@@ -1,0 +1,18 @@
+[package]
+name = "hub-modules"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Hub module implementations (ACP, Bulletin, Hub)"
+
+[dependencies]
+acp.workspace = true
+identity.workspace = true
+
+alloy-sol-types.workspace = true
+alloy-primitives.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

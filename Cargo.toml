@@ -41,6 +41,7 @@ strip = "symbols"
 [workspace.dependencies]
 # Core crates
 hub-backend = { path = "crates/hub-backend" }
+hub-modules = { path = "crates/hub-modules" }
 hub-cli = { path = "crates/hub-cli" }
 hub-config = { path = "crates/hub-config" }
 hub-consensus = { path = "crates/hub-consensus" }
@@ -77,6 +78,11 @@ commonware-stream = "2026.2.0"
 commonware-broadcast = "2026.2.0"
 commonware-resolver = "2026.2.0"
 commonware-macros = "2026.2.0"
+
+# defradb.rs (v0.6.1)
+acp = { git = "https://github.com/jackzampolin/defradb.rs", tag = "v0.6.1", default-features = false }
+identity = { git = "https://github.com/jackzampolin/defradb.rs", tag = "v0.6.1" }
+storage = { git = "https://github.com/jackzampolin/defradb.rs", tag = "v0.6.1", default-features = false }
 
 # Alloy
 alloy-primitives = "1.0"
