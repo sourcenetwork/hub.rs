@@ -207,13 +207,20 @@ impl BulletinModule {
     /// - ACP via `acp.direct_policy_cmd(SetRelationship)`
     ///
     /// # Ctx
-    /// `tx_ctx.signer` for creator DID resolution.
+    /// `creator` DID is pre-resolved by the caller (shim layer).
+    /// Go resolves the owner via `GetActorDID` (bearer-token-aware)
+    /// and the collaborator via `IssueDIDFromAccountAddr` (address-only).
     ///
     /// # Errors
     /// - `PolicyNotInitialized` — module policy not yet created
     /// - `NamespaceNotFound` — namespace does not exist
     /// - `CollaboratorAlreadyExists` — already a collaborator
     /// - `Unauthorized` — ACP: creator is not the object owner
+    ///
+    /// # Return
+    /// Go returns an empty response. Rust returns the collaborator DID
+    /// string (deliberate API enrichment — the proto field exists but
+    /// Go never populates it).
     #[allow(unused_variables)]
     pub fn add_collaborator(
         &mut self,
@@ -252,13 +259,18 @@ impl BulletinModule {
     /// - ACP via `acp.direct_policy_cmd(DeleteRelationship)`
     ///
     /// # Ctx
-    /// `tx_ctx.signer` for creator DID resolution.
+    /// `creator` DID is pre-resolved by the caller (shim layer).
+    /// Same resolution asymmetry as `add_collaborator`.
     ///
     /// # Errors
     /// - `PolicyNotInitialized` — module policy not yet created
     /// - `NamespaceNotFound` — namespace does not exist
     /// - `CollaboratorNotFound` — not currently a collaborator
     /// - `Unauthorized` — ACP: creator is not the object owner
+    ///
+    /// # Return
+    /// Go returns an empty response. Rust returns the collaborator DID
+    /// string (same enrichment as `add_collaborator`).
     #[allow(unused_variables)]
     pub fn remove_collaborator(
         &mut self,
