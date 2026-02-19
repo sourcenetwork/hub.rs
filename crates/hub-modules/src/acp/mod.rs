@@ -47,15 +47,20 @@ impl AcpModule {
     ///   3. Call `engine.create_policy(policy, marshal_type)` with the
     ///      metadata stored as a `SuppliedMetadata` blob on the record.
     ///      - Engine parses `policy` string according to `marshal_type`
-    ///      - Engine validates: policy name non-empty, spec-conditional
-    ///        schema checks (resource/relation/permission validation only
-    ///        when policy declares a specification type like `defra`)
-    ///      - Engine generates policy ID as a double SHA-256 hex digest:
-    ///        `hex(SHA256(SHA256(name + resource_names + relation_names +
-    ///        permission_names + permission_expressions) + counter_string))`
+    ///      - Engine runs the create-policy pipeline: transforms the policy
+    ///        (adds default actor resource, discretionary relations,
+    ///        decentralized admin, sorts, generates ID) then validates
+    ///        (name non-empty via BasicRequirement, spec-conditional checks)
+    ///      - Engine generates policy ID as a double SHA-256 hex digest.
+    ///        Inner hash iterates per-resource in order:
+    ///        `SHA256(name || for each resource { resource.name ||
+    ///        for each relation { relation.name } ||
+    ///        for each permission { perm.name || perm.expression } })`
+    ///        Outer hash: `hex(SHA256(inner_hash || counter_string))`
     ///        where `counter_string` is the decimal representation of a
     ///        monotonic counter value
-    ///      - Engine stores `PolicyRecord` in the zanzibar policy store
+    ///      - Engine stores the transformed `PolicyRecord` (which may differ
+    ///        from the input due to pipeline transforms)
     ///   4. Return the `PolicyRecord` from the engine response
     ///
     /// Reads: engine internal state (counter, schema validation)
@@ -137,7 +142,7 @@ impl AcpModule {
     ///                    + issued_height + creation_time + sorted(operations) + hash(params))
     ///      policy_id   = policy_id
     ///      creator     = creator.to_string()
-    ///      creator_acc_sequence = tx nonce (from tx_ctx or block state)
+    ///      creator_acc_sequence = account nonce (Go: accountKeeper.GetAccount; hub.rs: EVM account state nonce)
     ///      operations  = access_request.operations
     ///      actor       = access_request.actor.0.to_string()
     ///      params      = DecisionParams { decision_expiration_delta: 100,
@@ -207,7 +212,8 @@ impl AcpModule {
     ///
     ///      UnarchiveObject(obj):
     ///        - Engine validates creator is the previous owner
-    ///        - Engine clears archived flag, re-creates owner relationship
+    ///        - Engine clears `archived` flag on existing owner relationship
+    ///          record and updates it in place (does NOT create a new tuple)
     ///        - Returns UnarchiveObject { record, relationship_modified }
     ///        - Idempotent: unarchiving active object succeeds
     ///
@@ -221,7 +227,7 @@ impl AcpModule {
     ///
     ///      RevealRegistration { registrations_commitment_id, proof }:
     ///        - Fetches commitment by ID from `"commitment/"` prefix
-    ///        - Checks commitment not expired (creation_ts + validity < now)
+    ///        - Rejects if expired: error when `creation_ts + validity < now`
     ///        - Verifies Merkle proof against commitment root
     ///          (RFC 6962: leaf = SHA256(0x00 || policyId + resource + objectId + actorDID))
     ///        - If object unregistered: registers it (creator becomes owner)
@@ -258,19 +264,20 @@ impl AcpModule {
     /// Execute a policy command authenticated by a JWS payload signature.
     ///
     /// Flow:
-    ///   1. Validate `content_type` is `ContentType::Jws` (reject Unknown)
-    ///   2. Parse `payload` as compact-serialized JWS (jose ParseSigned)
-    ///   3. Unmarshal JWS payload as `SignedPolicyCmdPayload`
+    ///   1. Read module params from KV key `"p_acp"` (needed for expiration checks)
+    ///   2. Validate `content_type` is `ContentType::Jws` (reject Unknown)
+    ///   3. Parse `payload` as JWS (Go uses `FullSerialize` / JSON format;
+    ///      `jose.ParseSigned` accepts both compact and JSON serialization)
+    ///   4. Unmarshal JWS payload as `SignedPolicyCmdPayload`
     ///      `{ policy_id, cmd: PolicyCmd, actor: DID, issued_height: u64,
     ///        issued_at: Timestamp, expiration_delta: u64 }`
     ///      (`issued_at` is client-generated metadata, not trusted for validation)
-    ///   4. Decode actor DID as did:key, extract public key
-    ///   5. Verify JWS signature against the extracted public key
+    ///   5. Decode actor DID as did:key, extract public key
+    ///   6. Verify JWS signature against the extracted public key
     ///      (supports secp256k1/ES256K and ed25519)
-    ///   6. Read module params from KV key `"p_acp"`
     ///   7. Validate expiration_delta <= params.policy_command_max_expiration_delta
     ///   8. Validate not expired: block_height <= issued_height + expiration_delta
-    ///   9. Replay check: compute payload_id = SHA256(jws_string) (full compact JWS, not decoded payload)
+    ///   9. Replay check: compute payload_id = SHA256(jws_string) (full JWS string, not decoded payload)
     ///      - Read KV `"spc_seen/" + payload_id` → stored expire_height (8 bytes BE)
     ///      - If found AND expire_height >= current block_height → reject as replay
     ///      - If found AND expire_height < current block_height → delete stale entry
