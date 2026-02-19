@@ -4,6 +4,9 @@
 
 use alloy_primitives as _;
 
+/// Shared types used across modules (Timestamp, Duration).
+pub mod types;
+
 /// Access Control Policy module (precompile `0x0810`).
 pub mod acp;
 /// Bulletin module (precompile `0x0811`).

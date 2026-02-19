@@ -11,6 +11,8 @@ use error::HubError;
 use identity::Did;
 use types::{ChainConfig, HubParams, JWSTokenRecord, JWSTokenStatus};
 
+use crate::types::Timestamp;
+
 type Result<T> = std::result::Result<T, HubError>;
 
 /// Hub module.
@@ -54,8 +56,8 @@ impl HubModule {
         bearer_token: &str,
         issuer_did: &Did,
         authorized_account: &str,
-        issued_at: u64,
-        expires_at: u64,
+        issued_at: Timestamp,
+        expires_at: Timestamp,
     ) -> Result<()> {
         todo!()
     }
@@ -67,7 +69,8 @@ impl HubModule {
     }
 
     /// Sweep expired tokens (called at end of each block).
-    pub fn check_and_update_expired_tokens(&mut self) -> Result<()> {
+    #[allow(unused_variables)]
+    pub fn check_and_update_expired_tokens(&mut self, block_time: &Timestamp) -> Result<()> {
         todo!()
     }
 

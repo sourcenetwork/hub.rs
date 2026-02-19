@@ -1,8 +1,8 @@
-//! Hub domain types — JWS token records, chain config, and native tx operations.
-
 #![allow(missing_docs)]
 
 use serde::{Deserialize, Serialize};
+
+use crate::types::Timestamp;
 
 /// Status of a JWS token in the invalidation registry.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -19,12 +19,12 @@ pub struct JWSTokenRecord {
     pub bearer_token: String,
     pub issuer_did: String,
     pub authorized_account: String,
-    pub issued_at: u64,
-    pub expires_at: u64,
+    pub issued_at: Timestamp,
+    pub expires_at: Timestamp,
     pub status: JWSTokenStatus,
-    pub first_used_at: Option<u64>,
-    pub last_used_at: Option<u64>,
-    pub invalidated_at: Option<u64>,
+    pub first_used_at: Option<Timestamp>,
+    pub last_used_at: Option<Timestamp>,
+    pub invalidated_at: Option<Timestamp>,
     pub invalidated_by: String,
 }
 

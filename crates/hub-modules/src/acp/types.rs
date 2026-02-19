@@ -4,10 +4,12 @@ use acp::{Policy, Relationship, Subject};
 use identity::Did;
 use serde::{Deserialize, Serialize};
 
+use crate::types::{Duration, Timestamp};
+
 /// Metadata attached to any stored record.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RecordMetadata {
-    pub creation_ts: u64,
+    pub creation_ts: Timestamp,
     pub tx_hash: Vec<u8>,
     pub tx_signer: String,
     pub owner_did: String,
@@ -39,8 +41,7 @@ pub enum ContentType {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum PolicyMarshalingType {
     Unknown,
-    ShortYaml,
-    ShortJson,
+    Yaml,
 }
 
 /// Reference to an object within a policy resource.
@@ -66,12 +67,12 @@ pub struct AccessRequest {
 pub struct AccessDecision {
     pub id: String,
     pub policy_id: String,
-    pub creator: Actor,
+    pub creator: String,
     pub creator_acc_sequence: u64,
     pub operations: Vec<Operation>,
-    pub actor: Actor,
+    pub actor: String,
     pub params: DecisionParams,
-    pub creation_time: u64,
+    pub creation_time: Timestamp,
     pub issued_height: u64,
 }
 
@@ -87,7 +88,7 @@ pub enum PolicyCmd {
         commitment: Vec<u8>,
     },
     RevealRegistration {
-        commitment_id: u64,
+        registrations_commitment_id: u64,
         proof: RegistrationProof,
     },
     FlagHijackAttempt {
@@ -97,23 +98,43 @@ pub enum PolicyCmd {
 
 /// The result of executing a policy command (matches Go oneof).
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[allow(clippy::large_enum_variant)]
 pub enum PolicyCmdResult {
-    SetRelationship { record_existed: bool },
-    DeleteRelationship { record_found: bool },
-    RegisterObject { record_existed: bool },
-    ArchiveObject { record_found: bool },
-    UnarchiveObject { record_found: bool },
-    CommitRegistrations { commitment_id: u64 },
-    RevealRegistration,
-    FlagHijackAttempt,
+    SetRelationship {
+        record_existed: bool,
+        record: RelationshipRecord,
+    },
+    DeleteRelationship {
+        record_found: bool,
+    },
+    RegisterObject {
+        record: RelationshipRecord,
+    },
+    ArchiveObject {
+        found: bool,
+        relationships_removed: u64,
+    },
+    UnarchiveObject {
+        record: RelationshipRecord,
+        relationship_modified: bool,
+    },
+    CommitRegistrations {
+        registrations_commitment: RegistrationsCommitment,
+    },
+    RevealRegistration {
+        record: RelationshipRecord,
+        event: AmendmentEvent,
+    },
+    FlagHijackAttempt {
+        event: AmendmentEvent,
+    },
 }
 
 /// A stored policy with metadata.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PolicyRecord {
-    pub id: String,
     pub policy: Policy,
-    pub raw_policy: Vec<u8>,
+    pub raw_policy: String,
     pub marshal_type: PolicyMarshalingType,
     pub metadata: RecordMetadata,
 }
@@ -127,14 +148,6 @@ pub struct RegistrationProof {
     pub leaf_index: u64,
 }
 
-/// Status of a registration commitment.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum CommitmentStatus {
-    Pending,
-    Revealed,
-    Expired,
-}
-
 /// A batch registration commitment submitted by an actor.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RegistrationsCommitment {
@@ -142,7 +155,7 @@ pub struct RegistrationsCommitment {
     pub policy_id: String,
     pub commitment: Vec<u8>,
     pub expired: bool,
-    pub validity: u64,
+    pub validity: Duration,
     pub metadata: RecordMetadata,
 }
 
@@ -152,20 +165,41 @@ pub struct AmendmentEvent {
     pub id: u64,
     pub policy_id: String,
     pub object: Object,
-    pub new_owner: String,
-    pub previous_owner: String,
+    pub new_owner: Actor,
+    pub previous_owner: Actor,
     pub commitment_id: u64,
     pub hijack_flag: bool,
     pub metadata: RecordMetadata,
 }
 
+/// Selects objects within a relationship query.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum ObjectSelector {
+    Exact(Object),
+    Wildcard,
+    ResourcePredicate(String),
+}
+
+/// Selects relations within a relationship query.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum RelationSelector {
+    Exact(String),
+    Wildcard,
+}
+
+/// Selects subjects within a relationship query.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum SubjectSelector {
+    Exact(Subject),
+    Wildcard,
+}
+
 /// Filter for querying relationships.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct RelationshipSelector {
-    pub resource: Option<String>,
-    pub object_id: Option<String>,
-    pub relation: Option<String>,
-    pub subject: Option<Subject>,
+    pub object_selector: Option<ObjectSelector>,
+    pub relation_selector: Option<RelationSelector>,
+    pub subject_selector: Option<SubjectSelector>,
 }
 
 /// A relationship associated with its policy.
@@ -181,11 +215,11 @@ pub struct RelationshipRecord {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum AcpOp {
     CreatePolicy {
-        yaml: Vec<u8>,
+        policy: String,
     },
     EditPolicy {
         policy_id: String,
-        yaml: Vec<u8>,
+        policy: String,
     },
     CheckAccess {
         policy_id: String,
@@ -201,5 +235,5 @@ pub enum AcpOp {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct AcpParams {
     pub policy_command_max_expiration_delta: u64,
-    pub registrations_commitment_validity: u64,
+    pub registrations_commitment_validity: Duration,
 }

@@ -5,13 +5,15 @@
 use identity::Did;
 use serde::{Deserialize, Serialize};
 
+use crate::types::Timestamp;
+
 /// A registered namespace for organizing posts.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Namespace {
     pub id: String,
     pub creator: String,
     pub owner_did: String,
-    pub created_at: u64,
+    pub created_at: Timestamp,
 }
 
 /// A post within a namespace (payload + optional proof).
@@ -51,6 +53,9 @@ pub enum BulletinOp {
     RemoveCollaborator {
         namespace: String,
         collaborator: String,
+    },
+    UpdateParams {
+        params: BulletinParams,
     },
 }
 

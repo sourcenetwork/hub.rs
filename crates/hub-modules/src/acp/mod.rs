@@ -31,12 +31,12 @@ pub struct AcpModule {
 impl AcpModule {
     // ── Msg handlers ────────────────────────────────────────────────────
 
-    /// Parse and store a new policy from YAML.
+    /// Parse and store a new policy.
     #[allow(unused_variables)]
     pub fn create_policy(
         &mut self,
         creator: &Did,
-        policy_yaml: &[u8],
+        policy: &str,
         marshal_type: PolicyMarshalingType,
     ) -> Result<PolicyRecord> {
         todo!()
@@ -48,7 +48,7 @@ impl AcpModule {
         &mut self,
         creator: &Did,
         policy_id: &str,
-        policy_yaml: &[u8],
+        policy: &str,
         marshal_type: PolicyMarshalingType,
     ) -> Result<(u64, PolicyRecord)> {
         todo!()
@@ -138,11 +138,11 @@ impl AcpModule {
         todo!()
     }
 
-    /// Validate policy YAML without storing it.
+    /// Validate policy definition without storing it.
     #[allow(unused_variables)]
     pub fn query_validate_policy(
         &self,
-        policy_yaml: &[u8],
+        policy: &str,
         marshal_type: PolicyMarshalingType,
     ) -> Result<(bool, String, Policy)> {
         todo!()
@@ -186,7 +186,7 @@ impl AcpModule {
         policy_id: &str,
         objects: &[Object],
         actor: &types::Actor,
-    ) -> Result<(Vec<u8>, Vec<RegistrationProof>)> {
+    ) -> Result<(Vec<u8>, String, Vec<RegistrationProof>)> {
         todo!()
     }
 
