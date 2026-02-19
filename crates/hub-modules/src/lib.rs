@@ -8,3 +8,5 @@ use alloy_primitives as _;
 pub mod acp;
 /// Bulletin module (precompile `0x0811`).
 pub mod bulletin;
+/// Hub module (precompile `0x0812`).
+pub mod hub;
