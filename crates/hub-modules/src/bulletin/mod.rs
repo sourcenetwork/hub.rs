@@ -437,7 +437,10 @@ impl BulletinModule {
     /// - Keys under `"post/" + sanitize(namespace_id)` sub-prefix
     ///
     /// # Errors
-    /// None — the Go glob function (`utils.Glob`) accepts any pattern
+    /// - Empty `namespace` → Go returns `InvalidArgument` at the gRPC layer.
+    ///   Validate non-empty namespace before iterating.
+    ///
+    /// The glob function itself (`utils.Glob`) accepts any pattern
     /// and returns a bool; it never fails. The Rust implementation may
     /// choose to validate patterns if using a stricter glob library.
     ///
