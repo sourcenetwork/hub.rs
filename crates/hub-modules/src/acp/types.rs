@@ -41,7 +41,8 @@ pub enum ContentType {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum PolicyMarshalingType {
     Unknown,
-    Yaml,
+    ShortYaml,
+    ShortJson,
 }
 
 /// Reference to an object within a policy resource.
@@ -209,6 +210,15 @@ pub struct RelationshipRecord {
     pub relationship: Relationship,
     pub archived: bool,
     pub metadata: RecordMetadata,
+}
+
+/// Result of generating a registration commitment with proofs.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GenerateCommitmentResult {
+    pub commitment: Vec<u8>,
+    pub commitment_hex: String,
+    pub proofs: Vec<RegistrationProof>,
+    pub proofs_json: Vec<String>,
 }
 
 /// Native BLS transaction operations for the ACP module.

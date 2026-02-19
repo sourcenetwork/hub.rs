@@ -11,9 +11,9 @@ use acp::Policy;
 use error::AcpError;
 use identity::Did;
 use types::{
-    AccessDecision, AccessRequest, AcpParams, AmendmentEvent, ContentType, Object, PolicyCmd,
-    PolicyCmdResult, PolicyMarshalingType, PolicyRecord, RegistrationProof,
-    RegistrationsCommitment, RelationshipRecord, RelationshipSelector,
+    AccessDecision, AccessRequest, AcpParams, AmendmentEvent, ContentType,
+    GenerateCommitmentResult, Object, PolicyCmd, PolicyCmdResult, PolicyMarshalingType,
+    PolicyRecord, RegistrationsCommitment, RelationshipRecord, RelationshipSelector,
 };
 
 type Result<T> = std::result::Result<T, AcpError>;
@@ -81,7 +81,7 @@ impl AcpModule {
     pub fn signed_policy_cmd(
         &mut self,
         creator: &Did,
-        payload_jws: &str,
+        payload: &str,
         content_type: ContentType,
     ) -> Result<PolicyCmdResult> {
         todo!()
@@ -186,7 +186,7 @@ impl AcpModule {
         policy_id: &str,
         objects: &[Object],
         actor: &types::Actor,
-    ) -> Result<(Vec<u8>, String, Vec<RegistrationProof>)> {
+    ) -> Result<GenerateCommitmentResult> {
         todo!()
     }
 
