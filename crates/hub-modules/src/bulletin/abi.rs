@@ -12,7 +12,8 @@ sol! {
         function createPost(
             string namespace,
             bytes payload,
-            bytes proof
+            bytes proof,
+            string artifact
         ) external returns (bytes32 postId);
 
         function addCollaborator(

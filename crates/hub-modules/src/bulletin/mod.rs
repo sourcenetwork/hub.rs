@@ -42,7 +42,7 @@ impl BulletinModule {
         payload: &[u8],
         proof: &[u8],
         artifact: &str,
-    ) -> Result<Post> {
+    ) -> Result<()> {
         todo!()
     }
 

@@ -4,9 +4,11 @@ use serde::{Deserialize, Serialize};
 
 /// Wall-clock timestamp paired with block height.
 ///
-/// Matches Go's `sourcehub.acp.Timestamp` — captures both the proposer's
-/// wall-clock reading (unix seconds) and the block height at which the
-/// record was created. Both values come from `BlockContext.header`.
+/// The proposer's wall-clock reading (unix seconds) becomes authoritative
+/// once validators sign the block. `block_height` replaces protobuf's
+/// `nanos` — nanosecond precision is meaningless in consensus, while
+/// block height gives total ordering. Both values come from
+/// `BlockContext.header` (timestamp + number).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Timestamp {
     pub seconds: u64,

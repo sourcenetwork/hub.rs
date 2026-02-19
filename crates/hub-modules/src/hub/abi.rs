@@ -7,12 +7,12 @@ sol! {
     interface IHub {
         // ── Write methods ───────────────────────────────────────────────
 
-        function invalidateJWS(bytes32 tokenId) external;
+        function invalidateJWS(bytes32 tokenHash) external;
 
         // ── Read methods ────────────────────────────────────────────────
 
         function getJWSToken(
-            bytes32 tokenId
+            bytes32 tokenHash
         ) external view returns (bool valid, uint64 issuedAt, uint64 expiresAt);
     }
 }

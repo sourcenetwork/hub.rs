@@ -205,12 +205,12 @@ where
             .expect("system clock before unix epoch")
             .as_secs();
 
-        if block.timestamp <= parent_timestamp {
+        if block.timestamp < parent_timestamp {
             warn!(
                 ?digest,
                 block_ts = block.timestamp,
                 parent_ts = parent_timestamp,
-                "block timestamp not after parent"
+                "block timestamp before parent"
             );
             return false;
         }

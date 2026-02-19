@@ -88,9 +88,9 @@ impl RevmExecutor {
             )));
         }
 
-        if header.timestamp <= parent.timestamp {
+        if header.timestamp < parent.timestamp {
             return Err(ExecutionError::BlockValidation(format!(
-                "timestamp not increasing: parent {}, current {}",
+                "timestamp before parent: parent {}, current {}",
                 parent.timestamp, header.timestamp
             )));
         }
