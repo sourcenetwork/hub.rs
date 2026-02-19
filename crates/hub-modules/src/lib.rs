@@ -6,3 +6,5 @@ use alloy_primitives as _;
 
 /// Access Control Policy module (precompile `0x0810`).
 pub mod acp;
+/// Bulletin module (precompile `0x0811`).
+pub mod bulletin;
