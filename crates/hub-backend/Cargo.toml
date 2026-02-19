@@ -1,0 +1,28 @@
+[package]
+name = "hub-backend"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Commonware-storage based backend for hub QMDB"
+
+[lints]
+workspace = true
+
+[dependencies]
+hub-qmdb.workspace = true
+hub-handlers.workspace = true
+
+alloy-primitives.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+commonware-codec.workspace = true
+commonware-cryptography.workspace = true
+commonware-runtime.workspace = true
+commonware-storage.workspace = true
+commonware-utils.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,0 +1,23 @@
+[package]
+name = "hub-simplex"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Simplex Consensus Engine"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Commonware
+commonware-consensus.workspace = true
+commonware-cryptography.workspace = true
+commonware-p2p.workspace = true
+commonware-parallel.workspace = true
+commonware-runtime.workspace = true
+commonware-utils.workspace = true
+
+# Misc
+rand_core.workspace = true

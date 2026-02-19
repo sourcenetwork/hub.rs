@@ -1,0 +1,27 @@
+[package]
+name = "hub-executor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Block execution abstractions, REVM implementation, and hub precompiles"
+
+[dependencies]
+hub-traits.workspace = true
+hub-qmdb.workspace = true
+
+alloy-consensus.workspace = true
+alloy-eips.workspace = true
+alloy-primitives.workspace = true
+alloy-rlp.workspace = true
+futures.workspace = true
+revm.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+rstest.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true

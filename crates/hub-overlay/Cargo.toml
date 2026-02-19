@@ -1,0 +1,20 @@
+[package]
+name = "hub-overlay"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Overlay state for unpersisted QMDB changes"
+
+[lints]
+workspace = true
+
+[dependencies]
+hub-qmdb.workspace = true
+hub-traits.workspace = true
+
+alloy-primitives.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

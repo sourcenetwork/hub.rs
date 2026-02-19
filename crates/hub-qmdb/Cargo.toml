@@ -1,0 +1,21 @@
+[package]
+name = "hub-qmdb"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pure QMDB store logic for hub"
+
+[dependencies]
+alloy-primitives.workspace = true
+
+# Error handling
+thiserror.workspace = true
+
+[dev-dependencies]
+rstest.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true

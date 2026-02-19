@@ -1,0 +1,48 @@
+[package]
+name = "hub-jsonrpc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "RPC server for hub nodes"
+
+[lints]
+workspace = true
+
+[dependencies]
+# HTTP server
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+
+# JSON-RPC
+jsonrpsee.workspace = true
+
+# Alloy types
+alloy-primitives = { workspace = true, features = ["serde"] }
+
+# Async
+tokio = { workspace = true, features = ["net", "sync"] }
+async-trait.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Error handling
+thiserror.workspace = true
+
+# Tracing
+tracing.workspace = true
+
+# Misc
+parking_lot.workspace = true
+
+# Kora crates
+hub-indexer.workspace = true
+hub-traits.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+jsonrpsee = { workspace = true, features = ["ws-client"] }

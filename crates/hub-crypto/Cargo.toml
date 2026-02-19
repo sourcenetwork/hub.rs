@@ -1,0 +1,30 @@
+[package]
+name = "hub-crypto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Cryptographic utilities for hub"
+
+[lints]
+workspace = true
+
+[features]
+default = []
+test-utils = [
+    "dep:anyhow",
+    "dep:commonware-consensus",
+    "dep:commonware-cryptography",
+    "dep:commonware-utils",
+    "dep:hub-domain",
+    "dep:rand",
+]
+
+[dependencies]
+anyhow = { workspace = true, optional = true }
+commonware-consensus = { workspace = true, optional = true }
+commonware-cryptography = { workspace = true, optional = true }
+commonware-utils = { workspace = true, optional = true }
+hub-domain = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }

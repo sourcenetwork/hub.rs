@@ -1,0 +1,33 @@
+[package]
+name = "hub-service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "hub node service orchestration"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Local crates
+hub-config.workspace = true
+hub-transport.workspace = true
+
+# Commonware
+commonware-consensus.workspace = true
+commonware-cryptography.workspace = true
+commonware-p2p.workspace = true
+commonware-runtime.workspace = true
+commonware-utils.workspace = true
+
+# Async
+futures.workspace = true
+
+# Tracing
+tracing.workspace = true
+
+# Error handling
+eyre.workspace = true
+thiserror.workspace = true

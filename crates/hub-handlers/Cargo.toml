@@ -1,0 +1,25 @@
+[package]
+name = "hub-handlers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Database handles with synchronization for hub"
+
+[lints]
+workspace = true
+
+[dependencies]
+hub-qmdb.workspace = true
+hub-traits.workspace = true
+
+alloy-primitives.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+revm = { workspace = true, features = ["std", "asyncdb"] }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }

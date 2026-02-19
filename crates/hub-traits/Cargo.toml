@@ -1,0 +1,18 @@
+[package]
+name = "hub-traits"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Core trait abstractions for hub storage and consensus"
+
+[dependencies]
+alloy-primitives.workspace = true
+hub-qmdb.workspace = true
+
+# Error handling
+thiserror.workspace = true
+
+[lints]
+workspace = true

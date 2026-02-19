@@ -1,0 +1,46 @@
+[package]
+name = "hub-reporters"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Consensus reporters for hub nodes"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Local crates
+hub-consensus.workspace = true
+hub-domain.workspace = true
+hub-executor.workspace = true
+hub-ledger.workspace = true
+hub-overlay.workspace = true
+hub-qmdb-ledger.workspace = true
+hub-jsonrpc.workspace = true
+
+# Commonware
+commonware-codec.workspace = true
+commonware-consensus.workspace = true
+commonware-cryptography.workspace = true
+commonware-runtime.workspace = true
+commonware-utils.workspace = true
+
+# Alloy
+alloy-consensus = { workspace = true }
+alloy-eips.workspace = true
+alloy-primitives.workspace = true
+
+# Local crates (indexer)
+hub-indexer.workspace = true
+
+# Async
+tokio = { workspace = true, features = ["sync"] }
+
+# Tracing
+tracing.workspace = true
+
+[dev-dependencies]
+k256.workspace = true
+hub-domain = { workspace = true, features = ["evm"] }

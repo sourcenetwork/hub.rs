@@ -1,0 +1,33 @@
+[package]
+name = "hub-config"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Configuration types for hub node"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+
+# Error handling
+thiserror.workspace = true
+
+# Cryptography
+commonware-codec.workspace = true
+commonware-cryptography.workspace = true
+ed25519-consensus.workspace = true
+rand.workspace = true
+
+# Misc
+alloy-primitives.workspace = true
+
+[dev-dependencies]
+rstest.workspace = true
+tempfile.workspace = true

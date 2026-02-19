@@ -1,0 +1,31 @@
+[package]
+name = "hub-qmdb-ledger"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "QMDB-backed ledger adapter for hub"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Local crates
+hub-backend.workspace = true
+hub-handlers.workspace = true
+hub-qmdb.workspace = true
+hub-traits.workspace = true
+hub-domain.workspace = true
+
+# Commonware
+commonware-runtime.workspace = true
+
+# Alloy
+alloy-primitives.workspace = true
+
+# Error handling
+thiserror.workspace = true
+
+# Async
+tokio.workspace = true

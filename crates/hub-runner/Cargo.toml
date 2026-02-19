@@ -1,0 +1,44 @@
+[package]
+name = "hub-runner"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Node runner assembly for hub validators"
+
+[dependencies]
+hub-config.workspace = true
+hub-consensus.workspace = true
+hub-domain.workspace = true
+hub-executor.workspace = true
+hub-indexer.workspace = true
+hub-jsonrpc.workspace = true
+hub-ledger.workspace = true
+hub-marshal.workspace = true
+hub-overlay.workspace = true
+hub-qmdb-ledger.workspace = true
+hub-reporters.workspace = true
+hub-service.workspace = true
+hub-simplex.workspace = true
+hub-transport.workspace = true
+
+commonware-codec.workspace = true
+commonware-consensus.workspace = true
+commonware-cryptography.workspace = true
+commonware-p2p.workspace = true
+commonware-parallel.workspace = true
+commonware-runtime.workspace = true
+commonware-utils.workspace = true
+
+alloy-consensus.workspace = true
+alloy-primitives.workspace = true
+bytes.workspace = true
+
+anyhow.workspace = true
+futures.workspace = true
+hex.workspace = true
+rand.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

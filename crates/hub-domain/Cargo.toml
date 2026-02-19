@@ -1,0 +1,40 @@
+[package]
+name = "hub-domain"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Domain types for hub"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Commonware
+commonware-codec.workspace = true
+commonware-consensus.workspace = true
+commonware-cryptography.workspace = true
+
+# Execution
+alloy-evm = { workspace = true, features = ["std"] }
+alloy-primitives.workspace = true
+alloy-consensus = { workspace = true, optional = true }
+alloy-eips = { workspace = true, optional = true }
+k256 = { workspace = true, optional = true }
+sha3 = { workspace = true, optional = true }
+
+# Synchronization
+parking_lot.workspace = true
+
+# General
+bytes.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+alloy-eips.workspace = true
+
+[features]
+evm = ["dep:alloy-consensus", "dep:alloy-eips", "dep:k256", "dep:sha3"]

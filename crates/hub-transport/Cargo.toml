@@ -1,0 +1,32 @@
+[package]
+name = "hub-transport"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "P2P transport layer for hub nodes"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Kora
+hub-config.workspace = true
+
+# Commonware
+commonware-codec.workspace = true
+commonware-cryptography.workspace = true
+commonware-p2p.workspace = true
+commonware-runtime.workspace = true
+commonware-utils.workspace = true
+
+# Error handling
+thiserror.workspace = true
+
+# Tracing
+tracing.workspace = true
+
+# Misc
+hex.workspace = true
+rand_core.workspace = true

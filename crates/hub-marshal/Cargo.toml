@@ -1,0 +1,33 @@
+[package]
+name = "hub-marshal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "hub Marshal Adapter"
+
+[lints]
+workspace = true
+
+[dependencies]
+commonware-broadcast.workspace = true
+commonware-codec.workspace = true
+commonware-consensus.workspace = true
+commonware-cryptography.workspace = true
+commonware-p2p.workspace = true
+commonware-parallel.workspace = true
+commonware-resolver.workspace = true
+commonware-runtime.workspace = true
+commonware-storage.workspace = true
+commonware-utils.workspace = true
+rand.workspace = true
+rand_core.workspace = true
+
+[dev-dependencies]
+bytes.workspace = true
+commonware-consensus = { workspace = true, features = ["mocks"] }
+commonware-cryptography = { workspace = true, features = ["mocks"] }
+commonware-macros.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

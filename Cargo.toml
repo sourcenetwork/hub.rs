@@ -1,0 +1,142 @@
+[workspace]
+members = ["bin/hubd", "crates/*"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91.1"
+license = "MIT"
+repository = "https://github.com/sourcenetwork/hub.rs"
+
+[workspace.lints.rust]
+missing-debug-implementations = "warn"
+missing-docs = "warn"
+unreachable-pub = "warn"
+unused-must-use = "deny"
+rust-2018-idioms = "deny"
+unnameable-types = "warn"
+
+[workspace.lints.rustdoc]
+all = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+missing-const-for-fn = "warn"
+use-self = "warn"
+option-if-let-else = "warn"
+redundant-clone = "warn"
+
+[profile.dev]
+debug = "line-tables-only"
+split-debuginfo = "packed"
+incremental = false
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+debug = false
+strip = "symbols"
+
+[workspace.dependencies]
+# Core crates
+hub-backend = { path = "crates/hub-backend" }
+hub-cli = { path = "crates/hub-cli" }
+hub-config = { path = "crates/hub-config" }
+hub-consensus = { path = "crates/hub-consensus" }
+hub-crypto = { path = "crates/hub-crypto", features = ["test-utils"] }
+hub-domain = { path = "crates/hub-domain" }
+hub-handlers = { path = "crates/hub-handlers" }
+hub-indexer = { path = "crates/hub-indexer" }
+hub-ledger = { path = "crates/hub-ledger" }
+hub-marshal = { path = "crates/hub-marshal" }
+hub-overlay = { path = "crates/hub-overlay" }
+hub-qmdb = { path = "crates/hub-qmdb" }
+hub-qmdb-ledger = { path = "crates/hub-qmdb-ledger" }
+hub-reporters = { path = "crates/hub-reporters" }
+hub-jsonrpc = { path = "crates/hub-jsonrpc" }
+hub-service = { path = "crates/hub-service" }
+hub-simplex = { path = "crates/hub-simplex" }
+hub-traits = { path = "crates/hub-traits" }
+hub-transport = { path = "crates/hub-transport" }
+
+hub-executor = { path = "crates/hub-executor" }
+hub-genesis = { path = "crates/hub-genesis" }
+hub-runner = { path = "crates/hub-runner" }
+
+# Commonware (calver 2026.2.0)
+commonware-p2p = "2026.2.0"
+commonware-utils = "2026.2.0"
+commonware-codec = "2026.2.0"
+commonware-runtime = "2026.2.0"
+commonware-consensus = "2026.2.0"
+commonware-cryptography = "2026.2.0"
+commonware-parallel = "2026.2.0"
+commonware-storage = "2026.2.0"
+commonware-stream = "2026.2.0"
+commonware-broadcast = "2026.2.0"
+commonware-resolver = "2026.2.0"
+commonware-macros = "2026.2.0"
+
+# Alloy
+alloy-primitives = "1.0"
+alloy-consensus = { version = "1.0", features = ["k256"] }
+alloy-eips = "1.0"
+alloy-rlp = "0.3"
+alloy-evm = { version = "0.27.0", default-features = false }
+alloy-signer = "1"
+alloy-signer-local = { version = "1", default-features = false }
+alloy-sol-types = "1"
+
+# Execution
+revm = { version = "34.0.0", default-features = false }
+
+# Async
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+async-trait = "0.1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+thiserror = "2"
+eyre = "0.6"
+anyhow = "1"
+
+# Cryptography
+k256 = "0.13"
+sha3 = "0.10"
+ed25519-consensus = "2"
+
+# HTTP / RPC
+axum = "0.8"
+tower = { version = "0.5", features = ["limit"] }
+tower-http = { version = "0.6", features = ["cors"] }
+jsonrpsee = { version = "0.24", features = ["server", "macros"] }
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+
+# Concurrency
+parking_lot = "0.12"
+
+# Misc
+hex = "0.4"
+rand = "0.8"
+rand_core = "0.6"
+bytes = "1"
+regex = "1"
+sha2 = "0.10"
+libc = "0.2"
+
+# Testing
+tempfile = "3"
+rstest = "0.24"
