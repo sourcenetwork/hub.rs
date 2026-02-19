@@ -2,7 +2,24 @@
 
 Rust rewrite of SourceHub on Commonware consensus with EVM execution. Trust layer for Source Network: ACP policies, bulletin board, and identity management with native BLS12-381 signing.
 
-See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full design (dual tx model, module-to-precompile mapping, implementation phases).
+## Plan
+
+The implementation plan lives in GitHub issues. **#23 is the master tracking issue.**
+
+**Current phase: Phase 1** — Copy bankd-commonware infrastructure, get running, strip to skeleton (#1).
+
+| Phase | What | Tracking |
+|-------|------|----------|
+| 1 | Copy bankd, strip to skeleton | #1 |
+| 2 | API surface stubs + transaction types | #5 |
+| 3 | State model deep dive | #9 |
+| 4 | Annotate stubs with implementation specs | #10 |
+| 5 | Wire precompile shims | #14 |
+| 6 | Wire native BLS tx path (HubExecutor) | #18 |
+| 7 | hub-client crate | #19 |
+| 8 | Integration test framework | #20 |
+| 9 | Implement stubs | #21 |
+| 10 | Production hardening | #22 |
 
 ## Related Repos
 
@@ -12,14 +29,98 @@ All repos follow gopath convention at `/Users/johnzampolin/go/src/github.com/{or
 |------|-----|---------|
 | **hub.rs** | sourcenetwork | This repo — SourceHub rewrite on Commonware |
 | **sourcehub** | sourcenetwork | Go implementation (Cosmos SDK) — the upstream being replaced |
-| **orbis-rs** | sourcenetwork | Threshold key management — primary consumer of hub.rs |
-| **defradb.rs** | sourcenetwork | CRDT storage — queries ACP via hub.rs |
-| **bankd-commonware** | mizufinance | Reference: Commonware + REVM chain (fork source for Phase 1) |
+| **orbis-rs** | sourcenetwork | Threshold key management — primary consumer of hub.rs (BLS native txs) |
+| **defradb.rs** | sourcenetwork | CRDT storage — queries ACP via hub.rs (EVM precompile calls) |
+| **bankd-commonware** | mizufinance | Reference: Commonware + REVM chain (infrastructure source for Phase 1) |
 | **monorepo** | commonwarexyz | Commonware primitives (consensus, crypto, p2p, storage) |
 
-## Current Phase
+### Code reuse across repos
 
-**Phase 1: Fork bankd, strip to skeleton.** See ARCHITECTURE.md for the full 7-phase plan.
+| Component | Source repo | Used in hub.rs for |
+|-----------|-----------|-------------------|
+| Zanzibar engine (relation-tuple graph) | defradb.rs `crates/acp/src/zanzibar/` | ACP policy evaluation |
+| DID types, identity crate | defradb.rs `crates/identity/` | DID resolution (also check orbis-rs) |
+| YAML policy parser | defradb.rs `crates/acp/src/policy_yaml/` | ACP policy creation |
+| Simplex consensus, REVM executor, e2e harness | bankd-commonware | Consensus, EVM execution, testing |
+| BLS12-381 threshold crypto | commonware monorepo | Block signing, native tx verification |
+
+## Architecture
+
+### Dual transaction model
+
+Blocks contain both BLS-signed native txs and secp256k1-signed EVM txs, processed sequentially by the HubExecutor:
+
+```
+                     HubExecutor
+                          |
+          +---------------+---------------+
+          |                               |
+     Native BLS txs                  EVM txs
+     (processed first)               (processed second)
+          |                               |
+     BLS verify → did:key             REVM execution
+     Deserialize NativeTx                 |
+          |                          Precompile calls
+     Dispatch to module              hit same modules
+          |                               |
+          v                               v
+    module.method(args)  ←— same Rust code —→  module.method(args)
+```
+
+### Precompile addresses
+
+| Address | Module | Purpose |
+|---------|--------|---------|
+| `0x0810` | ACP | Access control policies (Zanzibar relation tuples) |
+| `0x0811` | Bulletin | Coordination / DKG messages / posts |
+| `0x0812` | Hub | Identity / JWS token lifecycle |
+
+### Shared module pattern
+
+Each module is a plain Rust struct. Two thin shims sit on top:
+- **Precompile shim:** ABI decode calldata → `module.method(args)`
+- **Native tx shim:** BLS verify + deserialize → `module.method(args)`
+
+Business logic lives once.
+
+### State model
+
+All module state is stored in QMDB (same Merkle-ized KV store that backs EVM state):
+
+```
+Block state commitment:
+    evm_state_root:    QMDB/MPT root (EVM account + storage state)
+    native_state_root: Combined root of module state trees
+        acp_root:      Policies, relationships, objects (zanzi engine → QMDB)
+        bulletin_root: Namespaces, collaborators, posts
+        hub_root:      JWS tokens, invalidation records
+```
+
+### RPC surfaces
+
+| Endpoint | Signing | Consumer |
+|----------|---------|----------|
+| `eth_sendRawTransaction` | secp256k1 | defradb.rs, MetaMask, wallets |
+| `hub_sendNativeTx` | BLS12-381 | orbis-rs, BLS identities |
+| `eth_call` | none (read-only) | All queries |
+
+## Crate Structure
+
+```
+hub.rs/
+    bin/hubd/                  # CLI binary (devnet, testnet, validator)
+    crates/
+        hub-app/               # Application trait impl, block executor (HubExecutor)
+        hub-modules/           # ACP, Bulletin, Hub module implementations
+        hub-precompiles/       # EVM precompile shims (ABI decode → module calls)
+        hub-native/            # Native BLS tx format, verification, dispatch
+        hub-domain/            # Block, tx, state root types
+        hub-consensus/         # Simplex integration, scheme config
+        hub-state/             # State tree management (per-module Merkle trees)
+        hub-jsonrpc/           # eth_* + hub_* JSON-RPC methods
+        hub-client/            # Rust client library (EVM + BLS paths)
+        hub-e2e/               # Integration test framework
+```
 
 ## Building
 
@@ -30,37 +131,6 @@ cargo test --workspace             # run all tests
 cargo clippy --all -- -D warnings  # lint
 cargo fmt --all                    # format
 ```
-
-## Crate Structure
-
-```
-hub.rs/
-    bin/hubd/                  # CLI binary (devnet, testnet, validator)
-    crates/
-        hub-app/               # Application trait impl, block executor
-        hub-modules/           # ACP, Bulletin, Hub module implementations
-        hub-precompiles/       # EVM precompile shims (ABI decode -> module calls)
-        hub-native/            # Native BLS tx format, verification, dispatch
-        hub-domain/            # Block, tx, state root types
-        hub-consensus/         # Simplex integration, scheme config
-        hub-state/             # State tree management (per-module Merkle trees)
-        hub-jsonrpc/           # eth_* + hub_* JSON-RPC methods
-        hub-e2e/               # Integration test framework
-```
-
-## Key Architecture Decisions
-
-**Dual transaction model.** Blocks contain both BLS-signed native txs (SourceHub operations) and secp256k1-signed EVM txs (tokens, bridges, DeFi). No relayer needed for BLS identities.
-
-**Shared module implementations.** Each SourceHub module (ACP, Bulletin, Hub) is a plain Rust struct. Two thin shims sit on top: a native tx shim (verify BLS, deserialize, call method) and a precompile shim (ABI decode, call same method). Business logic lives once.
-
-**Precompile addresses.** Each module is an EVM precompile with its own address and state:
-
-| Address | Module |
-|---------|--------|
-| `0x0810` | ACP (access control policies) |
-| `0x0811` | Bulletin (coordination / posts) |
-| `0x0812` | Hub (identity / JWS lifecycle) |
 
 ## Development Principles
 
