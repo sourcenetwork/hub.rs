@@ -15,6 +15,26 @@ pub struct Timestamp {
     pub block_height: u64,
 }
 
+/// Block-level execution context, set once at the start of block execution.
+///
+/// Available to begin_block, end_block, and all tx processing within the block.
+/// Both EVM precompile and native BLS tx paths derive this from the same
+/// `BlockContext.header`, guaranteeing consistency.
+#[derive(Clone, Debug, Default)]
+pub struct BlockExecCtx {
+    pub timestamp: Timestamp,
+}
+
+/// Per-transaction execution context, set before each tx dispatch.
+///
+/// Not available during begin_block/end_block. The calling shim (EVM
+/// precompile or native BLS) populates this — module methods are path-agnostic.
+#[derive(Clone, Debug)]
+pub struct TxExecCtx {
+    pub tx_hash: Vec<u8>,
+    pub signer: String,
+}
+
 /// A duration expressed either as wall-clock seconds or a block count.
 ///
 /// Matches Go's `sourcehub.acp.Duration` oneof: modules that use
