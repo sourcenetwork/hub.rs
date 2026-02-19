@@ -37,7 +37,7 @@ type Result<T> = std::result::Result<T, BulletinError>;
 /// | Bulletin method | ACP method | Mutability |
 /// |---|---|---|
 /// | `register_namespace` | `acp.create_policy()` (first call), `acp.direct_policy_cmd(RegisterObject)` | `&mut AcpModule` |
-/// | `create_post` | `acp.check_access()` | `&mut AcpModule` |
+/// | `create_post` | `acp.query_verify_access_request()` | `&AcpModule` |
 /// | `add_collaborator` | `acp.direct_policy_cmd(SetRelationship)` | `&mut AcpModule` |
 /// | `remove_collaborator` | `acp.direct_policy_cmd(DeleteRelationship)` | `&mut AcpModule` |
 ///
@@ -124,9 +124,9 @@ impl BulletinModule {
     ///    if absent.
     /// 4. Validate payload is non-empty → `InvalidPostPayload`.
     /// 5. Validate proof is non-empty → `InvalidPostProof`.
-    /// 6. Call `acp.check_access(creator, policy_id, &AccessRequest { operations: vec![Operation { object: Object { resource: "namespace", id: namespace_id }, permission: "create_post" }], actor: Actor { id: creator.to_string() } })`.
-    ///    Return `NotCollaborator` if the decision denies access.
-    ///    Note: `check_access` writes an `AccessDecision` record to ACP state.
+    /// 6. Call `acp.query_verify_access_request(policy_id, &AccessRequest { operations: vec![Operation { object: Object { resource: "namespace", id: namespace_id }, permission: "create_post" }], actor: Actor { id: creator.to_string() } })`.
+    ///    This is a **read-only** query (Go: `VerifyAccessRequest`), NOT `check_access`.
+    ///    Return `NotCollaborator` if the engine denies access.
     /// 7. Compute `post_id = hex(sha256(namespace_id + payload))`.
     /// 8. Read `"post/" + sanitize(namespace_id) + "/" + sanitize(post_id)` —
     ///    return `PostAlreadyExists` if present.
@@ -149,7 +149,6 @@ impl BulletinModule {
     ///
     /// # Writes
     /// - `"post/" + sanitize(namespace_id) + "/" + sanitize(post_id)`
-    /// - ACP via `acp.check_access()` (writes AccessDecision record)
     ///
     /// # Ctx
     /// `tx_ctx.signer` for DID resolution.
@@ -164,7 +163,7 @@ impl BulletinModule {
     #[allow(unused_variables, clippy::too_many_arguments)]
     pub fn create_post(
         &mut self,
-        acp: &mut super::acp::AcpModule,
+        acp: &super::acp::AcpModule,
         tx_ctx: &TxExecCtx,
         creator: &Did,
         namespace: &str,
@@ -426,9 +425,10 @@ impl BulletinModule {
     ///    an empty list is returned.
     /// 2. Open a sub-prefix iterator scoped to
     ///    `"post/" + sanitize(namespace_id)`.
-    /// 3. For each entry, unsanitize the post ID portion of the key
-    ///    (restore `|` → `/`).
-    /// 4. Apply glob matching against the unsanitized post ID.
+    /// 3. For each entry, extract the post ID portion of the key:
+    ///    strip any leading `|` or `/` separator, strip any trailing `/`,
+    ///    then unsanitize (restore `|` → `/`).
+    /// 4. Apply glob matching against the cleaned, unsanitized post ID.
     ///    Glob supports `*` as a wildcard that matches across `/`.
     /// 5. Collect matching entries, deserialize as `Post`.
     /// 6. Return the matched posts.
@@ -437,7 +437,9 @@ impl BulletinModule {
     /// - Keys under `"post/" + sanitize(namespace_id)` sub-prefix
     ///
     /// # Errors
-    /// - `InvalidGlob` — malformed glob pattern
+    /// None — the Go glob function (`utils.Glob`) accepts any pattern
+    /// and returns a bool; it never fails. The Rust implementation may
+    /// choose to validate patterns if using a stricter glob library.
     ///
     /// # Implementation notes
     /// The Go implementation uses a tighter prefix store scoped to the
