@@ -50,13 +50,17 @@ impl AcpModule {
     ///      - Engine validates: policy name non-empty, spec-conditional
     ///        schema checks (resource/relation/permission validation only
     ///        when policy declares a specification type like `defra`)
-    ///      - Engine generates policy ID as SHA-256 hex digest seeded by
-    ///        a monotonic counter + hash of policy name/resources/relations
+    ///      - Engine generates policy ID as a double SHA-256 hex digest:
+    ///        `hex(SHA256(SHA256(name + resource_names + relation_names +
+    ///        permission_names + permission_expressions) + counter_string))`
+    ///        where `counter_string` is the decimal representation of a
+    ///        monotonic counter value
     ///      - Engine stores `PolicyRecord` in the zanzibar policy store
     ///   4. Return the `PolicyRecord` from the engine response
     ///
     /// Reads: engine internal state (counter, schema validation)
-    /// Writes: engine policy store (new PolicyRecord keyed by generated ID)
+    /// Writes: engine policy store (new PolicyRecord keyed by generated ID),
+    ///         engine counter store (monotonic counter incremented)
     /// Ctx: block_ctx (timestamp for metadata), tx_ctx (tx_hash + signer for metadata)
     ///
     /// Errors:
@@ -91,8 +95,9 @@ impl AcpModule {
     ///      - Engine clones old record, updates policy/definition/marshal_type,
     ///        sets `metadata.last_modified = now` (preserves original creator
     ///        and creation_ts — metadata is NOT rebuilt)
-    ///      - Engine prunes orphaned relationships (tuples referencing
-    ///        resources/relations removed from the new schema)
+    ///      - Engine prunes orphaned relationships for relation changes
+    ///        within preserved resources (note: resources themselves cannot
+    ///        be removed — PreservedResourcesRequirement rejects that)
     ///      - Engine stores updated `PolicyRecord`
     ///   3. Return `(relationships_removed, updated PolicyRecord)`
     ///
@@ -168,8 +173,12 @@ impl AcpModule {
     ///
     /// Flow:
     ///   1. Read module params from KV key `"p_acp"`
-    ///   2. Build `RecordMetadata` from execution context
-    ///   3. Dispatch `cmd` to the appropriate handler variant:
+    ///   2. Inject `creator` DID as authenticated principal into engine context
+    ///      (Go: `utils.InjectPrincipal` — called before dispatch, not per-variant)
+    ///   3. Dispatch `cmd` to the appropriate handler variant.
+    ///      Variants that write records build `RecordMetadata` from execution
+    ///      context individually (e.g., SetRelationship, RegisterObject).
+    ///      Read-only variants like DeleteRelationship build no metadata.
     ///
     ///      SetRelationship(rel):
     ///        - Engine validates policy exists, resource/relation defined,
@@ -252,7 +261,9 @@ impl AcpModule {
     ///   1. Validate `content_type` is `ContentType::Jws` (reject Unknown)
     ///   2. Parse `payload` as compact-serialized JWS (jose ParseSigned)
     ///   3. Unmarshal JWS payload as `SignedPolicyCmdPayload`
-    ///      `{ policy_id, cmd: PolicyCmd, actor: DID, issued_height: u64, expiration_delta: u64 }`
+    ///      `{ policy_id, cmd: PolicyCmd, actor: DID, issued_height: u64,
+    ///        issued_at: Timestamp, expiration_delta: u64 }`
+    ///      (`issued_at` is client-generated metadata, not trusted for validation)
     ///   4. Decode actor DID as did:key, extract public key
     ///   5. Verify JWS signature against the extracted public key
     ///      (supports secp256k1/ES256K and ed25519)
@@ -302,7 +313,7 @@ impl AcpModule {
     ///   3. Decode issuer DID as did:key, extract public key
     ///   4. Verify JWS signature against the issuer's public key
     ///   5. Check token not expired: block_ctx.timestamp.seconds <= exp
-    ///   6. Check authorized_account matches tx_ctx.signer (the tx submitter
+    ///   6. Check authorized_account matches `creator` (the tx submitter
     ///      must be the account authorized in the token)
     ///   7. Read module params, dispatch `cmd` with issuer DID as the
     ///      authenticated principal (same dispatch as direct_policy_cmd)
@@ -313,10 +324,11 @@ impl AcpModule {
     ///       authorized_account check)
     ///
     /// Errors:
-    ///   - `AcpError::InvalidInput` if JWS parsing or claim extraction fails
-    ///   - `AcpError::Unauthorized` if signature fails or authorized_account
-    ///     does not match tx_ctx.signer
-    ///   - `AcpError::TokenExpired` if block time > exp
+    ///   - `AcpError::InvalidBearerToken` if JWS parsing, claim extraction,
+    ///     or signature verification fails (Go: `ErrorType_BAD_INPUT`)
+    ///   - `AcpError::Unauthorized` if authorized_account does not match `creator`
+    ///   - `AcpError::InvalidBearerToken` if block time > exp (token expiration
+    ///     is a sub-error of invalid bearer token in Go, not a separate type)
     ///
     /// The actor is the token's issuer DID, NOT `creator`. `creator` is the
     /// tx submitter authorized by the token. No replay protection — same
@@ -391,14 +403,14 @@ impl AcpModule {
     /// Filter relationships within a policy using a selector.
     ///
     /// Flow:
-    ///   1. Call `engine.get_policy(policy_id)` — return `PolicyNotFound` if None
-    ///   2. Call `engine.filter_relationships(policy, selector)` with the
-    ///      resolved `Policy` object (not the ID string):
+    ///   1. Call `engine.filter_relationships(policy_id, selector)` — passes
+    ///      the policy ID string directly (no separate get_policy call at
+    ///      keeper level; policy-not-found is handled inside the engine):
     ///      - `ObjectSelector`: Exact(Object), Wildcard, or ResourcePredicate(resource_name)
     ///      - `RelationSelector`: Exact(relation_name: String), or Wildcard
     ///      - `SubjectSelector`: Exact(Subject), or Wildcard
-    ///   3. For each result, extract `RecordMetadata` from `record.metadata.supplied.blob`
-    ///   4. Return Vec<RelationshipRecord>
+    ///   2. For each result, extract `RecordMetadata` from `record.metadata.supplied.blob`
+    ///   3. Return Vec<RelationshipRecord>
     ///
     /// Reads: engine policy store + relationship store (filtered query)
     ///
@@ -502,14 +514,18 @@ impl AcpModule {
     /// Fetch a registration commitment by its autoincrement ID.
     ///
     /// Flow:
-    ///   1. Read from raccoondb store at `"commitment/objs/"` prefix.
+    ///   1. Read from commitment store. Go uses raccoondb with application
+    ///      prefix `"commitment/"` — raccoondb internally adds `"objs/"` for
+    ///      its object storage, making the full KV path `"commitment/objs/"`.
+    ///      If rolling our own keys, decide whether to replicate this layout
+    ///      or use a simpler `"commitment/" + id` scheme.
     ///      Key is the u64 ID encoded as 8-byte big-endian bytes.
     ///   2. Deserialize as `RegistrationsCommitment`
     ///
-    /// Reads: raccoondb store (`"commitment/objs/" || id.to_be_bytes()`)
+    /// Reads: commitment store (application prefix `"commitment/"`, keyed by u64 ID)
     ///
     /// Errors:
-    ///   - `AcpError::NotFound` if ID does not exist
+    ///   - `AcpError::CommitmentNotFound` if ID does not exist
     #[allow(unused_variables)]
     pub fn query_registrations_commitment(&self, id: u64) -> Result<RegistrationsCommitment> {
         todo!()
@@ -521,7 +537,8 @@ impl AcpModule {
     ///   1. Query raccoondb commitment store secondary index on `commitment` field
     ///   2. Materialize all matching `RegistrationsCommitment` records
     ///
-    /// Reads: raccoondb store (`"commitment/objs/"` prefix, `commitment` secondary index)
+    /// Reads: commitment store (application prefix `"commitment/"`, `commitment`
+    ///   secondary index — same raccoondb layout note as `query_registrations_commitment`)
     ///
     /// Returns empty vec if no matches (not an error).
     /// Multiple commitments can share the same root (different actors/policies).
