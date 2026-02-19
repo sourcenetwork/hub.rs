@@ -42,6 +42,7 @@ pub enum BulletinOp {
         namespace: String,
         payload: Vec<u8>,
         proof: Vec<u8>,
+        artifact: String,
     },
     AddCollaborator {
         namespace: String,

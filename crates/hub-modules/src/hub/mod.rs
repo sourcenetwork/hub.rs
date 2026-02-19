@@ -110,4 +110,15 @@ impl HubModule {
     pub fn get_chain_config(&self) -> Result<ChainConfig> {
         todo!()
     }
+
+    /// Delete a JWS token record by hash (cleanup and genesis export).
+    #[allow(unused_variables)]
+    pub fn delete_jws_token(&mut self, token_hash: &str) -> Result<()> {
+        todo!()
+    }
+
+    /// Return all JWS token records (genesis export).
+    pub fn get_all_jws_tokens(&self) -> Result<Vec<JWSTokenRecord>> {
+        todo!()
+    }
 }
