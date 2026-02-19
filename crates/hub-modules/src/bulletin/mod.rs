@@ -29,10 +29,17 @@ type Result<T> = std::result::Result<T, BulletinError>;
 /// The policy defines one resource type `namespace` with one relation
 /// `collaborator` and one permission `create_post = collaborator`.
 ///
-/// - `register_namespace` → ACP `RegisterObject` (namespace as object, creator as owner)
-/// - `create_post` → ACP `VerifyAccessRequest` (read-only check, no ACP state change)
-/// - `add_collaborator` → ACP `SetRelationship` (owner-only, creates collaborator tuple)
-/// - `remove_collaborator` → ACP `DeleteRelationship` (owner-only, removes collaborator tuple)
+/// Cross-module calls use direct parameter passing — the caller
+/// (application/executor) passes `&mut AcpModule` to methods that
+/// need it. Rust's partial borrow rules allow this since modules
+/// are disjoint fields in the parent struct.
+///
+/// | Bulletin method | ACP method | Mutability |
+/// |---|---|---|
+/// | `register_namespace` | `acp.create_policy()` (first call), `acp.direct_policy_cmd(RegisterObject)` | `&mut AcpModule` |
+/// | `create_post` | `acp.check_access()` | `&mut AcpModule` |
+/// | `add_collaborator` | `acp.direct_policy_cmd(SetRelationship)` | `&mut AcpModule` |
+/// | `remove_collaborator` | `acp.direct_policy_cmd(DeleteRelationship)` | `&mut AcpModule` |
 ///
 /// # KV store layout
 ///
@@ -59,14 +66,14 @@ impl BulletinModule {
     ///
     /// # Flow
     ///
-    /// 1. Call `ensure_policy()` — lazily creates the module ACP policy
-    ///    on first invocation. Stores policy ID under `"policy_id"` key.
-    ///    Returns the policy ID.
+    /// 1. Call `ensure_policy(acp)` — on first call, invokes
+    ///    `acp.create_policy(creator, BULLETIN_POLICY_YAML, ShortYaml)`
+    ///    and stores the returned policy ID under `"policy_id"` key.
+    ///    Subsequent calls read the stored ID.
     /// 2. Compute `namespace_id = "bulletin/" + namespace`.
     /// 3. Read `"namespace/" + namespace_id` — if present, return
     ///    `NamespaceAlreadyExists`.
-    /// 4. Call ACP `RegisterObject` via the module policy capability:
-    ///    resource=`"namespace"`, object_id=`namespace_id`, owner=creator DID.
+    /// 4. Call `acp.direct_policy_cmd(creator, policy_id, RegisterObject(Object { resource: "namespace", id: namespace_id }))`.
     ///    This registers the namespace as an ACP object with the creator
     ///    as owner (granting implicit manager rights over `collaborator`).
     /// 5. Build `Namespace`:
@@ -86,7 +93,7 @@ impl BulletinModule {
     /// # Writes
     /// - `"policy_id"` (first call only — ensure_policy)
     /// - `"namespace/" + namespace_id`
-    /// - ACP: RegisterObject command
+    /// - ACP via `acp.create_policy()` (first call) + `acp.direct_policy_cmd(RegisterObject)`
     ///
     /// # Ctx
     /// `block_ctx.timestamp` for created_at, `tx_ctx.signer` for creator.
@@ -94,10 +101,11 @@ impl BulletinModule {
     /// # Errors
     /// - `PolicyInitFailed` — ACP policy creation failed
     /// - `NamespaceAlreadyExists` — namespace already registered
-    /// - ACP errors from RegisterObject
+    /// - ACP errors from `direct_policy_cmd`
     #[allow(unused_variables)]
     pub fn register_namespace(
         &mut self,
+        acp: &mut super::acp::AcpModule,
         block_ctx: &BlockExecCtx,
         tx_ctx: &TxExecCtx,
         creator: &Did,
@@ -116,10 +124,9 @@ impl BulletinModule {
     ///    if absent.
     /// 4. Validate payload is non-empty → `InvalidPostPayload`.
     /// 5. Validate proof is non-empty → `InvalidPostProof`.
-    /// 6. ACP access check: call `VerifyAccessRequest` with
-    ///    operation=`{object: (namespace, namespace_id), permission: "create_post"}`,
-    ///    actor=creator DID. Return `NotCollaborator` if denied.
-    ///    This is read-only — no ACP state changes.
+    /// 6. Call `acp.check_access(creator, policy_id, &AccessRequest { operations: vec![Operation { object: Object { resource: "namespace", id: namespace_id }, permission: "create_post" }], actor: Actor { id: creator.to_string() } })`.
+    ///    Return `NotCollaborator` if the decision denies access.
+    ///    Note: `check_access` writes an `AccessDecision` record to ACP state.
     /// 7. Compute `post_id = hex(sha256(namespace_id + payload))`.
     /// 8. Read `"post/" + sanitize(namespace_id) + "/" + sanitize(post_id)` —
     ///    return `PostAlreadyExists` if present.
@@ -142,6 +149,7 @@ impl BulletinModule {
     ///
     /// # Writes
     /// - `"post/" + sanitize(namespace_id) + "/" + sanitize(post_id)`
+    /// - ACP via `acp.check_access()` (writes AccessDecision record)
     ///
     /// # Ctx
     /// `tx_ctx.signer` for DID resolution.
@@ -153,9 +161,10 @@ impl BulletinModule {
     /// - `InvalidPostProof` — empty proof
     /// - `NotCollaborator` — ACP denies create_post permission
     /// - `PostAlreadyExists` — duplicate content hash
-    #[allow(unused_variables)]
+    #[allow(unused_variables, clippy::too_many_arguments)]
     pub fn create_post(
         &mut self,
+        acp: &mut super::acp::AcpModule,
         tx_ctx: &TxExecCtx,
         creator: &Did,
         namespace: &str,
@@ -178,9 +187,7 @@ impl BulletinModule {
     ///    (always derived from account address, never from bearer token).
     /// 5. Read `"collaborator/" + sanitize(namespace_id) + "/" + sanitize(collab_did)` —
     ///    return `CollaboratorAlreadyExists` if present.
-    /// 6. Call ACP `SetRelationship` via module policy capability:
-    ///    relationship=`{resource: "namespace", object: namespace_id,
-    ///    relation: "collaborator", actor: collab_did}`, acting as creator DID.
+    /// 6. Call `acp.direct_policy_cmd(creator, policy_id, SetRelationship(Relationship { resource: "namespace", object: namespace_id, relation: "collaborator", actor: collab_did }))`.
     ///    ACP enforces that creator is the object owner (manager of relation).
     /// 7. Build `Collaborator`:
     ///    ```text
@@ -198,7 +205,7 @@ impl BulletinModule {
     ///
     /// # Writes
     /// - `"collaborator/" + sanitize(namespace_id) + "/" + sanitize(collab_did)`
-    /// - ACP: SetRelationship command
+    /// - ACP via `acp.direct_policy_cmd(SetRelationship)`
     ///
     /// # Ctx
     /// `tx_ctx.signer` for creator DID resolution.
@@ -211,6 +218,7 @@ impl BulletinModule {
     #[allow(unused_variables)]
     pub fn add_collaborator(
         &mut self,
+        acp: &mut super::acp::AcpModule,
         tx_ctx: &TxExecCtx,
         creator: &Did,
         namespace: &str,
@@ -230,9 +238,7 @@ impl BulletinModule {
     /// 4. Resolve collaborator DID from the `collaborator` address string.
     /// 5. Read `"collaborator/" + sanitize(namespace_id) + "/" + sanitize(collab_did)` —
     ///    return `CollaboratorNotFound` if absent.
-    /// 6. Call ACP `DeleteRelationship` via module policy capability:
-    ///    relationship=`{resource: "namespace", object: namespace_id,
-    ///    relation: "collaborator", actor: collab_did}`, acting as creator DID.
+    /// 6. Call `acp.direct_policy_cmd(creator, policy_id, DeleteRelationship(Relationship { resource: "namespace", object: namespace_id, relation: "collaborator", actor: collab_did }))`.
     ///    ACP enforces that creator is the object owner.
     /// 7. Delete `"collaborator/" + sanitize(namespace_id) + "/" + sanitize(collab_did)`.
     /// 8. Return the collaborator DID string.
@@ -244,7 +250,7 @@ impl BulletinModule {
     ///
     /// # Writes (deletes)
     /// - `"collaborator/" + sanitize(namespace_id) + "/" + sanitize(collab_did)`
-    /// - ACP: DeleteRelationship command
+    /// - ACP via `acp.direct_policy_cmd(DeleteRelationship)`
     ///
     /// # Ctx
     /// `tx_ctx.signer` for creator DID resolution.
@@ -257,6 +263,7 @@ impl BulletinModule {
     #[allow(unused_variables)]
     pub fn remove_collaborator(
         &mut self,
+        acp: &mut super::acp::AcpModule,
         tx_ctx: &TxExecCtx,
         creator: &Did,
         namespace: &str,
