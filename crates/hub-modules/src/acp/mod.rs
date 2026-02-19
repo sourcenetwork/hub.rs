@@ -7,12 +7,13 @@ pub mod error;
 /// ACP domain types.
 pub mod types;
 
+use acp::Policy;
 use error::AcpError;
 use identity::Did;
 use types::{
-    AccessDecision, AccessRequest, AcpParams, AmendmentEvent, Object, PolicyCmd, PolicyCmdResult,
-    PolicyMarshalingType, PolicyRecord, RegistrationProof, RegistrationsCommitment,
-    RelationshipRecord, RelationshipSelector,
+    AccessDecision, AccessRequest, AcpParams, AmendmentEvent, ContentType, Object, PolicyCmd,
+    PolicyCmdResult, PolicyMarshalingType, PolicyRecord, RegistrationProof,
+    RegistrationsCommitment, RelationshipRecord, RelationshipSelector,
 };
 
 type Result<T> = std::result::Result<T, AcpError>;
@@ -81,6 +82,7 @@ impl AcpModule {
         &mut self,
         creator: &Did,
         payload_jws: &str,
+        content_type: ContentType,
     ) -> Result<PolicyCmdResult> {
         todo!()
     }
@@ -142,7 +144,7 @@ impl AcpModule {
         &self,
         policy_yaml: &[u8],
         marshal_type: PolicyMarshalingType,
-    ) -> Result<(bool, String)> {
+    ) -> Result<(bool, String, Policy)> {
         todo!()
     }
 
