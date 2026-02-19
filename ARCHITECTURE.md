@@ -407,11 +407,13 @@ With the full surface area visible, annotated, and testable:
 
 ### Phase 7: Production hardening
 
-- IBC precompile (port from bankd if cross-chain needed)
-- Validator set management / staking
-- Token economics (OPEN/CREDIT as ERC20s at genesis)
-- Bridge infrastructure
 - Orbis e2e test passes without "test account creates policies" workaround
+- Token economics (OPEN/CREDIT as ERC20s at genesis — EVM layer provides this)
+- Validator set management / staking (may need tokens from EVM layer)
+
+### Out of scope (for now)
+
+- IBC precompile / bridge infrastructure — way off, revisit when there's a concrete cross-chain need
 
 ## Reference Implementations
 
