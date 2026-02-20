@@ -696,8 +696,9 @@ impl AcpModule {
     ///
     /// Reads: commitment store (non-expired index scan), block context
     /// (time + height)
+    #[allow(clippy::missing_const_for_fn)] // Phase 9 replaces with real logic
     pub fn end_blocker(&mut self) -> Result<Vec<RegistrationsCommitment>> {
-        todo!()
+        Ok(vec![])
     }
 
     // ── Storage access methods ──────────────────────────────────────────

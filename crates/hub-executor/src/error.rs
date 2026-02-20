@@ -1,6 +1,6 @@
 //! Execution error types.
 
-use alloy_primitives::B256;
+use alloy_primitives::{Address, B256};
 use revm::database_interface::DBErrorMarker;
 use thiserror::Error;
 
@@ -30,6 +30,23 @@ pub enum ExecutionError {
     /// Code not found for hash.
     #[error("code not found: {0}")]
     CodeNotFound(B256),
+
+    /// BLS signature verification, public key deserialization, or DID derivation failed.
+    #[error("BLS verification failed: {0}")]
+    BlsVerification(String),
+
+    /// Native transaction chain ID does not match the executor's configured chain ID.
+    #[error("chain ID mismatch: expected {expected}, got {got}")]
+    ChainIdMismatch {
+        /// The chain ID configured on the executor.
+        expected: u64,
+        /// The chain ID present in the native transaction.
+        got: u64,
+    },
+
+    /// Native transaction targets an address that is not a known precompile.
+    #[error("unknown native tx target: {0}")]
+    UnknownNativeTarget(Address),
 }
 
 impl DBErrorMarker for ExecutionError {}
@@ -92,6 +109,33 @@ mod tests {
         let err = ExecutionError::TxDecode("test".to_string());
         let debug = format!("{:?}", err);
         assert!(debug.contains("TxDecode"));
+    }
+
+    #[test]
+    fn test_bls_verification_display() {
+        let err = ExecutionError::BlsVerification("invalid signature".to_string());
+        assert_eq!(
+            err.to_string(),
+            "BLS verification failed: invalid signature"
+        );
+    }
+
+    #[test]
+    fn test_chain_id_mismatch_display() {
+        let err = ExecutionError::ChainIdMismatch {
+            expected: 9001,
+            got: 1,
+        };
+        assert_eq!(err.to_string(), "chain ID mismatch: expected 9001, got 1");
+    }
+
+    #[test]
+    fn test_unknown_native_target_display() {
+        let addr = Address::from([
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x09, 0x99,
+        ]);
+        let err = ExecutionError::UnknownNativeTarget(addr);
+        assert!(err.to_string().contains("unknown native tx target"));
     }
 
     #[test]

@@ -285,9 +285,9 @@ impl HubModule {
     /// (no tx context during end-block). The caller (`EndBlocker`)
     /// logs errors but always returns nil — sweep failures are
     /// non-fatal.
-    #[allow(unused_variables)]
+    #[allow(unused_variables, clippy::missing_const_for_fn)] // Phase 9 replaces with real logic
     pub fn check_and_update_expired_tokens(&mut self, block_ctx: &BlockExecCtx) -> Result<()> {
-        todo!()
+        Ok(())
     }
 
     /// Look up a JWS token record by hash.

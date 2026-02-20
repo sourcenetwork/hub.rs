@@ -157,8 +157,7 @@ pub(super) fn dispatch(
             if gas_limit < READ_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let _call = IHub::getChainConfigCall::abi_decode(&input[4..]).map_err(decode_error)?;
-
+            // Zero-parameter function — no ABI decoding needed.
             let config = match module.get_chain_config() {
                 Ok(c) => c,
                 Err(e) => return Ok(module_error(e)),
@@ -172,8 +171,7 @@ pub(super) fn dispatch(
             if gas_limit < READ_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let _call = IHub::getParamsCall::abi_decode(&input[4..]).map_err(decode_error)?;
-
+            // Zero-parameter function — no ABI decoding needed.
             let params = match module.query_params() {
                 Ok(p) => p,
                 Err(e) => return Ok(module_error(e)),

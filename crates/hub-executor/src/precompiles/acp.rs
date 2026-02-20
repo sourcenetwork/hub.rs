@@ -574,8 +574,7 @@ pub(super) fn dispatch(
             if gas_limit < READ_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let _call = IAcp::getPolicyIdsCall::abi_decode(&input[4..]).map_err(decode_error)?;
-
+            // Zero-parameter function — no ABI decoding needed.
             let ids = match module.query_policy_ids() {
                 Ok(r) => r,
                 Err(e) => return Ok(module_error(e)),
@@ -736,8 +735,7 @@ pub(super) fn dispatch(
             if gas_limit < READ_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let _call = IAcp::getParamsCall::abi_decode(&input[4..]).map_err(decode_error)?;
-
+            // Zero-parameter function — no ABI decoding needed.
             let params = match module.query_params() {
                 Ok(r) => r,
                 Err(e) => return Ok(module_error(e)),

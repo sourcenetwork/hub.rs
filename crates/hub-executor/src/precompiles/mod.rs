@@ -59,25 +59,72 @@ pub struct HubPrecompiles {
     hub_module: HubModule,
 }
 
+/// Route calldata to the appropriate module based on the target precompile address.
+///
+/// Used by both the EVM precompile path and the native BLS tx path to ensure
+/// both converge on the same module methods.
+pub fn dispatch_to_module(
+    acp: &mut AcpModule,
+    bulletin: &mut BulletinModule,
+    hub: &mut HubModule,
+    target: Address,
+    calldata: &[u8],
+    block_ctx: &BlockExecCtx,
+    tx_ctx: &TxExecCtx,
+    gas_limit: u64,
+) -> Option<PrecompileResult> {
+    if target == ACP_ADDRESS {
+        Some(acp::dispatch(acp, block_ctx, tx_ctx, calldata, gas_limit))
+    } else if target == BULLETIN_ADDRESS {
+        Some(bulletin::dispatch(
+            bulletin, acp, block_ctx, tx_ctx, calldata, gas_limit,
+        ))
+    } else if target == HUB_ADDRESS {
+        Some(hub::dispatch(hub, block_ctx, tx_ctx, calldata, gas_limit))
+    } else {
+        None
+    }
+}
+
+fn new_custom_precompiles() -> Precompiles {
+    let mut custom = Precompiles::default();
+    custom.extend([
+        Precompile::new(PrecompileId::custom("acp"), ACP_ADDRESS, stub_precompile),
+        Precompile::new(
+            PrecompileId::custom("bulletin"),
+            BULLETIN_ADDRESS,
+            stub_precompile,
+        ),
+        Precompile::new(PrecompileId::custom("hub"), HUB_ADDRESS, stub_precompile),
+    ]);
+    custom
+}
+
 impl HubPrecompiles {
     /// Create a new hub precompile provider for the given spec.
     pub fn new(spec: SpecId) -> Self {
-        let mut custom = Precompiles::default();
-        custom.extend([
-            Precompile::new(PrecompileId::custom("acp"), ACP_ADDRESS, stub_precompile),
-            Precompile::new(
-                PrecompileId::custom("bulletin"),
-                BULLETIN_ADDRESS,
-                stub_precompile,
-            ),
-            Precompile::new(PrecompileId::custom("hub"), HUB_ADDRESS, stub_precompile),
-        ]);
         Self {
             eth: EthPrecompiles::new(spec),
-            custom,
+            custom: new_custom_precompiles(),
             acp_module: AcpModule::new(),
             bulletin_module: BulletinModule::new(),
             hub_module: HubModule::new(),
+        }
+    }
+
+    /// Create a hub precompile provider with pre-built module instances.
+    pub fn with_modules(
+        spec: SpecId,
+        acp_module: AcpModule,
+        bulletin_module: BulletinModule,
+        hub_module: HubModule,
+    ) -> Self {
+        Self {
+            eth: EthPrecompiles::new(spec),
+            custom: new_custom_precompiles(),
+            acp_module,
+            bulletin_module,
+            hub_module,
         }
     }
 }
@@ -133,35 +180,18 @@ impl HubPrecompiles {
     ) -> Result<Option<InterpreterResult>, String> {
         use revm::interpreter::{Gas, InstructionResult};
 
-        let address = inputs.bytecode_address;
-
-        let precompile_result = if address == ACP_ADDRESS {
-            acp::dispatch(
-                &mut self.acp_module,
-                block_ctx,
-                tx_ctx,
-                calldata,
-                inputs.gas_limit,
-            )
-        } else if address == BULLETIN_ADDRESS {
-            bulletin::dispatch(
-                &mut self.bulletin_module,
-                &mut self.acp_module,
-                block_ctx,
-                tx_ctx,
-                calldata,
-                inputs.gas_limit,
-            )
-        } else if address == HUB_ADDRESS {
-            hub::dispatch(
-                &mut self.hub_module,
-                block_ctx,
-                tx_ctx,
-                calldata,
-                inputs.gas_limit,
-            )
-        } else {
-            return Ok(None);
+        let precompile_result = match dispatch_to_module(
+            &mut self.acp_module,
+            &mut self.bulletin_module,
+            &mut self.hub_module,
+            inputs.bytecode_address,
+            calldata,
+            block_ctx,
+            tx_ctx,
+            inputs.gas_limit,
+        ) {
+            Some(r) => r,
+            None => return Ok(None),
         };
 
         let mut result = InterpreterResult {

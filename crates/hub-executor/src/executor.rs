@@ -1,10 +1,17 @@
-//! HubExecutor — EVM executor with hub precompiles (ACP, Bulletin, Hub).
+//! HubExecutor — EVM executor with hub precompiles (ACP, Bulletin, Hub)
+//! and native BLS transaction support.
 
 use crate::{
     BlockContext, BlockExecutor, ExecutionConfig, ExecutionError, ExecutionOutcome,
     ExecutionReceipt, StateDbAdapter, build_receipt, decode_tx_env, extract_changes,
 };
 use alloy_primitives::{B256, Bytes, U256, keccak256};
+use hub_crypto::bls;
+use hub_domain::NativeTx;
+use hub_modules::acp::AcpModule;
+use hub_modules::bulletin::BulletinModule;
+use hub_modules::hub::HubModule;
+use hub_modules::types::{BlockExecCtx, Timestamp, TxExecCtx};
 use hub_traits::StateDb;
 use revm::{
     Context, ExecuteEvm, Journal, MainBuilder, context::block::BlockEnv,
@@ -12,25 +19,45 @@ use revm::{
 };
 use tracing::warn;
 
-use crate::precompiles::HubPrecompiles;
+use crate::precompiles::{
+    ACP_ADDRESS, BULLETIN_ADDRESS, HUB_ADDRESS, HubPrecompiles, dispatch_to_module,
+};
+
+/// Gas budget for native BLS transactions dispatched to modules.
+const NATIVE_TX_GAS_LIMIT: u64 = 1_000_000;
 
 /// Block executor with hub precompiles (ACP, Bulletin, Hub).
+///
+/// Processes both EVM transactions (secp256k1) and native BLS transactions
+/// (BLS12-381) in block order. The first byte of each transaction determines
+/// the path: `0x45` → native BLS, anything else → REVM.
 #[derive(Clone, Debug)]
 pub struct HubExecutor {
     config: ExecutionConfig,
+    acp_module: AcpModule,
+    bulletin_module: BulletinModule,
+    hub_module: HubModule,
 }
 
 impl HubExecutor {
     /// Create a new hub executor.
-    pub const fn new(chain_id: u64) -> Self {
+    pub fn new(chain_id: u64) -> Self {
         Self {
             config: ExecutionConfig::new(chain_id),
+            acp_module: AcpModule::new(),
+            bulletin_module: BulletinModule::new(),
+            hub_module: HubModule::new(),
         }
     }
 
     /// Create a new hub executor with full configuration.
-    pub const fn with_config(config: ExecutionConfig) -> Self {
-        Self { config }
+    pub fn with_config(config: ExecutionConfig) -> Self {
+        Self {
+            config,
+            acp_module: AcpModule::new(),
+            bulletin_module: BulletinModule::new(),
+            hub_module: HubModule::new(),
+        }
     }
 
     /// Get the chain ID.
@@ -41,6 +68,93 @@ impl HubExecutor {
     /// Get the execution configuration.
     pub const fn config(&self) -> &ExecutionConfig {
         &self.config
+    }
+
+    /// Execute a native BLS transaction: verify signature, derive DID, dispatch to module.
+    fn execute_native_tx(
+        &self,
+        tx_bytes: &[u8],
+        block_ctx: &BlockExecCtx,
+        acp: &mut AcpModule,
+        bulletin: &mut BulletinModule,
+        hub: &mut HubModule,
+    ) -> Result<ExecutionReceipt, ExecutionError> {
+        let native_tx = NativeTx::decode_wire(tx_bytes)
+            .map_err(|e| ExecutionError::TxDecode(format!("native tx: {e}")))?;
+
+        if native_tx.chain_id != self.config.chain_id {
+            return Err(ExecutionError::ChainIdMismatch {
+                expected: self.config.chain_id,
+                got: native_tx.chain_id,
+            });
+        }
+
+        let pubkey = bls::deserialize_pubkey(native_tx.bls_pubkey.as_slice())
+            .map_err(|e| ExecutionError::BlsVerification(format!("pubkey: {e}")))?;
+
+        let signing_data = native_tx.signing_data();
+        bls::verify(&pubkey, &signing_data, native_tx.signature.as_slice())
+            .map_err(|e| ExecutionError::BlsVerification(format!("signature: {e}")))?;
+
+        let signer_did = bls::did_from_bls_pubkey(&pubkey)
+            .map_err(|e| ExecutionError::BlsVerification(format!("DID: {e}")))?;
+
+        if native_tx.target != ACP_ADDRESS
+            && native_tx.target != BULLETIN_ADDRESS
+            && native_tx.target != HUB_ADDRESS
+        {
+            return Err(ExecutionError::UnknownNativeTarget(native_tx.target));
+        }
+
+        let tx_hash = keccak256(tx_bytes);
+        let tx_ctx = TxExecCtx {
+            tx_hash: tx_hash.to_vec(),
+            signer: signer_did,
+        };
+
+        let precompile_result = dispatch_to_module(
+            acp,
+            bulletin,
+            hub,
+            native_tx.target,
+            &native_tx.calldata,
+            block_ctx,
+            &tx_ctx,
+            NATIVE_TX_GAS_LIMIT,
+        )
+        .expect("target validated above");
+
+        match precompile_result {
+            Ok(output) => Ok(ExecutionReceipt::new(
+                tx_hash,
+                !output.reverted,
+                output.gas_used,
+                0, // cumulative gas set by caller
+                vec![],
+                None,
+            )),
+            Err(_) => Ok(ExecutionReceipt::new(
+                tx_hash,
+                false,
+                NATIVE_TX_GAS_LIMIT,
+                0, // cumulative gas set by caller
+                vec![],
+                None,
+            )),
+        }
+    }
+
+    /// Run end-of-block hooks for modules that need per-block maintenance.
+    fn run_end_block_hooks(&self, block_ctx: &BlockExecCtx) {
+        let mut acp = self.acp_module.clone();
+        if let Err(e) = acp.end_blocker() {
+            warn!(?e, "ACP end_blocker failed");
+        }
+
+        let mut hub = self.hub_module.clone();
+        if let Err(e) = hub.check_and_update_expired_tokens(block_ctx) {
+            warn!(?e, "Hub expired token sweep failed");
+        }
     }
 }
 
@@ -74,49 +188,93 @@ impl<S: StateDb> BlockExecutor<S> for HubExecutor {
 
         let mut evm = ctx
             .build_mainnet()
-            .with_precompiles(HubPrecompiles::new(self.config.spec_id));
+            .with_precompiles(HubPrecompiles::with_modules(
+                self.config.spec_id,
+                self.acp_module.clone(),
+                self.bulletin_module.clone(),
+                self.hub_module.clone(),
+            ));
+
+        let block_ctx = BlockExecCtx {
+            timestamp: Timestamp {
+                seconds: context.header.timestamp,
+                block_height: context.header.number,
+            },
+        };
 
         let mut outcome = ExecutionOutcome::new();
         let mut cumulative_gas = 0u64;
         let building = !context.is_verification;
         let mut executed_indices: Vec<usize> = Vec::new();
 
+        let mut acp_module = self.acp_module.clone();
+        let mut bulletin_module = self.bulletin_module.clone();
+        let mut hub_module = self.hub_module.clone();
+
         for (i, tx_bytes) in txs.iter().enumerate() {
-            let tx_hash = keccak256(tx_bytes);
+            if !tx_bytes.is_empty() && NativeTx::is_native_tx(tx_bytes[0]) {
+                let receipt = match self.execute_native_tx(
+                    tx_bytes,
+                    &block_ctx,
+                    &mut acp_module,
+                    &mut bulletin_module,
+                    &mut hub_module,
+                ) {
+                    Ok(r) => r,
+                    Err(e) if building => {
+                        let tx_hash = keccak256(tx_bytes);
+                        warn!(%tx_hash, ?e, "skipping native tx");
+                        continue;
+                    }
+                    Err(e) => return Err(e),
+                };
 
-            let tx_env = match decode_tx_env(tx_bytes, self.config.chain_id) {
-                Ok(env) => env,
-                Err(e) if building => {
-                    warn!(%tx_hash, ?e, "skipping tx: decode error");
-                    continue;
-                }
-                Err(e) => return Err(e),
-            };
-            evm.set_tx(tx_env);
+                executed_indices.push(i);
+                let gas_used = receipt.gas_used;
+                cumulative_gas = cumulative_gas.saturating_add(gas_used);
 
-            let result_and_state = match evm.replay() {
-                Ok(r) => r,
-                Err(e) if building => {
-                    warn!(%tx_hash, ?e, "skipping tx: execution error");
-                    continue;
-                }
-                Err(e) => {
-                    return Err(ExecutionError::TxExecution(format!("{e:?}")));
-                }
-            };
+                let mut receipt = receipt;
+                receipt.receipt.cumulative_gas_used = cumulative_gas;
+                outcome.receipts.push(receipt);
+            } else {
+                let tx_hash = keccak256(tx_bytes);
 
-            executed_indices.push(i);
+                let tx_env = match decode_tx_env(tx_bytes, self.config.chain_id) {
+                    Ok(env) => env,
+                    Err(e) if building => {
+                        warn!(%tx_hash, ?e, "skipping tx: decode error");
+                        continue;
+                    }
+                    Err(e) => return Err(e),
+                };
+                evm.set_tx(tx_env);
 
-            let gas_used = result_and_state.result.gas_used();
-            cumulative_gas = cumulative_gas.saturating_add(gas_used);
+                let result_and_state = match evm.replay() {
+                    Ok(r) => r,
+                    Err(e) if building => {
+                        warn!(%tx_hash, ?e, "skipping tx: execution error");
+                        continue;
+                    }
+                    Err(e) => {
+                        return Err(ExecutionError::TxExecution(format!("{e:?}")));
+                    }
+                };
 
-            let receipt =
-                build_receipt(&result_and_state.result, tx_hash, gas_used, cumulative_gas);
-            outcome.receipts.push(receipt);
+                executed_indices.push(i);
 
-            let changes = extract_changes(result_and_state.state);
-            outcome.changes.merge(changes);
+                let gas_used = result_and_state.result.gas_used();
+                cumulative_gas = cumulative_gas.saturating_add(gas_used);
+
+                let receipt =
+                    build_receipt(&result_and_state.result, tx_hash, gas_used, cumulative_gas);
+                outcome.receipts.push(receipt);
+
+                let changes = extract_changes(result_and_state.state);
+                outcome.changes.merge(changes);
+            }
         }
+
+        self.run_end_block_hooks(&block_ctx);
 
         if building {
             outcome.executed_tx_indices = Some(executed_indices);
@@ -153,7 +311,7 @@ impl<S: StateDb> BlockExecutor<S> for HubExecutor {
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY};
+    use alloy_primitives::{Address, B256, Bytes, FixedBytes, KECCAK256_EMPTY};
     use hub_qmdb::ChangeSet;
     use hub_traits::{StateDb, StateDbError, StateDbRead, StateDbWrite};
 
@@ -202,6 +360,15 @@ mod tests {
         HubExecutor::new(9001)
     }
 
+    fn test_block_ctx() -> BlockExecCtx {
+        BlockExecCtx {
+            timestamp: Timestamp {
+                seconds: 1_700_000_000,
+                block_height: 1,
+            },
+        }
+    }
+
     #[test]
     fn hub_executor_new() {
         let executor = test_executor();
@@ -238,5 +405,214 @@ mod tests {
             <HubExecutor as BlockExecutor<MockStateDb>>::validate_header(&executor, &header)
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn native_tx_decode_error() {
+        let executor = test_executor();
+        let block_ctx = test_block_ctx();
+        let mut acp = AcpModule::new();
+        let mut bulletin = BulletinModule::new();
+        let mut hub = HubModule::new();
+
+        // 0x45 followed by garbage
+        let bad_bytes = [0x45, 0xFF, 0xFF];
+        let result =
+            executor.execute_native_tx(&bad_bytes, &block_ctx, &mut acp, &mut bulletin, &mut hub);
+        assert!(matches!(result, Err(ExecutionError::TxDecode(_))));
+    }
+
+    #[test]
+    fn native_tx_wrong_chain_id() {
+        let tx = NativeTx {
+            chain_id: 999,
+            nonce: 0,
+            bls_pubkey: FixedBytes::from([0xAA; 48]),
+            target: ACP_ADDRESS,
+            calldata: Bytes::new(),
+            signature: FixedBytes::from([0xBB; 96]),
+        };
+        let wire = tx.encode_wire();
+
+        let executor = test_executor(); // chain_id = 9001
+        let block_ctx = test_block_ctx();
+        let mut acp = AcpModule::new();
+        let mut bulletin = BulletinModule::new();
+        let mut hub = HubModule::new();
+
+        let result =
+            executor.execute_native_tx(&wire, &block_ctx, &mut acp, &mut bulletin, &mut hub);
+        match result {
+            Err(ExecutionError::ChainIdMismatch { expected, got }) => {
+                assert_eq!(expected, 9001);
+                assert_eq!(got, 999);
+            }
+            other => panic!("expected ChainIdMismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn native_tx_invalid_bls_sig() {
+        let tx = NativeTx {
+            chain_id: 9001,
+            nonce: 0,
+            bls_pubkey: FixedBytes::from([0xFF; 48]), // not a valid G1 point
+            target: ACP_ADDRESS,
+            calldata: Bytes::new(),
+            signature: FixedBytes::from([0xBB; 96]),
+        };
+        let wire = tx.encode_wire();
+
+        let executor = test_executor();
+        let block_ctx = test_block_ctx();
+        let mut acp = AcpModule::new();
+        let mut bulletin = BulletinModule::new();
+        let mut hub = HubModule::new();
+
+        let result =
+            executor.execute_native_tx(&wire, &block_ctx, &mut acp, &mut bulletin, &mut hub);
+        assert!(matches!(result, Err(ExecutionError::BlsVerification(_))));
+    }
+
+    #[test]
+    fn native_tx_unknown_target() {
+        use ark_bls12_381::{Fr, G1Affine, G1Projective};
+        use ark_ec::{AffineRepr, CurveGroup};
+        use ark_ff::UniformRand;
+        use ark_serialize::CanonicalSerialize;
+        use ark_std::test_rng;
+
+        let mut rng = test_rng();
+        let sk = Fr::rand(&mut rng);
+        let pk = (G1Projective::from(G1Affine::generator()) * sk).into_affine();
+
+        let mut pk_bytes = Vec::with_capacity(48);
+        pk.serialize_compressed(&mut pk_bytes).unwrap();
+
+        let bad_target = Address::from([
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x09, 0x99,
+        ]);
+
+        let mut tx = NativeTx {
+            chain_id: 9001,
+            nonce: 0,
+            bls_pubkey: FixedBytes::from_slice(&pk_bytes),
+            target: bad_target,
+            calldata: Bytes::new(),
+            signature: FixedBytes::from([0x00; 96]), // placeholder
+        };
+
+        let signing_data = tx.signing_data();
+        let sig = bls::sign(&sk, &signing_data).unwrap();
+        tx.signature = FixedBytes::from_slice(&sig);
+
+        let wire = tx.encode_wire();
+
+        let executor = test_executor();
+        let block_ctx = test_block_ctx();
+        let mut acp = AcpModule::new();
+        let mut bulletin = BulletinModule::new();
+        let mut hub = HubModule::new();
+
+        let result =
+            executor.execute_native_tx(&wire, &block_ctx, &mut acp, &mut bulletin, &mut hub);
+        assert!(matches!(
+            result,
+            Err(ExecutionError::UnknownNativeTarget(_))
+        ));
+    }
+
+    #[test]
+    fn native_tx_building_mode_skips_invalid() {
+        use alloy_consensus::Header;
+
+        let executor = test_executor();
+        let state = MockStateDb;
+        let header = Header {
+            number: 1,
+            timestamp: 1_700_000_000,
+            gas_limit: 30_000_000,
+            base_fee_per_gas: Some(0),
+            ..Default::default()
+        };
+        // Building mode (is_verification = false)
+        let context = BlockContext::new(header, B256::ZERO, B256::ZERO);
+
+        // Malformed native tx: 0x45 + garbage
+        let bad_native = Bytes::from(vec![0x45, 0xFF, 0xFF]);
+        let txs = vec![bad_native];
+
+        let outcome = executor.execute(&state, &context, &txs).unwrap();
+        // Invalid tx should be skipped
+        assert!(outcome.receipts.is_empty());
+        assert_eq!(outcome.gas_used, 0);
+        assert_eq!(outcome.executed_tx_indices, Some(vec![]));
+    }
+
+    #[test]
+    fn empty_block_runs_end_hooks() {
+        use alloy_consensus::Header;
+
+        let executor = test_executor();
+        let state = MockStateDb;
+        let header = Header {
+            number: 1,
+            timestamp: 1_700_000_000,
+            gas_limit: 30_000_000,
+            base_fee_per_gas: Some(0),
+            ..Default::default()
+        };
+        let context = BlockContext::new(header, B256::ZERO, B256::ZERO);
+        let txs: Vec<Bytes> = vec![];
+
+        // Should not panic — end-block hooks are no-ops
+        let outcome = executor.execute(&state, &context, &txs).unwrap();
+        assert_eq!(outcome.gas_used, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "not yet implemented")]
+    fn native_tx_dispatches_to_module() {
+        use alloy_sol_types::SolCall;
+        use ark_bls12_381::{Fr, G1Affine, G1Projective};
+        use ark_ec::{AffineRepr, CurveGroup};
+        use ark_ff::UniformRand;
+        use ark_serialize::CanonicalSerialize;
+        use ark_std::test_rng;
+        use hub_modules::acp::abi::IAcp;
+
+        let mut rng = test_rng();
+        let sk = Fr::rand(&mut rng);
+        let pk = (G1Projective::from(G1Affine::generator()) * sk).into_affine();
+
+        let mut pk_bytes = Vec::with_capacity(48);
+        pk.serialize_compressed(&mut pk_bytes).unwrap();
+
+        let calldata = IAcp::getParamsCall {}.abi_encode();
+
+        let mut tx = NativeTx {
+            chain_id: 9001,
+            nonce: 0,
+            bls_pubkey: FixedBytes::from_slice(&pk_bytes),
+            target: ACP_ADDRESS,
+            calldata: Bytes::from(calldata),
+            signature: FixedBytes::from([0x00; 96]),
+        };
+
+        let signing_data = tx.signing_data();
+        let sig = bls::sign(&sk, &signing_data).unwrap();
+        tx.signature = FixedBytes::from_slice(&sig);
+
+        let wire = tx.encode_wire();
+
+        let executor = test_executor();
+        let block_ctx = test_block_ctx();
+        let mut acp = AcpModule::new();
+        let mut bulletin = BulletinModule::new();
+        let mut hub = HubModule::new();
+
+        // Passes BLS verification and reaches module.query_params() → todo!()
+        let _result =
+            executor.execute_native_tx(&wire, &block_ctx, &mut acp, &mut bulletin, &mut hub);
     }
 }
