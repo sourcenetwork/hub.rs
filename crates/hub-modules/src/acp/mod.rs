@@ -633,4 +633,491 @@ impl AcpModule {
     pub fn query_params(&self) -> Result<AcpParams> {
         todo!()
     }
+
+    // ── Storage access methods ──────────────────────────────────────────
+    //
+    // Key paths below are LOGICAL — they describe what data lives where
+    // and what indexes exist. The Go implementation uses raccoondb which
+    // adds internal sub-prefixes (`vals/`, `count/`) that are NOT
+    // replicated here. hub.rs will define its own key layout when the
+    // storage layer is implemented.
+
+    // ── Storage — Params ─────────────────────────────────────────────────
+
+    /// Read module parameters from the KV store.
+    ///
+    /// Flow:
+    ///   1. Read value at fixed KV key `"p_acp"`
+    ///   2. If key absent, return default `AcpParams` (Go zero values:
+    ///      `policy_command_max_expiration_delta = 0`,
+    ///      `registrations_commitment_validity = None` (Go: nil `*Duration`))
+    ///      These are NOT the governed defaults (43200, 10 min) — those
+    ///      are set via `SetParams` during genesis initialization.
+    ///   3. Deserialize stored bytes as `AcpParams` (protobuf encoding
+    ///      in Go via gogoproto; hub.rs serialization format TBD)
+    ///
+    /// Key: `"p_acp"` (fixed, no dynamic component)
+    /// Value: serialized `AcpParams`
+    /// Direction: read-only
+    ///
+    /// Panics on corrupt stored data (Go: `MustUnmarshal`).
+    /// No validation of deserialized values.
+    fn get_params(&self) -> AcpParams {
+        todo!()
+    }
+
+    /// Write module parameters to the KV store.
+    ///
+    /// Flow:
+    ///   1. Serialize `params` as `AcpParams`
+    ///   2. Store at fixed KV key `"p_acp"` (upsert — overwrites any
+    ///      existing value)
+    ///
+    /// Key: `"p_acp"` (fixed)
+    /// Value: serialized `AcpParams`
+    /// Direction: write
+    ///
+    /// No validation of param values — caller is responsible.
+    /// Only possible error is serialization failure.
+    #[allow(unused_variables)]
+    fn set_params(&mut self, params: &AcpParams) -> Result<()> {
+        todo!()
+    }
+
+    // ── Storage — Replay cache ───────────────────────────────────────────
+
+    /// Check if a signed policy command has already been processed.
+    ///
+    /// Flow:
+    ///   1. Read value at KV key `"spc_seen/" + payload_id`
+    ///      (`payload_id` is SHA-256 of the entire JWS string in JSON
+    ///      full serialization format — `{"payload":"...","protected":"...",
+    ///      "signature":"..."}` — NOT compact `header.payload.signature`
+    ///      format. Go uses `go-jose`'s `FullSerialize()`. 32 bytes.)
+    ///   2. If key absent → return false
+    ///   3. If stored value is not exactly 8 bytes (corrupt) → delete
+    ///      the key and return false (self-healing cleanup)
+    ///   4. Decode value as big-endian u64 `expire_height`
+    ///   5. If `expire_height < current_height` → delete the key
+    ///      (lazy TTL expiration) and return false
+    ///   6. Otherwise → return true (command already processed)
+    ///
+    /// Key: `"spc_seen/" + payload_id` (9-byte prefix + 32-byte hash = 41 bytes)
+    /// Value: 8 bytes big-endian u64 (expiration block height)
+    /// Direction: read + conditional delete (lazy expiration)
+    ///
+    /// Silently returns false on KV store errors (no error propagation).
+    /// This is the read side of the replay protection cache.
+    #[allow(unused_variables)]
+    fn has_seen_signed_policy_cmd(&mut self, payload_id: &[u8], current_height: u64) -> bool {
+        todo!()
+    }
+
+    /// Record that a signed policy command has been processed.
+    ///
+    /// Flow:
+    ///   1. Check if key `"spc_seen/" + payload_id` already exists
+    ///   2. If exists → return error "already processed" (replay rejection).
+    ///      Unlike `has_seen_signed_policy_cmd`, this does NOT check
+    ///      expiration — raw existence rejects.
+    ///   3. Encode `expire_height` as 8 bytes big-endian
+    ///   4. Store at `"spc_seen/" + payload_id`
+    ///
+    /// Key: `"spc_seen/" + payload_id`
+    /// Value: 8 bytes big-endian u64 (expiration block height)
+    /// Direction: write (with existence check)
+    ///
+    /// Errors:
+    ///   - `AcpError::ReplayDetected` if the payload_id already exists
+    ///   - KV store read errors (from existence check) and write errors
+    ///     propagate — unlike `has_seen_signed_policy_cmd` which silently
+    ///     swallows errors, this method surfaces them
+    ///
+    /// The `expire_height` is computed by the caller as
+    /// `issued_height + expiration_delta`. Together with
+    /// `has_seen_signed_policy_cmd`, this forms a replay-protection
+    /// cache with lazy TTL cleanup on the read path.
+    #[allow(unused_variables)]
+    fn mark_signed_policy_cmd_seen(
+        &mut self,
+        payload_id: &[u8],
+        expire_height: u64,
+    ) -> Result<()> {
+        todo!()
+    }
+
+    // ── Storage — Access decisions ───────────────────────────────────────
+
+    /// Store an access decision.
+    ///
+    /// Flow:
+    ///   1. Serialize `decision` (all fields including operations, params,
+    ///      creation_time, issued_height)
+    ///   2. Store at `"access_decision/" + decision.id`
+    ///      (`id` is base32-encoded SHA-256 hash of all decision fields,
+    ///      using uppercase RFC 4648 alphabet with `=` padding)
+    ///
+    /// Key: `"access_decision/" + decision.id` (base32 string key)
+    /// Value: serialized `AccessDecision`
+    /// Direction: write (upsert)
+    ///
+    /// The `decision.id` must be pre-computed by the caller before
+    /// calling this method — the repository does not generate the ID.
+    /// Called by `check_access` after a successful Zanzibar evaluation.
+    #[allow(unused_variables)]
+    fn set_access_decision(&mut self, decision: &AccessDecision) -> Result<()> {
+        todo!()
+    }
+
+    /// Fetch an access decision by its ID.
+    ///
+    /// Flow:
+    ///   1. Read value at `"access_decision/" + id`
+    ///   2. If key absent → return `None` (not an error)
+    ///   3. Deserialize as `AccessDecision`
+    ///
+    /// Key: `"access_decision/" + id`
+    /// Value: serialized `AccessDecision`
+    /// Direction: read-only
+    ///
+    /// Missing decision returns `Ok(None)`, not an error.
+    /// Deserialization failure on an existing key returns `Err`, not `None`.
+    /// Called by `query_access_decision`.
+    #[allow(unused_variables)]
+    fn get_access_decision(&self, id: &str) -> Result<Option<AccessDecision>> {
+        todo!()
+    }
+
+    /// Delete an access decision by its ID.
+    ///
+    /// Flow:
+    ///   1. Delete key `"access_decision/" + id`
+    ///
+    /// Key: `"access_decision/" + id`
+    /// Direction: delete
+    ///
+    /// Deleting a non-existent key is a no-op (not an error).
+    #[allow(unused_variables)]
+    fn delete_access_decision(&mut self, id: &str) -> Result<()> {
+        todo!()
+    }
+
+    /// List all access decision IDs.
+    ///
+    /// Flow:
+    ///   1. Iterate all keys under prefix `"access_decision/"`
+    ///   2. Collect the key suffixes (the decision IDs) as strings
+    ///
+    /// Key prefix: `"access_decision/"`
+    /// Direction: read-only (full prefix scan, keys only)
+    ///
+    /// Returns empty vec if no decisions exist.
+    fn list_access_decision_ids(&self) -> Result<Vec<String>> {
+        todo!()
+    }
+
+    /// List all access decisions.
+    ///
+    /// Flow:
+    ///   1. Iterate all key-value pairs under prefix `"access_decision/"`
+    ///   2. Deserialize each value as `AccessDecision`
+    ///   3. If any single record fails to deserialize, return error
+    ///      immediately (all-or-nothing)
+    ///
+    /// Key prefix: `"access_decision/"`
+    /// Direction: read-only (full prefix scan, keys + values)
+    ///
+    /// Returns empty vec if no decisions exist.
+    fn list_access_decisions(&self) -> Result<Vec<AccessDecision>> {
+        todo!()
+    }
+
+    // ── Storage — Commitments ────────────────────────────────────────────
+
+    /// Create a new registration commitment with an auto-assigned ID.
+    ///
+    /// Flow:
+    ///   1. Read auto-increment counter at `"commitment/counter/id"`
+    ///      (0 if absent)
+    ///   2. Assign `commitment.id = counter + 1`
+    ///   3. Serialize and store at `"commitment/objs/" + BE(id)`
+    ///      (key is 8-byte big-endian u64)
+    ///   4. Update secondary index for `expired` field:
+    ///      store at `"commitment/indexes/expired/idx/" + bool_byte + "/" + BE(id)`
+    ///      (bool_byte: 0x00 for false, 0x01 for true)
+    ///   5. Update secondary index for `commitment` field:
+    ///      store at `"commitment/indexes/commitment/idx/" + commitment_bytes + "/" + BE(id)`
+    ///      (commitment_bytes: 32-byte SHA-256 Merkle root)
+    ///   6. Increment counter by 1 (counter now equals `id`)
+    ///
+    /// Keys written:
+    ///   - `"commitment/counter/id"` (auto-increment counter)
+    ///   - `"commitment/objs/" + BE(id)` (object data)
+    ///   - `"commitment/indexes/expired/idx/" + bool + "/" + BE(id)` (expired index)
+    ///   - `"commitment/indexes/commitment/idx/" + bytes + "/" + BE(id)` (commitment index)
+    /// Direction: write (insert only, never overwrites existing)
+    ///
+    /// Called by `direct_policy_cmd` CommitRegistrations variant.
+    /// New commitments always have `expired = false`.
+    #[allow(unused_variables)]
+    fn create_commitment(&mut self, commitment: &mut RegistrationsCommitment) -> Result<()> {
+        todo!()
+    }
+
+    /// Update an existing registration commitment in place.
+    ///
+    /// Flow:
+    ///   1. Read existing record at `"commitment/objs/" + BE(commitment.id)`
+    ///   2. Remove old record from secondary indexes (extract old field
+    ///      values, remove from old index buckets)
+    ///   3. Serialize and store updated record at same key
+    ///   4. Add new record to secondary indexes with new field values
+    ///
+    /// Keys written:
+    ///   - `"commitment/objs/" + BE(id)` (overwritten)
+    ///   - expired index entries (old removed, new added)
+    ///   - commitment index entries (old removed, new added)
+    /// Direction: write (in-place update)
+    ///
+    /// Primary use case: transitioning `expired` from false to true.
+    /// When expired changes, the record moves from the `expired=false`
+    /// index bucket to the `expired=true` bucket, so
+    /// `get_non_expired_commitments` stops returning it.
+    /// Does NOT change the auto-increment counter.
+    #[allow(unused_variables)]
+    fn update_commitment(&mut self, commitment: &RegistrationsCommitment) -> Result<()> {
+        todo!()
+    }
+
+    /// Fetch a registration commitment by its auto-increment ID.
+    ///
+    /// Flow:
+    ///   1. Read value at `"commitment/objs/" + BE(id)` (8-byte big-endian key)
+    ///   2. If absent → return `None`
+    ///   3. Deserialize as `RegistrationsCommitment`
+    ///
+    /// Key: `"commitment/objs/" + BE(id)`
+    /// Value: serialized `RegistrationsCommitment`
+    /// Direction: read-only
+    ///
+    /// Missing record returns `Ok(None)`, not an error.
+    #[allow(unused_variables)]
+    fn get_commitment_by_id(&self, id: u64) -> Result<Option<RegistrationsCommitment>> {
+        todo!()
+    }
+
+    /// Find commitments matching a commitment byte value (Merkle root).
+    ///
+    /// Flow:
+    ///   1. Scan secondary index `"commitment/indexes/commitment/idx/" + commitment_bytes + "/"`
+    ///      to get matching object keys (8-byte IDs)
+    ///   2. For each key, fetch and deserialize the full record from
+    ///      `"commitment/objs/" + key`
+    ///
+    /// Key prefix scanned: `"commitment/indexes/commitment/idx/" + commitment_bytes + "/"`
+    /// Direction: read-only (index scan + object materialization)
+    ///
+    /// Returns empty iterator/vec if no matches.
+    /// Multiple commitments can share the same Merkle root (different
+    /// actors or policies committing the same set of registrations).
+    #[allow(unused_variables)]
+    fn filter_commitments_by_commitment(
+        &self,
+        commitment: &[u8],
+    ) -> Result<Vec<RegistrationsCommitment>> {
+        todo!()
+    }
+
+    /// Get all non-expired registration commitments.
+    ///
+    /// Flow:
+    ///   1. Scan secondary index `"commitment/indexes/expired/idx/" + 0x00 + "/"`
+    ///      (bucket for `expired = false`)
+    ///   2. For each key, fetch and deserialize the full record from
+    ///      `"commitment/objs/" + key`
+    ///
+    /// Key prefix scanned: `"commitment/indexes/expired/idx/0x00/"`
+    /// Direction: read-only (index scan + object materialization)
+    ///
+    /// Returns empty iterator/vec if all commitments are expired.
+    ///
+    /// This method only returns records where `expired == false` — it
+    /// does NOT perform any expiry check itself. The expiry check lives
+    /// in a separate end-of-block sweep (`FlagExpiredCommitments` in Go)
+    /// which:
+    ///   1. Calls this method to get all non-expired commitments
+    ///   2. For each, checks `creation_ts + validity < now`
+    ///   3. Calls `update_commitment` to set `expired = true`
+    ///
+    /// Expiry supports two duration modes:
+    ///   - Block count: `creation_block_height + block_count < current_height`
+    ///   - Wall-clock: `current_time > creation_time + duration`
+    /// Default validity is 10 minutes wall-clock (stored per-record in
+    /// the `validity` field at creation time, not recomputed from defaults).
+    fn get_non_expired_commitments(&self) -> Result<Vec<RegistrationsCommitment>> {
+        todo!()
+    }
+
+    // ── Storage — Amendment events ───────────────────────────────────────
+
+    /// Create a new amendment event with an auto-assigned ID.
+    ///
+    /// Flow:
+    ///   1. Read auto-increment counter at `"amendment_event/counter/id"`
+    ///      (0 if absent)
+    ///   2. Assign `event.id = counter + 1`
+    ///   3. Serialize and store at `"amendment_event/objs/" + BE(id)`
+    ///   4. Update secondary index for `policy_id` field:
+    ///      store at `"amendment_event/indexes/policy/idx/" + policy_id + "/" + BE(id)`
+    ///   5. Increment counter to `id`
+    ///
+    /// Keys written:
+    ///   - `"amendment_event/counter/id"` (auto-increment counter)
+    ///   - `"amendment_event/objs/" + BE(id)` (object data)
+    ///   - `"amendment_event/indexes/policy/idx/" + policy_id + "/" + BE(id)` (policy index)
+    /// Direction: write (insert only)
+    ///
+    /// Called by `direct_policy_cmd` RevealRegistration variant when
+    /// an ownership amendment occurs (commitment is older than existing
+    /// registration). New events always have `hijack_flag = false`.
+    #[allow(unused_variables)]
+    fn create_amendment_event(&mut self, event: &mut AmendmentEvent) -> Result<()> {
+        todo!()
+    }
+
+    /// Update an existing amendment event in place.
+    ///
+    /// Flow:
+    ///   1. Read existing record at `"amendment_event/objs/" + BE(event.id)`
+    ///   2. Remove old record from policy index (extract old policy_id,
+    ///      remove from old bucket)
+    ///   3. Serialize and store updated record at same key
+    ///   4. Add new record to policy index with new policy_id
+    ///
+    /// Keys written:
+    ///   - `"amendment_event/objs/" + BE(id)` (overwritten)
+    ///   - policy index entries (old removed, new added — though in
+    ///     practice policy_id never changes between updates)
+    /// Direction: write (in-place update)
+    ///
+    /// Primary use case: setting `hijack_flag = true` via the
+    /// FlagHijackEvent service method (called from the
+    /// FlagHijackAttempt policy command variant). Does NOT change
+    /// the auto-increment counter.
+    #[allow(unused_variables)]
+    fn update_amendment_event(&mut self, event: &AmendmentEvent) -> Result<()> {
+        todo!()
+    }
+
+    /// Fetch an amendment event by its auto-increment ID.
+    ///
+    /// Flow:
+    ///   1. Read value at `"amendment_event/objs/" + BE(id)`
+    ///   2. If absent → return `None`
+    ///   3. Deserialize as `AmendmentEvent`
+    ///
+    /// Key: `"amendment_event/objs/" + BE(id)`
+    /// Value: serialized `AmendmentEvent`
+    /// Direction: read-only
+    ///
+    /// Missing record returns `Ok(None)`, not an error.
+    #[allow(unused_variables)]
+    fn get_amendment_event_by_id(&self, id: u64) -> Result<Option<AmendmentEvent>> {
+        todo!()
+    }
+
+    /// List all amendment events for a given policy.
+    ///
+    /// Flow:
+    ///   1. Scan secondary index
+    ///      `"amendment_event/indexes/policy/idx/" + policy_id + "/"`
+    ///      to get matching object keys (8-byte IDs)
+    ///   2. For each key, fetch and deserialize the full record from
+    ///      `"amendment_event/objs/" + key`
+    ///
+    /// Key prefix scanned: `"amendment_event/indexes/policy/idx/" + policy_id + "/"`
+    /// Direction: read-only (index scan + object materialization)
+    ///
+    /// Returns empty vec if no events exist for this policy.
+    #[allow(unused_variables)]
+    fn list_events_by_policy(&self, policy_id: &str) -> Result<Vec<AmendmentEvent>> {
+        todo!()
+    }
+
+    /// List amendment events flagged as hijack attempts for a policy.
+    ///
+    /// Flow:
+    ///   1. Call `list_events_by_policy(policy_id)` to get all events
+    ///      for the policy via the secondary index
+    ///   2. Filter in-memory to events where `hijack_flag == true`
+    ///
+    /// Direction: read-only (delegates to `list_events_by_policy` +
+    ///   application-level filter)
+    ///
+    /// There is no secondary index on `hijack_flag` — this scans ALL
+    /// events for the policy and filters in memory. If the volume of
+    /// amendment events per policy becomes large, consider adding a
+    /// composite index.
+    ///
+    /// A "hijack event" is an `AmendmentEvent` where an ownership
+    /// amendment occurred and the new owner (whose commitment was older)
+    /// flagged the event to indicate the previous owner may have tried
+    /// to register an object already committed by someone else.
+    #[allow(unused_variables)]
+    fn list_hijack_events_by_policy(&self, policy_id: &str) -> Result<Vec<AmendmentEvent>> {
+        todo!()
+    }
+
+    // ── Engine factory ───────────────────────────────────────────────────
+
+    /// Construct a fresh ACP engine instance from the current state.
+    ///
+    /// Flow:
+    ///   1. Open the module's KV store (scoped to `"acp"` module prefix).
+    ///      No additional prefix is applied at this level — unlike the
+    ///      repository factories which add their own prefixes, the engine
+    ///      receives the raw module store.
+    ///   2. Adapt the KV store to the engine's expected interface (Go:
+    ///      two adapter steps from Cosmos core KV → storetypes.KVStore
+    ///      → raccoondb.KVStore; hub.rs will need its own bridge from
+    ///      QMDB to whatever the Rust engine expects)
+    ///   3. Construct a `RuntimeManager` with:
+    ///      - The adapted KV store (engine internally sub-prefixes into
+    ///        `"store/"` for main state and `"internal/"` for bookkeeping)
+    ///      - A time service that reads block time from execution context
+    ///        (must carry block time, not wall-clock — the context flowing
+    ///        through the engine's method calls must have the correct
+    ///        block timestamp)
+    ///   4. Wrap the runtime in an `EngineService` (a dispatcher that
+    ///      delegates each operation to internal handler packages which
+    ///      implement Zanzibar relation-tuple semantics)
+    ///
+    /// The engine is stateless — it is a lightweight wrapper around a
+    /// KV store reference, reconstructed per-request. Each internal
+    /// handler constructs a fresh Zanzibar adapter from the same KV.
+    /// All state lives in the KV store; the engine is a stateless
+    /// interpreter over that store. The Go keeper may construct the
+    /// engine multiple times within a single request (once per service
+    /// that needs it).
+    ///
+    /// The engine interface exposes:
+    ///   - Policy CRUD: create, create_with_specification, edit,
+    ///     edit_metadata, delete, get, get_catalogue, list, validate
+    ///   - Relationship management: set, delete, filter
+    ///   - Object lifecycle: register, archive, unarchive, transfer,
+    ///     get_registration, amend_registration, reveal_registration
+    ///   - Access verification: verify_access_request,
+    ///     check_management_authority, evaluate_theorem
+    ///   - Params: get/set (engine-level, separate from module params)
+    ///
+    /// The engine's policy store, relationship store, and object
+    /// registration store all live under the `"store/"` sub-prefix
+    /// within the module's KV namespace. The Zanzibar graph engine
+    /// further partitions within `"store/"` for policy data and
+    /// relation nodes.
+    ///
+    /// Go panics on construction failure. hub.rs should return `Result`.
+    fn get_acp_engine(&self) {
+        todo!()
+    }
 }
