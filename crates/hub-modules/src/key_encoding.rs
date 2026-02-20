@@ -2,10 +2,16 @@
 
 /// Cosmos SDK-style length-prefix encoding: 1 byte length + raw bytes.
 ///
+/// Matches Go `address.LengthPrefix`: empty input returns empty output
+/// (no length byte prepended). Non-empty input returns `[len] + data`.
+///
 /// # Panics
 ///
 /// Panics if `data.len() > 255`.
 pub fn len_prefix(data: &[u8]) -> Vec<u8> {
+    if data.is_empty() {
+        return Vec::new();
+    }
     assert!(data.len() <= 255, "len_prefix: data exceeds 255 bytes");
     let mut out = Vec::with_capacity(1 + data.len());
     #[expect(clippy::cast_possible_truncation)]
@@ -38,7 +44,7 @@ mod tests {
     #[test]
     fn len_prefix_empty() {
         let result = len_prefix(b"");
-        assert_eq!(result, vec![0]);
+        assert!(result.is_empty());
     }
 
     #[test]

@@ -1,8 +1,8 @@
 //! ACP module key prefixes and builders.
 //!
-//! Matches Go `x/acp/types/keys.go` and raccoondb key layout patterns.
-//! Auto-increment stores use `objs` + `counter` sub-prefixes mirroring
-//! the raccoondb convention.
+//! Matches Go `x/acp/types/keys.go`. Auto-increment stores use
+//! `objs/` and `counter/` sub-prefixes as defined by the mod.rs
+//! storage spec.
 
 /// Access decision prefix (string-keyed objects).
 pub const ACCESS_DECISION_PREFIX: &[u8] = b"access_decision/";
@@ -15,10 +15,10 @@ pub const SIGNED_POLICY_CMD_SEEN_PREFIX: &[u8] = b"spc_seen/";
 /// Module parameters key.
 pub const PARAMS_KEY: &[u8] = b"p_acp";
 
-/// Raccoondb object sub-prefix.
-pub const OBJS_SUBPREFIX: &[u8] = b"/objs";
-/// Raccoondb counter sub-prefix.
-pub const COUNTER_SUBPREFIX: &[u8] = b"/counter";
+/// Object storage sub-prefix (within auto-increment stores).
+pub const OBJS_SUBPREFIX: &[u8] = b"objs/";
+/// Counter sub-prefix (within auto-increment stores).
+pub const COUNTER_SUBPREFIX: &[u8] = b"counter/";
 
 /// Access decision key: `prefix + decision_id`.
 pub fn access_decision_key(decision_id: &str) -> Vec<u8> {
@@ -27,35 +27,35 @@ pub fn access_decision_key(decision_id: &str) -> Vec<u8> {
     key
 }
 
-/// Commitment object key: `commitment_prefix + objs_subprefix + "/" + BE(id)`.
+/// Commitment object key: `"commitment/objs/" + BE(id)`.
 pub fn commitment_key(id: u64) -> Vec<u8> {
     let mut key = Vec::from(COMMITMENT_PREFIX);
     key.extend_from_slice(OBJS_SUBPREFIX);
-    key.push(b'/');
     key.extend_from_slice(&id.to_be_bytes());
     key
 }
 
-/// Commitment counter key: `commitment_prefix + counter_subprefix`.
+/// Commitment counter key: `"commitment/counter/id"`.
 pub fn commitment_counter_key() -> Vec<u8> {
     let mut key = Vec::from(COMMITMENT_PREFIX);
     key.extend_from_slice(COUNTER_SUBPREFIX);
+    key.extend_from_slice(b"id");
     key
 }
 
-/// Amendment event object key: `amendment_prefix + objs_subprefix + "/" + BE(id)`.
+/// Amendment event object key: `"amendment_event/objs/" + BE(id)`.
 pub fn amendment_event_key(id: u64) -> Vec<u8> {
     let mut key = Vec::from(AMENDMENT_EVENT_PREFIX);
     key.extend_from_slice(OBJS_SUBPREFIX);
-    key.push(b'/');
     key.extend_from_slice(&id.to_be_bytes());
     key
 }
 
-/// Amendment event counter key: `amendment_prefix + counter_subprefix`.
+/// Amendment event counter key: `"amendment_event/counter/id"`.
 pub fn amendment_event_counter_key() -> Vec<u8> {
     let mut key = Vec::from(AMENDMENT_EVENT_PREFIX);
     key.extend_from_slice(COUNTER_SUBPREFIX);
+    key.extend_from_slice(b"id");
     key
 }
 
@@ -87,18 +87,18 @@ mod tests {
     #[test]
     fn commitment_key_includes_objs_subprefix() {
         let key = commitment_key(1);
-        let key_str =
-            String::from_utf8_lossy(&key[..COMMITMENT_PREFIX.len() + OBJS_SUBPREFIX.len()]);
-        assert_eq!(key_str, "commitment//objs");
+        let prefix_len = COMMITMENT_PREFIX.len() + OBJS_SUBPREFIX.len();
+        let key_str = String::from_utf8_lossy(&key[..prefix_len]);
+        assert_eq!(key_str, "commitment/objs/");
     }
 
     #[test]
     fn counter_keys_are_stable() {
         let ck = commitment_counter_key();
-        assert_eq!(ck, b"commitment//counter");
+        assert_eq!(ck, b"commitment/counter/id");
 
         let ak = amendment_event_counter_key();
-        assert_eq!(ak, b"amendment_event//counter");
+        assert_eq!(ak, b"amendment_event/counter/id");
     }
 
     #[test]

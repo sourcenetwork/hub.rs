@@ -57,6 +57,10 @@ pub fn parse_post_key(key: &[u8]) -> (String, String) {
     let (ns, id) = suffix_str
         .split_once('/')
         .expect("post key contains separator");
+    assert!(
+        !id.contains('/'),
+        "malformed post key: expected exactly 2 parts"
+    );
     (unsanitize_key_part(ns), unsanitize_key_part(id))
 }
 
@@ -74,6 +78,10 @@ pub fn parse_collaborator_key(key: &[u8]) -> (String, String) {
     let (ns, did) = suffix_str
         .split_once('/')
         .expect("collaborator key contains separator");
+    assert!(
+        !did.contains('/'),
+        "malformed collaborator key: expected exactly 2 parts"
+    );
     (unsanitize_key_part(ns), unsanitize_key_part(did))
 }
 

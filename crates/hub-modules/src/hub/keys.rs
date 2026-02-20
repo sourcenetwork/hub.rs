@@ -17,10 +17,14 @@ pub const PARAMS_KEY: &[u8] = b"p_hub";
 /// Write-once chain configuration key.
 pub const CHAIN_CONFIG_KEY: &[u8] = b"chain_config";
 
-/// Primary store key: `prefix + len_prefix(token_hash)`.
+/// Primary store key: `prefix + token_hash` (raw bytes, no length prefix).
+///
+/// Token hashes are fixed-length hex strings (64 chars for SHA-256),
+/// so no length prefix is needed. Go's `JWSTokenKey()` with
+/// `MustLengthPrefix` is dead code — the keeper passes raw bytes.
 pub fn jws_token_key(token_hash: &str) -> Vec<u8> {
     let mut key = Vec::from(JWS_TOKEN_PREFIX);
-    key.extend_from_slice(&len_prefix(token_hash.as_bytes()));
+    key.extend_from_slice(token_hash.as_bytes());
     key
 }
 
@@ -69,11 +73,7 @@ mod tests {
         let hash = "abcdef1234567890";
         let key = jws_token_key(hash);
         assert_eq!(key[0], 0x01);
-        #[expect(clippy::cast_possible_truncation)]
-        {
-            assert_eq!(key[1], hash.len() as u8);
-        }
-        assert_eq!(&key[2..], hash.as_bytes());
+        assert_eq!(&key[1..], hash.as_bytes());
     }
 
     #[test]
