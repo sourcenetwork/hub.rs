@@ -248,6 +248,7 @@ impl<S: StateDb> BlockExecutor<S> for HubExecutor {
                     Err(e) => return Err(e),
                 };
                 evm.set_tx(tx_env);
+                evm.precompiles.set_tx_hash(tx_hash);
 
                 let result_and_state = match evm.replay() {
                     Ok(r) => r,

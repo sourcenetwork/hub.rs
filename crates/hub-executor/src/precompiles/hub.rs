@@ -6,47 +6,14 @@ use hub_modules::hub::HubModule;
 use hub_modules::hub::abi::IHub;
 use hub_modules::types::{BlockExecCtx, TxExecCtx};
 use identity::Did;
-use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
+use revm::precompile::{PrecompileError, PrecompileResult};
+
+use super::{decode_error, did_from_signer, json_bytes, module_error, ok_output};
 
 /// Flat gas cost for read operations (real metering is Phase 10).
 const READ_GAS: u64 = 1000;
 /// Flat gas cost for write operations (real metering is Phase 10).
 const WRITE_GAS: u64 = 5000;
-
-fn did_from_signer(signer: &str) -> Result<Did, PrecompileError> {
-    let did_str = if signer.starts_with("did:") {
-        signer.to_owned()
-    } else {
-        format!("did:key:z{signer}")
-    };
-    Did::new(did_str).map_err(|e| PrecompileError::Other(format!("DID construction: {e}").into()))
-}
-
-fn decode_error(e: alloy_sol_types::Error) -> PrecompileError {
-    PrecompileError::Other(format!("ABI decode: {e}").into())
-}
-
-fn module_error(e: impl core::fmt::Display) -> PrecompileOutput {
-    PrecompileOutput {
-        gas_used: 0,
-        gas_refunded: 0,
-        bytes: Bytes::from(e.to_string().into_bytes()),
-        reverted: true,
-    }
-}
-
-fn json_bytes(v: &impl serde::Serialize) -> Bytes {
-    Bytes::from(serde_json::to_vec(v).unwrap_or_default())
-}
-
-fn ok_output(gas: u64, ret: Vec<u8>) -> PrecompileOutput {
-    PrecompileOutput {
-        gas_used: gas,
-        gas_refunded: 0,
-        bytes: ret.into(),
-        reverted: false,
-    }
-}
 
 /// Dispatch an ABI-encoded call to the Hub module by selector.
 pub(super) fn dispatch(

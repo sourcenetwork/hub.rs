@@ -9,17 +9,20 @@ mod acp;
 mod bulletin;
 mod hub;
 
-use alloy_primitives::Address;
+use alloy_primitives::{Address, B256, Bytes};
 use hub_modules::acp::AcpModule;
 use hub_modules::bulletin::BulletinModule;
 use hub_modules::hub::HubModule;
 use hub_modules::types::{BlockExecCtx, Timestamp, TxExecCtx};
+use identity::Did;
 use revm::{
     context::Cfg,
     context_interface::{Block, ContextTr},
     handler::{EthPrecompiles, PrecompileProvider},
     interpreter::{CallInputs, InterpreterResult},
-    precompile::{Precompile, PrecompileId, PrecompileOutput, PrecompileResult, Precompiles},
+    precompile::{
+        Precompile, PrecompileError, PrecompileId, PrecompileOutput, PrecompileResult, Precompiles,
+    },
     primitives::hardfork::SpecId,
 };
 
@@ -37,6 +40,41 @@ const fn address_from_last_two_bytes(hi: u8, lo: u8) -> Address {
     bytes[18] = hi;
     bytes[19] = lo;
     Address::new(bytes)
+}
+
+pub(super) fn did_from_signer(signer: &str) -> Result<Did, PrecompileError> {
+    let did_str = if signer.starts_with("did:") {
+        signer.to_owned()
+    } else {
+        format!("did:key:z{signer}")
+    };
+    Did::new(did_str).map_err(|e| PrecompileError::Other(format!("DID construction: {e}").into()))
+}
+
+pub(super) fn decode_error(e: alloy_sol_types::Error) -> PrecompileError {
+    PrecompileError::Other(format!("ABI decode: {e}").into())
+}
+
+pub(super) fn module_error(e: impl core::fmt::Display) -> PrecompileOutput {
+    PrecompileOutput {
+        gas_used: 0,
+        gas_refunded: 0,
+        bytes: Bytes::from(e.to_string().into_bytes()),
+        reverted: true,
+    }
+}
+
+pub(super) fn json_bytes(v: &impl serde::Serialize) -> Bytes {
+    Bytes::from(serde_json::to_vec(v).unwrap_or_default())
+}
+
+pub(super) fn ok_output(gas: u64, ret: Vec<u8>) -> PrecompileOutput {
+    PrecompileOutput {
+        gas_used: gas,
+        gas_refunded: 0,
+        bytes: ret.into(),
+        reverted: false,
+    }
 }
 
 const fn stub_precompile(_input: &[u8], _gas_limit: u64) -> PrecompileResult {
@@ -57,6 +95,7 @@ pub struct HubPrecompiles {
     acp_module: AcpModule,
     bulletin_module: BulletinModule,
     hub_module: HubModule,
+    current_tx_hash: B256,
 }
 
 /// Route calldata to the appropriate module based on the target precompile address.
@@ -109,6 +148,7 @@ impl HubPrecompiles {
             acp_module: AcpModule::new(),
             bulletin_module: BulletinModule::new(),
             hub_module: HubModule::new(),
+            current_tx_hash: B256::ZERO,
         }
     }
 
@@ -125,7 +165,13 @@ impl HubPrecompiles {
             acp_module,
             bulletin_module,
             hub_module,
+            current_tx_hash: B256::ZERO,
         }
+    }
+
+    /// Set the tx hash for the current EVM transaction being executed.
+    pub fn set_tx_hash(&mut self, tx_hash: B256) {
+        self.current_tx_hash = tx_hash;
     }
 }
 
@@ -150,7 +196,7 @@ impl<CTX: ContextTr> PrecompileProvider<CTX> for HubPrecompiles {
                 },
             };
             let tx_ctx = TxExecCtx {
-                tx_hash: vec![],
+                tx_hash: self.current_tx_hash.to_vec(),
                 signer: format!("{:?}", inputs.caller),
             };
             let calldata = inputs.input.bytes(context);
