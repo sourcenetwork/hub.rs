@@ -634,6 +634,70 @@ impl AcpModule {
         todo!()
     }
 
+    // ── Lifecycle hooks ─────────────────────────────────────────────────
+
+    /// End-of-block hook: flag expired registration commitments.
+    ///
+    /// Called once at the end of every block. Scans all non-expired
+    /// commitments and marks any that have exceeded their validity
+    /// window as expired. This is the only place expiry transitions
+    /// happen — individual queries never mutate expiry state.
+    ///
+    /// Go instantiates a `CommitmentService` on each call from three
+    /// components: the ACP engine (`getACPEngine`), a commitment
+    /// repository (`getRegistrationsCommitmentRepository`), and the
+    /// service constructor. The service's `FlagExpiredCommitments`
+    /// method contains all the logic below.
+    ///
+    /// Flow:
+    ///   1. Build a "now" timestamp from the block context:
+    ///      - `block_time`: wall-clock time from the block header
+    ///      - `block_height`: current block number
+    ///      (Go: `TimestampFromCtx(ctx)` — can fail on proto
+    ///      timestamp conversion)
+    ///   2. Get all non-expired commitments via
+    ///      `get_non_expired_commitments()` (index scan on
+    ///      `expired == false`)
+    ///   3. For each non-expired commitment, call
+    ///      `commitment.is_expired_against(now)` which delegates to
+    ///      `creation_ts.is_after(validity, now)`:
+    ///      - If `validity` is a block-count duration:
+    ///        `creation_block + validity_blocks < block_height`
+    ///      - If `validity` is a wall-clock duration:
+    ///        `block_time > creation_time + duration`
+    ///      - If `validity` has an unknown/invalid type: panic
+    ///        (Go panics; hub.rs should return an error instead)
+    ///   4. For each expired commitment: set `expired = true`
+    ///      in-memory, collect into a `processed` list
+    ///   5. Write all flagged commitments back via
+    ///      `update_commitment()` for each
+    ///   6. Return the list of newly-expired commitments
+    ///      (Go caller discards the list — but the keeper method
+    ///      returns it for testability)
+    ///
+    /// Error handling (Go behavior):
+    ///   - Timestamp construction failure → return error
+    ///   - `get_non_expired_commitments` failure → return error
+    ///   - Iterator `Value()` or `Next()` failure → return error
+    ///   - `is_expired_against` failure (malformed proto timestamp
+    ///     or unknown duration type) → return error (or panic in Go
+    ///     for unknown duration)
+    ///   - Individual `update_commitment` failure → return error
+    ///     (partial writes possible — no transaction rollback in Go)
+    ///   - The caller (`AppModule.EndBlock`) logs errors but always
+    ///     returns nil — end-blocker errors never halt the chain
+    ///
+    /// No events emitted. No notifications to affected parties.
+    ///
+    /// Writes: commitment store (`"commitment/"` prefix) — updates
+    /// `expired` field on matching records
+    ///
+    /// Reads: commitment store (non-expired index scan), block context
+    /// (time + height)
+    pub fn end_blocker(&mut self) -> Result<Vec<RegistrationsCommitment>> {
+        todo!()
+    }
+
     // ── Storage access methods ──────────────────────────────────────────
     //
     // Key paths below are LOGICAL — they describe what data lives where
