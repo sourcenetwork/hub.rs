@@ -32,7 +32,7 @@ sol! {
 
         function getPost(
             string namespace,
-            bytes32 postId
+            string postId
         ) external view returns (bytes);
 
         function getNamespace(

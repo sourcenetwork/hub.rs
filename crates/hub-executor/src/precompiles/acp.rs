@@ -343,11 +343,28 @@ pub(super) fn dispatch(
             if gas_limit < WRITE_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let _call =
+            let call =
                 IAcp::revealRegistrationCall::abi_decode(&input[4..]).map_err(decode_error)?;
-            Err(PrecompileError::Other(
-                "revealRegistration proof deserialization not yet wired".into(),
-            ))
+            let creator = did_from_signer(&tx_ctx.signer)?;
+            let proof: hub_modules::acp::types::RegistrationProof =
+                serde_json::from_slice(&call.proof).map_err(|e| {
+                    PrecompileError::Other(format!("proof JSON decode: {e}").into())
+                })?;
+            let cmd = PolicyCmd::RevealRegistration {
+                registrations_commitment_id: call.commitmentId,
+                proof,
+            };
+
+            // policy_id is not needed — the commitment record carries it.
+            let result = match module.direct_policy_cmd(&creator, "", cmd) {
+                Ok(r) => r,
+                Err(e) => return Ok(module_error(e)),
+            };
+
+            let encoded = serde_json::to_vec(&result).unwrap_or_default();
+            let ret_bytes = Bytes::from(encoded);
+            let ret = IAcp::revealRegistrationCall::abi_encode_returns(&ret_bytes);
+            Ok(ok_output(WRITE_GAS, ret))
         }
 
         IAcp::flagHijackAttemptCall::SELECTOR => {
@@ -361,6 +378,9 @@ pub(super) fn dispatch(
                 event_id: call.eventId,
             };
 
+            // policy_id is empty — FlagHijackAttempt looks up the amendment
+            // event by event_id; the event record itself carries the policy_id.
+            // The module implementation must ignore policy_id for this variant.
             let result = match module.direct_policy_cmd(&creator, "", cmd) {
                 Ok(r) => r,
                 Err(e) => return Ok(module_error(e)),
@@ -504,6 +524,8 @@ pub(super) fn dispatch(
                 Err(e) => return Ok(module_error(e)),
             };
 
+            // Phase 9: verify that query_filter_relationships excludes archived
+            // records. If it doesn't, add `.iter().any(|r| !r.archived)` here.
             let has = !rels.is_empty();
             let ret = IAcp::hasRelationshipCall::abi_encode_returns(&has);
             Ok(ok_output(READ_GAS, ret))

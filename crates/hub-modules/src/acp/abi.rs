@@ -50,7 +50,7 @@ sol! {
         function revealRegistration(
             uint64 commitmentId,
             bytes proof
-        ) external;
+        ) external returns (bytes);
 
         function flagHijackAttempt(uint64 eventId) external returns (bytes event);
 

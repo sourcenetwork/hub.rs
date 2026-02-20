@@ -188,9 +188,8 @@ pub(super) fn dispatch(
                 return Err(PrecompileError::OutOfGas);
             }
             let call = IBulletin::getPostCall::abi_decode(&input[4..]).map_err(decode_error)?;
-            let post_id = hex::encode(call.postId.as_slice());
 
-            let post = match module.query_post(&call.namespace, &post_id) {
+            let post = match module.query_post(&call.namespace, &call.postId) {
                 Ok(p) => p,
                 Err(e) => return Ok(module_error(e)),
             };
