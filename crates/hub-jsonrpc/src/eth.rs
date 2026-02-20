@@ -293,7 +293,14 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
     }
 
     async fn send_raw_transaction(&self, data: Bytes) -> RpcResult<B256> {
-        let tx_hash = alloy_primitives::keccak256(&data);
+        let tx_hash = match data.first() {
+            Some(&b) if hub_domain::NativeTx::is_native_tx(b) => {
+                let ntx = hub_domain::NativeTx::decode_wire(&data)
+                    .map_err(|e| RpcError::InvalidTransaction(format!("native tx decode: {e}")))?;
+                ntx.tx_id().0
+            }
+            _ => alloy_primitives::keccak256(&data),
+        };
 
         if let Some(ref submit) = self.tx_submit
             && !submit(data)
@@ -531,5 +538,28 @@ mod tests {
         assert!(result.is_ok());
         assert!(submitted.load(std::sync::atomic::Ordering::Relaxed));
         assert_eq!(result.unwrap(), alloy_primitives::keccak256(&tx_data));
+    }
+
+    #[tokio::test]
+    async fn eth_send_raw_transaction_native_tx() {
+        let ntx = hub_domain::NativeTx {
+            chain_id: 1,
+            nonce: 42,
+            bls_pubkey: alloy_primitives::FixedBytes::from([0xAA; 48]),
+            target: Address::from([
+                0x08, 0x10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ]),
+            calldata: Bytes::from(vec![0xDE, 0xAD]),
+            signature: alloy_primitives::FixedBytes::from([0xBB; 96]),
+        };
+        let wire = Bytes::from(ntx.encode_wire());
+        let expected = ntx.tx_id().0;
+
+        let callback: TxSubmitCallback = Arc::new(|_| true);
+        let api = EthApiImpl::with_tx_submit(1, NoopStateProvider, callback);
+        let result = EthApiServer::send_raw_transaction(&api, wire).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), expected);
     }
 }

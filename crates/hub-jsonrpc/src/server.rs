@@ -256,13 +256,15 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
                 }
             };
 
-            let eth_api = tx_submit.map_or_else(
+            let eth_api = tx_submit.as_ref().map_or_else(
                 || EthApiImpl::new(chain_id, state_provider.clone()),
-                |submit| EthApiImpl::with_tx_submit(chain_id, state_provider.clone(), submit),
+                |submit| {
+                    EthApiImpl::with_tx_submit(chain_id, state_provider.clone(), submit.clone())
+                },
             );
             let net_api = NetApiImpl::new(chain_id);
             let web3_api = Web3ApiImpl::new();
-            let hub_api = HubApiImpl::new(node_state_for_jsonrpc);
+            let hub_api = HubApiImpl::new(node_state_for_jsonrpc, tx_submit);
 
             let mut module = jsonrpsee::RpcModule::new(());
             if let Err(e) = module.merge(eth_api.into_rpc()) {
@@ -395,6 +397,7 @@ pub struct JsonRpcServer<S: StateProvider = NoopStateProvider> {
     chain_id: u64,
     tx_submit: Option<TxSubmitCallback>,
     state_provider: S,
+    node_state: Option<Arc<NodeState>>,
     max_connections: u32,
     subscription_heads: Option<broadcast::Sender<RpcBlock>>,
     subscription_logs: Option<broadcast::Sender<Vec<RpcLog>>>,
@@ -419,6 +422,7 @@ impl JsonRpcServer<NoopStateProvider> {
             chain_id,
             tx_submit: None,
             state_provider: NoopStateProvider,
+            node_state: None,
             max_connections: 100,
             subscription_heads: None,
             subscription_logs: None,
@@ -435,11 +439,19 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
             chain_id,
             tx_submit: None,
             state_provider,
+            node_state: None,
             max_connections: 100,
             subscription_heads: None,
             subscription_logs: None,
             extra_modules: Vec::new(),
         }
+    }
+
+    /// Set the node state for hub API support.
+    #[must_use]
+    pub fn with_node_state(mut self, node_state: Arc<NodeState>) -> Self {
+        self.node_state = Some(node_state);
+        self
     }
 
     /// Set the transaction submission callback.
@@ -489,9 +501,11 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
             .local_addr()
             .map_err(|e| ServerError::Build(e.to_string()))?;
 
-        let eth_api = self.tx_submit.map_or_else(
+        let eth_api = self.tx_submit.as_ref().map_or_else(
             || EthApiImpl::new(self.chain_id, self.state_provider.clone()),
-            |submit| EthApiImpl::with_tx_submit(self.chain_id, self.state_provider.clone(), submit),
+            |submit| {
+                EthApiImpl::with_tx_submit(self.chain_id, self.state_provider.clone(), submit.clone())
+            },
         );
         let net_api = NetApiImpl::new(self.chain_id);
         let web3_api = Web3ApiImpl::new();
@@ -500,6 +514,10 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
         module.merge(eth_api.into_rpc())?;
         module.merge(net_api.into_rpc())?;
         module.merge(web3_api.into_rpc())?;
+        if let Some(node_state) = self.node_state {
+            let hub_api = HubApiImpl::new(node_state, self.tx_submit);
+            module.merge(hub_api.into_rpc())?;
+        }
         if let (Some(heads_tx), Some(logs_tx)) = (self.subscription_heads, self.subscription_logs) {
             let sub_api = EthSubscriptionApiImpl::new(heads_tx, logs_tx);
             module.merge(sub_api.into_rpc())?;
