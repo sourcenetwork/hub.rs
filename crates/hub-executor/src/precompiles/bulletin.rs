@@ -32,6 +32,19 @@ fn module_error(e: impl core::fmt::Display) -> PrecompileOutput {
     }
 }
 
+fn json_bytes(v: &impl serde::Serialize) -> Bytes {
+    Bytes::from(serde_json::to_vec(v).unwrap_or_default())
+}
+
+fn ok_output(gas: u64, ret: Vec<u8>) -> PrecompileOutput {
+    PrecompileOutput {
+        gas_used: gas,
+        gas_refunded: 0,
+        bytes: ret.into(),
+        reverted: false,
+    }
+}
+
 /// Dispatch an ABI-encoded call to the Bulletin module by selector.
 pub(super) fn dispatch(
     module: &mut BulletinModule,
@@ -58,17 +71,19 @@ pub(super) fn dispatch(
                 IBulletin::registerNamespaceCall::abi_decode(&input[4..]).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
 
-            match module.register_namespace(acp, block_ctx, tx_ctx, &creator, &call.namespace) {
-                Ok(_) => {}
+            let ns = match module.register_namespace(
+                acp,
+                block_ctx,
+                tx_ctx,
+                &creator,
+                &call.namespace,
+            ) {
+                Ok(r) => r,
                 Err(e) => return Ok(module_error(e)),
-            }
+            };
 
-            Ok(PrecompileOutput {
-                gas_used: WRITE_GAS,
-                gas_refunded: 0,
-                bytes: Bytes::new(),
-                reverted: false,
-            })
+            let ret = IBulletin::registerNamespaceCall::abi_encode_returns(&json_bytes(&ns));
+            Ok(ok_output(WRITE_GAS, ret))
         }
 
         IBulletin::createPostCall::SELECTOR => {
@@ -96,12 +111,7 @@ pub(super) fn dispatch(
             // When Phase 9 implements the module, create_post should return
             // the post ID. For now, return zeroed bytes32.
             let ret = IBulletin::createPostCall::abi_encode_returns(&B256::ZERO);
-            Ok(PrecompileOutput {
-                gas_used: WRITE_GAS,
-                gas_refunded: 0,
-                bytes: ret.into(),
-                reverted: false,
-            })
+            Ok(ok_output(WRITE_GAS, ret))
         }
 
         IBulletin::addCollaboratorCall::SELECTOR => {
@@ -111,20 +121,21 @@ pub(super) fn dispatch(
             let call =
                 IBulletin::addCollaboratorCall::abi_decode(&input[4..]).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
-            let collaborator_str = format!("{:?}", call.collaborator);
+            let collaborator_str = format!("{}", call.collaborator);
 
-            match module.add_collaborator(acp, tx_ctx, &creator, &call.namespace, &collaborator_str)
-            {
-                Ok(_) => {}
+            let collaborator_did = match module.add_collaborator(
+                acp,
+                tx_ctx,
+                &creator,
+                &call.namespace,
+                &collaborator_str,
+            ) {
+                Ok(r) => r,
                 Err(e) => return Ok(module_error(e)),
-            }
+            };
 
-            Ok(PrecompileOutput {
-                gas_used: WRITE_GAS,
-                gas_refunded: 0,
-                bytes: Bytes::new(),
-                reverted: false,
-            })
+            let ret = IBulletin::addCollaboratorCall::abi_encode_returns(&collaborator_did);
+            Ok(ok_output(WRITE_GAS, ret))
         }
 
         IBulletin::removeCollaboratorCall::SELECTOR => {
@@ -134,25 +145,21 @@ pub(super) fn dispatch(
             let call =
                 IBulletin::removeCollaboratorCall::abi_decode(&input[4..]).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
-            let collaborator_str = format!("{:?}", call.collaborator);
+            let collaborator_str = format!("{}", call.collaborator);
 
-            match module.remove_collaborator(
+            let collaborator_did = match module.remove_collaborator(
                 acp,
                 tx_ctx,
                 &creator,
                 &call.namespace,
                 &collaborator_str,
             ) {
-                Ok(_) => {}
+                Ok(r) => r,
                 Err(e) => return Ok(module_error(e)),
-            }
+            };
 
-            Ok(PrecompileOutput {
-                gas_used: WRITE_GAS,
-                gas_refunded: 0,
-                bytes: Bytes::new(),
-                reverted: false,
-            })
+            let ret = IBulletin::removeCollaboratorCall::abi_encode_returns(&collaborator_did);
+            Ok(ok_output(WRITE_GAS, ret))
         }
 
         IBulletin::updateParamsCall::SELECTOR => {
@@ -163,19 +170,16 @@ pub(super) fn dispatch(
                 IBulletin::updateParamsCall::abi_decode(&input[4..]).map_err(decode_error)?;
             let authority = did_from_signer(&tx_ctx.signer)?;
             let params: hub_modules::bulletin::types::BulletinParams =
-                serde_json::from_slice(&call.params).unwrap_or_default();
+                serde_json::from_slice(&call.params).map_err(|e| {
+                    PrecompileError::Other(format!("params JSON decode: {e}").into())
+                })?;
 
             match module.update_params(&authority, params) {
                 Ok(()) => {}
                 Err(e) => return Ok(module_error(e)),
             }
 
-            Ok(PrecompileOutput {
-                gas_used: WRITE_GAS,
-                gas_refunded: 0,
-                bytes: Bytes::new(),
-                reverted: false,
-            })
+            Ok(ok_output(WRITE_GAS, Vec::new()))
         }
 
         // ── Read methods ─────────────────────────────────────────────
@@ -191,15 +195,8 @@ pub(super) fn dispatch(
                 Err(e) => return Ok(module_error(e)),
             };
 
-            let encoded = serde_json::to_vec(&post).unwrap_or_default();
-            let ret_bytes = Bytes::from(encoded);
-            let ret = IBulletin::getPostCall::abi_encode_returns(&ret_bytes);
-            Ok(PrecompileOutput {
-                gas_used: READ_GAS,
-                gas_refunded: 0,
-                bytes: ret.into(),
-                reverted: false,
-            })
+            let ret = IBulletin::getPostCall::abi_encode_returns(&json_bytes(&post));
+            Ok(ok_output(READ_GAS, ret))
         }
 
         IBulletin::getNamespaceCall::SELECTOR => {
@@ -214,15 +211,8 @@ pub(super) fn dispatch(
                 Err(e) => return Ok(module_error(e)),
             };
 
-            let encoded = serde_json::to_vec(&ns).unwrap_or_default();
-            let ret_bytes = Bytes::from(encoded);
-            let ret = IBulletin::getNamespaceCall::abi_encode_returns(&ret_bytes);
-            Ok(PrecompileOutput {
-                gas_used: READ_GAS,
-                gas_refunded: 0,
-                bytes: ret.into(),
-                reverted: false,
-            })
+            let ret = IBulletin::getNamespaceCall::abi_encode_returns(&json_bytes(&ns));
+            Ok(ok_output(READ_GAS, ret))
         }
 
         IBulletin::getNamespacesCall::SELECTOR => {
@@ -235,15 +225,8 @@ pub(super) fn dispatch(
                 Err(e) => return Ok(module_error(e)),
             };
 
-            let encoded = serde_json::to_vec(&namespaces).unwrap_or_default();
-            let ret_bytes = Bytes::from(encoded);
-            let ret = IBulletin::getNamespacesCall::abi_encode_returns(&ret_bytes);
-            Ok(PrecompileOutput {
-                gas_used: READ_GAS,
-                gas_refunded: 0,
-                bytes: ret.into(),
-                reverted: false,
-            })
+            let ret = IBulletin::getNamespacesCall::abi_encode_returns(&json_bytes(&namespaces));
+            Ok(ok_output(READ_GAS, ret))
         }
 
         IBulletin::getNamespaceCollaboratorsCall::SELECTOR => {
@@ -258,15 +241,10 @@ pub(super) fn dispatch(
                 Err(e) => return Ok(module_error(e)),
             };
 
-            let encoded = serde_json::to_vec(&collaborators).unwrap_or_default();
-            let ret_bytes = Bytes::from(encoded);
-            let ret = IBulletin::getNamespaceCollaboratorsCall::abi_encode_returns(&ret_bytes);
-            Ok(PrecompileOutput {
-                gas_used: READ_GAS,
-                gas_refunded: 0,
-                bytes: ret.into(),
-                reverted: false,
-            })
+            let ret = IBulletin::getNamespaceCollaboratorsCall::abi_encode_returns(&json_bytes(
+                &collaborators,
+            ));
+            Ok(ok_output(READ_GAS, ret))
         }
 
         IBulletin::getNamespacePostsCall::SELECTOR => {
@@ -281,15 +259,8 @@ pub(super) fn dispatch(
                 Err(e) => return Ok(module_error(e)),
             };
 
-            let encoded = serde_json::to_vec(&posts).unwrap_or_default();
-            let ret_bytes = Bytes::from(encoded);
-            let ret = IBulletin::getNamespacePostsCall::abi_encode_returns(&ret_bytes);
-            Ok(PrecompileOutput {
-                gas_used: READ_GAS,
-                gas_refunded: 0,
-                bytes: ret.into(),
-                reverted: false,
-            })
+            let ret = IBulletin::getNamespacePostsCall::abi_encode_returns(&json_bytes(&posts));
+            Ok(ok_output(READ_GAS, ret))
         }
 
         IBulletin::getPostsCall::SELECTOR => {
@@ -302,15 +273,8 @@ pub(super) fn dispatch(
                 Err(e) => return Ok(module_error(e)),
             };
 
-            let encoded = serde_json::to_vec(&posts).unwrap_or_default();
-            let ret_bytes = Bytes::from(encoded);
-            let ret = IBulletin::getPostsCall::abi_encode_returns(&ret_bytes);
-            Ok(PrecompileOutput {
-                gas_used: READ_GAS,
-                gas_refunded: 0,
-                bytes: ret.into(),
-                reverted: false,
-            })
+            let ret = IBulletin::getPostsCall::abi_encode_returns(&json_bytes(&posts));
+            Ok(ok_output(READ_GAS, ret))
         }
 
         IBulletin::iterateGlobCall::SELECTOR => {
@@ -324,15 +288,8 @@ pub(super) fn dispatch(
                 Err(e) => return Ok(module_error(e)),
             };
 
-            let encoded = serde_json::to_vec(&posts).unwrap_or_default();
-            let ret_bytes = Bytes::from(encoded);
-            let ret = IBulletin::iterateGlobCall::abi_encode_returns(&ret_bytes);
-            Ok(PrecompileOutput {
-                gas_used: READ_GAS,
-                gas_refunded: 0,
-                bytes: ret.into(),
-                reverted: false,
-            })
+            let ret = IBulletin::iterateGlobCall::abi_encode_returns(&json_bytes(&posts));
+            Ok(ok_output(READ_GAS, ret))
         }
 
         IBulletin::getParamsCall::SELECTOR => {
@@ -345,15 +302,8 @@ pub(super) fn dispatch(
                 Err(e) => return Ok(module_error(e)),
             };
 
-            let encoded = serde_json::to_vec(&params).unwrap_or_default();
-            let ret_bytes = Bytes::from(encoded);
-            let ret = IBulletin::getParamsCall::abi_encode_returns(&ret_bytes);
-            Ok(PrecompileOutput {
-                gas_used: READ_GAS,
-                gas_refunded: 0,
-                bytes: ret.into(),
-                reverted: false,
-            })
+            let ret = IBulletin::getParamsCall::abi_encode_returns(&json_bytes(&params));
+            Ok(ok_output(READ_GAS, ret))
         }
 
         _ => Err(PrecompileError::Other(

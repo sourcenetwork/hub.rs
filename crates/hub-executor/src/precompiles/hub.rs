@@ -31,6 +31,19 @@ fn module_error(e: impl core::fmt::Display) -> PrecompileOutput {
     }
 }
 
+fn json_bytes(v: &impl serde::Serialize) -> Bytes {
+    Bytes::from(serde_json::to_vec(v).unwrap_or_default())
+}
+
+fn ok_output(gas: u64, ret: Vec<u8>) -> PrecompileOutput {
+    PrecompileOutput {
+        gas_used: gas,
+        gas_refunded: 0,
+        bytes: ret.into(),
+        reverted: false,
+    }
+}
+
 /// Dispatch an ABI-encoded call to the Hub module by selector.
 pub(super) fn dispatch(
     module: &mut HubModule,
@@ -54,19 +67,13 @@ pub(super) fn dispatch(
             }
             let call = IHub::invalidateJWSCall::abi_decode(&input[4..]).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
-            let token_hash = hex::encode(call.tokenHash.as_slice());
 
-            match module.invalidate_jws(block_ctx, tx_ctx, &creator, &token_hash) {
+            match module.invalidate_jws(block_ctx, tx_ctx, &creator, &call.tokenHash) {
                 Ok(_) => {}
                 Err(e) => return Ok(module_error(e)),
             }
 
-            Ok(PrecompileOutput {
-                gas_used: WRITE_GAS,
-                gas_refunded: 0,
-                bytes: Bytes::new(),
-                reverted: false,
-            })
+            Ok(ok_output(WRITE_GAS, Vec::new()))
         }
 
         IHub::updateParamsCall::SELECTOR => {
@@ -75,20 +82,17 @@ pub(super) fn dispatch(
             }
             let call = IHub::updateParamsCall::abi_decode(&input[4..]).map_err(decode_error)?;
             let authority = did_from_signer(&tx_ctx.signer)?;
-            let params: hub_modules::hub::types::HubParams =
-                serde_json::from_slice(&call.params).unwrap_or_default();
+            let params: hub_modules::hub::types::HubParams = serde_json::from_slice(&call.params)
+                .map_err(|e| {
+                PrecompileError::Other(format!("params JSON decode: {e}").into())
+            })?;
 
             match module.update_params(&authority, params) {
                 Ok(()) => {}
                 Err(e) => return Ok(module_error(e)),
             }
 
-            Ok(PrecompileOutput {
-                gas_used: WRITE_GAS,
-                gas_refunded: 0,
-                bytes: Bytes::new(),
-                reverted: false,
-            })
+            Ok(ok_output(WRITE_GAS, Vec::new()))
         }
 
         // ── Read methods ─────────────────────────────────────────────
@@ -97,54 +101,86 @@ pub(super) fn dispatch(
                 return Err(PrecompileError::OutOfGas);
             }
             let call = IHub::getJWSTokenCall::abi_decode(&input[4..]).map_err(decode_error)?;
-            let token_hash = hex::encode(call.tokenHash.as_slice());
 
-            let record = match module.get_jws_token(&token_hash) {
+            let record = match module.get_jws_token(&call.tokenHash) {
                 Ok(r) => r,
                 Err(e) => return Ok(module_error(e)),
             };
 
-            let (valid, issued_at, expires_at) = match record {
-                Some(r) => (
-                    r.status == hub_modules::hub::types::JWSTokenStatus::Valid,
-                    r.issued_at.seconds,
-                    r.expires_at.seconds,
-                ),
-                None => (false, 0, 0),
-            };
+            let (found, record_bytes) = record
+                .as_ref()
+                .map_or_else(|| (false, Bytes::new()), |r| (true, json_bytes(r)));
 
             let ret = IHub::getJWSTokenCall::abi_encode_returns(&IHub::getJWSTokenReturn {
-                valid,
-                issuedAt: issued_at,
-                expiresAt: expires_at,
+                found,
+                record: record_bytes,
             });
-            Ok(PrecompileOutput {
-                gas_used: READ_GAS,
-                gas_refunded: 0,
-                bytes: ret.into(),
-                reverted: false,
-            })
+            Ok(ok_output(READ_GAS, ret))
+        }
+
+        IHub::getJWSTokensByDidCall::SELECTOR => {
+            if gas_limit < READ_GAS {
+                return Err(PrecompileError::OutOfGas);
+            }
+            let call =
+                IHub::getJWSTokensByDidCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let did = Did::new(&call.did)
+                .map_err(|e| PrecompileError::Other(format!("DID parse: {e}").into()))?;
+
+            let tokens = match module.get_jws_tokens_by_did(&did) {
+                Ok(r) => r,
+                Err(e) => return Ok(module_error(e)),
+            };
+
+            let ret = IHub::getJWSTokensByDidCall::abi_encode_returns(&json_bytes(&tokens));
+            Ok(ok_output(READ_GAS, ret))
+        }
+
+        IHub::getJWSTokensByAccountCall::SELECTOR => {
+            if gas_limit < READ_GAS {
+                return Err(PrecompileError::OutOfGas);
+            }
+            let call =
+                IHub::getJWSTokensByAccountCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let account_str = format!("{}", call.account);
+
+            let tokens = match module.get_jws_tokens_by_account(&account_str) {
+                Ok(r) => r,
+                Err(e) => return Ok(module_error(e)),
+            };
+
+            let ret = IHub::getJWSTokensByAccountCall::abi_encode_returns(&json_bytes(&tokens));
+            Ok(ok_output(READ_GAS, ret))
+        }
+
+        IHub::getChainConfigCall::SELECTOR => {
+            if gas_limit < READ_GAS {
+                return Err(PrecompileError::OutOfGas);
+            }
+            let _call = IHub::getChainConfigCall::abi_decode(&input[4..]).map_err(decode_error)?;
+
+            let config = match module.get_chain_config() {
+                Ok(c) => c,
+                Err(e) => return Ok(module_error(e)),
+            };
+
+            let ret = IHub::getChainConfigCall::abi_encode_returns(&json_bytes(&config));
+            Ok(ok_output(READ_GAS, ret))
         }
 
         IHub::getParamsCall::SELECTOR => {
             if gas_limit < READ_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
+            let _call = IHub::getParamsCall::abi_decode(&input[4..]).map_err(decode_error)?;
 
             let params = match module.query_params() {
                 Ok(p) => p,
                 Err(e) => return Ok(module_error(e)),
             };
 
-            let encoded = serde_json::to_vec(&params).unwrap_or_default();
-            let ret_bytes = Bytes::from(encoded);
-            let ret = IHub::getParamsCall::abi_encode_returns(&ret_bytes);
-            Ok(PrecompileOutput {
-                gas_used: READ_GAS,
-                gas_refunded: 0,
-                bytes: ret.into(),
-                reverted: false,
-            })
+            let ret = IHub::getParamsCall::abi_encode_returns(&json_bytes(&params));
+            Ok(ok_output(READ_GAS, ret))
         }
 
         _ => Err(PrecompileError::Other(

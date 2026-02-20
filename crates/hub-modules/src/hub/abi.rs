@@ -7,15 +7,25 @@ sol! {
     interface IHub {
         // ── Write methods ───────────────────────────────────────────────
 
-        function invalidateJWS(bytes32 tokenHash) external;
+        function invalidateJWS(string tokenHash) external;
 
         function updateParams(bytes params) external;
 
         // ── Read methods ────────────────────────────────────────────────
 
         function getJWSToken(
-            bytes32 tokenHash
-        ) external view returns (bool valid, uint64 issuedAt, uint64 expiresAt);
+            string tokenHash
+        ) external view returns (bool found, bytes record);
+
+        function getJWSTokensByDid(
+            string did
+        ) external view returns (bytes);
+
+        function getJWSTokensByAccount(
+            address account
+        ) external view returns (bytes);
+
+        function getChainConfig() external view returns (bytes);
 
         function getParams() external view returns (bytes);
     }

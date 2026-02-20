@@ -7,7 +7,7 @@ sol! {
     interface IBulletin {
         // ── Write methods ───────────────────────────────────────────────
 
-        function registerNamespace(string namespace) external;
+        function registerNamespace(string namespace) external returns (bytes);
 
         function createPost(
             string namespace,
@@ -19,12 +19,12 @@ sol! {
         function addCollaborator(
             string namespace,
             address collaborator
-        ) external;
+        ) external returns (string collaboratorDid);
 
         function removeCollaborator(
             string namespace,
             address collaborator
-        ) external;
+        ) external returns (string collaboratorDid);
 
         function updateParams(bytes params) external;
 
