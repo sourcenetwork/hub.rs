@@ -3310,7 +3310,6 @@ dependencies = [
  "multibase",
  "rand 0.8.5",
  "sha2 0.10.9",
- "subtle",
  "thiserror 2.0.18",
  "unsigned-varint 0.8.0",
 ]

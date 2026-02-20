@@ -12,7 +12,6 @@ use ark_ec::{
 use ark_ff::field_hashers::DefaultFieldHasher;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use sha2::Sha256;
-use subtle::ConstantTimeEq;
 
 /// IETF-standard BLS signature DST (matches orbis-rs `sign.rs:27`).
 const BLS_SIG_DOMAIN: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_";
@@ -45,6 +44,9 @@ pub fn hash_to_g2(msg: &[u8]) -> Result<G2Affine, BlsError> {
         MapToCurveBasedHasher<G2Projective, DefaultFieldHasher<Sha256>, WBMap<G2Config>>;
     let hasher = G2Hasher::new(BLS_SIG_DOMAIN).map_err(|_| BlsError::HashToCurve)?;
     let point: G2Affine = hasher.hash(msg).map_err(|_| BlsError::HashToCurve)?;
+    if point.is_zero() {
+        return Err(BlsError::HashToCurve);
+    }
     Ok(point)
 }
 
@@ -60,26 +62,25 @@ pub fn sign(secret_key: &ark_bls12_381::Fr, msg: &[u8]) -> Result<Vec<u8>, BlsEr
 
 /// Verify a BLS signature against a G1 public key and message.
 ///
-/// Uses constant-time comparison on serialized pairing outputs (matches orbis-rs
-/// `sign.rs:157-190`).
+/// Rejects identity points for both the public key and signature to prevent
+/// trivial forgery via degenerate pairing (matches orbis-rs `sign.rs:157-190`).
 pub fn verify(pubkey: &G1Affine, msg: &[u8], sig_bytes: &[u8]) -> Result<(), BlsError> {
+    if pubkey.is_zero() {
+        return Err(BlsError::InvalidSignature);
+    }
+
     let sig = G2Affine::deserialize_compressed(sig_bytes).map_err(|_| BlsError::Deserialize)?;
+    if sig.is_zero() {
+        return Err(BlsError::InvalidSignature);
+    }
+
     let h_msg = hash_to_g2(msg)?;
     let g1_gen = G1Affine::generator();
 
     let lhs = Bls12_381::pairing(*pubkey, h_msg);
     let rhs = Bls12_381::pairing(g1_gen, sig);
 
-    let mut lhs_bytes = Vec::new();
-    let mut rhs_bytes = Vec::new();
-    lhs.0
-        .serialize_compressed(&mut lhs_bytes)
-        .map_err(|_| BlsError::Serialize)?;
-    rhs.0
-        .serialize_compressed(&mut rhs_bytes)
-        .map_err(|_| BlsError::Serialize)?;
-
-    if lhs_bytes.ct_ne(&rhs_bytes).into() {
+    if lhs != rhs {
         return Err(BlsError::InvalidSignature);
     }
     Ok(())
@@ -112,10 +113,10 @@ pub fn did_from_bls_pubkey(pubkey: &G1Affine) -> Result<String, BlsError> {
 
 #[cfg(test)]
 mod tests {
-    use ark_bls12_381::{Fr, G1Affine, G1Projective};
+    use ark_bls12_381::{Fr, G1Affine, G1Projective, G2Affine};
     use ark_ec::{AffineRepr, CurveGroup};
     use ark_ff::UniformRand;
-    use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+    use ark_serialize::CanonicalSerialize;
     use ark_std::test_rng;
 
     use super::*;
@@ -186,6 +187,26 @@ mod tests {
         let did1 = did_from_bls_pubkey(&pk).expect("did1");
         let did2 = did_from_bls_pubkey(&pk).expect("did2");
         assert_eq!(did1, did2);
+    }
+
+    #[test]
+    fn verify_rejects_identity_pubkey() {
+        let (sk, _pk) = generate_keypair();
+        let msg = b"test message";
+        let sig = sign(&sk, msg).expect("sign");
+        let identity = G1Affine::zero();
+        assert!(verify(&identity, msg, &sig).is_err());
+    }
+
+    #[test]
+    fn verify_rejects_identity_signature() {
+        let (_sk, pk) = generate_keypair();
+        let msg = b"test message";
+        let mut sig_bytes = Vec::new();
+        G2Affine::zero()
+            .serialize_compressed(&mut sig_bytes)
+            .expect("serialize identity");
+        assert!(verify(&pk, msg, &sig_bytes).is_err());
     }
 
     #[test]

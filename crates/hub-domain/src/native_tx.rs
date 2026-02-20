@@ -1,7 +1,7 @@
 //! BLS12-381 signed native transaction type.
 
-use alloy_primitives::{Address, Bytes, keccak256};
-use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
+use alloy_primitives::{Address, Bytes, FixedBytes, keccak256};
+use alloy_rlp::{Encodable, RlpDecodable, RlpEncodable};
 
 use crate::TxId;
 
@@ -20,14 +20,14 @@ pub struct NativeTx {
     pub chain_id: u64,
     /// Sender nonce.
     pub nonce: u64,
-    /// BLS12-381 G1 compressed public key (48 bytes).
-    pub bls_pubkey: Bytes,
+    /// BLS12-381 G1 compressed public key (exactly 48 bytes).
+    pub bls_pubkey: FixedBytes<48>,
     /// Precompile target address (0x0810, 0x0811, or 0x0812).
     pub target: Address,
     /// ABI-encoded calldata, identical to EVM precompile calldata.
     pub calldata: Bytes,
-    /// BLS12-381 G2 compressed signature (96 bytes).
-    pub signature: Bytes,
+    /// BLS12-381 G2 compressed signature (exactly 96 bytes).
+    pub signature: FixedBytes<96>,
 }
 
 /// The unsigned portion of a [`NativeTx`] (everything except the signature).
@@ -39,8 +39,8 @@ pub struct NativeTxPayload {
     pub chain_id: u64,
     /// Sender nonce.
     pub nonce: u64,
-    /// BLS12-381 G1 compressed public key (48 bytes).
-    pub bls_pubkey: Bytes,
+    /// BLS12-381 G1 compressed public key (exactly 48 bytes).
+    pub bls_pubkey: FixedBytes<48>,
     /// Precompile target address (0x0810, 0x0811, or 0x0812).
     pub target: Address,
     /// ABI-encoded calldata, identical to EVM precompile calldata.
@@ -65,7 +65,7 @@ impl NativeTx {
         if bytes.first() != Some(&NATIVE_TX_TYPE) {
             return Err(alloy_rlp::Error::Custom("missing native tx type byte"));
         }
-        Self::decode(&mut &bytes[1..])
+        alloy_rlp::decode_exact(&bytes[1..])
     }
 
     /// Produce the bytes that are signed by the BLS key.
@@ -75,7 +75,7 @@ impl NativeTx {
         let payload = NativeTxPayload {
             chain_id: self.chain_id,
             nonce: self.nonce,
-            bls_pubkey: self.bls_pubkey.clone(),
+            bls_pubkey: self.bls_pubkey,
             target: self.target,
             calldata: self.calldata.clone(),
         };
@@ -99,18 +99,20 @@ impl NativeTx {
 
 #[cfg(test)]
 mod tests {
+    use alloy_rlp::Decodable;
+
     use super::*;
 
     fn sample_tx() -> NativeTx {
         NativeTx {
             chain_id: 1,
             nonce: 42,
-            bls_pubkey: Bytes::from(vec![0xAA; 48]),
+            bls_pubkey: FixedBytes::from([0xAA; 48]),
             target: Address::from([
                 0x08, 0x10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             ]),
             calldata: Bytes::from(vec![0xDE, 0xAD]),
-            signature: Bytes::from(vec![0xBB; 96]),
+            signature: FixedBytes::from([0xBB; 96]),
         }
     }
 
@@ -171,5 +173,13 @@ mod tests {
     #[test]
     fn decode_wire_rejects_empty() {
         assert!(NativeTx::decode_wire(&[]).is_err());
+    }
+
+    #[test]
+    fn decode_wire_rejects_trailing_bytes() {
+        let tx = sample_tx();
+        let mut wire = tx.encode_wire();
+        wire.push(0xFF);
+        assert!(NativeTx::decode_wire(&wire).is_err());
     }
 }
