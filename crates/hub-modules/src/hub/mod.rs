@@ -252,7 +252,10 @@ impl HubModule {
     /// 3. If `record.expires_at < block_ctx.timestamp`:
     ///    call `update_jws_token_status(token_hash, Invalid, "")`.
     ///    Empty `invalidated_by` signals automatic expiry.
-    /// 4. Per-token errors are logged but do not abort iteration.
+    /// 4. Per-token `update_jws_token_status` errors are logged but
+    ///    do not abort iteration. However, iterator-level errors
+    ///    (e.g. deserialization failure on a record) DO abort and
+    ///    propagate upward.
     ///
     /// # Reads
     /// - Full scan of `0x01` prefix
@@ -261,11 +264,25 @@ impl HubModule {
     /// - `0x01 || token_hash` for each expired token
     ///
     /// # Ctx
-    /// `block_ctx.timestamp` for expiry comparison.
+    /// `block_ctx.timestamp` for expiry comparison. Go correctly
+    /// uses `sdkCtx.BlockTime()` here (unlike `RecordJWSTokenUsage`
+    /// and `UpdateJWSTokenStatus` which use `time.Now()`).
+    ///
+    /// # Go bug: zero-expiry tokens
+    /// Go has no `!expires_at.is_zero()` guard in this sweep.
+    /// The zero `time.Time` value (`0001-01-01`) is always before
+    /// `block_time`, so tokens created with zero expiry (meaning
+    /// "no expiry") are immediately swept as expired in the next
+    /// block. The creation path (`store_or_update_jws_token`) has
+    /// a `!expiresAt.IsZero()` guard for validation, but this
+    /// sweep does not. hub.rs should add an `expires_at.is_zero()`
+    /// guard here to skip tokens with no expiry.
     ///
     /// # Implementation notes
     /// Called by the end-block hook. Only block context is available
-    /// (no tx context during end-block).
+    /// (no tx context during end-block). The caller (`EndBlocker`)
+    /// logs errors but always returns nil — sweep failures are
+    /// non-fatal.
     #[allow(unused_variables)]
     pub fn check_and_update_expired_tokens(&mut self, block_ctx: &BlockExecCtx) -> Result<()> {
         todo!()
@@ -424,6 +441,121 @@ impl HubModule {
     /// # Reads
     /// - All keys under `0x01` prefix
     pub fn get_all_jws_tokens(&self) -> Result<Vec<JWSTokenRecord>> {
+        todo!()
+    }
+
+    // ── Storage access methods ──────────────────────────────────────────
+    //
+    // Hub uses raw Cosmos SDK prefix stores — no raccoondb. Three byte-
+    // prefixed namespaces for JWS tokens (0x01 primary, 0x02 DID index,
+    // 0x03 account index), plus two raw string keys ("p_hub" for params,
+    // "chain_config" for genesis config).
+    //
+    // Length-prefixed encoding: secondary index keys use Cosmos SDK
+    // `address.MustLengthPrefix` — a 1-byte length indicator followed
+    // by the raw bytes. This allows unambiguous parsing of composite
+    // keys with two variable-length components.
+    //
+    // ICA connection methods (prefix 0x00) exist in Go but are
+    // Cosmos IBC-specific. Not ported to hub.rs.
+
+    // ── Storage — JWS Token (primary + indexes) ────────────────────────
+
+    /// Write a JWS token record to all three stores.
+    ///
+    /// This is the core write method called by `store_or_update_jws_token`,
+    /// `record_jws_token_usage`, and `update_jws_token_status`.
+    ///
+    /// Flow:
+    ///   1. Validate: `record.token_hash` non-empty,
+    ///      `record.issuer_did` non-empty
+    ///   2. If chain config `ignore_bearer_auth` is false and
+    ///      `record.authorized_account` is empty → return error
+    ///      (account required when bearer auth is enforced)
+    ///   3. If `record.authorized_account` is non-empty, validate
+    ///      it is a well-formed account address
+    ///   4. Serialize `record` as protobuf
+    ///   5. Write to primary store: key `record.token_hash` (raw
+    ///      bytes, no length prefix) under prefix `0x01`.
+    ///      Value: serialized record
+    ///   6. Write to DID index: key `len_prefix(issuer_did) +
+    ///      len_prefix(token_hash)` under prefix `0x02`.
+    ///      Value: `[0x01]` (presence marker only)
+    ///   7. If `record.authorized_account` is non-empty: write to
+    ///      account index: key `len_prefix(authorized_account) +
+    ///      len_prefix(token_hash)` under prefix `0x03`.
+    ///      Value: `[0x01]` (presence marker only)
+    ///
+    /// Key paths:
+    ///   - Primary: `0x01 + token_hash` → full record
+    ///   - DID index: `0x02 + len(did) + did + len(hash) + hash` → 0x01
+    ///   - Account index: `0x03 + len(acct) + acct + len(hash) + hash` → 0x01
+    ///
+    /// The primary store key does NOT use length prefix — `token_hash`
+    /// is a fixed-length hex string (64 chars for SHA-256). The Go
+    /// `JWSTokenKey()` helper with `MustLengthPrefix` exists in
+    /// `keys.go` but is dead code — the keeper passes
+    /// `[]byte(record.TokenHash)` directly.
+    ///
+    /// Errors:
+    ///   - Empty `token_hash` or `issuer_did`
+    ///   - Missing `authorized_account` when bearer auth enforced
+    ///   - Invalid `authorized_account` format
+    ///   - Serialization failure
+    #[allow(unused_variables)]
+    fn set_jws_token(&mut self, record: &JWSTokenRecord) -> Result<()> {
+        todo!()
+    }
+
+    // ── Storage — Params ───────────────────────────────────────────────
+
+    /// Read module parameters from the KV store.
+    ///
+    /// Flow:
+    ///   1. Read value at raw KV key `"p_hub"` (no prefix store)
+    ///   2. If key absent → return default `HubParams`
+    ///      (currently an empty struct — no tunable parameters)
+    ///   3. Deserialize stored bytes as `HubParams` (protobuf)
+    ///
+    /// Key: `"p_hub"` (fixed, raw store)
+    /// Value: serialized `HubParams`
+    /// Direction: read-only
+    ///
+    /// Panics on corrupt stored data (Go: `MustUnmarshal`).
+    fn get_params(&self) -> HubParams {
+        todo!()
+    }
+
+    /// Write module parameters to the KV store.
+    ///
+    /// Flow:
+    ///   1. Serialize `params` as `HubParams`
+    ///   2. Store at raw KV key `"p_hub"` (upsert)
+    ///
+    /// Key: `"p_hub"` (fixed, raw store)
+    /// Value: serialized `HubParams`
+    /// Direction: write
+    ///
+    /// Returns error on marshal failure (Go uses fallible
+    /// `cdc.Marshal`, not `MustMarshal`).
+    #[allow(unused_variables)]
+    fn set_params(&mut self, params: &HubParams) -> Result<()> {
+        todo!()
+    }
+
+    // ── Storage — Utility ──────────────────────────────────────────────
+
+    /// Compute a JWS token hash from the raw bearer token string.
+    ///
+    /// Formula: `hex(sha256(bearer_token))`
+    ///
+    /// The bearer token is the full JWS string (compact or JSON
+    /// serialization — whichever was received). The hex encoding
+    /// is lowercase, producing a 64-character string for SHA-256.
+    ///
+    /// This hash serves as the primary key in all three stores.
+    #[allow(unused_variables)]
+    fn hash_jws_token(bearer_token: &str) -> String {
         todo!()
     }
 }
