@@ -1,14 +1,22 @@
-//! Hub precompiles — stub addresses for ACP, Bulletin, and Hub modules.
+//! Hub precompiles — ABI dispatch for ACP, Bulletin, and Hub modules.
 //!
 //! L2-convention addresses:
 //! - `0x0810` — ACP (access control policies)
 //! - `0x0811` — Bulletin (coordination / DKG messages)
 //! - `0x0812` — Hub (identity / JWS token lifecycle)
 
+mod acp;
+mod bulletin;
+mod hub;
+
 use alloy_primitives::Address;
+use hub_modules::acp::AcpModule;
+use hub_modules::bulletin::BulletinModule;
+use hub_modules::hub::HubModule;
+use hub_modules::types::{BlockExecCtx, Timestamp, TxExecCtx};
 use revm::{
     context::Cfg,
-    context_interface::ContextTr,
+    context_interface::{Block, ContextTr},
     handler::{EthPrecompiles, PrecompileProvider},
     interpreter::{CallInputs, InterpreterResult},
     precompile::{Precompile, PrecompileId, PrecompileOutput, PrecompileResult, Precompiles},
@@ -41,11 +49,14 @@ const fn stub_precompile(_input: &[u8], _gas_limit: u64) -> PrecompileResult {
 }
 
 /// Hub precompile provider that extends standard Ethereum precompiles
-/// with stub precompiles for ACP, Bulletin, and Hub modules.
+/// with ABI-dispatching precompiles for ACP, Bulletin, and Hub modules.
 #[derive(Clone, Debug)]
 pub struct HubPrecompiles {
     eth: EthPrecompiles,
     custom: Precompiles,
+    acp_module: AcpModule,
+    bulletin_module: BulletinModule,
+    hub_module: HubModule,
 }
 
 impl HubPrecompiles {
@@ -64,6 +75,9 @@ impl HubPrecompiles {
         Self {
             eth: EthPrecompiles::new(spec),
             custom,
+            acp_module: AcpModule::new(),
+            bulletin_module: BulletinModule::new(),
+            hub_module: HubModule::new(),
         }
     }
 }
@@ -81,7 +95,19 @@ impl<CTX: ContextTr> PrecompileProvider<CTX> for HubPrecompiles {
         inputs: &CallInputs,
     ) -> Result<Option<Self::Output>, String> {
         if self.custom.contains(&inputs.bytecode_address) {
-            return self.run_custom(inputs);
+            let block = context.block();
+            let block_ctx = BlockExecCtx {
+                timestamp: Timestamp {
+                    seconds: block.timestamp().as_limbs()[0],
+                    block_height: block.number().as_limbs()[0],
+                },
+            };
+            let tx_ctx = TxExecCtx {
+                tx_hash: vec![],
+                signer: format!("{:?}", inputs.caller),
+            };
+            let calldata = inputs.input.bytes(context);
+            return self.run_custom(inputs, &calldata, &block_ctx, &tx_ctx);
         }
         self.eth.run(context, inputs)
     }
@@ -98,18 +124,52 @@ impl<CTX: ContextTr> PrecompileProvider<CTX> for HubPrecompiles {
 }
 
 impl HubPrecompiles {
-    fn run_custom(&self, inputs: &CallInputs) -> Result<Option<InterpreterResult>, String> {
+    fn run_custom(
+        &mut self,
+        inputs: &CallInputs,
+        calldata: &[u8],
+        block_ctx: &BlockExecCtx,
+        tx_ctx: &TxExecCtx,
+    ) -> Result<Option<InterpreterResult>, String> {
         use revm::interpreter::{Gas, InstructionResult};
 
-        let Some(precompile) = self.custom.get(&inputs.bytecode_address) else {
+        let address = inputs.bytecode_address;
+
+        let precompile_result = if address == ACP_ADDRESS {
+            acp::dispatch(
+                &mut self.acp_module,
+                block_ctx,
+                tx_ctx,
+                calldata,
+                inputs.gas_limit,
+            )
+        } else if address == BULLETIN_ADDRESS {
+            bulletin::dispatch(
+                &mut self.bulletin_module,
+                &mut self.acp_module,
+                block_ctx,
+                tx_ctx,
+                calldata,
+                inputs.gas_limit,
+            )
+        } else if address == HUB_ADDRESS {
+            hub::dispatch(
+                &mut self.hub_module,
+                block_ctx,
+                tx_ctx,
+                calldata,
+                inputs.gas_limit,
+            )
+        } else {
             return Ok(None);
         };
+
         let mut result = InterpreterResult {
             result: InstructionResult::Return,
             gas: Gas::new(inputs.gas_limit),
             output: revm::primitives::Bytes::new(),
         };
-        match precompile.execute(&[], inputs.gas_limit) {
+        match precompile_result {
             Ok(output) => {
                 result.gas.record_refund(output.gas_refunded);
                 let underflow = result.gas.record_cost(output.gas_used);

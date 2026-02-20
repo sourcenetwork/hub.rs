@@ -3297,15 +3297,21 @@ dependencies = [
 name = "hub-executor"
 version = "0.1.0"
 dependencies = [
+ "acp",
  "alloy-consensus",
  "alloy-eips",
  "alloy-primitives",
  "alloy-rlp",
+ "alloy-sol-types",
  "futures",
+ "hex",
+ "hub-modules",
  "hub-qmdb",
  "hub-traits",
+ "identity",
  "revm",
  "rstest",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",

@@ -23,12 +23,23 @@ type Result<T> = std::result::Result<T, AcpError>;
 /// Manages Zanzibar-style relation tuples, policy CRUD, object registration,
 /// and access checks. Business logic lives here; precompile and native-tx
 /// shims are thin wrappers that decode arguments and forward to these methods.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct AcpModule {
     _private: (),
 }
 
+impl Default for AcpModule {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AcpModule {
+    /// Create a new ACP module instance.
+    pub const fn new() -> Self {
+        Self { _private: () }
+    }
+
     // ── Msg handlers ────────────────────────────────────────────────────
 
     /// Parse, validate, and store a new access control policy.

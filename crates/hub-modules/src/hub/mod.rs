@@ -43,12 +43,23 @@ type Result<T> = std::result::Result<T, HubError>;
 ///
 /// DID and account indices are presence markers (value=0x01);
 /// the full record lives only in the primary 0x01 store.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct HubModule {
     _private: (),
 }
 
+impl Default for HubModule {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HubModule {
+    /// Create a new Hub module instance.
+    pub const fn new() -> Self {
+        Self { _private: () }
+    }
+
     // ── Msg handlers ────────────────────────────────────────────────────
 
     /// Invalidate a JWS token by its hash.

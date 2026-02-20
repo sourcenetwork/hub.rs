@@ -54,12 +54,23 @@ type Result<T> = std::result::Result<T, BulletinError>;
 /// Key sanitization: `/` in component parts is replaced with `|`.
 /// Namespace IDs are always prefixed: user `"ns1"` → stored `"bulletin/ns1"`.
 /// Post IDs are deterministic: `hex(sha256(namespaceId + payload))`.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct BulletinModule {
     _private: (),
 }
 
+impl Default for BulletinModule {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BulletinModule {
+    /// Create a new Bulletin module instance.
+    pub const fn new() -> Self {
+        Self { _private: () }
+    }
+
     // ── Msg handlers ────────────────────────────────────────────────────
 
     /// Register a new namespace owned by the creator.

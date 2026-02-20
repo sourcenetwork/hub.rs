@@ -87,5 +87,28 @@ sol! {
             string resource,
             string objectId
         ) external view returns (string);
+
+        function getPolicyIds() external view returns (string[]);
+
+        function filterRelationships(
+            bytes32 policyId,
+            string resource,
+            string objectId,
+            string relation,
+            string actor
+        ) external view returns (bytes);
+
+        function validatePolicy(bytes calldata policy) external view returns (bool valid, string reason);
+
+        function getAccessDecision(uint64 decisionId) external view returns (bytes);
+
+        function getRegistrationsCommitment(uint64 commitmentId) external view returns (bytes);
+
+        function getRegistrationsCommitmentByValue(
+            bytes32 policyId,
+            bytes commitment
+        ) external view returns (bytes);
+
+        function getHijackAttempts(bytes32 policyId) external view returns (bytes);
     }
 }
