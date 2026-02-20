@@ -1,11 +1,13 @@
 #![allow(missing_docs)]
 
+use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
 
 use crate::types::Timestamp;
 
 /// Status of a JWS token in the invalidation registry.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+#[borsh(use_discriminant = true)]
 pub enum JWSTokenStatus {
     Unspecified = 0,
     Valid = 1,
@@ -13,7 +15,7 @@ pub enum JWSTokenStatus {
 }
 
 /// A stored JWS token record tracking lifecycle and usage.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct JWSTokenRecord {
     pub token_hash: String,
     pub bearer_token: String,
@@ -29,18 +31,20 @@ pub struct JWSTokenRecord {
 }
 
 /// Write-once chain configuration (set at genesis).
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct ChainConfig {
     pub allow_zero_fee_txs: bool,
     pub ignore_bearer_auth: bool,
 }
 
 /// Native BLS transaction operations for the Hub module.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub enum HubOp {
     InvalidateJWS { token_hash: String },
 }
 
 /// Module-level parameters (governance-controlled).
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize,
+)]
 pub struct HubParams {}

@@ -4,6 +4,9 @@
 
 use alloy_primitives as _;
 
+mod borsh_did;
+/// Shared key encoding helpers (length prefix, sanitization).
+pub mod key_encoding;
 /// Shared types used across modules (Timestamp, Duration).
 pub mod types;
 

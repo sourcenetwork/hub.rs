@@ -4,6 +4,8 @@
 pub mod abi;
 /// Hub error types.
 pub mod error;
+/// Key prefixes and builders for Hub KV storage.
+pub mod keys;
 /// Hub domain types.
 pub mod types;
 

@@ -4,6 +4,8 @@
 pub mod abi;
 /// Bulletin error types.
 pub mod error;
+/// Key prefixes and builders for Bulletin KV storage.
+pub mod keys;
 /// Bulletin domain types.
 pub mod types;
 
@@ -585,10 +587,7 @@ impl BulletinModule {
     ///   - ACP `create_module_policy` failure → `PolicyInitFailed`
     ///   - Capability claim failure → `PolicyInitFailed`
     #[allow(unused_variables)]
-    fn ensure_policy(
-        &mut self,
-        acp: &mut super::acp::AcpModule,
-    ) -> Result<String> {
+    fn ensure_policy(&mut self, acp: &mut super::acp::AcpModule) -> Result<String> {
         todo!()
     }
 

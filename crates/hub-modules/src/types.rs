@@ -1,5 +1,6 @@
 #![allow(missing_docs)]
 
+use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
 
 /// Wall-clock timestamp paired with block height.
@@ -9,7 +10,9 @@ use serde::{Deserialize, Serialize};
 /// `nanos` — nanosecond precision is meaningless in consensus, while
 /// block height gives total ordering. Both values come from
 /// `BlockContext.header` (timestamp + number).
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize,
+)]
 pub struct Timestamp {
     pub seconds: u64,
     pub block_height: u64,
@@ -39,7 +42,7 @@ pub struct TxExecCtx {
 ///
 /// Matches Go's `sourcehub.acp.Duration` oneof: modules that use
 /// time-based expiration can express it in either unit.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub enum Duration {
     Seconds(u64),
     Blocks(u64),

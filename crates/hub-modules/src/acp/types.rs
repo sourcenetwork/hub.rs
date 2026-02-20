@@ -1,13 +1,14 @@
 #![allow(missing_docs)]
 
 use acp::{Policy, Relationship, Subject};
+use borsh::{BorshDeserialize, BorshSerialize};
 use identity::Did;
 use serde::{Deserialize, Serialize};
 
 use crate::types::{Duration, Timestamp};
 
 /// Metadata attached to any stored record.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct RecordMetadata {
     pub creation_ts: Timestamp,
     pub tx_hash: Vec<u8>,
@@ -16,7 +17,7 @@ pub struct RecordMetadata {
 }
 
 /// Parameters governing access-decision lifecycle timers.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct DecisionParams {
     pub decision_expiration_delta: u64,
     pub proof_expiration_delta: u64,
@@ -24,21 +25,21 @@ pub struct DecisionParams {
 }
 
 /// A single operation within an access request.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct Operation {
     pub object: Object,
     pub permission: String,
 }
 
 /// Content type discriminator for signed payloads.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub enum ContentType {
     Unknown,
     Jws,
 }
 
 /// Policy serialization format.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub enum PolicyMarshalingType {
     Unknown,
     ShortYaml,
@@ -46,25 +47,31 @@ pub enum PolicyMarshalingType {
 }
 
 /// Reference to an object within a policy resource.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct Object {
     pub resource: String,
     pub id: String,
 }
 
 /// An actor identity (wraps a DID).
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Actor(pub Did);
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+pub struct Actor(
+    #[borsh(
+        serialize_with = "crate::borsh_did::serialize_did",
+        deserialize_with = "crate::borsh_did::deserialize_did"
+    )]
+    pub Did,
+);
 
 /// A request to check whether an actor has permissions on objects.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct AccessRequest {
     pub operations: Vec<Operation>,
     pub actor: Actor,
 }
 
 /// The result of evaluating an access check.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct AccessDecision {
     pub id: String,
     pub policy_id: String,
@@ -141,7 +148,7 @@ pub struct PolicyRecord {
 }
 
 /// Proof that an object was included in a registration commitment.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct RegistrationProof {
     pub object: Object,
     pub merkle_proof: Vec<Vec<u8>>,
@@ -150,7 +157,7 @@ pub struct RegistrationProof {
 }
 
 /// A batch registration commitment submitted by an actor.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct RegistrationsCommitment {
     pub id: u64,
     pub policy_id: String,
@@ -161,7 +168,7 @@ pub struct RegistrationsCommitment {
 }
 
 /// Record of an ownership amendment event.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct AmendmentEvent {
     pub id: u64,
     pub policy_id: String,
@@ -242,7 +249,9 @@ pub enum AcpOp {
 }
 
 /// Module-level parameters (governance-controlled).
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize,
+)]
 pub struct AcpParams {
     pub policy_command_max_expiration_delta: u64,
     pub registrations_commitment_validity: Duration,

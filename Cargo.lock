@@ -3497,8 +3497,11 @@ dependencies = [
  "acp",
  "alloy-primitives",
  "alloy-sol-types",
+ "borsh",
+ "hex",
  "identity",
  "serde",
+ "sha2 0.10.9",
  "thiserror 2.0.18",
 ]
 

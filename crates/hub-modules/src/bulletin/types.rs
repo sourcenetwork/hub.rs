@@ -2,13 +2,14 @@
 
 #![allow(missing_docs)]
 
+use borsh::{BorshDeserialize, BorshSerialize};
 use identity::Did;
 use serde::{Deserialize, Serialize};
 
 use crate::types::Timestamp;
 
 /// A registered namespace for organizing posts.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct Namespace {
     pub id: String,
     pub creator: String,
@@ -17,7 +18,7 @@ pub struct Namespace {
 }
 
 /// A post within a namespace (payload + optional proof).
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct Post {
     pub id: String,
     pub namespace: String,
@@ -27,7 +28,7 @@ pub struct Post {
 }
 
 /// A collaborator on a namespace.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct Collaborator {
     pub address: String,
     pub did: String,
@@ -35,7 +36,7 @@ pub struct Collaborator {
 }
 
 /// Native BLS transaction operations for the Bulletin module.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub enum BulletinOp {
     RegisterNamespace {
         namespace: String,
@@ -60,9 +61,17 @@ pub enum BulletinOp {
 }
 
 /// Module-level parameters (governance-controlled).
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize,
+)]
 pub struct BulletinParams {}
 
 /// Actor identity for Bulletin operations (wraps a DID).
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct BulletinActor(pub Did);
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+pub struct BulletinActor(
+    #[borsh(
+        serialize_with = "crate::borsh_did::serialize_did",
+        deserialize_with = "crate::borsh_did::deserialize_did"
+    )]
+    pub Did,
+);

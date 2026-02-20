@@ -11,7 +11,10 @@ identity.workspace = true
 
 alloy-sol-types.workspace = true
 alloy-primitives.workspace = true
+borsh.workspace = true
+hex.workspace = true
 serde.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 
 [lints]

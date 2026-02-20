@@ -4,6 +4,8 @@
 pub mod abi;
 /// ACP error types.
 pub mod error;
+/// Key prefixes and builders for ACP KV storage.
+pub mod keys;
 /// ACP domain types.
 pub mod types;
 
@@ -802,11 +804,7 @@ impl AcpModule {
     /// `has_seen_signed_policy_cmd`, this forms a replay-protection
     /// cache with lazy TTL cleanup on the read path.
     #[allow(unused_variables)]
-    fn mark_signed_policy_cmd_seen(
-        &mut self,
-        payload_id: &[u8],
-        expire_height: u64,
-    ) -> Result<()> {
+    fn mark_signed_policy_cmd_seen(&mut self, payload_id: &[u8], expire_height: u64) -> Result<()> {
         todo!()
     }
 
