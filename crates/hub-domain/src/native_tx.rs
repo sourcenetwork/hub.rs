@@ -85,9 +85,12 @@ impl NativeTx {
         buf
     }
 
-    /// Compute the transaction identifier: `keccak256(encode_wire())`.
+    /// Compute the transaction identifier: `keccak256(signing_data())`.
+    ///
+    /// Hashes the payload (excluding signature) so that the tx_id is stable
+    /// across different valid signatures of the same transaction.
     pub fn tx_id(&self) -> TxId {
-        TxId(keccak256(self.encode_wire()))
+        TxId(keccak256(self.signing_data()))
     }
 
     /// Returns `true` if the byte matches the native tx type prefix.
@@ -160,6 +163,14 @@ mod tests {
         let mut tx2 = sample_tx();
         tx2.calldata = Bytes::from(vec![0xFF, 0xFF]);
         assert_ne!(tx1.tx_id(), tx2.tx_id());
+    }
+
+    #[test]
+    fn tx_id_ignores_signature() {
+        let tx1 = sample_tx();
+        let mut tx2 = sample_tx();
+        tx2.signature = FixedBytes::from([0xCC; 96]);
+        assert_eq!(tx1.tx_id(), tx2.tx_id());
     }
 
     #[test]

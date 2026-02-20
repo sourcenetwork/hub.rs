@@ -9,7 +9,7 @@ use ark_ec::{
     hashing::{HashToCurve, curve_maps::wb::WBMap, map_to_curve_hasher::MapToCurveBasedHasher},
     pairing::Pairing,
 };
-use ark_ff::field_hashers::DefaultFieldHasher;
+use ark_ff::{Zero, field_hashers::DefaultFieldHasher};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use sha2::Sha256;
 
@@ -34,6 +34,12 @@ pub enum BlsError {
     /// Signature verification failed (pairing mismatch).
     #[error("invalid signature")]
     InvalidSignature,
+    /// Secret key is zero (degenerate — produces forgeable identity signatures).
+    #[error("invalid secret key")]
+    InvalidSecretKey,
+    /// Public key is the identity point (degenerate — passes no signature checks).
+    #[error("invalid public key")]
+    InvalidPublicKey,
 }
 
 /// Hash a message to a G2 point using the IETF hash-to-curve suite.
@@ -52,6 +58,9 @@ pub fn hash_to_g2(msg: &[u8]) -> Result<G2Affine, BlsError> {
 
 /// Sign a message with a BLS secret key, producing a compressed G2 signature (96 bytes).
 pub fn sign(secret_key: &ark_bls12_381::Fr, msg: &[u8]) -> Result<Vec<u8>, BlsError> {
+    if secret_key.is_zero() {
+        return Err(BlsError::InvalidSecretKey);
+    }
     let h_msg = hash_to_g2(msg)?;
     let sig: G2Affine = (G2Projective::from(h_msg) * secret_key).into_affine();
     let mut bytes = Vec::with_capacity(96);
@@ -87,14 +96,23 @@ pub fn verify(pubkey: &G1Affine, msg: &[u8], sig_bytes: &[u8]) -> Result<(), Bls
 }
 
 /// Deserialize a compressed BLS G1 public key (48 bytes).
+///
+/// Rejects the identity point (point at infinity).
 pub fn deserialize_pubkey(bytes: &[u8]) -> Result<G1Affine, BlsError> {
-    G1Affine::deserialize_compressed(bytes).map_err(|_| BlsError::Deserialize)
+    let pk = G1Affine::deserialize_compressed(bytes).map_err(|_| BlsError::Deserialize)?;
+    if pk.is_zero() {
+        return Err(BlsError::InvalidPublicKey);
+    }
+    Ok(pk)
 }
 
 /// Derive a `did:key:` identifier from a BLS G1 public key.
 ///
 /// Encoding: `did:key:` + multibase(Base58Btc, varint(0xea) || compressed_pubkey).
 pub fn did_from_bls_pubkey(pubkey: &G1Affine) -> Result<String, BlsError> {
+    if pubkey.is_zero() {
+        return Err(BlsError::InvalidPublicKey);
+    }
     let mut varint_buf = [0u8; 10];
     let varint = unsigned_varint::encode::u64(BLS_G1_MULTICODEC, &mut varint_buf);
 
@@ -187,6 +205,27 @@ mod tests {
         let did1 = did_from_bls_pubkey(&pk).expect("did1");
         let did2 = did_from_bls_pubkey(&pk).expect("did2");
         assert_eq!(did1, did2);
+    }
+
+    #[test]
+    fn sign_rejects_zero_secret_key() {
+        let result = sign(&Fr::from(0u64), b"test message");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn deserialize_pubkey_rejects_identity() {
+        let mut bytes = Vec::new();
+        G1Affine::zero()
+            .serialize_compressed(&mut bytes)
+            .expect("serialize identity");
+        assert!(deserialize_pubkey(&bytes).is_err());
+    }
+
+    #[test]
+    fn did_rejects_identity_pubkey() {
+        let identity = G1Affine::zero();
+        assert!(did_from_bls_pubkey(&identity).is_err());
     }
 
     #[test]
