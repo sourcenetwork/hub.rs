@@ -3311,6 +3311,7 @@ dependencies = [
  "identity",
  "revm",
  "rstest",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",

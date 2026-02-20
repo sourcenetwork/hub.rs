@@ -5,8 +5,8 @@ sol! {
     interface IAcp {
         // ── Write methods (map to Cosmos Msgs) ──────────────────────────
 
-        function createPolicy(bytes calldata yaml) external returns (bytes32 policyId);
-        function editPolicy(bytes32 policyId, bytes calldata yaml) external;
+        function createPolicy(bytes calldata policy, uint8 marshalType) external returns (bytes);
+        function editPolicy(bytes32 policyId, bytes calldata policy, uint8 marshalType) external returns (uint64 relationshipsRemoved, bytes record);
 
         function setRelationship(
             bytes32 policyId,
@@ -14,7 +14,7 @@ sol! {
             string objectId,
             string relation,
             string actor
-        ) external;
+        ) external returns (bool recordExisted, bytes record);
 
         function deleteRelationship(
             bytes32 policyId,
@@ -22,25 +22,25 @@ sol! {
             string objectId,
             string relation,
             string actor
-        ) external;
+        ) external returns (bool recordFound);
 
         function registerObject(
             bytes32 policyId,
             string objectId,
             string resource
-        ) external;
+        ) external returns (bytes record);
 
         function archiveObject(
             bytes32 policyId,
             string objectId,
             string resource
-        ) external;
+        ) external returns (bool found, uint64 relationshipsRemoved);
 
         function unarchiveObject(
             bytes32 policyId,
             string objectId,
             string resource
-        ) external;
+        ) external returns (bytes record, bool relationshipModified);
 
         function commitRegistrations(
             bytes32 policyId,
@@ -52,25 +52,29 @@ sol! {
             bytes proof
         ) external;
 
-        function flagHijackAttempt(uint64 eventId) external;
-
-        // ── Read methods (map to Cosmos Queries) ────────────────────────
+        function flagHijackAttempt(uint64 eventId) external returns (bytes event);
 
         function checkAccess(
             bytes32 policyId,
-            string resource,
-            string objectId,
-            string permission,
+            string[] resources,
+            string[] objectIds,
+            string[] permissions,
             string actor
-        ) external view returns (bool);
+        ) external returns (bytes);
 
         function verifyAccessRequest(
             bytes32 policyId,
-            string resource,
-            string objectId,
-            string permission,
+            string[] resources,
+            string[] objectIds,
+            string[] permissions,
             string actor
         ) external view returns (bool);
+
+        function signedPolicyCmd(bytes payload, uint8 contentType) external returns (bytes);
+        function bearerPolicyCmd(string bearerToken, bytes32 policyId, bytes cmd) external returns (bytes);
+        function updateParams(bytes params) external;
+
+        // ── Read methods (map to Cosmos Queries) ────────────────────────
 
         function hasRelationship(
             bytes32 policyId,
@@ -86,7 +90,7 @@ sol! {
             bytes32 policyId,
             string resource,
             string objectId
-        ) external view returns (string);
+        ) external view returns (bool registered, bytes record);
 
         function getPolicyIds() external view returns (string[]);
 
@@ -98,17 +102,25 @@ sol! {
             string actor
         ) external view returns (bytes);
 
-        function validatePolicy(bytes calldata policy) external view returns (bool valid, string reason);
+        function validatePolicy(bytes calldata policy, uint8 marshalType) external view returns (bool valid, string reason);
 
-        function getAccessDecision(uint64 decisionId) external view returns (bytes);
+        function getAccessDecision(string decisionId) external view returns (bytes);
 
         function getRegistrationsCommitment(uint64 commitmentId) external view returns (bytes);
 
         function getRegistrationsCommitmentByValue(
-            bytes32 policyId,
             bytes commitment
         ) external view returns (bytes);
 
         function getHijackAttempts(bytes32 policyId) external view returns (bytes);
+
+        function generateCommitment(
+            bytes32 policyId,
+            string[] resources,
+            string[] objectIds,
+            string actor
+        ) external view returns (bytes);
+
+        function getParams() external view returns (bytes);
     }
 }
