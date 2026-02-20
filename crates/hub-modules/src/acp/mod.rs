@@ -12,6 +12,8 @@ pub mod types;
 use acp::Policy;
 use error::AcpError;
 use identity::Did;
+
+use crate::types::BlockExecCtx;
 use types::{
     AccessDecision, AccessRequest, AcpParams, AmendmentEvent, ContentType,
     GenerateCommitmentResult, Object, PolicyCmd, PolicyCmdResult, PolicyMarshalingType,
@@ -696,8 +698,11 @@ impl AcpModule {
     ///
     /// Reads: commitment store (non-expired index scan), block context
     /// (time + height)
-    #[allow(clippy::missing_const_for_fn)] // Phase 9 replaces with real logic
-    pub fn end_blocker(&mut self) -> Result<Vec<RegistrationsCommitment>> {
+    #[allow(unused_variables, clippy::missing_const_for_fn)] // Phase 9 replaces with real logic
+    pub fn end_blocker(
+        &mut self,
+        block_ctx: &BlockExecCtx,
+    ) -> Result<Vec<RegistrationsCommitment>> {
         Ok(vec![])
     }
 

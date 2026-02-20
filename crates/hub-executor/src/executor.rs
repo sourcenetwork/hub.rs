@@ -147,7 +147,7 @@ impl HubExecutor {
     /// Run end-of-block hooks for modules that need per-block maintenance.
     fn run_end_block_hooks(&self, block_ctx: &BlockExecCtx) {
         let mut acp = self.acp_module.clone();
-        if let Err(e) = acp.end_blocker() {
+        if let Err(e) = acp.end_blocker(block_ctx) {
             warn!(?e, "ACP end_blocker failed");
         }
 

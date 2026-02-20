@@ -202,8 +202,10 @@ impl HubPrecompiles {
         match precompile_result {
             Ok(output) => {
                 result.gas.record_refund(output.gas_refunded);
-                let underflow = result.gas.record_cost(output.gas_used);
-                assert!(underflow, "Gas underflow is not possible");
+                if !result.gas.record_cost(output.gas_used) {
+                    result.result = InstructionResult::PrecompileOOG;
+                    return Ok(Some(result));
+                }
                 result.result = if output.reverted {
                     InstructionResult::Revert
                 } else {

@@ -18,8 +18,12 @@ const READ_GAS: u64 = 1000;
 const WRITE_GAS: u64 = 5000;
 
 fn did_from_signer(signer: &str) -> Result<Did, PrecompileError> {
-    Did::new(format!("did:key:z{signer}"))
-        .map_err(|e| PrecompileError::Other(format!("DID construction: {e}").into()))
+    let did_str = if signer.starts_with("did:") {
+        signer.to_owned()
+    } else {
+        format!("did:key:z{signer}")
+    };
+    Did::new(did_str).map_err(|e| PrecompileError::Other(format!("DID construction: {e}").into()))
 }
 
 fn did_from_actor(actor: &str) -> Result<Did, PrecompileError> {
