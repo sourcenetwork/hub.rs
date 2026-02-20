@@ -88,7 +88,7 @@ storage = { git = "https://github.com/jackzampolin/defradb.rs", tag = "v0.6.1", 
 alloy-primitives = "1.0"
 alloy-consensus = { version = "1.0", features = ["k256"] }
 alloy-eips = "1.0"
-alloy-rlp = "0.3"
+alloy-rlp = { version = "0.3", features = ["derive"] }
 alloy-evm = { version = "0.27.0", default-features = false }
 alloy-signer = "1"
 alloy-signer-local = { version = "1", default-features = false }
@@ -124,6 +124,13 @@ k256 = "0.13"
 sha3 = "0.10"
 ed25519-consensus = "2"
 
+# Arkworks BLS (match orbis-rs versions)
+ark-bls12-381 = "0.4"
+ark-ec = "0.4"
+ark-ff = "0.4"
+ark-serialize = "0.4"
+ark-std = "0.4"
+
 # HTTP / RPC
 axum = "0.8"
 tower = { version = "0.5", features = ["limit"] }
@@ -133,6 +140,10 @@ reqwest = { version = "0.12", features = ["json", "blocking"] }
 
 # Concurrency
 parking_lot = "0.12"
+
+# DID / encoding
+multibase = "0.9"
+unsigned-varint = "0.8"
 
 # Misc
 hex = "0.4"

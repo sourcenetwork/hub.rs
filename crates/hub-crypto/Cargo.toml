@@ -22,9 +22,28 @@ test-utils = [
 ]
 
 [dependencies]
+# Arkworks BLS (match orbis-rs versions)
+ark-bls12-381.workspace = true
+ark-ec.workspace = true
+ark-ff.workspace = true
+ark-serialize.workspace = true
+sha2.workspace = true
+subtle = "2.5"
+
+# DID derivation
+multibase.workspace = true
+unsigned-varint.workspace = true
+
+# Error handling
+thiserror.workspace = true
+
+# Optional (test-utils feature)
 anyhow = { workspace = true, optional = true }
 commonware-consensus = { workspace = true, optional = true }
 commonware-cryptography = { workspace = true, optional = true }
 commonware-utils = { workspace = true, optional = true }
 hub-domain = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
+
+[dev-dependencies]
+ark-std.workspace = true

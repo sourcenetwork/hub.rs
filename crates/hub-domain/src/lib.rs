@@ -22,6 +22,9 @@ pub use block::{Block, BlockCfg};
 mod idents;
 pub use idents::{BlockId, Idents, StateRoot, TxId};
 
+mod native_tx;
+pub use native_tx::{NATIVE_TX_TYPE, NativeTx, NativeTxPayload};
+
 mod tx;
 pub use tx::{Tx, TxCfg};
 
