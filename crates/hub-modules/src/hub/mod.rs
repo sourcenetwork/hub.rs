@@ -24,7 +24,7 @@ type Result<T> = std::result::Result<T, HubError>;
 /// # KV store layout
 ///
 /// ```text
-/// 0x01 || len_prefix(token_hash)                     → JWSTokenRecord (primary)
+/// 0x01 || token_hash                                 → JWSTokenRecord (primary)
 /// 0x02 || len_prefix(did) || len_prefix(token_hash)  → 0x01 (DID index)
 /// 0x03 || len_prefix(acct) || len_prefix(token_hash) → 0x01 (account index)
 /// "p_hub"                                            → HubParams
@@ -32,6 +32,15 @@ type Result<T> = std::result::Result<T, HubError>;
 /// ```
 ///
 /// Token hash: `hex(sha256(raw_bearer_jws_string))`.
+///
+/// Primary store (0x01): Go keeper methods (`GetJWSToken`, `SetJWSToken`,
+/// `DeleteJWSToken`) pass raw `[]byte(tokenHash)` to the prefix store —
+/// no length prefix. The `JWSTokenKey()` helper in keys.go uses
+/// `MustLengthPrefix` but is never called (dead code).
+///
+/// DID and account indices (0x02, 0x03) use length-prefixed composite
+/// keys because they encode two variable-length components.
+///
 /// DID and account indices are presence markers (value=0x01);
 /// the full record lives only in the primary 0x01 store.
 #[derive(Debug)]
@@ -47,7 +56,7 @@ impl HubModule {
     /// # Flow
     ///
     /// 1. Read `JWSTokenRecord` from primary store at
-    ///    `0x01 || len_prefix(token_hash)`. Return `TokenNotFound` if absent.
+    ///    `0x01 || token_hash`. Return `TokenNotFound` if absent.
     /// 2. Check `record.status == Invalid`. Return `TokenAlreadyInvalidated`
     ///    if so.
     /// 3. Authorization — caller must be either the token issuer DID
@@ -59,14 +68,19 @@ impl HubModule {
     /// 5. Return `Ok(true)`.
     ///
     /// # Reads
-    /// - `0x01 || len_prefix(token_hash)` (primary lookup)
+    /// - `0x01 || token_hash` (primary lookup)
     ///
     /// # Writes
-    /// - `0x01 || len_prefix(token_hash)` (status update via update_jws_token_status)
+    /// - `0x01 || token_hash` (status update via update_jws_token_status)
     ///
     /// # Ctx
     /// `tx_ctx.signer` for authorization check and `invalidated_by`.
     /// Extracted DID from JWS extension (if present) for issuer check.
+    ///
+    /// # Go divergence
+    /// Go `UpdateJWSTokenStatus` uses `time.Now()` for `invalidated_at`
+    /// (non-deterministic). Rust uses `block_ctx.timestamp` (deterministic,
+    /// correct for a state machine).
     ///
     /// # Errors
     /// - `TokenNotFound` — no record for this hash
@@ -97,6 +111,7 @@ impl HubModule {
     ///
     /// # Errors
     /// - `Unauthorized` — caller is not the governance authority
+    /// - `State` — store write failure
     #[allow(unused_variables)]
     pub fn update_params(&mut self, authority: &Did, params: HubParams) -> Result<()> {
         todo!()
@@ -125,11 +140,12 @@ impl HubModule {
     /// # Flow
     ///
     /// 1. Compute `token_hash = hex(sha256(bearer_token))`.
-    /// 2. Read primary store at `0x01 || len_prefix(token_hash)`.
+    /// 2. Read primary store at `0x01 || token_hash`.
     ///    - If found: call `record_jws_token_usage(token_hash)` to update
     ///      usage timestamps and return (idempotent re-use).
-    /// 3. If new token: validate `expires_at` is not already past
-    ///    `block_ctx.timestamp`. Reject pre-expired tokens.
+    /// 3. If new token and `expires_at` is non-zero: validate `expires_at`
+    ///    is not already past `block_ctx.timestamp`. Reject pre-expired tokens.
+    ///    (Go: `!expiresAt.IsZero()` guard — zero expiry bypasses the check.)
     /// 4. Build `JWSTokenRecord`:
     ///    ```text
     ///    token_hash         = computed hash
@@ -145,12 +161,12 @@ impl HubModule {
     ///    invalidated_by     = ""
     ///    ```
     /// 5. Write to all three store locations:
-    ///    - Primary: `0x01 || len_prefix(token_hash)` → record
+    ///    - Primary: `0x01 || token_hash` → record
     ///    - DID index: `0x02 || len_prefix(issuer_did) || len_prefix(token_hash)` → 0x01
     ///    - Account index (if non-empty): `0x03 || len_prefix(authorized_account) || len_prefix(token_hash)` → 0x01
     ///
     /// # Reads
-    /// - `0x01 || len_prefix(token_hash)` (existence check)
+    /// - `0x01 || token_hash` (existence check)
     ///
     /// # Writes
     /// - `0x01` primary store
@@ -160,8 +176,12 @@ impl HubModule {
     /// # Ctx
     /// `block_ctx.timestamp` for first/last used and expiry validation.
     ///
+    /// # Go divergence
+    /// Go uses `time.Now()` for `first_used_at`/`last_used_at` (non-deterministic).
+    /// Rust uses `block_ctx.timestamp` (deterministic, correct for a state machine).
+    ///
     /// # Errors
-    /// - `InvalidJws` — token already expired at block time
+    /// - `InvalidJws` — token already expired at block time (skipped if expires_at is zero)
     /// - `State` — store write failure
     ///
     /// # Implementation notes
@@ -192,13 +212,17 @@ impl HubModule {
     /// 4. Write back via `set_jws_token` (updates primary + indices).
     ///
     /// # Reads
-    /// - `0x01 || len_prefix(token_hash)`
+    /// - `0x01 || token_hash`
     ///
     /// # Writes
-    /// - `0x01 || len_prefix(token_hash)` (updated timestamps)
+    /// - `0x01 || token_hash` (updated timestamps)
     ///
     /// # Ctx
     /// `block_ctx.timestamp` for usage timestamps.
+    ///
+    /// # Go divergence
+    /// Go uses `time.Now()` for timestamps (non-deterministic).
+    /// Rust uses `block_ctx.timestamp` (deterministic).
     #[allow(unused_variables)]
     pub fn record_jws_token_usage(
         &mut self,
@@ -223,7 +247,7 @@ impl HubModule {
     /// - Full scan of `0x01` prefix
     ///
     /// # Writes
-    /// - `0x01 || len_prefix(token_hash)` for each expired token
+    /// - `0x01 || token_hash` for each expired token
     ///
     /// # Ctx
     /// `block_ctx.timestamp` for expiry comparison.
@@ -240,11 +264,11 @@ impl HubModule {
     ///
     /// # Flow
     ///
-    /// 1. Read from primary store at `0x01 || len_prefix(token_hash)`.
+    /// 1. Read from primary store at `0x01 || token_hash`.
     /// 2. Return `Some(record)` or `None`.
     ///
     /// # Reads
-    /// - `0x01 || len_prefix(token_hash)`
+    /// - `0x01 || token_hash`
     #[allow(unused_variables)]
     pub fn get_jws_token(&self, token_hash: &str) -> Result<Option<JWSTokenRecord>> {
         todo!()
@@ -261,7 +285,7 @@ impl HubModule {
     ///
     /// # Reads
     /// - `0x02 || len_prefix(did) || ...` (index scan)
-    /// - `0x01 || len_prefix(token_hash)` per match (primary lookup)
+    /// - `0x01 || token_hash` per match (primary lookup)
     #[allow(unused_variables)]
     pub fn get_jws_tokens_by_did(&self, did: &Did) -> Result<Vec<JWSTokenRecord>> {
         todo!()
@@ -278,7 +302,7 @@ impl HubModule {
     ///
     /// # Reads
     /// - `0x03 || len_prefix(account) || ...` (index scan)
-    /// - `0x01 || len_prefix(token_hash)` per match (primary lookup)
+    /// - `0x01 || token_hash` per match (primary lookup)
     #[allow(unused_variables)]
     pub fn get_jws_tokens_by_account(&self, account: &str) -> Result<Vec<JWSTokenRecord>> {
         todo!()
@@ -296,13 +320,17 @@ impl HubModule {
     /// 4. Write back via `set_jws_token`.
     ///
     /// # Reads
-    /// - `0x01 || len_prefix(token_hash)`
+    /// - `0x01 || token_hash`
     ///
     /// # Writes
-    /// - `0x01 || len_prefix(token_hash)` (updated status)
+    /// - `0x01 || token_hash` (updated status)
     ///
     /// # Ctx
     /// `block_ctx.timestamp` for `invalidated_at`.
+    ///
+    /// # Go divergence
+    /// Go uses `time.Now()` for `invalidated_at` (non-deterministic).
+    /// Rust uses `block_ctx.timestamp` (deterministic).
     #[allow(unused_variables)]
     pub fn update_jws_token_status(
         &mut self,
@@ -354,16 +382,16 @@ impl HubModule {
     ///
     /// 1. Read record from primary store (need DID and account for index cleanup).
     ///    Return `TokenNotFound` if absent.
-    /// 2. Delete from primary store: `0x01 || len_prefix(token_hash)`.
+    /// 2. Delete from primary store: `0x01 || token_hash`.
     /// 3. Delete from DID index: `0x02 || len_prefix(issuer_did) || len_prefix(token_hash)`.
     /// 4. If `authorized_account` non-empty: delete from account index:
     ///    `0x03 || len_prefix(authorized_account) || len_prefix(token_hash)`.
     ///
     /// # Reads
-    /// - `0x01 || len_prefix(token_hash)` (to get DID/account for index cleanup)
+    /// - `0x01 || token_hash` (to get DID/account for index cleanup)
     ///
     /// # Writes (deletes)
-    /// - `0x01 || len_prefix(token_hash)`
+    /// - `0x01 || token_hash`
     /// - `0x02 || len_prefix(issuer_did) || len_prefix(token_hash)`
     /// - `0x03 || len_prefix(account) || len_prefix(token_hash)` (if applicable)
     ///
