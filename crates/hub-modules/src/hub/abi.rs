@@ -9,10 +9,14 @@ sol! {
 
         function invalidateJWS(bytes32 tokenHash) external;
 
+        function updateParams(bytes params) external;
+
         // ── Read methods ────────────────────────────────────────────────
 
         function getJWSToken(
             bytes32 tokenHash
         ) external view returns (bool valid, uint64 issuedAt, uint64 expiresAt);
+
+        function getParams() external view returns (bytes);
     }
 }

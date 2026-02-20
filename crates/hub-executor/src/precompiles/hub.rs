@@ -69,6 +69,28 @@ pub(super) fn dispatch(
             })
         }
 
+        IHub::updateParamsCall::SELECTOR => {
+            if gas_limit < WRITE_GAS {
+                return Err(PrecompileError::OutOfGas);
+            }
+            let call = IHub::updateParamsCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let authority = did_from_signer(&tx_ctx.signer)?;
+            let params: hub_modules::hub::types::HubParams =
+                serde_json::from_slice(&call.params).unwrap_or_default();
+
+            match module.update_params(&authority, params) {
+                Ok(()) => {}
+                Err(e) => return Ok(module_error(e)),
+            }
+
+            Ok(PrecompileOutput {
+                gas_used: WRITE_GAS,
+                gas_refunded: 0,
+                bytes: Bytes::new(),
+                reverted: false,
+            })
+        }
+
         // ── Read methods ─────────────────────────────────────────────
         IHub::getJWSTokenCall::SELECTOR => {
             if gas_limit < READ_GAS {
@@ -96,6 +118,27 @@ pub(super) fn dispatch(
                 issuedAt: issued_at,
                 expiresAt: expires_at,
             });
+            Ok(PrecompileOutput {
+                gas_used: READ_GAS,
+                gas_refunded: 0,
+                bytes: ret.into(),
+                reverted: false,
+            })
+        }
+
+        IHub::getParamsCall::SELECTOR => {
+            if gas_limit < READ_GAS {
+                return Err(PrecompileError::OutOfGas);
+            }
+
+            let params = match module.query_params() {
+                Ok(p) => p,
+                Err(e) => return Ok(module_error(e)),
+            };
+
+            let encoded = serde_json::to_vec(&params).unwrap_or_default();
+            let ret_bytes = Bytes::from(encoded);
+            let ret = IHub::getParamsCall::abi_encode_returns(&ret_bytes);
             Ok(PrecompileOutput {
                 gas_used: READ_GAS,
                 gas_refunded: 0,

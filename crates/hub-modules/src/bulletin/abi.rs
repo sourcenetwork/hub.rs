@@ -26,6 +26,8 @@ sol! {
             address collaborator
         ) external;
 
+        function updateParams(bytes params) external;
+
         // ── Read methods ────────────────────────────────────────────────
 
         function getPost(
@@ -36,5 +38,24 @@ sol! {
         function getNamespace(
             string namespace
         ) external view returns (bytes);
+
+        function getNamespaces() external view returns (bytes);
+
+        function getNamespaceCollaborators(
+            string namespace
+        ) external view returns (bytes);
+
+        function getNamespacePosts(
+            string namespace
+        ) external view returns (bytes);
+
+        function getPosts() external view returns (bytes);
+
+        function iterateGlob(
+            string namespace,
+            string glob
+        ) external view returns (bytes);
+
+        function getParams() external view returns (bytes);
     }
 }

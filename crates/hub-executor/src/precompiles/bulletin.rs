@@ -155,6 +155,29 @@ pub(super) fn dispatch(
             })
         }
 
+        IBulletin::updateParamsCall::SELECTOR => {
+            if gas_limit < WRITE_GAS {
+                return Err(PrecompileError::OutOfGas);
+            }
+            let call =
+                IBulletin::updateParamsCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let authority = did_from_signer(&tx_ctx.signer)?;
+            let params: hub_modules::bulletin::types::BulletinParams =
+                serde_json::from_slice(&call.params).unwrap_or_default();
+
+            match module.update_params(&authority, params) {
+                Ok(()) => {}
+                Err(e) => return Ok(module_error(e)),
+            }
+
+            Ok(PrecompileOutput {
+                gas_used: WRITE_GAS,
+                gas_refunded: 0,
+                bytes: Bytes::new(),
+                reverted: false,
+            })
+        }
+
         // ── Read methods ─────────────────────────────────────────────
         IBulletin::getPostCall::SELECTOR => {
             if gas_limit < READ_GAS {
@@ -194,6 +217,137 @@ pub(super) fn dispatch(
             let encoded = serde_json::to_vec(&ns).unwrap_or_default();
             let ret_bytes = Bytes::from(encoded);
             let ret = IBulletin::getNamespaceCall::abi_encode_returns(&ret_bytes);
+            Ok(PrecompileOutput {
+                gas_used: READ_GAS,
+                gas_refunded: 0,
+                bytes: ret.into(),
+                reverted: false,
+            })
+        }
+
+        IBulletin::getNamespacesCall::SELECTOR => {
+            if gas_limit < READ_GAS {
+                return Err(PrecompileError::OutOfGas);
+            }
+
+            let namespaces = match module.query_namespaces() {
+                Ok(ns) => ns,
+                Err(e) => return Ok(module_error(e)),
+            };
+
+            let encoded = serde_json::to_vec(&namespaces).unwrap_or_default();
+            let ret_bytes = Bytes::from(encoded);
+            let ret = IBulletin::getNamespacesCall::abi_encode_returns(&ret_bytes);
+            Ok(PrecompileOutput {
+                gas_used: READ_GAS,
+                gas_refunded: 0,
+                bytes: ret.into(),
+                reverted: false,
+            })
+        }
+
+        IBulletin::getNamespaceCollaboratorsCall::SELECTOR => {
+            if gas_limit < READ_GAS {
+                return Err(PrecompileError::OutOfGas);
+            }
+            let call = IBulletin::getNamespaceCollaboratorsCall::abi_decode(&input[4..])
+                .map_err(decode_error)?;
+
+            let collaborators = match module.query_namespace_collaborators(&call.namespace) {
+                Ok(c) => c,
+                Err(e) => return Ok(module_error(e)),
+            };
+
+            let encoded = serde_json::to_vec(&collaborators).unwrap_or_default();
+            let ret_bytes = Bytes::from(encoded);
+            let ret = IBulletin::getNamespaceCollaboratorsCall::abi_encode_returns(&ret_bytes);
+            Ok(PrecompileOutput {
+                gas_used: READ_GAS,
+                gas_refunded: 0,
+                bytes: ret.into(),
+                reverted: false,
+            })
+        }
+
+        IBulletin::getNamespacePostsCall::SELECTOR => {
+            if gas_limit < READ_GAS {
+                return Err(PrecompileError::OutOfGas);
+            }
+            let call =
+                IBulletin::getNamespacePostsCall::abi_decode(&input[4..]).map_err(decode_error)?;
+
+            let posts = match module.query_namespace_posts(&call.namespace) {
+                Ok(p) => p,
+                Err(e) => return Ok(module_error(e)),
+            };
+
+            let encoded = serde_json::to_vec(&posts).unwrap_or_default();
+            let ret_bytes = Bytes::from(encoded);
+            let ret = IBulletin::getNamespacePostsCall::abi_encode_returns(&ret_bytes);
+            Ok(PrecompileOutput {
+                gas_used: READ_GAS,
+                gas_refunded: 0,
+                bytes: ret.into(),
+                reverted: false,
+            })
+        }
+
+        IBulletin::getPostsCall::SELECTOR => {
+            if gas_limit < READ_GAS {
+                return Err(PrecompileError::OutOfGas);
+            }
+
+            let posts = match module.query_posts() {
+                Ok(p) => p,
+                Err(e) => return Ok(module_error(e)),
+            };
+
+            let encoded = serde_json::to_vec(&posts).unwrap_or_default();
+            let ret_bytes = Bytes::from(encoded);
+            let ret = IBulletin::getPostsCall::abi_encode_returns(&ret_bytes);
+            Ok(PrecompileOutput {
+                gas_used: READ_GAS,
+                gas_refunded: 0,
+                bytes: ret.into(),
+                reverted: false,
+            })
+        }
+
+        IBulletin::iterateGlobCall::SELECTOR => {
+            if gas_limit < READ_GAS {
+                return Err(PrecompileError::OutOfGas);
+            }
+            let call = IBulletin::iterateGlobCall::abi_decode(&input[4..]).map_err(decode_error)?;
+
+            let posts = match module.query_iterate_glob(&call.namespace, &call.glob) {
+                Ok(p) => p,
+                Err(e) => return Ok(module_error(e)),
+            };
+
+            let encoded = serde_json::to_vec(&posts).unwrap_or_default();
+            let ret_bytes = Bytes::from(encoded);
+            let ret = IBulletin::iterateGlobCall::abi_encode_returns(&ret_bytes);
+            Ok(PrecompileOutput {
+                gas_used: READ_GAS,
+                gas_refunded: 0,
+                bytes: ret.into(),
+                reverted: false,
+            })
+        }
+
+        IBulletin::getParamsCall::SELECTOR => {
+            if gas_limit < READ_GAS {
+                return Err(PrecompileError::OutOfGas);
+            }
+
+            let params = match module.query_params() {
+                Ok(p) => p,
+                Err(e) => return Ok(module_error(e)),
+            };
+
+            let encoded = serde_json::to_vec(&params).unwrap_or_default();
+            let ret_bytes = Bytes::from(encoded);
+            let ret = IBulletin::getParamsCall::abi_encode_returns(&ret_bytes);
             Ok(PrecompileOutput {
                 gas_used: READ_GAS,
                 gas_refunded: 0,
