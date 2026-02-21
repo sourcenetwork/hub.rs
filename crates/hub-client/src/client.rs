@@ -215,6 +215,29 @@ impl HubClient {
             .await
     }
 
+    // ── BLS native write helper ────────────────────────────────────
+
+    /// Sign and submit a native BLS transaction, then poll for the receipt.
+    pub(crate) async fn send_native_precompile_tx(
+        &self,
+        signer: &crate::bls_signer::BlsSigner,
+        target: Address,
+        calldata: Bytes,
+    ) -> Result<TransactionReceipt, ClientError> {
+        let wire = signer.sign_native_tx(target, calldata)?;
+        let tx_hash = self.send_native_tx(&wire).await?;
+        let receipt = self
+            .wait_for_receipt(tx_hash, Duration::from_millis(200), 100)
+            .await?;
+        if receipt.status == 0 {
+            return Err(ClientError::TxReverted {
+                status: 0,
+                receipt: Box::new(receipt),
+            });
+        }
+        Ok(receipt)
+    }
+
     // ── EVM write helper ──────────────────────────────────────────
 
     /// Sign and submit a precompile transaction, then poll for the receipt.

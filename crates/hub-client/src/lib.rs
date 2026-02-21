@@ -6,13 +6,16 @@
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
+mod bls_signer;
 mod client;
 mod error;
+mod native_tx;
 mod query;
 mod signer;
 mod tx;
 mod types;
 
+pub use bls_signer::BlsSigner;
 pub use client::{ACP_ADDRESS, BULLETIN_ADDRESS, HUB_ADDRESS, HubClient};
 pub use error::ClientError;
 pub use signer::EvmSigner;

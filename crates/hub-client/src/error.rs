@@ -38,6 +38,10 @@ pub enum ClientError {
     #[error("signing error: {0}")]
     Signing(String),
 
+    /// BLS operation failed.
+    #[error("BLS error: {0}")]
+    Bls(String),
+
     /// JSON-RPC response contained no `result` field.
     #[error("missing result in RPC response")]
     MissingResult,
@@ -80,5 +84,11 @@ mod tests {
     fn abi_decode_display() {
         let err = ClientError::AbiDecode("bad selector".into());
         assert_eq!(err.to_string(), "ABI decode error: bad selector");
+    }
+
+    #[test]
+    fn bls_error_display() {
+        let err = ClientError::Bls("invalid key".into());
+        assert_eq!(err.to_string(), "BLS error: invalid key");
     }
 }

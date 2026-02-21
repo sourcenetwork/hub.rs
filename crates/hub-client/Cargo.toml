@@ -11,6 +11,8 @@ description = "Rust client library for hub (EVM + BLS transaction paths)"
 workspace = true
 
 [dependencies]
+hub-crypto.workspace = true
+hub-domain.workspace = true
 hub-modules.workspace = true
 
 alloy-consensus = { workspace = true, features = ["k256"] }
@@ -21,6 +23,12 @@ alloy-signer-local = { workspace = true, default-features = false }
 alloy-sol-types.workspace = true
 k256.workspace = true
 
+ark-bls12-381.workspace = true
+ark-ec.workspace = true
+ark-ff.workspace = true
+ark-serialize.workspace = true
+rand.workspace = true
+
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -30,4 +38,5 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+ark-std.workspace = true
 tokio = { workspace = true, features = ["rt", "macros"] }
