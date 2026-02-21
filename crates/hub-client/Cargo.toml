@@ -1,0 +1,28 @@
+[package]
+name = "hub-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rust client library for hub (EVM + BLS transaction paths)"
+
+[lints]
+workspace = true
+
+[dependencies]
+hub-modules.workspace = true
+
+alloy-primitives = { workspace = true, features = ["serde"] }
+alloy-sol-types.workspace = true
+
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["net"] }
+hex.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }

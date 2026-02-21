@@ -61,6 +61,7 @@ hub-simplex = { path = "crates/hub-simplex" }
 hub-traits = { path = "crates/hub-traits" }
 hub-transport = { path = "crates/hub-transport" }
 
+hub-client = { path = "crates/hub-client" }
 hub-executor = { path = "crates/hub-executor" }
 hub-genesis = { path = "crates/hub-genesis" }
 hub-runner = { path = "crates/hub-runner" }
