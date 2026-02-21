@@ -30,6 +30,9 @@ async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
+# Encoding
+hex.workspace = true
+
 # Error handling
 thiserror.workspace = true
 

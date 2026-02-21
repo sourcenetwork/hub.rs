@@ -9,9 +9,16 @@ use revm::{bytecode::Bytecode, database_interface::DatabaseRef, state::AccountIn
 
 use crate::ExecutionError;
 
-/// Wrapper for blocking async operations in sync contexts.
+/// Bridge async operations into the sync REVM `DatabaseRef` interface.
+///
+/// Uses `tokio::task::block_in_place` when running inside a Tokio runtime
+/// (e.g. RPC handlers), falling back to `futures::executor::block_on` otherwise
+/// (e.g. tests without a Tokio runtime).
 fn block_on<F: std::future::Future>(f: F) -> F::Output {
-    futures::executor::block_on(f)
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(f)),
+        Err(_) => futures::executor::block_on(f),
+    }
 }
 
 /// Adapts a [`StateDbRead`] to REVM's [`DatabaseRef`] interface.

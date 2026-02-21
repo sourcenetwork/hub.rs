@@ -188,8 +188,9 @@ impl<S: StateDbRead + Send + Sync + 'static> StateProvider for IndexedStateProvi
     async fn call(
         &self,
         request: CallRequest,
-        _block: Option<BlockNumberOrTag>,
+        block: Option<BlockNumberOrTag>,
     ) -> Result<Bytes, RpcError> {
+        reject_historical_block(&block)?;
         let sim_request = call_request_to_simulate(&request);
         let result = simulate_call(
             &self.state,
@@ -201,17 +202,18 @@ impl<S: StateDbRead + Send + Sync + 'static> StateProvider for IndexedStateProvi
         if result.success {
             Ok(result.output)
         } else {
-            Err(RpcError::ExecutionFailed(
-                String::from_utf8_lossy(&result.output).into_owned(),
-            ))
+            Err(RpcError::ExecutionReverted {
+                data: format!("0x{}", hex::encode(&result.output)),
+            })
         }
     }
 
     async fn estimate_gas(
         &self,
         request: CallRequest,
-        _block: Option<BlockNumberOrTag>,
+        block: Option<BlockNumberOrTag>,
     ) -> Result<u64, RpcError> {
+        reject_historical_block(&block)?;
         let sim_request = call_request_to_simulate(&request);
         executor_estimate_gas(
             &self.state,
@@ -238,6 +240,18 @@ impl<S> IndexedStateProvider<S> {
                 Ok(self.index.head_block_number())
             }
             BlockTag::Earliest => Ok(0),
+        }
+    }
+}
+
+const fn reject_historical_block(block: &Option<BlockNumberOrTag>) -> Result<(), RpcError> {
+    match block {
+        None | Some(BlockNumberOrTag::Latest) => Ok(()),
+        Some(BlockNumberOrTag::Tag(
+            BlockTag::Latest | BlockTag::Safe | BlockTag::Finalized | BlockTag::Pending,
+        )) => Ok(()),
+        Some(BlockNumberOrTag::Number(_) | BlockNumberOrTag::Tag(BlockTag::Earliest)) => {
+            Err(RpcError::NotImplemented)
         }
     }
 }

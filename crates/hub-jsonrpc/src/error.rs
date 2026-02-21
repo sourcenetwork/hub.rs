@@ -59,6 +59,13 @@ pub enum RpcError {
     #[error("execution failed: {0}")]
     ExecutionFailed(String),
 
+    /// Execution reverted with ABI-encoded revert data.
+    #[error("execution reverted")]
+    ExecutionReverted {
+        /// Hex-encoded revert data (with 0x prefix).
+        data: String,
+    },
+
     /// State database error.
     #[error("state error: {0}")]
     StateError(String),
@@ -74,18 +81,26 @@ pub enum RpcError {
 
 impl From<RpcError> for ErrorObjectOwned {
     fn from(err: RpcError) -> Self {
-        let (code, message) = match &err {
-            RpcError::BlockNotFound => (codes::RESOURCE_NOT_FOUND, err.to_string()),
-            RpcError::TransactionNotFound => (codes::RESOURCE_NOT_FOUND, err.to_string()),
-            RpcError::AccountNotFound(_) => (codes::RESOURCE_NOT_FOUND, err.to_string()),
-            RpcError::InvalidBlockNumber(_) => (codes::INVALID_PARAMS, err.to_string()),
-            RpcError::InvalidTransaction(_) => (codes::INVALID_PARAMS, err.to_string()),
-            RpcError::ExecutionFailed(_) => (codes::EXECUTION_ERROR, err.to_string()),
-            RpcError::StateError(_) => (codes::INTERNAL_ERROR, err.to_string()),
-            RpcError::Internal(_) => (codes::INTERNAL_ERROR, err.to_string()),
-            RpcError::NotImplemented => (codes::METHOD_NOT_SUPPORTED, err.to_string()),
-        };
-        ErrorObjectOwned::owned(code, message, None::<()>)
+        match &err {
+            RpcError::ExecutionReverted { data } => {
+                ErrorObjectOwned::owned(codes::EXECUTION_ERROR, err.to_string(), Some(data.clone()))
+            }
+            _ => {
+                let (code, message) = match &err {
+                    RpcError::BlockNotFound => (codes::RESOURCE_NOT_FOUND, err.to_string()),
+                    RpcError::TransactionNotFound => (codes::RESOURCE_NOT_FOUND, err.to_string()),
+                    RpcError::AccountNotFound(_) => (codes::RESOURCE_NOT_FOUND, err.to_string()),
+                    RpcError::InvalidBlockNumber(_) => (codes::INVALID_PARAMS, err.to_string()),
+                    RpcError::InvalidTransaction(_) => (codes::INVALID_PARAMS, err.to_string()),
+                    RpcError::ExecutionFailed(_) => (codes::EXECUTION_ERROR, err.to_string()),
+                    RpcError::StateError(_) => (codes::INTERNAL_ERROR, err.to_string()),
+                    RpcError::Internal(_) => (codes::INTERNAL_ERROR, err.to_string()),
+                    RpcError::NotImplemented => (codes::METHOD_NOT_SUPPORTED, err.to_string()),
+                    RpcError::ExecutionReverted { .. } => unreachable!(),
+                };
+                ErrorObjectOwned::owned(code, message, None::<()>)
+            }
+        }
     }
 }
 

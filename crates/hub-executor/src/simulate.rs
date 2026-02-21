@@ -64,6 +64,7 @@ pub fn simulate_call<S: StateDbRead>(
         .modify_cfg_chained(|cfg| {
             cfg.chain_id = chain_id;
             cfg.disable_nonce_check = true;
+            cfg.disable_balance_check = true;
         })
         .modify_block_chained(|blk: &mut BlockEnv| {
             blk.gas_limit = block_gas_limit;
@@ -146,7 +147,7 @@ pub fn estimate_gas<S: StateDbRead>(
         let mid = lo + (hi - lo) / 2;
         req_at_cap.gas = Some(mid);
         let result = simulate_call(state, chain_id, &req_at_cap, block_gas_limit)?;
-        if result.success && !is_out_of_gas(&result) {
+        if result.success {
             hi = mid;
         } else {
             lo = mid;
@@ -154,14 +155,6 @@ pub fn estimate_gas<S: StateDbRead>(
     }
 
     Ok(hi)
-}
-
-fn is_out_of_gas(result: &SimulateResult) -> bool {
-    if result.success {
-        return false;
-    }
-    let msg = String::from_utf8_lossy(&result.output);
-    msg.contains("OutOfGas")
 }
 
 #[cfg(test)]

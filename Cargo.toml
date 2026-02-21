@@ -95,7 +95,7 @@ alloy-signer-local = { version = "1", default-features = false }
 alloy-sol-types = "1"
 
 # Execution
-revm = { version = "34.0.0", default-features = false }
+revm = { version = "34.0.0", default-features = false, features = ["optional_balance_check"] }
 
 # Async
 tokio = { version = "1", features = ["full"] }
