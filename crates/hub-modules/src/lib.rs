@@ -16,3 +16,5 @@ pub mod acp;
 pub mod bulletin;
 /// Hub module (precompile `0x0812`).
 pub mod hub;
+/// Native account state (DID-keyed nonce tracking).
+pub mod native_account;

@@ -47,6 +47,17 @@ pub enum ExecutionError {
     /// Native transaction targets an address that is not a known precompile.
     #[error("unknown native tx target: {0}")]
     UnknownNativeTarget(Address),
+
+    /// Native transaction nonce does not match the expected value for the signer DID.
+    #[error("nonce mismatch for {did}: expected {expected}, got {got}")]
+    NonceMismatch {
+        /// The DID of the signer.
+        did: String,
+        /// The next expected nonce.
+        expected: u64,
+        /// The nonce present in the transaction.
+        got: u64,
+    },
 }
 
 impl DBErrorMarker for ExecutionError {}
@@ -136,6 +147,19 @@ mod tests {
         ]);
         let err = ExecutionError::UnknownNativeTarget(addr);
         assert!(err.to_string().contains("unknown native tx target"));
+    }
+
+    #[test]
+    fn test_nonce_mismatch_display() {
+        let err = ExecutionError::NonceMismatch {
+            did: "did:key:z6Mk1".to_string(),
+            expected: 3,
+            got: 0,
+        };
+        assert_eq!(
+            err.to_string(),
+            "nonce mismatch for did:key:z6Mk1: expected 3, got 0"
+        );
     }
 
     #[test]

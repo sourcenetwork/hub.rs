@@ -11,6 +11,7 @@ use hub_domain::NativeTx;
 use hub_modules::acp::AcpModule;
 use hub_modules::bulletin::BulletinModule;
 use hub_modules::hub::HubModule;
+use hub_modules::native_account::NativeNonceStore;
 use hub_modules::types::{BlockExecCtx, Timestamp, TxExecCtx};
 use hub_traits::StateDb;
 use revm::{
@@ -37,6 +38,7 @@ pub struct HubExecutor {
     acp_module: AcpModule,
     bulletin_module: BulletinModule,
     hub_module: HubModule,
+    nonce_store: NativeNonceStore,
 }
 
 impl HubExecutor {
@@ -47,6 +49,7 @@ impl HubExecutor {
             acp_module: AcpModule::new(),
             bulletin_module: BulletinModule::new(),
             hub_module: HubModule::new(),
+            nonce_store: NativeNonceStore::default(),
         }
     }
 
@@ -57,6 +60,7 @@ impl HubExecutor {
             acp_module: AcpModule::new(),
             bulletin_module: BulletinModule::new(),
             hub_module: HubModule::new(),
+            nonce_store: NativeNonceStore::default(),
         }
     }
 
@@ -78,6 +82,7 @@ impl HubExecutor {
         acp: &mut AcpModule,
         bulletin: &mut BulletinModule,
         hub: &mut HubModule,
+        nonce_store: &mut NativeNonceStore,
     ) -> Result<ExecutionReceipt, ExecutionError> {
         let native_tx = NativeTx::decode_wire(tx_bytes)
             .map_err(|e| ExecutionError::TxDecode(format!("native tx: {e}")))?;
@@ -98,6 +103,14 @@ impl HubExecutor {
 
         let signer_did = bls::did_from_bls_pubkey(&pubkey)
             .map_err(|e| ExecutionError::BlsVerification(format!("DID: {e}")))?;
+
+        nonce_store
+            .check_and_increment(&signer_did, native_tx.nonce)
+            .map_err(|e| match e {
+                hub_modules::native_account::NonceError::Mismatch { did, expected, got } => {
+                    ExecutionError::NonceMismatch { did, expected, got }
+                }
+            })?;
 
         if native_tx.target != ACP_ADDRESS
             && native_tx.target != BULLETIN_ADDRESS
@@ -210,6 +223,7 @@ impl<S: StateDb> BlockExecutor<S> for HubExecutor {
         let mut acp_module = self.acp_module.clone();
         let mut bulletin_module = self.bulletin_module.clone();
         let mut hub_module = self.hub_module.clone();
+        let mut nonce_store = self.nonce_store.clone();
 
         for (i, tx_bytes) in txs.iter().enumerate() {
             if !tx_bytes.is_empty() && NativeTx::is_native_tx(tx_bytes[0]) {
@@ -219,6 +233,7 @@ impl<S: StateDb> BlockExecutor<S> for HubExecutor {
                     &mut acp_module,
                     &mut bulletin_module,
                     &mut hub_module,
+                    &mut nonce_store,
                 ) {
                     Ok(r) => r,
                     Err(e) if building => {
@@ -415,11 +430,18 @@ mod tests {
         let mut acp = AcpModule::new();
         let mut bulletin = BulletinModule::new();
         let mut hub = HubModule::new();
+        let mut nonces = NativeNonceStore::default();
 
         // 0x45 followed by garbage
         let bad_bytes = [0x45, 0xFF, 0xFF];
-        let result =
-            executor.execute_native_tx(&bad_bytes, &block_ctx, &mut acp, &mut bulletin, &mut hub);
+        let result = executor.execute_native_tx(
+            &bad_bytes,
+            &block_ctx,
+            &mut acp,
+            &mut bulletin,
+            &mut hub,
+            &mut nonces,
+        );
         assert!(matches!(result, Err(ExecutionError::TxDecode(_))));
     }
 
@@ -440,9 +462,16 @@ mod tests {
         let mut acp = AcpModule::new();
         let mut bulletin = BulletinModule::new();
         let mut hub = HubModule::new();
+        let mut nonces = NativeNonceStore::default();
 
-        let result =
-            executor.execute_native_tx(&wire, &block_ctx, &mut acp, &mut bulletin, &mut hub);
+        let result = executor.execute_native_tx(
+            &wire,
+            &block_ctx,
+            &mut acp,
+            &mut bulletin,
+            &mut hub,
+            &mut nonces,
+        );
         match result {
             Err(ExecutionError::ChainIdMismatch { expected, got }) => {
                 assert_eq!(expected, 9001);
@@ -469,9 +498,16 @@ mod tests {
         let mut acp = AcpModule::new();
         let mut bulletin = BulletinModule::new();
         let mut hub = HubModule::new();
+        let mut nonces = NativeNonceStore::default();
 
-        let result =
-            executor.execute_native_tx(&wire, &block_ctx, &mut acp, &mut bulletin, &mut hub);
+        let result = executor.execute_native_tx(
+            &wire,
+            &block_ctx,
+            &mut acp,
+            &mut bulletin,
+            &mut hub,
+            &mut nonces,
+        );
         assert!(matches!(result, Err(ExecutionError::BlsVerification(_))));
     }
 
@@ -514,9 +550,16 @@ mod tests {
         let mut acp = AcpModule::new();
         let mut bulletin = BulletinModule::new();
         let mut hub = HubModule::new();
+        let mut nonces = NativeNonceStore::default();
 
-        let result =
-            executor.execute_native_tx(&wire, &block_ctx, &mut acp, &mut bulletin, &mut hub);
+        let result = executor.execute_native_tx(
+            &wire,
+            &block_ctx,
+            &mut acp,
+            &mut bulletin,
+            &mut hub,
+            &mut nonces,
+        );
         assert!(matches!(
             result,
             Err(ExecutionError::UnknownNativeTarget(_))
@@ -611,9 +654,169 @@ mod tests {
         let mut acp = AcpModule::new();
         let mut bulletin = BulletinModule::new();
         let mut hub = HubModule::new();
+        let mut nonces = NativeNonceStore::default();
 
-        // Passes BLS verification and reaches module.query_params() → todo!()
-        let _result =
-            executor.execute_native_tx(&wire, &block_ctx, &mut acp, &mut bulletin, &mut hub);
+        // Passes BLS verification and nonce check, reaches module.query_params() → todo!()
+        let _result = executor.execute_native_tx(
+            &wire,
+            &block_ctx,
+            &mut acp,
+            &mut bulletin,
+            &mut hub,
+            &mut nonces,
+        );
+    }
+
+    /// Build a signed native tx targeting ACP with a given nonce and keypair.
+    fn signed_native_tx(sk: &ark_bls12_381::Fr, pk_bytes: &[u8], nonce: u64) -> Vec<u8> {
+        let mut tx = NativeTx {
+            chain_id: 9001,
+            nonce,
+            bls_pubkey: FixedBytes::from_slice(pk_bytes),
+            target: ACP_ADDRESS,
+            calldata: Bytes::new(),
+            signature: FixedBytes::from([0x00; 96]),
+        };
+        let signing_data = tx.signing_data();
+        let sig = bls::sign(sk, &signing_data).unwrap();
+        tx.signature = FixedBytes::from_slice(&sig);
+        tx.encode_wire()
+    }
+
+    fn test_bls_keypair() -> (ark_bls12_381::Fr, Vec<u8>) {
+        use ark_bls12_381::{Fr, G1Affine, G1Projective};
+        use ark_ec::{AffineRepr, CurveGroup};
+        use ark_ff::UniformRand;
+        use ark_serialize::CanonicalSerialize;
+        use ark_std::test_rng;
+
+        let mut rng = test_rng();
+        let sk = Fr::rand(&mut rng);
+        let pk = (G1Projective::from(G1Affine::generator()) * sk).into_affine();
+        let mut pk_bytes = Vec::with_capacity(48);
+        pk.serialize_compressed(&mut pk_bytes).unwrap();
+        (sk, pk_bytes)
+    }
+
+    #[test]
+    fn native_tx_nonce_mismatch_rejected() {
+        let (sk, pk_bytes) = test_bls_keypair();
+        let wire = signed_native_tx(&sk, &pk_bytes, 5); // expected 0
+
+        let executor = test_executor();
+        let block_ctx = test_block_ctx();
+        let mut acp = AcpModule::new();
+        let mut bulletin = BulletinModule::new();
+        let mut hub = HubModule::new();
+        let mut nonces = NativeNonceStore::default();
+
+        let result = executor.execute_native_tx(
+            &wire,
+            &block_ctx,
+            &mut acp,
+            &mut bulletin,
+            &mut hub,
+            &mut nonces,
+        );
+        match result {
+            Err(ExecutionError::NonceMismatch { expected, got, .. }) => {
+                assert_eq!(expected, 0);
+                assert_eq!(got, 5);
+            }
+            other => panic!("expected NonceMismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn native_tx_sequential_nonces_accepted() {
+        let (sk, pk_bytes) = test_bls_keypair();
+
+        let executor = test_executor();
+        let block_ctx = test_block_ctx();
+        let mut acp = AcpModule::new();
+        let mut bulletin = BulletinModule::new();
+        let mut hub = HubModule::new();
+        let mut nonces = NativeNonceStore::default();
+
+        // nonce 0 passes nonce check; empty calldata fails ABI decode → failed receipt
+        let wire_0 = signed_native_tx(&sk, &pk_bytes, 0);
+        let result_0 = executor.execute_native_tx(
+            &wire_0,
+            &block_ctx,
+            &mut acp,
+            &mut bulletin,
+            &mut hub,
+            &mut nonces,
+        );
+        assert!(result_0.is_ok(), "nonce 0 should pass: {result_0:?}");
+
+        // nonce 1 also passes nonce check
+        let wire_1 = signed_native_tx(&sk, &pk_bytes, 1);
+        let result_1 = executor.execute_native_tx(
+            &wire_1,
+            &block_ctx,
+            &mut acp,
+            &mut bulletin,
+            &mut hub,
+            &mut nonces,
+        );
+        assert!(result_1.is_ok(), "nonce 1 should pass: {result_1:?}");
+
+        // Replay of nonce 0 should fail
+        let wire_replay = signed_native_tx(&sk, &pk_bytes, 0);
+        let result_replay = executor.execute_native_tx(
+            &wire_replay,
+            &block_ctx,
+            &mut acp,
+            &mut bulletin,
+            &mut hub,
+            &mut nonces,
+        );
+        assert!(matches!(
+            result_replay,
+            Err(ExecutionError::NonceMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn native_tx_replay_rejected_after_success() {
+        let (sk, pk_bytes) = test_bls_keypair();
+
+        let executor = test_executor();
+        let block_ctx = test_block_ctx();
+        let mut acp = AcpModule::new();
+        let mut bulletin = BulletinModule::new();
+        let mut hub = HubModule::new();
+        let mut nonces = NativeNonceStore::default();
+
+        // First: nonce 0 passes nonce check (empty calldata → failed receipt, but nonce consumed)
+        let wire = signed_native_tx(&sk, &pk_bytes, 0);
+        let result = executor.execute_native_tx(
+            &wire,
+            &block_ctx,
+            &mut acp,
+            &mut bulletin,
+            &mut hub,
+            &mut nonces,
+        );
+        assert!(result.is_ok());
+
+        // Replay: nonce 0 again should fail with NonceMismatch
+        let wire_replay = signed_native_tx(&sk, &pk_bytes, 0);
+        let result = executor.execute_native_tx(
+            &wire_replay,
+            &block_ctx,
+            &mut acp,
+            &mut bulletin,
+            &mut hub,
+            &mut nonces,
+        );
+        match result {
+            Err(ExecutionError::NonceMismatch { expected, got, .. }) => {
+                assert_eq!(expected, 1);
+                assert_eq!(got, 0);
+            }
+            other => panic!("expected NonceMismatch, got {other:?}"),
+        }
     }
 }
