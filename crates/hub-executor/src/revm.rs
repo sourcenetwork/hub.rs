@@ -416,6 +416,21 @@ pub fn convert_access_list(access_list: &alloy_eips::eip2930::AccessList) -> Acc
     )
 }
 
+/// Recover the signer's `did:key:` from raw EVM transaction bytes.
+///
+/// Decodes the RLP envelope, extracts the ECDSA signature and signing hash,
+/// and recovers the secp256k1 public key to construct a valid `did:key:`.
+pub fn recover_evm_signer_did(tx_bytes: &Bytes) -> Result<String, ExecutionError> {
+    use alloy_consensus::TxEnvelope;
+    use alloy_rlp::Decodable;
+
+    let envelope = TxEnvelope::decode(&mut tx_bytes.as_ref())
+        .map_err(|e| ExecutionError::TxDecode(format!("signer DID decode: {e}")))?;
+
+    hub_crypto::secp256k1::recover_did(envelope.signature(), &envelope.signature_hash())
+        .map_err(|e| ExecutionError::TxDecode(format!("signer DID: {e}")))
+}
+
 /// Convert alloy authorization list to revm authorization list.
 pub fn convert_authorization_list(
     auth_list: &[alloy_eips::eip7702::SignedAuthorization],

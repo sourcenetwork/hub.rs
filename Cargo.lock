@@ -3297,6 +3297,7 @@ dependencies = [
 name = "hub-crypto"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "anyhow",
  "ark-bls12-381 0.4.0",
  "ark-ec 0.4.2",
@@ -3307,6 +3308,7 @@ dependencies = [
  "commonware-cryptography",
  "commonware-utils",
  "hub-domain",
+ "k256",
  "multibase",
  "rand 0.8.5",
  "sha2 0.10.9",

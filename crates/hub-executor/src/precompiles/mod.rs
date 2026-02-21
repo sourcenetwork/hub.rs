@@ -43,12 +43,7 @@ const fn address_from_last_two_bytes(hi: u8, lo: u8) -> Address {
 }
 
 pub(super) fn did_from_signer(signer: &str) -> Result<Did, PrecompileError> {
-    let did_str = if signer.starts_with("did:") {
-        signer.to_owned()
-    } else {
-        format!("did:key:z{signer}")
-    };
-    Did::new(did_str).map_err(|e| PrecompileError::Other(format!("DID construction: {e}").into()))
+    Did::new(signer).map_err(|e| PrecompileError::Other(format!("DID: {e}").into()))
 }
 
 pub(super) fn decode_error(e: alloy_sol_types::Error) -> PrecompileError {
@@ -96,6 +91,7 @@ pub struct HubPrecompiles {
     bulletin_module: BulletinModule,
     hub_module: HubModule,
     current_tx_hash: B256,
+    current_signer_did: String,
 }
 
 /// Route calldata to the appropriate module based on the target precompile address.
@@ -149,6 +145,7 @@ impl HubPrecompiles {
             bulletin_module: BulletinModule::new(),
             hub_module: HubModule::new(),
             current_tx_hash: B256::ZERO,
+            current_signer_did: String::new(),
         }
     }
 
@@ -166,12 +163,18 @@ impl HubPrecompiles {
             bulletin_module,
             hub_module,
             current_tx_hash: B256::ZERO,
+            current_signer_did: String::new(),
         }
     }
 
     /// Set the tx hash for the current EVM transaction being executed.
     pub fn set_tx_hash(&mut self, tx_hash: B256) {
         self.current_tx_hash = tx_hash;
+    }
+
+    /// Set the signer DID for the current EVM transaction being executed.
+    pub fn set_signer_did(&mut self, did: String) {
+        self.current_signer_did = did;
     }
 }
 
@@ -197,7 +200,7 @@ impl<CTX: ContextTr> PrecompileProvider<CTX> for HubPrecompiles {
             };
             let tx_ctx = TxExecCtx {
                 tx_hash: self.current_tx_hash.to_vec(),
-                signer: format!("{:?}", inputs.caller),
+                signer: self.current_signer_did.clone(),
             };
             let calldata = inputs.input.bytes(context);
             return self.run_custom(inputs, &calldata, &block_ctx, &tx_ctx);

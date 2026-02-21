@@ -4,6 +4,7 @@
 use crate::{
     BlockContext, BlockExecutor, ExecutionConfig, ExecutionError, ExecutionOutcome,
     ExecutionReceipt, StateDbAdapter, build_receipt, decode_tx_env, extract_changes,
+    recover_evm_signer_did,
 };
 use alloy_primitives::{B256, Bytes, U256, keccak256};
 use hub_crypto::bls;
@@ -265,8 +266,18 @@ impl<S: StateDb> BlockExecutor<S> for HubExecutor {
                     }
                     Err(e) => return Err(e),
                 };
+                let signer_did = match recover_evm_signer_did(tx_bytes) {
+                    Ok(did) => did,
+                    Err(e) if building => {
+                        warn!(%tx_hash, ?e, "skipping tx: signer DID recovery error");
+                        continue;
+                    }
+                    Err(e) => return Err(e),
+                };
+
                 evm.set_tx(tx_env);
                 evm.precompiles.set_tx_hash(tx_hash);
+                evm.precompiles.set_signer_did(signer_did);
 
                 let result_and_state = match evm.replay() {
                     Ok(r) => r,

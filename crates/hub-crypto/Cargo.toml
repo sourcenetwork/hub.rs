@@ -33,6 +33,10 @@ sha2.workspace = true
 multibase.workspace = true
 unsigned-varint.workspace = true
 
+# secp256k1 DID recovery
+alloy-primitives.workspace = true
+k256.workspace = true
+
 # Error handling
 thiserror.workspace = true
 
