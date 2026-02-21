@@ -236,6 +236,8 @@ impl<'a> TxValidator<'a> {
             nonce,
             gas_limit,
             intrinsic_gas,
+            max_fee,
+            value,
         })
     }
 
@@ -337,6 +339,10 @@ pub struct ValidatedTx {
     pub gas_limit: u64,
     /// Intrinsic gas cost.
     pub intrinsic_gas: u64,
+    /// Maximum fee per gas (gas_price for legacy, max_fee_per_gas for EIP-1559+).
+    pub max_fee: u128,
+    /// ETH value transferred.
+    pub value: U256,
 }
 
 #[cfg(test)]

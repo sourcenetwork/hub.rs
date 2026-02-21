@@ -35,4 +35,7 @@ pub use validation::{
 mod executor;
 pub use executor::HubExecutor;
 
+mod mempool;
+pub use mempool::{MempoolValidator, TxValidationResult};
+
 pub mod precompiles;
