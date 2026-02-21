@@ -64,9 +64,10 @@ impl HubApiServer for HubApiImpl {
             .ok_or_else(|| RpcError::InvalidTransaction("empty transaction".into()))?;
 
         if !hub_domain::NativeTx::is_native_tx(*first) {
-            return Err(
-                RpcError::InvalidTransaction("not a native transaction (expected 0x45 prefix)".into()).into(),
-            );
+            return Err(RpcError::InvalidTransaction(
+                "not a native transaction (expected 0x45 prefix)".into(),
+            )
+            .into());
         }
 
         let ntx = hub_domain::NativeTx::decode_wire(&data)
