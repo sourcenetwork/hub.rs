@@ -19,6 +19,10 @@ pub enum NonceError {
         /// The nonce present in the transaction.
         got: u64,
     },
+
+    /// Nonce counter would overflow `u64::MAX`.
+    #[error("nonce overflow for {0}")]
+    Overflow(String),
 }
 
 /// In-memory per-DID nonce store for native BLS transactions.
@@ -47,7 +51,10 @@ impl NativeNonceStore {
                 got: tx_nonce,
             });
         }
-        self.nonces.insert(did.to_string(), expected + 1);
+        let next = expected
+            .checked_add(1)
+            .ok_or_else(|| NonceError::Overflow(did.to_string()))?;
+        self.nonces.insert(did.to_string(), next);
         Ok(())
     }
 }
@@ -153,5 +160,17 @@ mod tests {
             err.to_string(),
             "nonce mismatch for did:key:z6Mk1: expected 3, got 1"
         );
+    }
+
+    #[test]
+    fn overflow_rejected() {
+        let mut store = NativeNonceStore::default();
+        let did = "did:key:z6MkMax";
+        store.nonces.insert(did.to_string(), u64::MAX);
+
+        let err = store.check_and_increment(did, u64::MAX).unwrap_err();
+        assert_eq!(err, NonceError::Overflow(did.to_string()));
+        // Nonce unchanged.
+        assert_eq!(store.get_nonce(did), u64::MAX);
     }
 }

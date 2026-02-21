@@ -110,6 +110,9 @@ impl HubExecutor {
                 hub_modules::native_account::NonceError::Mismatch { did, expected, got } => {
                     ExecutionError::NonceMismatch { did, expected, got }
                 }
+                hub_modules::native_account::NonceError::Overflow(did) => {
+                    ExecutionError::InvalidTx(format!("nonce overflow for {did}"))
+                }
             })?;
 
         if native_tx.target != ACP_ADDRESS
