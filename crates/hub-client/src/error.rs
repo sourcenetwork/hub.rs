@@ -34,6 +34,10 @@ pub enum ClientError {
         attempts: u32,
     },
 
+    /// Transaction signing failed.
+    #[error("signing error: {0}")]
+    Signing(String),
+
     /// JSON-RPC response contained no `result` field.
     #[error("missing result in RPC response")]
     MissingResult,

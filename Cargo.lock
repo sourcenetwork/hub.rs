@@ -3261,10 +3261,15 @@ dependencies = [
 name = "hub-client"
 version = "0.1.0"
 dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
  "alloy-primitives",
+ "alloy-signer",
+ "alloy-signer-local",
  "alloy-sol-types",
  "hex",
  "hub-modules",
+ "k256",
  "reqwest",
  "serde",
  "serde_json",

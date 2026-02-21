@@ -9,8 +9,11 @@
 mod client;
 mod error;
 mod query;
+mod signer;
+mod tx;
 mod types;
 
 pub use client::{ACP_ADDRESS, BULLETIN_ADDRESS, HUB_ADDRESS, HubClient};
 pub use error::ClientError;
+pub use signer::EvmSigner;
 pub use types::{Log, NodeStatus, TransactionReceipt};

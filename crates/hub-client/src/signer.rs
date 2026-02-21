@@ -1,0 +1,182 @@
+//! EVM transaction signer wrapping a secp256k1 private key.
+
+use alloy_consensus::{SignableTransaction, TxLegacy};
+use alloy_eips::eip2718::Encodable2718;
+use alloy_primitives::{Address, Bytes, TxKind, U256};
+use alloy_signer::SignerSync;
+use alloy_signer_local::PrivateKeySigner;
+use k256::ecdsa::SigningKey;
+
+use crate::error::ClientError;
+
+const GAS_PRICE: u128 = 1_000_000_000;
+const GAS_LIMIT: u64 = 5_000_000;
+
+/// Secp256k1 signer for EVM transactions.
+///
+/// Wraps a [`PrivateKeySigner`] with a chain ID. Used by write methods
+/// to construct, sign, and encode [`TxLegacy`] transactions.
+#[derive(Debug)]
+pub struct EvmSigner {
+    inner: PrivateKeySigner,
+    chain_id: u64,
+}
+
+impl EvmSigner {
+    /// Create a signer from a secp256k1 signing key and chain ID.
+    pub fn new(signing_key: SigningKey, chain_id: u64) -> Self {
+        Self {
+            inner: PrivateKeySigner::from_signing_key(signing_key),
+            chain_id,
+        }
+    }
+
+    /// Parse a hex-encoded private key and create a signer.
+    pub fn from_hex(hex: &str, chain_id: u64) -> Result<Self, ClientError> {
+        let signer: PrivateKeySigner =
+            hex.parse()
+                .map_err(|e: alloy_signer_local::LocalSignerError| {
+                    ClientError::Signing(e.to_string())
+                })?;
+        Ok(Self {
+            inner: signer,
+            chain_id,
+        })
+    }
+
+    /// Return the Ethereum address derived from this signer's key.
+    pub const fn address(&self) -> Address {
+        self.inner.address()
+    }
+
+    /// Return the chain ID this signer targets.
+    pub const fn chain_id(&self) -> u64 {
+        self.chain_id
+    }
+
+    /// Build a [`TxLegacy`], sign it, and return the EIP-2718 encoded bytes.
+    pub(crate) fn sign_tx(
+        &self,
+        to: Address,
+        calldata: Bytes,
+        nonce: u64,
+    ) -> Result<Vec<u8>, ClientError> {
+        let tx = TxLegacy {
+            chain_id: Some(self.chain_id),
+            nonce,
+            gas_price: GAS_PRICE,
+            gas_limit: GAS_LIMIT,
+            to: TxKind::Call(to),
+            value: U256::ZERO,
+            input: calldata,
+        };
+
+        let sig = self
+            .inner
+            .sign_hash_sync(&tx.signature_hash())
+            .map_err(|e| ClientError::Signing(e.to_string()))?;
+        let signed = tx.into_signed(sig);
+        Ok(signed.encoded_2718())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy_consensus::Transaction;
+    use alloy_eips::eip2718::Decodable2718;
+
+    use super::*;
+
+    fn test_key() -> SigningKey {
+        let mut secret = [0u8; 32];
+        secret[31] = 1;
+        SigningKey::from_bytes((&secret).into()).expect("valid key")
+    }
+
+    #[test]
+    fn from_hex_valid_key() {
+        let hex = "0000000000000000000000000000000000000000000000000000000000000001";
+        let signer = EvmSigner::from_hex(hex, 1337).unwrap();
+        assert_eq!(signer.chain_id(), 1337);
+        assert_ne!(signer.address(), Address::ZERO);
+    }
+
+    #[test]
+    fn from_hex_invalid_key() {
+        let result = EvmSigner::from_hex("not-hex", 1);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn address_is_deterministic() {
+        let signer1 = EvmSigner::new(test_key(), 1);
+        let signer2 = EvmSigner::new(test_key(), 1);
+        assert_eq!(signer1.address(), signer2.address());
+    }
+
+    #[test]
+    fn chain_id_stored() {
+        let signer = EvmSigner::new(test_key(), 42);
+        assert_eq!(signer.chain_id(), 42);
+    }
+
+    #[test]
+    fn sign_tx_produces_valid_envelope() {
+        let signer = EvmSigner::new(test_key(), 1337);
+        let to = Address::repeat_byte(0xab);
+        let calldata = Bytes::from(vec![0xde, 0xad]);
+
+        let raw = signer.sign_tx(to, calldata, 0).unwrap();
+        let signed = alloy_consensus::TxEnvelope::decode_2718(&mut raw.as_slice())
+            .expect("valid EIP-2718 encoding");
+
+        assert!(matches!(signed, alloy_consensus::TxEnvelope::Legacy(_)));
+    }
+
+    #[test]
+    fn sign_tx_correct_chain_id() {
+        let signer = EvmSigner::new(test_key(), 42);
+        let raw = signer.sign_tx(Address::ZERO, Bytes::new(), 0).unwrap();
+        let envelope = alloy_consensus::TxEnvelope::decode_2718(&mut raw.as_slice()).unwrap();
+        assert_eq!(envelope.chain_id(), Some(42));
+    }
+
+    #[test]
+    fn sign_tx_correct_nonce() {
+        let signer = EvmSigner::new(test_key(), 1);
+        let raw = signer.sign_tx(Address::ZERO, Bytes::new(), 99).unwrap();
+        let envelope = alloy_consensus::TxEnvelope::decode_2718(&mut raw.as_slice()).unwrap();
+        assert_eq!(envelope.nonce(), 99);
+    }
+
+    #[test]
+    fn sign_tx_correct_gas_fields() {
+        let signer = EvmSigner::new(test_key(), 1);
+        let raw = signer.sign_tx(Address::ZERO, Bytes::new(), 0).unwrap();
+        let envelope = alloy_consensus::TxEnvelope::decode_2718(&mut raw.as_slice()).unwrap();
+        assert_eq!(envelope.gas_limit(), GAS_LIMIT);
+    }
+
+    #[test]
+    fn sign_tx_correct_recipient() {
+        let signer = EvmSigner::new(test_key(), 1);
+        let to = Address::repeat_byte(0xcd);
+        let raw = signer.sign_tx(to, Bytes::new(), 0).unwrap();
+        let envelope = alloy_consensus::TxEnvelope::decode_2718(&mut raw.as_slice()).unwrap();
+        assert_eq!(envelope.to(), Some(to));
+    }
+
+    #[test]
+    fn sign_tx_different_nonces_differ() {
+        let signer = EvmSigner::new(test_key(), 1);
+        let raw1 = signer.sign_tx(Address::ZERO, Bytes::new(), 0).unwrap();
+        let raw2 = signer.sign_tx(Address::ZERO, Bytes::new(), 1).unwrap();
+        assert_ne!(raw1, raw2);
+    }
+
+    #[test]
+    fn signing_error_display() {
+        let err = ClientError::Signing("bad key".into());
+        assert_eq!(err.to_string(), "signing error: bad key");
+    }
+}

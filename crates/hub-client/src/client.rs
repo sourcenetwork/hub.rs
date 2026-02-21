@@ -215,6 +215,30 @@ impl HubClient {
             .await
     }
 
+    // ── EVM write helper ──────────────────────────────────────────
+
+    /// Sign and submit a precompile transaction, then poll for the receipt.
+    pub(crate) async fn send_precompile_tx(
+        &self,
+        signer: &crate::signer::EvmSigner,
+        target: Address,
+        calldata: Bytes,
+    ) -> Result<TransactionReceipt, ClientError> {
+        let nonce = self.get_nonce(signer.address()).await?;
+        let raw = signer.sign_tx(target, calldata, nonce)?;
+        let tx_hash = self.send_raw_transaction(&raw).await?;
+        let receipt = self
+            .wait_for_receipt(tx_hash, Duration::from_millis(200), 100)
+            .await?;
+        if receipt.status == 0 {
+            return Err(ClientError::TxReverted {
+                status: 0,
+                receipt: Box::new(receipt),
+            });
+        }
+        Ok(receipt)
+    }
+
     // ── Receipt polling ─────────────────────────────────────────────
 
     /// Poll for a transaction receipt until it appears or attempts are exhausted.
