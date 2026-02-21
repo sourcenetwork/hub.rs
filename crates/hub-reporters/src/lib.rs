@@ -244,6 +244,8 @@ async fn handle_finalized_update<E, P>(
                 return;
             }
 
+            state.recheck_mempool().await;
+
             // Index the finalized block and broadcast subscription events.
             let needs_receipts = block_index.is_some() || subscriptions.is_some();
             if needs_receipts {

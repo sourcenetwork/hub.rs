@@ -1,6 +1,6 @@
 //! Ethereum JSON-RPC API implementation.
 
-use std::sync::Arc;
+use std::{future::Future, pin::Pin, sync::Arc};
 
 use alloy_primitives::{Address, B256, Bytes, U64, U256};
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
@@ -180,8 +180,9 @@ pub struct FeeHistory {
 /// Transaction submission callback type.
 ///
 /// Called when a raw transaction is submitted via `eth_sendRawTransaction`.
-/// Returns true if the transaction was accepted, false otherwise.
-pub type TxSubmitCallback = Arc<dyn Fn(Bytes) -> bool + Send + Sync>;
+/// Returns `Ok(true)` if accepted, `Ok(false)` if duplicate, `Err(msg)` on validation failure.
+pub type TxSubmitCallback =
+    Arc<dyn Fn(Bytes) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send>> + Send + Sync>;
 
 /// Ethereum API implementation with state provider.
 pub struct EthApiImpl<S: StateProvider> {
@@ -302,10 +303,16 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
             _ => alloy_primitives::keccak256(&data),
         };
 
-        if let Some(ref submit) = self.tx_submit
-            && !submit(data)
-        {
-            return Err(RpcError::InvalidTransaction("transaction rejected".into()).into());
+        if let Some(ref submit) = self.tx_submit {
+            match submit(data).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Err(RpcError::InvalidTransaction("duplicate transaction".into()).into());
+                }
+                Err(msg) => {
+                    return Err(RpcError::InvalidTransaction(msg).into());
+                }
+            }
         }
 
         Ok(tx_hash)
@@ -528,7 +535,7 @@ mod tests {
         let submitted_clone = submitted.clone();
         let callback: TxSubmitCallback = Arc::new(move |_| {
             submitted_clone.store(true, std::sync::atomic::Ordering::Relaxed);
-            true
+            Box::pin(async { Ok(true) })
         });
 
         let api = EthApiImpl::with_tx_submit(1, NoopStateProvider, callback);
@@ -555,7 +562,7 @@ mod tests {
         let wire = Bytes::from(ntx.encode_wire());
         let expected = ntx.tx_id().0;
 
-        let callback: TxSubmitCallback = Arc::new(|_| true);
+        let callback: TxSubmitCallback = Arc::new(|_| Box::pin(async { Ok(true) }));
         let api = EthApiImpl::with_tx_submit(1, NoopStateProvider, callback);
         let result = EthApiServer::send_raw_transaction(&api, wire).await;
 

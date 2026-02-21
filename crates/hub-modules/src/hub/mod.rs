@@ -56,6 +56,7 @@ impl Default for HubModule {
     }
 }
 
+#[allow(dead_code)]
 impl HubModule {
     /// Create a new Hub module instance.
     pub const fn new() -> Self {

@@ -38,6 +38,7 @@ impl Default for AcpModule {
     }
 }
 
+#[allow(dead_code)]
 impl AcpModule {
     /// Create a new ACP module instance.
     pub const fn new() -> Self {
@@ -657,6 +658,7 @@ impl AcpModule {
     ///   1. Build a "now" timestamp from the block context:
     ///      - `block_time`: wall-clock time from the block header
     ///      - `block_height`: current block number
+    ///
     ///      (Go: `TimestampFromCtx(ctx)` — can fail on proto
     ///      timestamp conversion)
     ///   2. Get all non-expired commitments via
@@ -670,12 +672,14 @@ impl AcpModule {
     ///      - If `validity` is a wall-clock duration:
     ///        `block_time > creation_time + duration`
     ///      - If `validity` has an unknown/invalid type: panic
+    ///
     ///        (Go panics; hub.rs should return an error instead)
     ///   4. For each expired commitment: set `expired = true`
     ///      in-memory, collect into a `processed` list
     ///   5. Write all flagged commitments back via
     ///      `update_commitment()` for each
     ///   6. Return the list of newly-expired commitments
+    ///
     ///      (Go caller discards the list — but the keeper method
     ///      returns it for testability)
     ///
@@ -923,6 +927,7 @@ impl AcpModule {
     ///   - `"commitment/objs/" + BE(id)` (object data)
     ///   - `"commitment/indexes/expired/idx/" + bool + "/" + BE(id)` (expired index)
     ///   - `"commitment/indexes/commitment/idx/" + bytes + "/" + BE(id)` (commitment index)
+    ///
     /// Direction: write (insert only, never overwrites existing)
     ///
     /// Called by `direct_policy_cmd` CommitRegistrations variant.
@@ -945,6 +950,7 @@ impl AcpModule {
     ///   - `"commitment/objs/" + BE(id)` (overwritten)
     ///   - expired index entries (old removed, new added)
     ///   - commitment index entries (old removed, new added)
+    ///
     /// Direction: write (in-place update)
     ///
     /// Primary use case: transitioning `expired` from false to true.
@@ -1020,6 +1026,7 @@ impl AcpModule {
     /// Expiry supports two duration modes:
     ///   - Block count: `creation_block_height + block_count < current_height`
     ///   - Wall-clock: `current_time > creation_time + duration`
+    ///
     /// Default validity is 10 minutes wall-clock (stored per-record in
     /// the `validity` field at creation time, not recomputed from defaults).
     fn get_non_expired_commitments(&self) -> Result<Vec<RegistrationsCommitment>> {
@@ -1043,6 +1050,7 @@ impl AcpModule {
     ///   - `"amendment_event/counter/id"` (auto-increment counter)
     ///   - `"amendment_event/objs/" + BE(id)` (object data)
     ///   - `"amendment_event/indexes/policy/idx/" + policy_id + "/" + BE(id)` (policy index)
+    ///
     /// Direction: write (insert only)
     ///
     /// Called by `direct_policy_cmd` RevealRegistration variant when
@@ -1066,6 +1074,7 @@ impl AcpModule {
     ///   - `"amendment_event/objs/" + BE(id)` (overwritten)
     ///   - policy index entries (old removed, new added — though in
     ///     practice policy_id never changes between updates)
+    ///
     /// Direction: write (in-place update)
     ///
     /// Primary use case: setting `hijack_flag = true` via the

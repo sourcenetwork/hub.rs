@@ -16,6 +16,7 @@ use hub_consensus::{
     components::{InMemoryMempool, InMemorySeedTracker, InMemorySnapshotStore},
 };
 use hub_domain::{Block, BlockId, ConsensusDigest, LedgerEvent, LedgerEvents, StateRoot, Tx, TxId};
+use hub_executor::{ExecutionConfig, MempoolValidator};
 use hub_overlay::OverlayState;
 use hub_qmdb_ledger::{Error as QmdbError, QmdbChangeSet, QmdbConfig, QmdbLedger, QmdbState};
 use hub_traits::{StateDbError, StateDbRead, StateDbWrite};
@@ -70,6 +71,8 @@ struct LedgerState {
     seeds: InMemorySeedTracker,
     /// Underlying QMDB ledger service for persistence.
     qmdb: QmdbLedger,
+    /// Mempool admission gate — validates txs before insertion.
+    validator: MempoolValidator<QmdbState>,
 }
 
 impl LedgerView {
@@ -79,9 +82,10 @@ impl LedgerView {
         page_cache: CacheRef,
         partition_prefix: String,
         genesis_alloc: Vec<(Address, U256)>,
+        chain_id: u64,
     ) -> LedgerResult<Self> {
         let config = QmdbConfig::new(partition_prefix, page_cache);
-        Self::init_with_config(context, config, genesis_alloc).await
+        Self::init_with_config(context, config, genesis_alloc, chain_id).await
     }
 
     /// Initialize a ledger view with an explicit QMDB configuration.
@@ -89,6 +93,7 @@ impl LedgerView {
         context: tokio::Context,
         config: QmdbConfig,
         genesis_alloc: Vec<(Address, U256)>,
+        chain_id: u64,
     ) -> LedgerResult<Self> {
         let qmdb = QmdbLedger::init(context.with_label("qmdb"), config, genesis_alloc).await?;
         let genesis_root = qmdb.root().await?;
@@ -116,12 +121,16 @@ impl LedgerView {
         snapshots.insert(genesis_digest, genesis_snapshot);
         snapshots.mark_persisted(&[genesis_digest]);
 
+        let exec_config = ExecutionConfig::new(chain_id);
+        let validator = MempoolValidator::new(qmdb.state(), exec_config, 0);
+
         Ok(Self {
             inner: Arc::new(Mutex::new(LedgerState {
                 mempool: InMemoryMempool::new(),
                 snapshots,
                 seeds: InMemorySeedTracker::new(genesis_digest),
                 qmdb,
+                validator,
             })),
             genesis_block,
         })
@@ -132,10 +141,46 @@ impl LedgerView {
         self.genesis_block.clone()
     }
 
-    /// Submit a transaction into the mempool.
-    pub async fn submit_tx(&self, tx: Tx) -> bool {
+    /// Submit a transaction into the mempool after validation.
+    pub async fn submit_tx(&self, tx: Tx) -> Result<bool, String> {
+        let mut inner = self.inner.lock().await;
+        inner
+            .validator
+            .validate_tx(&tx.bytes)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(inner.mempool.insert(tx))
+    }
+
+    /// Insert a transaction without validation (bootstrap txs).
+    pub async fn submit_tx_trusted(&self, tx: Tx) -> bool {
         let inner = self.inner.lock().await;
         inner.mempool.insert(tx)
+    }
+
+    /// Reset the validator and evict stale transactions after finalization.
+    pub async fn recheck_mempool(&self) {
+        let mut inner = self.inner.lock().await;
+        let fresh_state = inner.qmdb.state();
+        inner.validator.reset(fresh_state);
+
+        let pending = inner.mempool.build(usize::MAX, &BTreeSet::new());
+        let mut evict_ids = Vec::new();
+
+        for tx in &pending {
+            if let Err(e) = inner.validator.recheck_tx_stateless(&tx.bytes).await {
+                tracing::trace!(tx_id = ?tx.id(), error = %e, "evicting stale tx");
+                evict_ids.push(tx.id());
+            }
+        }
+
+        if !evict_ids.is_empty() {
+            tracing::debug!(
+                count = evict_ids.len(),
+                "rechecked mempool, evicting stale txs"
+            );
+            inner.mempool.prune(&evict_ids);
+        }
     }
 
     /// Query a balance at the given digest.
@@ -324,14 +369,29 @@ impl LedgerService {
         self.view.genesis_block()
     }
 
-    /// Submit a transaction and emit events.
-    pub async fn submit_tx(&self, tx: Tx) -> bool {
+    /// Submit a transaction with validation and emit events.
+    pub async fn submit_tx(&self, tx: Tx) -> Result<bool, String> {
         let tx_id = tx.id();
-        let inserted = self.view.submit_tx(tx).await;
+        let inserted = self.view.submit_tx(tx).await?;
+        if inserted {
+            self.publish(LedgerEvent::TransactionSubmitted(tx_id));
+        }
+        Ok(inserted)
+    }
+
+    /// Insert a transaction without validation (bootstrap txs).
+    pub async fn submit_tx_trusted(&self, tx: Tx) -> bool {
+        let tx_id = tx.id();
+        let inserted = self.view.submit_tx_trusted(tx).await;
         if inserted {
             self.publish(LedgerEvent::TransactionSubmitted(tx_id));
         }
         inserted
+    }
+
+    /// Reset the validator and evict stale transactions after finalization.
+    pub async fn recheck_mempool(&self) {
+        self.view.recheck_mempool().await;
     }
 
     /// Query a balance at the given digest.
@@ -531,6 +591,7 @@ mod tests {
             test_page_cache(),
             next_partition(partition_prefix),
             allocations,
+            CHAIN_ID,
         )
         .await
         .expect("init ledger");

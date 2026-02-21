@@ -74,10 +74,16 @@ impl HubApiServer for HubApiImpl {
             .map_err(|e| RpcError::InvalidTransaction(format!("native tx decode: {e}")))?;
         let tx_hash = ntx.tx_id().0;
 
-        if let Some(ref submit) = self.tx_submit
-            && !submit(data)
-        {
-            return Err(RpcError::InvalidTransaction("transaction rejected".into()).into());
+        if let Some(ref submit) = self.tx_submit {
+            match submit(data).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Err(RpcError::InvalidTransaction("duplicate transaction".into()).into());
+                }
+                Err(msg) => {
+                    return Err(RpcError::InvalidTransaction(msg).into());
+                }
+            }
         }
 
         Ok(tx_hash)
@@ -113,7 +119,7 @@ mod tests {
         let submitted_clone = submitted.clone();
         let callback: TxSubmitCallback = Arc::new(move |_| {
             submitted_clone.store(true, std::sync::atomic::Ordering::Relaxed);
-            true
+            Box::pin(async { Ok(true) })
         });
 
         let state = Arc::new(NodeState::new(1, 0, 1));

@@ -61,6 +61,50 @@ impl<S: StateDb> MempoolValidator<S> {
         self.native_nonces = NativeNonceStore::default();
     }
 
+    /// Stateless recheck against committed base state.
+    ///
+    /// EVM txs: decode + recover signer + check nonce/balance (no branch mutation).
+    /// BLS native txs: decode + check chain_id/target (skip sig verification).
+    /// Native nonces are in-memory only, so native txs always pass recheck.
+    pub async fn recheck_tx_stateless(&self, tx_bytes: &[u8]) -> Result<(), ExecutionError> {
+        if tx_bytes.is_empty() {
+            return Err(ExecutionError::TxDecode("empty transaction".to_string()));
+        }
+        if NativeTx::is_native_tx(tx_bytes[0]) {
+            self.recheck_native_tx(tx_bytes)
+        } else {
+            self.recheck_evm_tx(tx_bytes).await
+        }
+    }
+
+    async fn recheck_evm_tx(&self, tx_bytes: &[u8]) -> Result<(), ExecutionError> {
+        let validator = TxValidator::new(&self.config, self.base_fee);
+        let bytes = Bytes::from(tx_bytes.to_vec());
+        validator.validate(&bytes, &self.base).await?;
+        Ok(())
+    }
+
+    fn recheck_native_tx(&self, tx_bytes: &[u8]) -> Result<(), ExecutionError> {
+        let native_tx = NativeTx::decode_wire(tx_bytes)
+            .map_err(|e| ExecutionError::TxDecode(format!("native tx: {e}")))?;
+
+        if native_tx.chain_id != self.config.chain_id {
+            return Err(ExecutionError::ChainIdMismatch {
+                expected: self.config.chain_id,
+                got: native_tx.chain_id,
+            });
+        }
+
+        if native_tx.target != ACP_ADDRESS
+            && native_tx.target != BULLETIN_ADDRESS
+            && native_tx.target != HUB_ADDRESS
+        {
+            return Err(ExecutionError::UnknownNativeTarget(native_tx.target));
+        }
+
+        Ok(())
+    }
+
     /// Validate a transaction for mempool admission.
     ///
     /// Detects format by first byte (`0x45` = BLS native, else EVM).

@@ -67,6 +67,7 @@ impl Default for BulletinModule {
     }
 }
 
+#[allow(dead_code)]
 impl BulletinModule {
     /// Create a new Bulletin module instance.
     pub const fn new() -> Self {

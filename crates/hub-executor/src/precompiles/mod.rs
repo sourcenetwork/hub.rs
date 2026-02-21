@@ -98,6 +98,7 @@ pub struct HubPrecompiles {
 ///
 /// Used by both the EVM precompile path and the native BLS tx path to ensure
 /// both converge on the same module methods.
+#[allow(clippy::too_many_arguments)]
 pub fn dispatch_to_module(
     acp: &mut AcpModule,
     bulletin: &mut BulletinModule,
@@ -168,7 +169,7 @@ impl HubPrecompiles {
     }
 
     /// Set the tx hash for the current EVM transaction being executed.
-    pub fn set_tx_hash(&mut self, tx_hash: B256) {
+    pub const fn set_tx_hash(&mut self, tx_hash: B256) {
         self.current_tx_hash = tx_hash;
     }
 

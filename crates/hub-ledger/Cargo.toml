@@ -14,6 +14,7 @@ workspace = true
 # Local crates
 hub-consensus.workspace = true
 hub-domain.workspace = true
+hub-executor.workspace = true
 hub-overlay.workspace = true
 hub-qmdb-ledger.workspace = true
 hub-traits.workspace = true
@@ -31,10 +32,10 @@ futures.workspace = true
 # Error handling
 thiserror.workspace = true
 
-[dev-dependencies]
-# Local crates
-hub-executor.workspace = true
+# Logging
+tracing.workspace = true
 
+[dev-dependencies]
 # Commonware
 commonware-runtime.workspace = true
 commonware-utils.workspace = true

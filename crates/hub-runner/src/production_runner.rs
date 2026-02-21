@@ -208,6 +208,7 @@ impl NodeRunner for ProductionRunner {
             page_cache.clone(),
             format!("{}-qmdb", self.partition_prefix),
             self.bootstrap.genesis_alloc.clone(),
+            self.chain_id,
         )
         .await
         .context("init qmdb")?;
@@ -311,7 +312,7 @@ impl NodeRunner for ProductionRunner {
         let reporter = Reporters::from((seed_reporter, inner_reporters));
 
         for tx in &self.bootstrap.bootstrap_txs {
-            let _ = ledger.submit_tx(tx.clone()).await;
+            ledger.submit_tx_trusted(tx.clone()).await;
         }
 
         let engine = simplex::Engine::new(

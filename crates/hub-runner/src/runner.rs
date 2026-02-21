@@ -247,6 +247,7 @@ impl NodeRunner for HubRunner {
             page_cache.clone(),
             format!("{}-qmdb", PARTITION_PREFIX),
             self.bootstrap.genesis_alloc.clone(),
+            self.chain_id,
         )
         .await
         .context("init qmdb")?;
@@ -259,7 +260,8 @@ impl NodeRunner for HubRunner {
         let participants: Vec<Peer> = validators.iter().cloned().collect();
         let view_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let schedule = crate::tx_forward::LeaderSchedule::new(participants, view_counter.clone());
-        let forwarder = TxForwarder::new(direct_mempool.clone(), schedule.clone());
+        let forwarder =
+            TxForwarder::new(direct_mempool.clone(), schedule.clone()).with_ledger(state.clone());
         let gossip_notify = forwarder.notifier();
         forwarder.spawn_receiver(context.clone(), mempool_receiver);
         forwarder.spawn_gossip_loop(context.clone(), mempool_sender.clone());
@@ -360,7 +362,7 @@ impl NodeRunner for HubRunner {
         let reporter = Reporters::from((seed_reporter, with_view));
 
         for tx in &self.bootstrap.bootstrap_txs {
-            let _ = ledger.submit_tx(tx.clone()).await;
+            ledger.submit_tx_trusted(tx.clone()).await;
         }
 
         let engine = simplex::Engine::new(
@@ -409,17 +411,24 @@ impl NodeRunner for HubRunner {
                     }
                 }
             });
+            let submit_ledger = ledger.clone();
             let tx_submit: hub_jsonrpc::TxSubmitCallback = Arc::new(move |data: Bytes| {
-                use hub_consensus::Mempool as _;
-                let tx = Tx::new(data.clone());
-                let inserted = direct_mempool.insert(tx);
-                if inserted {
-                    if tx_broadcast_sender.send(data).is_err() {
-                        tracing::warn!("tx forwarding channel closed; tx in local mempool only");
+                let ledger = submit_ledger.clone();
+                let fwd_sender = tx_broadcast_sender.clone();
+                let notify = gossip_notify.clone();
+                Box::pin(async move {
+                    let tx = Tx::new(data.clone());
+                    let inserted = ledger.submit_tx(tx).await?;
+                    if inserted {
+                        if fwd_sender.send(data).is_err() {
+                            tracing::warn!(
+                                "tx forwarding channel closed; tx in local mempool only"
+                            );
+                        }
+                        notify.notify_one();
                     }
-                    gossip_notify.notify_one();
-                }
-                inserted
+                    Ok(inserted)
+                })
             });
 
             let rpc = hub_jsonrpc::RpcServer::with_state_provider(

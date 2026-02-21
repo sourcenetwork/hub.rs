@@ -23,6 +23,7 @@ use commonware_runtime::Spawner;
 use hub_consensus::Mempool as _;
 use hub_consensus::components::InMemoryMempool;
 use hub_domain::Tx;
+use hub_ledger::LedgerView;
 use hub_transport::{Receiver, Sender};
 use tracing::{trace, warn};
 
@@ -91,6 +92,7 @@ impl LeaderSchedule {
 #[derive(Debug)]
 pub struct TxForwarder {
     mempool: InMemoryMempool,
+    ledger: Option<LedgerView>,
     notify: Arc<::tokio::sync::Notify>,
     schedule: Option<LeaderSchedule>,
 }
@@ -100,6 +102,7 @@ impl TxForwarder {
     pub fn new(mempool: InMemoryMempool, schedule: LeaderSchedule) -> Self {
         Self {
             mempool,
+            ledger: None,
             notify: Arc::new(::tokio::sync::Notify::new()),
             schedule: Some(schedule),
         }
@@ -109,9 +112,17 @@ impl TxForwarder {
     pub fn broadcast_only(mempool: InMemoryMempool) -> Self {
         Self {
             mempool,
+            ledger: None,
             notify: Arc::new(::tokio::sync::Notify::new()),
             schedule: None,
         }
+    }
+
+    /// Attach a ledger view for validating forwarded transactions.
+    #[must_use]
+    pub fn with_ledger(mut self, ledger: LedgerView) -> Self {
+        self.ledger = Some(ledger);
+        self
     }
 
     /// Returns a handle that wakes the gossip loop when called.
@@ -119,8 +130,9 @@ impl TxForwarder {
         self.notify.clone()
     }
 
-    /// Spawn the receiver loop: reads forwarded txs from P2P and inserts into local mempool.
+    /// Spawn the receiver loop: reads forwarded txs from P2P, validates, and inserts into mempool.
     pub fn spawn_receiver<S: Spawner>(&self, spawner: S, mut receiver: MempoolReceiver) {
+        let ledger = self.ledger.clone();
         let mempool = self.mempool.clone();
         let notify = self.notify.clone();
         spawner.shared(true).spawn(move |_| async move {
@@ -129,7 +141,21 @@ impl TxForwarder {
                 match receiver.recv().await {
                     Ok((sender_pk, msg)) => {
                         let tx = Tx::new(Bytes::copy_from_slice(msg.as_ref()));
-                        let inserted = mempool.insert(tx);
+                        let inserted = if let Some(ref ledger) = ledger {
+                            match ledger.submit_tx(tx).await {
+                                Ok(ins) => ins,
+                                Err(e) => {
+                                    trace!(
+                                        from = %hex::encode(&sender_pk.as_ref()[..4]),
+                                        error = %e,
+                                        "rejected forwarded tx"
+                                    );
+                                    false
+                                }
+                            }
+                        } else {
+                            mempool.insert(tx)
+                        };
                         if inserted {
                             notify.notify_one();
                         }
