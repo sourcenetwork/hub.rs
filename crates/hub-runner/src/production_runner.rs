@@ -350,7 +350,8 @@ impl NodeRunner for ProductionRunner {
         // FinalizedReporter writes indexed blocks; IndexedStateProvider reads them for RPC.
         if let Some((node_state, addr)) = &self.rpc_config {
             let qmdb_state = ledger.qmdb_state().await;
-            let provider = IndexedStateProvider::new(block_index, qmdb_state);
+            let provider =
+                IndexedStateProvider::new(block_index, qmdb_state, self.chain_id, self.gas_limit);
             let rpc = hub_jsonrpc::RpcServer::with_state_provider(
                 node_state.clone(),
                 *addr,

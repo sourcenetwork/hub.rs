@@ -398,7 +398,8 @@ impl NodeRunner for HubRunner {
 
         if let Some((node_state, addr)) = &self.rpc_config {
             let qmdb_state = ledger.qmdb_state().await;
-            let provider = IndexedStateProvider::new(block_index, qmdb_state);
+            let provider =
+                IndexedStateProvider::new(block_index, qmdb_state, self.chain_id, self.gas_limit);
 
             let (tx_broadcast_sender, mut tx_broadcast_receiver) =
                 ::tokio::sync::mpsc::unbounded_channel::<Bytes>();

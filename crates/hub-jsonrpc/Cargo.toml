@@ -41,6 +41,7 @@ parking_lot.workspace = true
 
 # Kora crates
 hub-domain.workspace = true
+hub-executor.workspace = true
 hub-indexer.workspace = true
 hub-traits.workspace = true
 

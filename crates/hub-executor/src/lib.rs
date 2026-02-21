@@ -38,4 +38,7 @@ pub use executor::HubExecutor;
 mod mempool;
 pub use mempool::{MempoolValidator, TxValidationResult};
 
+mod simulate;
+pub use simulate::{SimulateRequest, SimulateResult, estimate_gas, simulate_call};
+
 pub mod precompiles;
