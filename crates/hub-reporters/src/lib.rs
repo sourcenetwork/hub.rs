@@ -10,7 +10,7 @@ use std::{fmt, marker::PhantomData, sync::Arc};
 use ::tokio::sync::broadcast;
 use alloy_consensus::{Transaction as _, TxEnvelope, transaction::SignerRecoverable as _};
 use alloy_eips::eip2718::Decodable2718 as _;
-use alloy_primitives::{B256, Bytes, keccak256};
+use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
 use commonware_consensus::{
     Block as _, Reporter,
     marshal::Update,
@@ -23,7 +23,7 @@ use commonware_cryptography::{Committable as _, bls12381::primitives::variant::V
 use commonware_runtime::{Spawner as _, tokio};
 use commonware_utils::acknowledgement::Acknowledgement as _;
 use hub_consensus::BlockExecution;
-use hub_domain::{Block, ConsensusDigest, PublicKey};
+use hub_domain::{Block, ConsensusDigest, NativeTx, PublicKey};
 use hub_executor::{BlockContext, BlockExecutor, ExecutionReceipt};
 use hub_indexer::{BlockIndex, IndexedBlock, IndexedLog, IndexedReceipt, IndexedTransaction};
 use hub_jsonrpc::{NodeState, RpcBlock, RpcLog};
@@ -366,17 +366,51 @@ fn index_finalized_block<P: BlockContextProvider>(
     let mut block_log_index: u64 = 0;
 
     for (i, tx) in block.txs.iter().enumerate() {
-        let tx_hash = keccak256(&tx.bytes);
+        let is_native = !tx.bytes.is_empty() && NativeTx::is_native_tx(tx.bytes[0]);
 
-        let Ok(envelope) = TxEnvelope::decode_2718(&mut tx.bytes.as_ref()) else {
-            error!(height = block.height, index = i, %tx_hash, "failed to decode tx for indexing");
-            tx_hashes.push(tx_hash);
-            continue;
-        };
-        let Ok(sender) = envelope.recover_signer() else {
-            error!(height = block.height, index = i, %tx_hash, "failed to recover sender for indexing");
-            tx_hashes.push(tx_hash);
-            continue;
+        let (tx_hash, sender, to, value, gas_limit, gas_price, input, nonce) = if is_native {
+            match NativeTx::decode_wire(&tx.bytes) {
+                Ok(native_tx) => (
+                    native_tx.tx_id().0,
+                    Address::ZERO,
+                    Some(native_tx.target),
+                    U256::ZERO,
+                    0u64,
+                    0u128,
+                    native_tx.calldata.clone(),
+                    native_tx.nonce,
+                ),
+                Err(e) => {
+                    let fallback_hash = keccak256(&tx.bytes);
+                    error!(height = block.height, index = i, %fallback_hash, error = %e, "failed to decode native tx for indexing");
+                    tx_hashes.push(fallback_hash);
+                    continue;
+                }
+            }
+        } else {
+            let evm_hash = keccak256(&tx.bytes);
+            let Ok(envelope) = TxEnvelope::decode_2718(&mut tx.bytes.as_ref()) else {
+                error!(height = block.height, index = i, %evm_hash, "failed to decode tx for indexing");
+                tx_hashes.push(evm_hash);
+                continue;
+            };
+            let Ok(sender) = envelope.recover_signer() else {
+                error!(height = block.height, index = i, %evm_hash, "failed to recover sender for indexing");
+                tx_hashes.push(evm_hash);
+                continue;
+            };
+            (
+                evm_hash,
+                sender,
+                envelope.to(),
+                envelope.value(),
+                envelope.gas_limit(),
+                envelope
+                    .gas_price()
+                    .unwrap_or_else(|| envelope.max_fee_per_gas()),
+                envelope.input().clone(),
+                envelope.nonce(),
+            )
         };
 
         tx_hashes.push(tx_hash);
@@ -387,14 +421,12 @@ fn index_finalized_block<P: BlockContextProvider>(
             block_number: block.height,
             transaction_index: i as u64,
             from: sender,
-            to: envelope.to(),
-            value: envelope.value(),
-            gas_limit: envelope.gas_limit(),
-            gas_price: envelope
-                .gas_price()
-                .unwrap_or_else(|| envelope.max_fee_per_gas()),
-            input: envelope.input().clone(),
-            nonce: envelope.nonce(),
+            to,
+            value,
+            gas_limit,
+            gas_price,
+            input,
+            nonce,
         });
 
         if let Some(receipt) = receipts.get(i) {
@@ -423,7 +455,7 @@ fn index_finalized_block<P: BlockContextProvider>(
                 block_number: block.height,
                 transaction_index: i as u64,
                 from: sender,
-                to: envelope.to(),
+                to,
                 cumulative_gas_used: receipt.cumulative_gas_used(),
                 gas_used: receipt.gas_used,
                 contract_address: receipt.contract_address,

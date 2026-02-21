@@ -1,6 +1,8 @@
 //! HubExecutor — EVM executor with hub precompiles (ACP, Bulletin, Hub)
 //! and native BLS transaction support.
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
+
 use crate::{
     BlockContext, BlockExecutor, ExecutionConfig, ExecutionError, ExecutionOutcome,
     ExecutionReceipt, StateDbAdapter, build_receipt, decode_evm_tx, extract_changes,
@@ -122,26 +124,39 @@ impl HubExecutor {
             return Err(ExecutionError::UnknownNativeTarget(native_tx.target));
         }
 
-        let tx_hash = keccak256(tx_bytes);
+        let tx_hash = native_tx.tx_id().0;
         let tx_ctx = TxExecCtx {
             tx_hash: tx_hash.to_vec(),
             signer: signer_did,
         };
 
-        let precompile_result = dispatch_to_module(
-            acp,
-            bulletin,
-            hub,
-            native_tx.target,
-            &native_tx.calldata,
-            block_ctx,
-            &tx_ctx,
-            NATIVE_TX_GAS_LIMIT,
-        )
-        .expect("target validated above");
+        let dispatch_result = catch_unwind(AssertUnwindSafe(|| {
+            dispatch_to_module(
+                acp,
+                bulletin,
+                hub,
+                native_tx.target,
+                &native_tx.calldata,
+                block_ctx,
+                &tx_ctx,
+                NATIVE_TX_GAS_LIMIT,
+            )
+            .expect("target validated above")
+        }));
 
-        match precompile_result {
-            Ok(output) => Ok(ExecutionReceipt::new(
+        let failed_receipt = || {
+            ExecutionReceipt::new(
+                tx_hash,
+                false,
+                NATIVE_TX_GAS_LIMIT,
+                0, // cumulative gas set by caller
+                vec![],
+                None,
+            )
+        };
+
+        match dispatch_result {
+            Ok(Ok(output)) => Ok(ExecutionReceipt::new(
                 tx_hash,
                 !output.reverted,
                 output.gas_used,
@@ -149,14 +164,11 @@ impl HubExecutor {
                 vec![],
                 None,
             )),
-            Err(_) => Ok(ExecutionReceipt::new(
-                tx_hash,
-                false,
-                NATIVE_TX_GAS_LIMIT,
-                0, // cumulative gas set by caller
-                vec![],
-                None,
-            )),
+            Ok(Err(_)) => Ok(failed_receipt()),
+            Err(_) => {
+                warn!(%tx_hash, "native tx module panicked");
+                Ok(failed_receipt())
+            }
         }
     }
 
@@ -620,7 +632,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "not yet implemented")]
     fn native_tx_dispatches_to_module() {
         use alloy_sol_types::SolCall;
         use ark_bls12_381::{Fr, G1Affine, G1Projective};
@@ -661,14 +672,20 @@ mod tests {
         let mut hub = HubModule::new();
         let mut nonces = NativeNonceStore::default();
 
-        // Passes BLS verification and nonce check, reaches module.query_params() → todo!()
-        let _result = executor.execute_native_tx(
-            &wire,
-            &block_ctx,
-            &mut acp,
-            &mut bulletin,
-            &mut hub,
-            &mut nonces,
+        // Passes BLS verification and nonce check, reaches module — panic caught as failed receipt
+        let receipt = executor
+            .execute_native_tx(
+                &wire,
+                &block_ctx,
+                &mut acp,
+                &mut bulletin,
+                &mut hub,
+                &mut nonces,
+            )
+            .unwrap();
+        assert!(
+            !receipt.success(),
+            "unimplemented module should produce failed receipt"
         );
     }
 
