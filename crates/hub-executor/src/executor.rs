@@ -259,8 +259,8 @@ impl<S: StateDb> BlockExecutor<S> for HubExecutor {
 
                 let (tx_env, signer_did) = match decode_evm_tx(tx_bytes, self.config.chain_id) {
                     Ok(r) => r,
-                    Err(e) if building => {
-                        warn!(%tx_hash, ?e, "skipping tx: decode error");
+                    Err(ExecutionError::TxDecode(msg)) if building => {
+                        warn!(%tx_hash, msg, "skipping tx: decode error");
                         continue;
                     }
                     Err(e) => return Err(e),

@@ -35,6 +35,10 @@ pub enum ExecutionError {
     #[error("BLS verification failed: {0}")]
     BlsVerification(String),
 
+    /// secp256k1 signer DID recovery failed.
+    #[error("signer DID recovery failed: {0}")]
+    SignerDidRecovery(String),
+
     /// Native transaction chain ID does not match the executor's configured chain ID.
     #[error("chain ID mismatch: expected {expected}, got {got}")]
     ChainIdMismatch {

@@ -305,10 +305,6 @@ pub fn decode_evm_tx(
     let envelope = TxEnvelope::decode(&mut tx_bytes.as_ref())
         .map_err(|e| ExecutionError::TxDecode(format!("{e}")))?;
 
-    let signer_did =
-        hub_crypto::secp256k1::recover_did(envelope.signature(), &envelope.signature_hash())
-            .map_err(|e| ExecutionError::TxDecode(format!("signer DID: {e}")))?;
-
     let mut builder = revm::context::TxEnv::builder();
 
     match &envelope {
@@ -407,6 +403,10 @@ pub fn decode_evm_tx(
     let tx_env = builder
         .build()
         .map_err(|e| ExecutionError::TxDecode(format!("failed to build tx env: {e:?}")))?;
+
+    let signer_did =
+        hub_crypto::secp256k1::recover_did(envelope.signature(), &envelope.signature_hash())
+            .map_err(|e| ExecutionError::SignerDidRecovery(e.to_string()))?;
 
     Ok((tx_env, signer_did))
 }
