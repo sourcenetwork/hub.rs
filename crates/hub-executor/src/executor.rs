@@ -3,8 +3,7 @@
 
 use crate::{
     BlockContext, BlockExecutor, ExecutionConfig, ExecutionError, ExecutionOutcome,
-    ExecutionReceipt, StateDbAdapter, build_receipt, decode_tx_env, extract_changes,
-    recover_evm_signer_did,
+    ExecutionReceipt, StateDbAdapter, build_receipt, decode_evm_tx, extract_changes,
 };
 use alloy_primitives::{B256, Bytes, U256, keccak256};
 use hub_crypto::bls;
@@ -258,18 +257,10 @@ impl<S: StateDb> BlockExecutor<S> for HubExecutor {
             } else {
                 let tx_hash = keccak256(tx_bytes);
 
-                let tx_env = match decode_tx_env(tx_bytes, self.config.chain_id) {
-                    Ok(env) => env,
+                let (tx_env, signer_did) = match decode_evm_tx(tx_bytes, self.config.chain_id) {
+                    Ok(r) => r,
                     Err(e) if building => {
                         warn!(%tx_hash, ?e, "skipping tx: decode error");
-                        continue;
-                    }
-                    Err(e) => return Err(e),
-                };
-                let signer_did = match recover_evm_signer_did(tx_bytes) {
-                    Ok(did) => did,
-                    Err(e) if building => {
-                        warn!(%tx_hash, ?e, "skipping tx: signer DID recovery error");
                         continue;
                     }
                     Err(e) => return Err(e),

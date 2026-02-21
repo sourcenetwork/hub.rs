@@ -285,24 +285,38 @@ impl<S: StateDb> BlockExecutor<S> for RevmExecutor {
 /// Currently supports basic transaction decoding for all Ethereum transaction types.
 pub fn decode_tx_env(
     tx_bytes: &Bytes,
-    _chain_id: u64,
+    chain_id: u64,
 ) -> Result<revm::context::TxEnv, ExecutionError> {
+    let (tx_env, _did) = decode_evm_tx(tx_bytes, chain_id)?;
+    Ok(tx_env)
+}
+
+/// Decode EVM transaction bytes, returning both the REVM TxEnv and the signer's `did:key:`.
+///
+/// Single RLP decode + EC recovery pass: builds the TxEnv for REVM execution and
+/// recovers the secp256k1 public key for `did:key:` construction.
+pub fn decode_evm_tx(
+    tx_bytes: &Bytes,
+    _chain_id: u64,
+) -> Result<(revm::context::TxEnv, String), ExecutionError> {
     use alloy_consensus::TxEnvelope;
     use alloy_rlp::Decodable;
 
-    // Decode the transaction envelope
     let envelope = TxEnvelope::decode(&mut tx_bytes.as_ref())
-        .map_err(|e| ExecutionError::TxDecode(format!("{}", e)))?;
+        .map_err(|e| ExecutionError::TxDecode(format!("{e}")))?;
 
-    // Build TxEnv using the builder pattern
+    let signer_did =
+        hub_crypto::secp256k1::recover_did(envelope.signature(), &envelope.signature_hash())
+            .map_err(|e| ExecutionError::TxDecode(format!("signer DID: {e}")))?;
+
     let mut builder = revm::context::TxEnv::builder();
 
     match &envelope {
         TxEnvelope::Legacy(signed) => {
             let tx = signed.tx();
-            let caller = signed.recover_signer().map_err(|e| {
-                ExecutionError::TxDecode(format!("failed to recover signer: {}", e))
-            })?;
+            let caller = signed
+                .recover_signer()
+                .map_err(|e| ExecutionError::TxDecode(format!("failed to recover signer: {e}")))?;
 
             builder = builder
                 .caller(caller)
@@ -316,9 +330,9 @@ pub fn decode_tx_env(
         }
         TxEnvelope::Eip2930(signed) => {
             let tx = signed.tx();
-            let caller = signed.recover_signer().map_err(|e| {
-                ExecutionError::TxDecode(format!("failed to recover signer: {}", e))
-            })?;
+            let caller = signed
+                .recover_signer()
+                .map_err(|e| ExecutionError::TxDecode(format!("failed to recover signer: {e}")))?;
 
             builder = builder
                 .caller(caller)
@@ -333,9 +347,9 @@ pub fn decode_tx_env(
         }
         TxEnvelope::Eip1559(signed) => {
             let tx = signed.tx();
-            let caller = signed.recover_signer().map_err(|e| {
-                ExecutionError::TxDecode(format!("failed to recover signer: {}", e))
-            })?;
+            let caller = signed
+                .recover_signer()
+                .map_err(|e| ExecutionError::TxDecode(format!("failed to recover signer: {e}")))?;
 
             builder = builder
                 .caller(caller)
@@ -351,9 +365,9 @@ pub fn decode_tx_env(
         }
         TxEnvelope::Eip4844(signed) => {
             let tx = signed.tx().tx();
-            let caller = signed.recover_signer().map_err(|e| {
-                ExecutionError::TxDecode(format!("failed to recover signer: {}", e))
-            })?;
+            let caller = signed
+                .recover_signer()
+                .map_err(|e| ExecutionError::TxDecode(format!("failed to recover signer: {e}")))?;
 
             builder = builder
                 .caller(caller)
@@ -371,9 +385,9 @@ pub fn decode_tx_env(
         }
         TxEnvelope::Eip7702(signed) => {
             let tx = signed.tx();
-            let caller = signed.recover_signer().map_err(|e| {
-                ExecutionError::TxDecode(format!("failed to recover signer: {}", e))
-            })?;
+            let caller = signed
+                .recover_signer()
+                .map_err(|e| ExecutionError::TxDecode(format!("failed to recover signer: {e}")))?;
 
             builder = builder
                 .caller(caller)
@@ -390,9 +404,11 @@ pub fn decode_tx_env(
         }
     }
 
-    builder
+    let tx_env = builder
         .build()
-        .map_err(|e| ExecutionError::TxDecode(format!("failed to build tx env: {:?}", e)))
+        .map_err(|e| ExecutionError::TxDecode(format!("failed to build tx env: {e:?}")))?;
+
+    Ok((tx_env, signer_did))
 }
 
 /// Convert alloy TxKind to revm TxKind.
@@ -414,21 +430,6 @@ pub fn convert_access_list(access_list: &alloy_eips::eip2930::AccessList) -> Acc
             })
             .collect(),
     )
-}
-
-/// Recover the signer's `did:key:` from raw EVM transaction bytes.
-///
-/// Decodes the RLP envelope, extracts the ECDSA signature and signing hash,
-/// and recovers the secp256k1 public key to construct a valid `did:key:`.
-pub fn recover_evm_signer_did(tx_bytes: &Bytes) -> Result<String, ExecutionError> {
-    use alloy_consensus::TxEnvelope;
-    use alloy_rlp::Decodable;
-
-    let envelope = TxEnvelope::decode(&mut tx_bytes.as_ref())
-        .map_err(|e| ExecutionError::TxDecode(format!("signer DID decode: {e}")))?;
-
-    hub_crypto::secp256k1::recover_did(envelope.signature(), &envelope.signature_hash())
-        .map_err(|e| ExecutionError::TxDecode(format!("signer DID: {e}")))
 }
 
 /// Convert alloy authorization list to revm authorization list.
