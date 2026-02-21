@@ -8,6 +8,7 @@
 
 mod bls_signer;
 mod client;
+mod document_acp;
 mod error;
 mod native_tx;
 mod query;
@@ -17,6 +18,7 @@ mod types;
 
 pub use bls_signer::BlsSigner;
 pub use client::{ACP_ADDRESS, BULLETIN_ADDRESS, HUB_ADDRESS, HubClient};
+pub use document_acp::HubDocumentACP;
 pub use error::ClientError;
 pub use signer::EvmSigner;
 pub use types::{Log, NodeStatus, TransactionReceipt};

@@ -3261,6 +3261,7 @@ dependencies = [
 name = "hub-client"
 version = "0.1.0"
 dependencies = [
+ "acp",
  "alloy-consensus",
  "alloy-eips",
  "alloy-primitives",
@@ -3272,10 +3273,12 @@ dependencies = [
  "ark-ff 0.4.2",
  "ark-serialize 0.4.2",
  "ark-std 0.4.0",
+ "async-trait",
  "hex",
  "hub-crypto",
  "hub-domain",
  "hub-modules",
+ "identity",
  "k256",
  "rand 0.8.5",
  "reqwest",
