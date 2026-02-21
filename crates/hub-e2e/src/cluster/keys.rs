@@ -286,7 +286,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let node_dir = dir.path().join("node0");
 
-        keys.write_to(&[node_dir.clone()]).unwrap();
+        keys.write_to(std::slice::from_ref(&node_dir)).unwrap();
 
         assert!(node_dir.join("validator.key").exists());
         assert!(!node_dir.join("output.json").exists());

@@ -3383,6 +3383,7 @@ dependencies = [
  "commonware-cryptography",
  "eyre",
  "hex",
+ "hub-client",
  "hub-config",
  "hub-crypto",
  "hub-genesis",
