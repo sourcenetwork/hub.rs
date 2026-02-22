@@ -10,7 +10,9 @@ use async_trait::async_trait;
 use hub_indexer::{BlockIndex, IndexedBlock, IndexedReceipt, IndexedTransaction, LogFilter};
 use hub_traits::{StateDbError, StateDbRead};
 
-use hub_executor::{SimulateRequest, estimate_gas as executor_estimate_gas, simulate_call};
+use hub_executor::{
+    SharedModuleState, SimulateRequest, estimate_gas as executor_estimate_gas, simulate_call,
+};
 
 use crate::{
     error::RpcError,
@@ -32,6 +34,7 @@ pub struct IndexedStateProvider<S> {
     state: S,
     chain_id: u64,
     block_gas_limit: u64,
+    modules: SharedModuleState,
 }
 
 impl<S> IndexedStateProvider<S> {
@@ -42,12 +45,14 @@ impl<S> IndexedStateProvider<S> {
         state: S,
         chain_id: u64,
         block_gas_limit: u64,
+        modules: SharedModuleState,
     ) -> Self {
         Self {
             index,
             state,
             chain_id,
             block_gas_limit,
+            modules,
         }
     }
 }
@@ -59,6 +64,7 @@ impl<S: Clone> Clone for IndexedStateProvider<S> {
             state: self.state.clone(),
             chain_id: self.chain_id,
             block_gas_limit: self.block_gas_limit,
+            modules: Arc::clone(&self.modules),
         }
     }
 }
@@ -192,13 +198,19 @@ impl<S: StateDbRead + Send + Sync + 'static> StateProvider for IndexedStateProvi
     ) -> Result<Bytes, RpcError> {
         reject_historical_block(&block)?;
         let sim_request = call_request_to_simulate(&request);
+        let modules = self
+            .modules
+            .read()
+            .map_err(|_| RpcError::Internal("lock poisoned".to_string()))?;
         let result = simulate_call(
             &self.state,
             self.chain_id,
             &sim_request,
             self.block_gas_limit,
+            Some(&*modules),
         )
         .map_err(|e| RpcError::ExecutionFailed(e.to_string()))?;
+        drop(modules);
         if result.success {
             Ok(result.output)
         } else {
@@ -215,11 +227,16 @@ impl<S: StateDbRead + Send + Sync + 'static> StateProvider for IndexedStateProvi
     ) -> Result<u64, RpcError> {
         reject_historical_block(&block)?;
         let sim_request = call_request_to_simulate(&request);
+        let modules = self
+            .modules
+            .read()
+            .map_err(|_| RpcError::Internal("lock poisoned".to_string()))?;
         executor_estimate_gas(
             &self.state,
             self.chain_id,
             &sim_request,
             self.block_gas_limit,
+            Some(&*modules),
         )
         .map_err(|e| RpcError::ExecutionFailed(e.to_string()))
     }
@@ -370,9 +387,16 @@ fn indexed_receipt_to_rpc(receipt: IndexedReceipt) -> RpcTransactionReceipt {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::RwLock;
+
+    use hub_executor::ModuleState;
     use hub_indexer::IndexedLog;
 
     use super::*;
+
+    fn default_modules() -> SharedModuleState {
+        Arc::new(RwLock::new(ModuleState::default()))
+    }
 
     #[derive(Clone)]
     struct MockState;
@@ -458,7 +482,8 @@ mod tests {
     #[tokio::test]
     async fn test_balance() {
         let index = Arc::new(BlockIndex::new());
-        let provider = IndexedStateProvider::new(index, MockState, 1, 30_000_000);
+        let provider =
+            IndexedStateProvider::new(index, MockState, 1, 30_000_000, default_modules());
 
         let balance = provider.balance(Address::ZERO, None).await.unwrap();
         assert_eq!(balance, U256::from(1000));
@@ -467,7 +492,8 @@ mod tests {
     #[tokio::test]
     async fn test_nonce() {
         let index = Arc::new(BlockIndex::new());
-        let provider = IndexedStateProvider::new(index, MockState, 1, 30_000_000);
+        let provider =
+            IndexedStateProvider::new(index, MockState, 1, 30_000_000, default_modules());
 
         let nonce = provider.nonce(Address::ZERO, None).await.unwrap();
         assert_eq!(nonce, 42);
@@ -479,7 +505,8 @@ mod tests {
         let block_hash = B256::repeat_byte(1);
         index.insert_block(create_test_block(1, block_hash), vec![], vec![]);
 
-        let provider = IndexedStateProvider::new(index, MockState, 1, 30_000_000);
+        let provider =
+            IndexedStateProvider::new(index, MockState, 1, 30_000_000, default_modules());
 
         let block = provider
             .block_by_number(BlockNumberOrTag::Number(U64::from(1)))
@@ -495,7 +522,8 @@ mod tests {
         let block_hash = B256::repeat_byte(1);
         index.insert_block(create_test_block(1, block_hash), vec![], vec![]);
 
-        let provider = IndexedStateProvider::new(index, MockState, 1, 30_000_000);
+        let provider =
+            IndexedStateProvider::new(index, MockState, 1, 30_000_000, default_modules());
 
         let block = provider.block_by_hash(block_hash).await.unwrap();
         assert!(block.is_some());
@@ -513,7 +541,8 @@ mod tests {
             vec![],
         );
 
-        let provider = IndexedStateProvider::new(index, MockState, 1, 30_000_000);
+        let provider =
+            IndexedStateProvider::new(index, MockState, 1, 30_000_000, default_modules());
 
         let tx = provider.transaction_by_hash(tx_hash).await.unwrap();
         assert!(tx.is_some());
@@ -531,7 +560,8 @@ mod tests {
             vec![create_test_receipt(tx_hash, block_hash, 1)],
         );
 
-        let provider = IndexedStateProvider::new(index, MockState, 1, 30_000_000);
+        let provider =
+            IndexedStateProvider::new(index, MockState, 1, 30_000_000, default_modules());
 
         let receipt = provider.receipt_by_hash(tx_hash).await.unwrap();
         assert!(receipt.is_some());
@@ -545,7 +575,8 @@ mod tests {
         let index = Arc::new(BlockIndex::new());
         index.insert_block(create_test_block(5, B256::repeat_byte(5)), vec![], vec![]);
 
-        let provider = IndexedStateProvider::new(index, MockState, 1, 30_000_000);
+        let provider =
+            IndexedStateProvider::new(index, MockState, 1, 30_000_000, default_modules());
 
         let num = provider.block_number().await.unwrap();
         assert_eq!(num, 5);
@@ -556,7 +587,8 @@ mod tests {
         let index = Arc::new(BlockIndex::new());
         index.insert_block(create_test_block(10, B256::repeat_byte(10)), vec![], vec![]);
 
-        let provider = IndexedStateProvider::new(index, MockState, 1, 30_000_000);
+        let provider =
+            IndexedStateProvider::new(index, MockState, 1, 30_000_000, default_modules());
 
         let block = provider
             .block_by_number(BlockNumberOrTag::Tag(BlockTag::Latest))

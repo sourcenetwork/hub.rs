@@ -7,7 +7,7 @@ use alloy_primitives as _;
 mod borsh_did;
 /// Shared key encoding helpers (length prefix, sanitization).
 pub mod key_encoding;
-/// Shared module state container for block-scoped execution.
+/// Shared module state container.
 pub mod module_state;
 /// Shared types used across modules (Timestamp, Duration).
 pub mod types;

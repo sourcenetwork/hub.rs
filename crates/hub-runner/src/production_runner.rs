@@ -1,4 +1,5 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use alloy_consensus::Header;
 use alloy_primitives::{Address, B256};
@@ -16,7 +17,7 @@ use commonware_runtime::{Metrics as _, Spawner, buffer::paged::CacheRef, tokio};
 use commonware_utils::{NZU64, NZUsize, acknowledgement::Exact};
 use futures::StreamExt;
 use hub_domain::{Block, BlockCfg, BootstrapConfig, ConsensusDigest, LedgerEvent, TxCfg};
-use hub_executor::{BlockContext, RevmExecutor};
+use hub_executor::{BlockContext, ModuleState, RevmExecutor, SharedModuleState};
 use hub_indexer::BlockIndex;
 use hub_jsonrpc::IndexedStateProvider;
 use hub_ledger::{LedgerService, LedgerView};
@@ -228,6 +229,7 @@ impl NodeRunner for ProductionRunner {
         let (heads_tx, _) = ::tokio::sync::broadcast::channel::<hub_jsonrpc::RpcBlock>(64);
         let (logs_tx, _) = ::tokio::sync::broadcast::channel::<Vec<hub_jsonrpc::RpcLog>>(256);
 
+        let modules: SharedModuleState = Arc::new(RwLock::new(ModuleState::default()));
         let executor = RevmExecutor::new(self.chain_id);
         let context_provider = RevmContextProvider {
             gas_limit: self.gas_limit,
@@ -350,8 +352,13 @@ impl NodeRunner for ProductionRunner {
         // FinalizedReporter writes indexed blocks; IndexedStateProvider reads them for RPC.
         if let Some((node_state, addr)) = &self.rpc_config {
             let qmdb_state = ledger.qmdb_state().await;
-            let provider =
-                IndexedStateProvider::new(block_index, qmdb_state, self.chain_id, self.gas_limit);
+            let provider = IndexedStateProvider::new(
+                block_index,
+                qmdb_state,
+                self.chain_id,
+                self.gas_limit,
+                modules.clone(),
+            );
             let rpc = hub_jsonrpc::RpcServer::with_state_provider(
                 node_state.clone(),
                 *addr,
