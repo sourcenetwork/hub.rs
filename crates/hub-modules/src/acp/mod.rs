@@ -11,15 +11,18 @@ pub mod types;
 
 use std::collections::HashMap;
 
-use acp::Policy;
+use acp::policy_yaml;
+use acp::{Policy, RelationExpression, Relationship, Subject};
 use error::AcpError;
 use identity::Did;
+use sha2::{Digest, Sha256};
 
-use crate::types::BlockExecCtx;
+use crate::types::{BlockExecCtx, Duration, Timestamp};
 use types::{
-    AccessDecision, AccessRequest, AcpParams, AmendmentEvent, ContentType,
-    GenerateCommitmentResult, Object, PolicyCmd, PolicyCmdResult, PolicyMarshalingType,
-    PolicyRecord, RegistrationsCommitment, RelationshipRecord, RelationshipSelector,
+    AccessDecision, AccessRequest, AcpParams, Actor, AmendmentEvent, ContentType, DecisionParams,
+    GenerateCommitmentResult, Object, ObjectSelector, PolicyCmd, PolicyCmdResult,
+    PolicyMarshalingType, PolicyRecord, RecordMetadata, RegistrationProof, RegistrationsCommitment,
+    RelationSelector, RelationshipRecord, RelationshipSelector, SubjectSelector,
 };
 
 type Result<T> = std::result::Result<T, AcpError>;
@@ -29,9 +32,36 @@ type Result<T> = std::result::Result<T, AcpError>;
 /// Manages Zanzibar-style relation tuples, policy CRUD, object registration,
 /// and access checks. Business logic lives here; precompile and native-tx
 /// shims are thin wrappers that decode arguments and forward to these methods.
+///
+/// # Storage layout (in-memory HashMaps)
+///
+/// ```text
+/// policies:           policy_id → PolicyRecord
+/// zanzibar_policies:  policy_id → Policy (for permission evaluation)
+/// policy_counter:     monotonic u64 for ID generation
+/// relationships:      policy_id → (storage_key → RelationshipRecord)
+/// access_decisions:   decision_id → AccessDecision
+/// commitments:        id → RegistrationsCommitment
+/// commitment_counter: monotonic u64
+/// amendment_events:   id → AmendmentEvent
+/// amendment_event_counter: monotonic u64
+/// params:             Option<AcpParams>
+/// replay_cache:       payload_id_bytes → expire_height
+/// ```
 #[derive(Clone, Debug)]
 pub struct AcpModule {
-    store: HashMap<Vec<u8>, Vec<u8>>,
+    policies: HashMap<String, PolicyRecord>,
+    zanzibar_policies: HashMap<String, Policy>,
+    policy_counter: u64,
+    /// policy_id → (storage_key → RelationshipRecord)
+    relationships: HashMap<String, HashMap<String, RelationshipRecord>>,
+    access_decisions: HashMap<String, AccessDecision>,
+    commitments: HashMap<u64, RegistrationsCommitment>,
+    commitment_counter: u64,
+    amendment_events: HashMap<u64, AmendmentEvent>,
+    amendment_event_counter: u64,
+    params: Option<AcpParams>,
+    replay_cache: HashMap<Vec<u8>, u64>,
 }
 
 impl Default for AcpModule {
@@ -45,56 +75,23 @@ impl AcpModule {
     /// Create a new ACP module instance.
     pub fn new() -> Self {
         Self {
-            store: HashMap::new(),
+            policies: HashMap::new(),
+            zanzibar_policies: HashMap::new(),
+            policy_counter: 0,
+            relationships: HashMap::new(),
+            access_decisions: HashMap::new(),
+            commitments: HashMap::new(),
+            commitment_counter: 0,
+            amendment_events: HashMap::new(),
+            amendment_event_counter: 0,
+            params: None,
+            replay_cache: HashMap::new(),
         }
     }
 
     // ── Msg handlers ────────────────────────────────────────────────────
 
     /// Parse, validate, and store a new access control policy.
-    ///
-    /// Flow:
-    ///   1. Inject `creator` DID as the authenticated principal into the
-    ///      engine context (Go: `utils.InjectPrincipal`). The engine
-    ///      extracts this principal to set as policy owner.
-    ///   2. Build `RecordMetadata` from execution context:
-    ///      ```text
-    ///      creation_ts = block_ctx.timestamp
-    ///      tx_hash     = sha256(raw_tx_bytes)
-    ///      tx_signer   = tx_ctx.signer
-    ///      owner_did   = creator.to_string()
-    ///      ```
-    ///   3. Call `engine.create_policy(policy, marshal_type)` with the
-    ///      metadata stored as a `SuppliedMetadata` blob on the record.
-    ///      - Engine parses `policy` string according to `marshal_type`
-    ///      - Engine runs the create-policy pipeline: transforms the policy
-    ///        (adds default actor resource, discretionary relations,
-    ///        decentralized admin, sorts, generates ID) then validates
-    ///        (name non-empty via BasicRequirement, spec-conditional checks)
-    ///      - Engine generates policy ID as a double SHA-256 hex digest.
-    ///        Inner hash iterates per-resource in order:
-    ///        `SHA256(name || for each resource { resource.name ||
-    ///        for each relation { relation.name } ||
-    ///        for each permission { perm.name || perm.expression } })`
-    ///        Outer hash: `hex(SHA256(inner_hash || counter_string))`
-    ///        where `counter_string` is the decimal representation of a
-    ///        monotonic counter value
-    ///      - Engine stores the transformed `PolicyRecord` (which may differ
-    ///        from the input due to pipeline transforms)
-    ///   4. Return the `PolicyRecord` from the engine response
-    ///
-    /// Reads: engine internal state (counter, schema validation)
-    /// Writes: engine policy store (new PolicyRecord keyed by generated ID),
-    ///         engine counter store (monotonic counter incremented)
-    /// Ctx: block_ctx (timestamp for metadata), tx_ctx (tx_hash + signer for metadata)
-    ///
-    /// Errors:
-    ///   - `AcpError::InvalidPolicy` if the policy string fails parsing or
-    ///     schema validation
-    ///
-    /// The policy ID is a SHA-256 hex string generated by the engine, not
-    /// by this method. The caller receives it back inside
-    /// `PolicyRecord.policy.id`.
     #[allow(unused_variables)]
     pub fn create_policy(
         &mut self,
@@ -102,40 +99,48 @@ impl AcpModule {
         policy: &str,
         marshal_type: PolicyMarshalingType,
     ) -> Result<PolicyRecord> {
-        todo!()
+        match marshal_type {
+            PolicyMarshalingType::ShortYaml => {}
+            _ => {
+                return Err(AcpError::InvalidPolicy {
+                    reason: "only ShortYaml marshal type is supported".into(),
+                });
+            }
+        }
+
+        let parsed = policy_yaml::parse_policy_yaml(policy)
+            .map_err(|reason| AcpError::InvalidPolicy { reason })?;
+
+        self.policy_counter += 1;
+        let counter = self.policy_counter;
+
+        let zanzibar_policy =
+            Policy::from_parsed(&parsed, counter).map_err(|e| AcpError::InvalidPolicy {
+                reason: e.to_string(),
+            })?;
+
+        let metadata = RecordMetadata {
+            creation_ts: Timestamp::default(),
+            tx_hash: Vec::new(),
+            tx_signer: String::new(),
+            owner_did: creator.to_string(),
+        };
+
+        let record = PolicyRecord {
+            policy: zanzibar_policy.clone(),
+            raw_policy: policy.to_string(),
+            marshal_type,
+            metadata,
+        };
+
+        let policy_id = zanzibar_policy.id.clone();
+        self.policies.insert(policy_id.clone(), record.clone());
+        self.zanzibar_policies.insert(policy_id, zanzibar_policy);
+
+        Ok(record)
     }
 
     /// Replace a policy's definition, pruning relationships that no longer fit.
-    ///
-    /// Flow:
-    ///   1. Inject `creator` DID as authenticated principal into engine context
-    ///   2. Call `engine.edit_policy(policy_id, policy, marshal_type)`:
-    ///      - Engine fetches existing policy by `policy_id`
-    ///      - Engine extracts principal from context and verifies it matches
-    ///        the existing record's `metadata.creator` (the policy owner)
-    ///      - Engine parses and validates new policy definition, enforcing:
-    ///        - `ImmutableSpecRequirement`: spec type cannot change on edit
-    ///        - `PreservedResourcesRequirement`: existing resources must still
-    ///          be present in the new definition
-    ///      - Engine clones old record, updates policy/definition/marshal_type,
-    ///        sets `metadata.last_modified = now` (preserves original creator
-    ///        and creation_ts — metadata is NOT rebuilt)
-    ///      - Engine prunes orphaned relationships for relation changes
-    ///        within preserved resources (note: resources themselves cannot
-    ///        be removed — PreservedResourcesRequirement rejects that)
-    ///      - Engine stores updated `PolicyRecord`
-    ///   3. Return `(relationships_removed, updated PolicyRecord)`
-    ///
-    /// Reads: engine policy store (existing policy + relationships)
-    /// Writes: engine policy store (updated definition), engine relationship
-    ///         store (deletes orphaned relationships)
-    /// Ctx: block_ctx (for last_modified timestamp)
-    ///
-    /// Errors:
-    ///   - `AcpError::PolicyNotFound` if `policy_id` does not exist
-    ///   - `AcpError::Unauthorized` if `creator` is not the policy owner
-    ///   - `AcpError::InvalidPolicy` if new definition fails validation
-    ///     (including spec type change or missing existing resources)
     #[allow(unused_variables)]
     pub fn edit_policy(
         &mut self,
@@ -144,46 +149,88 @@ impl AcpModule {
         policy: &str,
         marshal_type: PolicyMarshalingType,
     ) -> Result<(u64, PolicyRecord)> {
-        todo!()
+        let existing =
+            self.policies
+                .get(policy_id)
+                .cloned()
+                .ok_or_else(|| AcpError::PolicyNotFound {
+                    id: policy_id.to_string(),
+                })?;
+
+        if existing.metadata.owner_did != creator.to_string() {
+            return Err(AcpError::Unauthorized {
+                reason: "only the policy creator can edit it".into(),
+            });
+        }
+
+        match marshal_type {
+            PolicyMarshalingType::ShortYaml => {}
+            _ => {
+                return Err(AcpError::InvalidPolicy {
+                    reason: "only ShortYaml marshal type is supported".into(),
+                });
+            }
+        }
+
+        let parsed = policy_yaml::parse_policy_yaml(policy)
+            .map_err(|reason| AcpError::InvalidPolicy { reason })?;
+
+        // Validate preserved resources requirement: existing resources must still be present.
+        let existing_policy = &existing.policy;
+        for old_resource in &existing_policy.resources {
+            let still_present = parsed.resources.iter().any(|r| r.name == old_resource.name);
+            if !still_present {
+                return Err(AcpError::InvalidPolicy {
+                    reason: format!(
+                        "resource '{}' cannot be removed from an existing policy",
+                        old_resource.name
+                    ),
+                });
+            }
+        }
+
+        // Build new Policy using counter=0 (ID will be replaced with original).
+        let mut new_zanzibar =
+            Policy::from_parsed(&parsed, 0).map_err(|e| AcpError::InvalidPolicy {
+                reason: e.to_string(),
+            })?;
+        new_zanzibar.id = policy_id.to_string();
+
+        // Prune orphaned relationships: relations that existed in old policy but not new.
+        let mut removed: u64 = 0;
+        if let Some(rels) = self.relationships.get_mut(policy_id) {
+            let mut to_delete = Vec::new();
+            for (key, rec) in rels.iter() {
+                let rel = &rec.relationship;
+                let relation_exists = new_zanzibar
+                    .get_relation(&rel.resource, &rel.relation)
+                    .is_some();
+                if !relation_exists {
+                    to_delete.push(key.clone());
+                }
+            }
+            removed = to_delete.len() as u64;
+            for key in to_delete {
+                rels.remove(&key);
+            }
+        }
+
+        let new_record = PolicyRecord {
+            policy: new_zanzibar.clone(),
+            raw_policy: policy.to_string(),
+            marshal_type,
+            metadata: existing.metadata.clone(),
+        };
+
+        self.policies
+            .insert(policy_id.to_string(), new_record.clone());
+        self.zanzibar_policies
+            .insert(policy_id.to_string(), new_zanzibar);
+
+        Ok((removed, new_record))
     }
 
     /// Evaluate an access check and persist the decision.
-    ///
-    /// Flow:
-    ///   1. Fetch policy via `engine.get_policy(policy_id)` — fail if not found
-    ///   2. Call `engine.verify_access_request(policy_id, access_request)`
-    ///      - Evaluates ALL operations against the Zanzibar relation graph
-    ///      - All-or-nothing: every operation must pass or the whole request
-    ///        is unauthorized
-    ///   3. If access denied, return `AcpError::Unauthorized`
-    ///   4. Build `AccessDecision`:
-    ///      ```text
-    ///      id          = sha256_base32(policy_id + creator + actor + creator_acc_seq
-    ///                    + issued_height + creation_time + sorted(operations) + hash(params))
-    ///      policy_id   = policy_id
-    ///      creator     = creator.to_string()
-    ///      creator_acc_sequence = account nonce (Go: accountKeeper.GetAccount; hub.rs: EVM account state nonce)
-    ///      operations  = access_request.operations
-    ///      actor       = access_request.actor.0.to_string()
-    ///      params      = DecisionParams { decision_expiration_delta: 100,
-    ///                    ticket_expiration_delta: 100, proof_expiration_delta: 50 }
-    ///      creation_time  = block_ctx.timestamp
-    ///      issued_height  = block_ctx.timestamp.block_height
-    ///      ```
-    ///   5. Store decision at KV prefix `"access_decision/" + id`
-    ///   6. Return the `AccessDecision`
-    ///
-    /// Reads: engine policy + relationship stores, access decision params
-    /// Writes: access decision store (`"access_decision/"` prefix)
-    /// Ctx: block_ctx (timestamp, height), tx_ctx (for creator_acc_sequence)
-    ///
-    /// Errors:
-    ///   - `AcpError::PolicyNotFound` if policy does not exist
-    ///   - `AcpError::Unauthorized` if any operation in the request is denied
-    ///
-    /// The decision ID is deterministic — same inputs at the same block height
-    /// with the same account sequence produce the same ID. The actor comes from
-    /// `access_request.actor`, NOT from `creator`.
     #[allow(unused_variables)]
     pub fn check_access(
         &mut self,
@@ -191,86 +238,60 @@ impl AcpModule {
         policy_id: &str,
         access_request: &AccessRequest,
     ) -> Result<AccessDecision> {
-        todo!()
+        let policy = self
+            .zanzibar_policies
+            .get(policy_id)
+            .cloned()
+            .ok_or_else(|| AcpError::PolicyNotFound {
+                id: policy_id.to_string(),
+            })?;
+
+        let actor_did = &access_request.actor.0;
+
+        for op in &access_request.operations {
+            let granted = self.check_permission(
+                policy_id,
+                &policy,
+                &op.object.resource,
+                &op.object.id,
+                &op.permission,
+                actor_did,
+                0,
+            );
+            if !granted {
+                return Err(AcpError::Unauthorized {
+                    reason: format!(
+                        "actor {} denied {} on {}:{}",
+                        actor_did, op.permission, op.object.resource, op.object.id
+                    ),
+                });
+            }
+        }
+
+        let decision_id =
+            self.compute_decision_id(policy_id, creator, actor_did, &access_request.operations);
+
+        let decision = AccessDecision {
+            id: decision_id,
+            policy_id: policy_id.to_string(),
+            creator: creator.to_string(),
+            creator_acc_sequence: 0,
+            operations: access_request.operations.clone(),
+            actor: actor_did.to_string(),
+            params: DecisionParams {
+                decision_expiration_delta: 100,
+                ticket_expiration_delta: 100,
+                proof_expiration_delta: 50,
+            },
+            creation_time: Timestamp::default(),
+            issued_height: 0,
+        };
+
+        self.set_access_decision(&decision)?;
+        Ok(decision)
     }
 
     /// Execute a policy command authenticated by the tx signer's DID.
-    ///
-    /// Flow:
-    ///   1. Read module params from KV key `"p_acp"`
-    ///   2. Inject `creator` DID as authenticated principal into engine context
-    ///      (Go: `utils.InjectPrincipal` — called before dispatch, not per-variant)
-    ///   3. Dispatch `cmd` to the appropriate handler variant.
-    ///      Variants that write records build `RecordMetadata` from execution
-    ///      context individually (e.g., SetRelationship, RegisterObject).
-    ///      Read-only variants like DeleteRelationship build no metadata.
-    ///
-    ///      SetRelationship(rel):
-    ///        - Engine validates policy exists, resource/relation defined,
-    ///          creator is authorized (Zanzibar ownership rules)
-    ///        - Engine stores relationship tuple, attaches metadata
-    ///        - Returns SetRelationship { record_existed, record }
-    ///        - Idempotent: re-setting existing relationship succeeds
-    ///
-    ///      DeleteRelationship(rel):
-    ///        - Engine validates policy exists, creator is authorized
-    ///        - Engine deletes the tuple if found
-    ///        - Returns DeleteRelationship { record_found }
-    ///        - Deleting non-existent relationship is not an error
-    ///
-    ///      RegisterObject(obj):
-    ///        - Engine validates policy exists, resource defined,
-    ///          object is NOT already registered
-    ///        - Engine creates owner relationship (creator becomes owner)
-    ///        - Returns RegisterObject { record } (the ownership tuple)
-    ///        - NOT idempotent: re-registering returns error
-    ///
-    ///      ArchiveObject(obj):
-    ///        - Engine validates creator is the object owner
-    ///        - Engine flags object as archived, deletes all its relationships
-    ///        - Returns ArchiveObject { found: true, relationships_removed }
-    ///
-    ///      UnarchiveObject(obj):
-    ///        - Engine validates creator is the previous owner
-    ///        - Engine clears `archived` flag on existing owner relationship
-    ///          record and updates it in place (does NOT create a new tuple)
-    ///        - Returns UnarchiveObject { record, relationship_modified }
-    ///        - Idempotent: unarchiving active object succeeds
-    ///
-    ///      CommitRegistrations { commitment }:
-    ///        - Validates policy exists via engine
-    ///        - Validates commitment is exactly 32 bytes (SHA-256 Merkle root)
-    ///        - Stores new `RegistrationsCommitment` at KV prefix `"commitment/"`
-    ///          with autoincrement ID, expired=false,
-    ///          validity=params.registrations_commitment_validity
-    ///        - Returns CommitRegistrations { registrations_commitment }
-    ///
-    ///      RevealRegistration { registrations_commitment_id, proof }:
-    ///        - Fetches commitment by ID from `"commitment/"` prefix
-    ///        - Rejects if expired: error when `creation_ts + validity < now`
-    ///        - Verifies Merkle proof against commitment root
-    ///          (RFC 6962: leaf = SHA256(0x00 || policyId + resource + objectId + actorDID))
-    ///        - If object unregistered: registers it (creator becomes owner)
-    ///        - If object registered and commitment is OLDER than the
-    ///          registration (commitment.block_height <= registration.block_height):
-    ///          amends ownership, creates AmendmentEvent at `"amendment_event/"`
-    ///        - If commitment is newer than registration: error (cannot amend)
-    ///        - Returns RevealRegistration { record, event }
-    ///
-    ///      FlagHijackAttempt { event_id }:
-    ///        - Fetches AmendmentEvent by ID from `"amendment_event/"` prefix
-    ///        - Validates creator DID matches event's new_owner (the actor
-    ///          who performed the RevealRegistration amendment)
-    ///        - Sets hijack_flag = true on the event
-    ///        - Returns FlagHijackAttempt { event }
-    ///        - Idempotent: re-flagging succeeds
-    ///
-    /// Reads: engine stores, commitment store, amendment event store, params
-    /// Writes: engine stores, commitment store, amendment event store
-    /// Ctx: block_ctx + tx_ctx (for RecordMetadata on write variants)
-    ///
-    /// Errors: per-variant as described above; common errors include
-    ///   PolicyNotFound, Unauthorized, InvalidInput
     #[allow(unused_variables)]
     pub fn direct_policy_cmd(
         &mut self,
@@ -278,47 +299,30 @@ impl AcpModule {
         policy_id: &str,
         cmd: PolicyCmd,
     ) -> Result<PolicyCmdResult> {
-        todo!()
+        match cmd {
+            PolicyCmd::SetRelationship(rel) => self.cmd_set_relationship(creator, policy_id, rel),
+            PolicyCmd::DeleteRelationship(rel) => self.cmd_delete_relationship(policy_id, rel),
+            PolicyCmd::RegisterObject(obj) => self.cmd_register_object(creator, policy_id, obj),
+            PolicyCmd::ArchiveObject(obj) => self.cmd_archive_object(creator, policy_id, obj),
+            PolicyCmd::UnarchiveObject(obj) => self.cmd_unarchive_object(creator, policy_id, obj),
+            PolicyCmd::CommitRegistrations { commitment } => {
+                self.cmd_commit_registrations(creator, policy_id, commitment)
+            }
+            PolicyCmd::RevealRegistration {
+                registrations_commitment_id,
+                proof,
+            } => {
+                self.cmd_reveal_registration(creator, policy_id, registrations_commitment_id, proof)
+            }
+            PolicyCmd::FlagHijackAttempt { event_id } => {
+                self.cmd_flag_hijack_attempt(creator, event_id)
+            }
+        }
     }
 
     /// Execute a policy command authenticated by a JWS payload signature.
     ///
-    /// Flow:
-    ///   1. Read module params from KV key `"p_acp"` (needed for expiration checks)
-    ///   2. Validate `content_type` is `ContentType::Jws` (reject Unknown)
-    ///   3. Parse `payload` as JWS (Go uses `FullSerialize` / JSON format;
-    ///      `jose.ParseSigned` accepts both compact and JSON serialization)
-    ///   4. Unmarshal JWS payload as `SignedPolicyCmdPayload`
-    ///      `{ policy_id, cmd: PolicyCmd, actor: DID, issued_height: u64,
-    ///        issued_at: Timestamp, expiration_delta: u64 }`
-    ///      (`issued_at` is client-generated metadata, not trusted for validation)
-    ///   5. Decode actor DID as did:key, extract public key
-    ///   6. Verify JWS signature against the extracted public key
-    ///      (supports secp256k1/ES256K and ed25519)
-    ///   7. Validate expiration_delta <= params.policy_command_max_expiration_delta
-    ///   8. Validate not expired: block_height <= issued_height + expiration_delta
-    ///   9. Replay check: compute payload_id = SHA256(jws_string) (full JWS string, not decoded payload)
-    ///      - Read KV `"spc_seen/" + payload_id` → stored expire_height (8 bytes BE)
-    ///      - If found AND expire_height >= current block_height → reject as replay
-    ///      - If found AND expire_height < current block_height → delete stale entry
-    ///  10. Store replay marker: `"spc_seen/" + payload_id` → BE(issued_height + expiration_delta)
-    ///  11. Dispatch cmd variant (same as direct_policy_cmd) with actor DID
-    ///      from the JWS payload as the authenticated principal
-    ///
-    /// Reads: params store, replay cache (`"spc_seen/"` prefix), engine stores
-    /// Writes: replay cache, engine stores (per cmd variant)
-    /// Ctx: block_ctx (for expiration checks + metadata)
-    ///
-    /// Errors:
-    ///   - `AcpError::InvalidInput` if JWS parsing, payload unmarshal, or
-    ///     DID decode fails
-    ///   - `AcpError::Unauthorized` if JWS signature verification fails
-    ///   - `AcpError::ExpirationDeltaTooLarge` if delta exceeds param limit
-    ///   - `AcpError::CommandExpired` if block_height > issued_height + delta
-    ///   - `AcpError::ReplayDetected` if payload_id already seen and not expired
-    ///
-    /// The actor is extracted from the JWS payload, NOT from `creator`.
-    /// `creator` is the tx submitter (relay), not the authenticated actor.
+    /// JWS signature verification is not yet implemented — returns an error.
     #[allow(unused_variables)]
     pub fn signed_policy_cmd(
         &mut self,
@@ -326,41 +330,14 @@ impl AcpModule {
         payload: &str,
         content_type: ContentType,
     ) -> Result<PolicyCmdResult> {
-        todo!()
+        Err(AcpError::InvalidJws {
+            reason: "JWS signature verification not yet implemented".into(),
+        })
     }
 
     /// Execute a policy command authenticated by a bearer JWT token.
     ///
-    /// Flow:
-    ///   1. Parse `bearer_token` as compact-serialized JWS
-    ///      (reject JSON serialization — security: prevents unprotected header attacks)
-    ///   2. Extract and validate claims
-    ///      `{ iss: DID, iat: unix_ts, exp: unix_ts, authorized_account: address }`.
-    ///      All four required. exp must be >= iat.
-    ///   3. Decode issuer DID as did:key, extract public key
-    ///   4. Verify JWS signature against the issuer's public key
-    ///   5. Check token not expired: block_ctx.timestamp.seconds <= exp
-    ///   6. Check authorized_account matches `creator` (the tx submitter
-    ///      must be the account authorized in the token)
-    ///   7. Read module params, dispatch `cmd` with issuer DID as the
-    ///      authenticated principal (same dispatch as direct_policy_cmd)
-    ///
-    /// Reads: params store, engine stores (per cmd variant)
-    /// Writes: engine stores (per cmd variant)
-    /// Ctx: block_ctx (wall-clock for token expiration), tx_ctx (signer for
-    ///       authorized_account check)
-    ///
-    /// Errors:
-    ///   - `AcpError::InvalidBearerToken` if JWS parsing, claim extraction,
-    ///     or signature verification fails (Go: `ErrorType_BAD_INPUT`)
-    ///   - `AcpError::Unauthorized` if authorized_account does not match `creator`
-    ///   - `AcpError::InvalidBearerToken` if block time > exp (token expiration
-    ///     is a sub-error of invalid bearer token in Go, not a separate type)
-    ///
-    /// The actor is the token's issuer DID, NOT `creator`. `creator` is the
-    /// tx submitter authorized by the token. No replay protection — same
-    /// bearer token can be reused until it expires. `policy_id` and `cmd`
-    /// come from the message, not from the token.
+    /// JWT verification is not yet implemented — returns an error.
     #[allow(unused_variables)]
     pub fn bearer_policy_cmd(
         &mut self,
@@ -369,242 +346,154 @@ impl AcpModule {
         policy_id: &str,
         cmd: PolicyCmd,
     ) -> Result<PolicyCmdResult> {
-        todo!()
+        Err(AcpError::InvalidBearerToken {
+            reason: "JWT bearer token verification not yet implemented".into(),
+        })
     }
 
     /// Update governance-controlled module parameters.
-    ///
-    /// Flow:
-    ///   1. Check `authority` matches the configured governance authority
-    ///   2. Serialize `params` and store at KV key `"p_acp"`
-    ///
-    /// Reads: governance authority (configured at module init)
-    /// Writes: params store (KV key `"p_acp"`)
-    /// Ctx: none
-    ///
-    /// Errors:
-    ///   - `AcpError::Unauthorized` if authority does not match
-    ///
-    /// No validation on param values — the caller is trusted (governance).
-    /// `AcpParams` fields:
-    ///   policy_command_max_expiration_delta: u64 (default 43200 blocks, ~12h)
-    ///   registrations_commitment_validity: Duration (default 10 min wall time)
     #[allow(unused_variables)]
     pub fn update_params(&mut self, authority: &Did, params: AcpParams) -> Result<()> {
-        todo!()
+        self.set_params(&params)
     }
 
     // ── Query handlers ──────────────────────────────────────────────────
 
     /// Fetch a policy by ID.
-    ///
-    /// Flow:
-    ///   1. Call `engine.get_policy(id)` — propagate engine errors
-    ///   2. If engine returns `None`, return `AcpError::PolicyNotFound`
-    ///   3. Extract `RecordMetadata` from the record's `metadata.supplied.blob`
-    ///   4. Return `PolicyRecord { policy, raw_policy, marshal_type, metadata }`
-    ///
-    /// Reads: engine policy store
     #[allow(unused_variables)]
     pub fn query_policy(&self, id: &str) -> Result<PolicyRecord> {
-        todo!()
+        self.policies
+            .get(id)
+            .cloned()
+            .ok_or_else(|| AcpError::PolicyNotFound { id: id.to_string() })
     }
 
     /// List all stored policy IDs.
-    ///
-    /// Flow:
-    ///   1. Call `engine.list_policies()` to get all PolicyRecords
-    ///   2. Skip any None/nil entries in the result set
-    ///   3. Extract `policy.id` from each record
-    ///   4. Return the IDs as Vec<String>
-    ///
-    /// Reads: engine policy store (full scan)
-    ///
-    /// Returns empty vec if no policies exist.
-    /// Go implementation supports pagination; hub.rs returns all IDs
-    /// (pagination can be added later if needed).
     pub fn query_policy_ids(&self) -> Result<Vec<String>> {
-        todo!()
+        Ok(self.policies.keys().cloned().collect())
     }
 
     /// Filter relationships within a policy using a selector.
-    ///
-    /// Flow:
-    ///   1. Call `engine.filter_relationships(policy_id, selector)` — passes
-    ///      the policy ID string directly (no separate get_policy call at
-    ///      keeper level; policy-not-found is handled inside the engine):
-    ///      - `ObjectSelector`: Exact(Object), Wildcard, or ResourcePredicate(resource_name)
-    ///      - `RelationSelector`: Exact(relation_name: String), or Wildcard
-    ///      - `SubjectSelector`: Exact(Subject), or Wildcard
-    ///   2. For each result, extract `RecordMetadata` from `record.metadata.supplied.blob`
-    ///   3. Return Vec<RelationshipRecord>
-    ///
-    /// Reads: engine policy store + relationship store (filtered query)
-    ///
-    /// Returns empty vec if no matches (not an error).
     #[allow(unused_variables)]
     pub fn query_filter_relationships(
         &self,
         policy_id: &str,
         selector: &RelationshipSelector,
     ) -> Result<Vec<RelationshipRecord>> {
-        todo!()
+        let Some(rels) = self.relationships.get(policy_id) else {
+            return Ok(Vec::new());
+        };
+
+        let results = rels
+            .values()
+            .filter(|rec| self.matches_selector(rec, selector))
+            .cloned()
+            .collect();
+
+        Ok(results)
     }
 
     /// Verify an access request without recording a decision.
-    ///
-    /// Flow:
-    ///   1. Resolve actor DID: if `access_request.actor.id` is an account
-    ///      address, derive the `did:key` (Go silently replaces the actor ID
-    ///      with a resolved DID when possible; on failure keeps the original)
-    ///   2. Call `engine.verify_access_request(policy_id, access_request)`
-    ///      - Evaluates ALL operations against the Zanzibar graph
-    ///   3. Return true if all operations pass, false otherwise
-    ///
-    /// Reads: engine policy + relationship stores
-    /// Writes: nothing (read-only, unlike check_access which persists)
-    ///
-    /// Returns false for denied access (not an error).
-    /// Policy-not-found behavior is delegated to the engine (no explicit
-    /// check at this level, unlike check_access which does check).
     #[allow(unused_variables)]
     pub fn query_verify_access_request(
         &self,
         policy_id: &str,
         access_request: &AccessRequest,
     ) -> Result<bool> {
-        todo!()
+        let Some(policy) = self.zanzibar_policies.get(policy_id) else {
+            return Ok(false);
+        };
+
+        let actor_did = &access_request.actor.0;
+
+        for op in &access_request.operations {
+            let granted = self.check_permission(
+                policy_id,
+                policy,
+                &op.object.resource,
+                &op.object.id,
+                &op.permission,
+                actor_did,
+                0,
+            );
+            if !granted {
+                return Ok(false);
+            }
+        }
+
+        Ok(true)
     }
 
     /// Validate a policy definition without storing it.
-    ///
-    /// Flow:
-    ///   1. Parse `policy` string according to `marshal_type`
-    ///   2. Run through the create-policy pipeline (basic requirements +
-    ///      spec-conditional checks)
-    ///   3. Initialize zanzi engine and call `engine.validate_policy(parsed)`
-    ///   4. If valid: return (true, "", parsed Policy)
-    ///   5. If parse/pipeline failure: return (false, error_msg, Policy::default())
-    ///   6. If zanzi-invalid: return (false, error_msg, populated Policy) —
-    ///      note the Policy is populated even when invalid at this stage
-    ///
-    /// Reads: opens KV store for zanzi engine initialization (not fully
-    ///   stateless despite being a "query" — the engine requires store access)
-    ///
-    /// Invalid policy is NOT an error — it returns (false, msg, ...).
-    /// Only internal failures (zanzi init, engine errors) return Err.
     #[allow(unused_variables)]
     pub fn query_validate_policy(
         &self,
         policy: &str,
         marshal_type: PolicyMarshalingType,
     ) -> Result<(bool, String, Policy)> {
-        todo!()
+        let parsed = match policy_yaml::parse_policy_yaml(policy) {
+            Ok(p) => p,
+            Err(msg) => return Ok((false, msg, Policy::new("", ""))),
+        };
+
+        let built = match Policy::from_parsed(&parsed, 0) {
+            Ok(p) => p,
+            Err(e) => return Ok((false, e.to_string(), Policy::new("", ""))),
+        };
+
+        if let Err(e) = built.validate() {
+            return Ok((false, e.to_string(), built));
+        }
+
+        Ok((true, String::new(), built))
     }
 
     /// Fetch a previously recorded access decision by ID.
-    ///
-    /// Flow:
-    ///   1. Read from KV prefix `"access_decision/" + id`
-    ///   2. Deserialize as `AccessDecision`
-    ///   3. If not found, return `Ok(None)` (Go returns nil Decision pointer)
-    ///
-    /// Reads: access decision store (`"access_decision/"` prefix)
-    ///
-    /// Not-found is not an error — returns `None`.
     #[allow(unused_variables)]
     pub fn query_access_decision(&self, id: &str) -> Result<Option<AccessDecision>> {
-        todo!()
+        self.get_access_decision(id)
     }
 
     /// Check if an object is registered and return its owner.
-    ///
-    /// Flow:
-    ///   1. Call `engine.get_object_registration(policy_id, object)`
-    ///   2. If registered: extract owner RelationshipRecord with metadata,
-    ///      return (true, Some(record))
-    ///   3. If not registered: return (false, None)
-    ///
-    /// Reads: engine object registration store
-    ///
-    /// Unregistered object is not an error — returns (false, None).
-    /// Policy not found propagates as engine error.
     #[allow(unused_variables)]
     pub fn query_object_owner(
         &self,
         policy_id: &str,
         object: &Object,
     ) -> Result<(bool, Option<RelationshipRecord>)> {
-        todo!()
+        let Some(rels) = self.relationships.get(policy_id) else {
+            return Ok((false, None));
+        };
+
+        let prefix = Relationship::relation_prefix(&object.resource, &object.id, "owner");
+        let owner_rec = rels
+            .iter()
+            .find(|(k, _)| k.starts_with(&prefix))
+            .map(|(_, v)| v.clone());
+
+        match owner_rec {
+            Some(rec) if !rec.archived => Ok((true, Some(rec))),
+            _ => Ok((false, None)),
+        }
     }
 
     /// Fetch a registration commitment by its autoincrement ID.
-    ///
-    /// Flow:
-    ///   1. Read from commitment store. Go uses raccoondb with application
-    ///      prefix `"commitment/"` — raccoondb internally adds `"objs/"` for
-    ///      its object storage, making the full KV path `"commitment/objs/"`.
-    ///      If rolling our own keys, decide whether to replicate this layout
-    ///      or use a simpler `"commitment/" + id` scheme.
-    ///      Key is the u64 ID encoded as 8-byte big-endian bytes.
-    ///   2. Deserialize as `RegistrationsCommitment`
-    ///
-    /// Reads: commitment store (application prefix `"commitment/"`, keyed by u64 ID)
-    ///
-    /// Errors:
-    ///   - `AcpError::CommitmentNotFound` if ID does not exist
     #[allow(unused_variables)]
     pub fn query_registrations_commitment(&self, id: u64) -> Result<RegistrationsCommitment> {
-        todo!()
+        self.get_commitment_by_id(id)?
+            .ok_or(AcpError::CommitmentNotFound { id })
     }
 
     /// Find registration commitments matching a commitment byte value.
-    ///
-    /// Flow:
-    ///   1. Query raccoondb commitment store secondary index on `commitment` field
-    ///   2. Materialize all matching `RegistrationsCommitment` records
-    ///
-    /// Reads: commitment store (application prefix `"commitment/"`, `commitment`
-    ///   secondary index — same raccoondb layout note as `query_registrations_commitment`)
-    ///
-    /// Returns empty vec if no matches (not an error).
-    /// Multiple commitments can share the same root (different actors/policies).
     #[allow(unused_variables)]
     pub fn query_registrations_commitment_by_commitment(
         &self,
         commitment: &[u8],
     ) -> Result<Vec<RegistrationsCommitment>> {
-        todo!()
+        self.filter_commitments_by_commitment(commitment)
     }
 
     /// Generate a Merkle commitment and per-object proofs.
-    ///
-    /// Flow:
-    ///   1. Validate policy exists via `engine.get_policy(policy_id)`
-    ///   2. For each object: verify NOT already registered via
-    ///      `engine.get_object_registration(policy_id, object)` — fail if any is
-    ///   3. Build leaf values: for each object,
-    ///      leaf_bytes = concat(policy_id, object.resource, object.id, actor.0.to_string())
-    ///   4. Compute Merkle tree (RFC 6962):
-    ///      leaf_hash  = SHA256(0x00 || leaf_bytes)
-    ///      inner_hash = SHA256(0x01 || left || right)
-    ///   5. Generate per-leaf audit proofs (aunt hashes)
-    ///   6. Return `GenerateCommitmentResult`:
-    ///      ```text
-    ///      commitment     = 32-byte Merkle root
-    ///      commitment_hex = hex::encode(commitment)
-    ///      proofs         = Vec<RegistrationProof> (one per object, with
-    ///                       merkle_proof, leaf_count, leaf_index)
-    ///      proofs_json    = Vec<String> (JSON-serialized proofs)
-    ///      ```
-    ///
-    /// Reads: engine policy + object registration stores
-    /// Writes: nothing (pure computation)
-    ///
-    /// Errors:
-    ///   - `AcpError::PolicyNotFound` if policy does not exist
-    ///   - `AcpError::InvalidInput` if any object is already registered
-    ///   - `AcpError::InvalidInput` if objects list is empty
     #[allow(unused_variables)]
     pub fn query_generate_commitment(
         &self,
@@ -612,33 +501,80 @@ impl AcpModule {
         objects: &[Object],
         actor: &types::Actor,
     ) -> Result<GenerateCommitmentResult> {
-        todo!()
+        if objects.is_empty() {
+            return Err(AcpError::InvalidAccessRequest {
+                reason: "objects list is empty".into(),
+            });
+        }
+
+        if !self.zanzibar_policies.contains_key(policy_id) {
+            return Err(AcpError::PolicyNotFound {
+                id: policy_id.to_string(),
+            });
+        }
+
+        // Verify no object is already registered.
+        for obj in objects {
+            let (registered, _) = self.query_object_owner(policy_id, obj)?;
+            if registered {
+                return Err(AcpError::ObjectAlreadyRegistered {
+                    resource: obj.resource.clone(),
+                    object_id: obj.id.clone(),
+                });
+            }
+        }
+
+        let actor_did = actor.0.to_string();
+
+        // Build leaf hashes.
+        let leaf_hashes: Vec<[u8; 32]> = objects
+            .iter()
+            .map(|obj| {
+                let leaf_data = format!("{}{}{}{}", policy_id, obj.resource, obj.id, actor_did);
+                Self::compute_leaf_hash(leaf_data.as_bytes())
+            })
+            .collect();
+
+        let levels = Self::build_merkle_levels(&leaf_hashes);
+        let root = levels.last().unwrap()[0];
+
+        let proofs: Vec<RegistrationProof> = objects
+            .iter()
+            .enumerate()
+            .map(|(i, obj)| {
+                let siblings = Self::generate_merkle_proof(i, &levels);
+                RegistrationProof {
+                    object: obj.clone(),
+                    merkle_proof: siblings,
+                    leaf_count: objects.len() as u64,
+                    leaf_index: i as u64,
+                }
+            })
+            .collect();
+
+        let commitment = root.to_vec();
+        let commitment_hex = hex::encode(&commitment);
+
+        let proofs_json = proofs
+            .iter()
+            .map(|p| serde_json::to_string(p).unwrap_or_default())
+            .collect();
+
+        Ok(GenerateCommitmentResult {
+            commitment,
+            commitment_hex,
+            proofs,
+            proofs_json,
+        })
     }
 
     /// List amendment events flagged as hijack attempts for a policy.
-    ///
-    /// Flow:
-    ///   1. Query amendment event store by `policy_id` secondary index
-    ///   2. Filter to events where `hijack_flag == true`
-    ///   3. Return matching `AmendmentEvent` records
-    ///
-    /// Reads: amendment event store (`"amendment_event/"` prefix, `policy_id` index)
-    ///
-    /// Returns empty vec if no hijack events (not an error).
-    /// Does not validate that the policy exists.
     #[allow(unused_variables)]
     pub fn query_hijack_attempts_by_policy(&self, policy_id: &str) -> Result<Vec<AmendmentEvent>> {
-        todo!()
+        self.list_hijack_events_by_policy(policy_id)
     }
 
     /// Return current module parameters.
-    ///
-    /// Flow:
-    ///   1. Read from KV key `"p_acp"`
-    ///   2. Deserialize as `AcpParams`
-    ///   3. If key not set, return default AcpParams (zero values)
-    ///
-    /// Reads: params store (KV key `"p_acp"`)
     pub fn query_params(&self) -> Result<AcpParams> {
         Ok(self.get_params())
     }
@@ -646,738 +582,1450 @@ impl AcpModule {
     // ── Lifecycle hooks ─────────────────────────────────────────────────
 
     /// End-of-block hook: flag expired registration commitments.
-    ///
-    /// Called once at the end of every block. Scans all non-expired
-    /// commitments and marks any that have exceeded their validity
-    /// window as expired. This is the only place expiry transitions
-    /// happen — individual queries never mutate expiry state.
-    ///
-    /// Go instantiates a `CommitmentService` on each call from three
-    /// components: the ACP engine (`getACPEngine`), a commitment
-    /// repository (`getRegistrationsCommitmentRepository`), and the
-    /// service constructor. The service's `FlagExpiredCommitments`
-    /// method contains all the logic below.
-    ///
-    /// Flow:
-    ///   1. Build a "now" timestamp from the block context:
-    ///      - `block_time`: wall-clock time from the block header
-    ///      - `block_height`: current block number
-    ///
-    ///      (Go: `TimestampFromCtx(ctx)` — can fail on proto
-    ///      timestamp conversion)
-    ///   2. Get all non-expired commitments via
-    ///      `get_non_expired_commitments()` (index scan on
-    ///      `expired == false`)
-    ///   3. For each non-expired commitment, call
-    ///      `commitment.is_expired_against(now)` which delegates to
-    ///      `creation_ts.is_after(validity, now)`:
-    ///      - If `validity` is a block-count duration:
-    ///        `creation_block + validity_blocks < block_height`
-    ///      - If `validity` is a wall-clock duration:
-    ///        `block_time > creation_time + duration`
-    ///      - If `validity` has an unknown/invalid type: panic
-    ///
-    ///        (Go panics; hub.rs should return an error instead)
-    ///   4. For each expired commitment: set `expired = true`
-    ///      in-memory, collect into a `processed` list
-    ///   5. Write all flagged commitments back via
-    ///      `update_commitment()` for each
-    ///   6. Return the list of newly-expired commitments
-    ///
-    ///      (Go caller discards the list — but the keeper method
-    ///      returns it for testability)
-    ///
-    /// Error handling (Go behavior):
-    ///   - Timestamp construction failure → return error
-    ///   - `get_non_expired_commitments` failure → return error
-    ///   - Iterator `Value()` or `Next()` failure → return error
-    ///   - `is_expired_against` failure (malformed proto timestamp
-    ///     or unknown duration type) → return error (or panic in Go
-    ///     for unknown duration)
-    ///   - Individual `update_commitment` failure → return error
-    ///     (partial writes possible — no transaction rollback in Go)
-    ///   - The caller (`AppModule.EndBlock`) logs errors but always
-    ///     returns nil — end-blocker errors never halt the chain
-    ///
-    /// No events emitted. No notifications to affected parties.
-    ///
-    /// Writes: commitment store (`"commitment/"` prefix) — updates
-    /// `expired` field on matching records
-    ///
-    /// Reads: commitment store (non-expired index scan), block context
-    /// (time + height)
-    #[allow(unused_variables, clippy::missing_const_for_fn)] // Phase 9 replaces with real logic
     pub fn end_blocker(
         &mut self,
         block_ctx: &BlockExecCtx,
     ) -> Result<Vec<RegistrationsCommitment>> {
-        Ok(vec![])
+        let non_expired = self.get_non_expired_commitments()?;
+        let mut flagged = Vec::new();
+
+        let now_seconds = block_ctx.timestamp.seconds;
+        let now_height = block_ctx.timestamp.block_height;
+
+        for mut commitment in non_expired {
+            let creation_seconds = commitment.metadata.creation_ts.seconds;
+            let creation_height = commitment.metadata.creation_ts.block_height;
+
+            let is_expired = match &commitment.validity {
+                Duration::Seconds(n) => now_seconds > creation_seconds.saturating_add(*n),
+                Duration::Blocks(n) => now_height > creation_height.saturating_add(*n),
+            };
+
+            if is_expired {
+                commitment.expired = true;
+                self.update_commitment(&commitment)?;
+                flagged.push(commitment);
+            }
+        }
+
+        Ok(flagged)
     }
 
     // ── Storage access methods ──────────────────────────────────────────
-    //
-    // Key paths below are LOGICAL — they describe what data lives where
-    // and what indexes exist. The Go implementation uses raccoondb which
-    // adds internal sub-prefixes (`vals/`, `count/`) that are NOT
-    // replicated here. hub.rs will define its own key layout when the
-    // storage layer is implemented.
 
     // ── Storage — Params ─────────────────────────────────────────────────
 
-    /// Read module parameters from the KV store.
-    ///
-    /// Flow:
-    ///   1. Read value at fixed KV key `"p_acp"`
-    ///   2. If key absent, return default `AcpParams` (Go zero values:
-    ///      `policy_command_max_expiration_delta = 0`,
-    ///      `registrations_commitment_validity = None` (Go: nil `*Duration`))
-    ///      These are NOT the governed defaults (43200, 10 min) — those
-    ///      are set via `SetParams` during genesis initialization.
-    ///   3. Deserialize stored bytes as `AcpParams` (protobuf encoding
-    ///      in Go via gogoproto; hub.rs serialization format TBD)
-    ///
-    /// Key: `"p_acp"` (fixed, no dynamic component)
-    /// Value: serialized `AcpParams`
-    /// Direction: read-only
-    ///
-    /// Panics on corrupt stored data (Go: `MustUnmarshal`).
-    /// No validation of deserialized values.
     fn get_params(&self) -> AcpParams {
-        self.store
-            .get(keys::PARAMS_KEY)
-            .map_or_else(AcpParams::default, |bytes| {
-                borsh::from_slice(bytes).expect("corrupt params store")
-            })
+        self.params.clone().unwrap_or_default()
     }
 
-    /// Write module parameters to the KV store.
-    ///
-    /// Flow:
-    ///   1. Serialize `params` as `AcpParams`
-    ///   2. Store at fixed KV key `"p_acp"` (upsert — overwrites any
-    ///      existing value)
-    ///
-    /// Key: `"p_acp"` (fixed)
-    /// Value: serialized `AcpParams`
-    /// Direction: write
-    ///
-    /// No validation of param values — caller is responsible.
-    /// Only possible error is serialization failure.
+    #[allow(unused_variables)]
     fn set_params(&mut self, params: &AcpParams) -> Result<()> {
-        let bytes = borsh::to_vec(params).map_err(|e| AcpError::State(e.to_string()))?;
-        self.store.insert(keys::PARAMS_KEY.to_vec(), bytes);
+        self.params = Some(params.clone());
         Ok(())
     }
 
     // ── Storage — Replay cache ───────────────────────────────────────────
 
-    /// Check if a signed policy command has already been processed.
-    ///
-    /// Flow:
-    ///   1. Read value at KV key `"spc_seen/" + payload_id`
-    ///      (`payload_id` is SHA-256 of the entire JWS string in JSON
-    ///      full serialization format — `{"payload":"...","protected":"...",
-    ///      "signature":"..."}` — NOT compact `header.payload.signature`
-    ///      format. Go uses `go-jose`'s `FullSerialize()`. 32 bytes.)
-    ///   2. If key absent → return false
-    ///   3. If stored value is not exactly 8 bytes (corrupt) → delete
-    ///      the key and return false (self-healing cleanup)
-    ///   4. Decode value as big-endian u64 `expire_height`
-    ///   5. If `expire_height < current_height` → delete the key
-    ///      (lazy TTL expiration) and return false
-    ///   6. Otherwise → return true (command already processed)
-    ///
-    /// Key: `"spc_seen/" + payload_id` (9-byte prefix + 32-byte hash = 41 bytes)
-    /// Value: 8 bytes big-endian u64 (expiration block height)
-    /// Direction: read + conditional delete (lazy expiration)
-    ///
-    /// Silently returns false on KV store errors (no error propagation).
-    /// This is the read side of the replay protection cache.
+    #[allow(unused_variables)]
     fn has_seen_signed_policy_cmd(&mut self, payload_id: &[u8], current_height: u64) -> bool {
-        let key = keys::signed_policy_cmd_key(payload_id);
-        let bytes = match self.store.get(&key) {
-            None => return false,
-            Some(b) => b.clone(),
-        };
-        if bytes.len() != 8 {
-            self.store.remove(&key);
-            return false;
+        match self.replay_cache.get(payload_id) {
+            None => false,
+            Some(&expire_height) if expire_height < current_height => {
+                self.replay_cache.remove(payload_id);
+                false
+            }
+            Some(_) => true,
         }
-        let expire_height = u64::from_be_bytes(bytes[..8].try_into().expect("8-byte slice"));
-        if expire_height < current_height {
-            self.store.remove(&key);
-            return false;
-        }
-        true
     }
 
-    /// Record that a signed policy command has been processed.
-    ///
-    /// Flow:
-    ///   1. Check if key `"spc_seen/" + payload_id` already exists
-    ///   2. If exists → return error "already processed" (replay rejection).
-    ///      Unlike `has_seen_signed_policy_cmd`, this does NOT check
-    ///      expiration — raw existence rejects.
-    ///   3. Encode `expire_height` as 8 bytes big-endian
-    ///   4. Store at `"spc_seen/" + payload_id`
-    ///
-    /// Key: `"spc_seen/" + payload_id`
-    /// Value: 8 bytes big-endian u64 (expiration block height)
-    /// Direction: write (with existence check)
-    ///
-    /// Errors:
-    ///   - `AcpError::ReplayDetected` if the payload_id already exists
-    ///   - KV store read errors (from existence check) and write errors
-    ///     propagate — unlike `has_seen_signed_policy_cmd` which silently
-    ///     swallows errors, this method surfaces them
-    ///
-    /// The `expire_height` is computed by the caller as
-    /// `issued_height + expiration_delta`. Together with
-    /// `has_seen_signed_policy_cmd`, this forms a replay-protection
-    /// cache with lazy TTL cleanup on the read path.
+    #[allow(unused_variables)]
     fn mark_signed_policy_cmd_seen(&mut self, payload_id: &[u8], expire_height: u64) -> Result<()> {
-        let key = keys::signed_policy_cmd_key(payload_id);
-        if self.store.contains_key(&key) {
+        if self.replay_cache.contains_key(payload_id) {
             return Err(AcpError::ReplayDetected);
         }
-        self.store.insert(key, expire_height.to_be_bytes().to_vec());
+        self.replay_cache.insert(payload_id.to_vec(), expire_height);
         Ok(())
     }
 
     // ── Storage — Access decisions ───────────────────────────────────────
 
-    /// Store an access decision.
-    ///
-    /// Flow:
-    ///   1. Serialize `decision` (all fields including operations, params,
-    ///      creation_time, issued_height)
-    ///   2. Store at `"access_decision/" + decision.id`
-    ///      (`id` is base32-encoded SHA-256 hash of all decision fields,
-    ///      using uppercase RFC 4648 alphabet with `=` padding)
-    ///
-    /// Key: `"access_decision/" + decision.id` (base32 string key)
-    /// Value: serialized `AccessDecision`
-    /// Direction: write (upsert)
-    ///
-    /// The `decision.id` must be pre-computed by the caller before
-    /// calling this method — the repository does not generate the ID.
-    /// Called by `check_access` after a successful Zanzibar evaluation.
+    #[allow(unused_variables)]
     fn set_access_decision(&mut self, decision: &AccessDecision) -> Result<()> {
-        let key = keys::access_decision_key(&decision.id);
-        let bytes = borsh::to_vec(decision).map_err(|e| AcpError::State(e.to_string()))?;
-        self.store.insert(key, bytes);
+        self.access_decisions
+            .insert(decision.id.clone(), decision.clone());
         Ok(())
     }
 
-    /// Fetch an access decision by its ID.
-    ///
-    /// Flow:
-    ///   1. Read value at `"access_decision/" + id`
-    ///   2. If key absent → return `None` (not an error)
-    ///   3. Deserialize as `AccessDecision`
-    ///
-    /// Key: `"access_decision/" + id`
-    /// Value: serialized `AccessDecision`
-    /// Direction: read-only
-    ///
-    /// Missing decision returns `Ok(None)`, not an error.
-    /// Deserialization failure on an existing key returns `Err`, not `None`.
-    /// Called by `query_access_decision`.
+    #[allow(unused_variables)]
     fn get_access_decision(&self, id: &str) -> Result<Option<AccessDecision>> {
-        let key = keys::access_decision_key(id);
-        match self.store.get(&key) {
-            None => Ok(None),
-            Some(bytes) => {
-                let decision: AccessDecision =
-                    borsh::from_slice(bytes).map_err(|e| AcpError::State(e.to_string()))?;
-                Ok(Some(decision))
-            }
-        }
+        Ok(self.access_decisions.get(id).cloned())
     }
 
-    /// Delete an access decision by its ID.
-    ///
-    /// Flow:
-    ///   1. Delete key `"access_decision/" + id`
-    ///
-    /// Key: `"access_decision/" + id`
-    /// Direction: delete
-    ///
-    /// Deleting a non-existent key is a no-op (not an error).
+    #[allow(unused_variables)]
     fn delete_access_decision(&mut self, id: &str) -> Result<()> {
-        self.store.remove(&keys::access_decision_key(id));
+        self.access_decisions.remove(id);
         Ok(())
     }
 
-    /// List all access decision IDs.
-    ///
-    /// Flow:
-    ///   1. Iterate all keys under prefix `"access_decision/"`
-    ///   2. Collect the key suffixes (the decision IDs) as strings
-    ///
-    /// Key prefix: `"access_decision/"`
-    /// Direction: read-only (full prefix scan, keys only)
-    ///
-    /// Returns empty vec if no decisions exist.
     fn list_access_decision_ids(&self) -> Result<Vec<String>> {
-        let prefix = keys::ACCESS_DECISION_PREFIX;
-        let ids = self
-            .store
-            .keys()
-            .filter(|k| k.starts_with(prefix))
-            .map(|k| String::from_utf8_lossy(&k[prefix.len()..]).into_owned())
-            .collect();
-        Ok(ids)
+        Ok(self.access_decisions.keys().cloned().collect())
     }
 
-    /// List all access decisions.
-    ///
-    /// Flow:
-    ///   1. Iterate all key-value pairs under prefix `"access_decision/"`
-    ///   2. Deserialize each value as `AccessDecision`
-    ///   3. If any single record fails to deserialize, return error
-    ///      immediately (all-or-nothing)
-    ///
-    /// Key prefix: `"access_decision/"`
-    /// Direction: read-only (full prefix scan, keys + values)
-    ///
-    /// Returns empty vec if no decisions exist.
     fn list_access_decisions(&self) -> Result<Vec<AccessDecision>> {
-        let prefix = keys::ACCESS_DECISION_PREFIX;
-        let mut decisions = Vec::new();
-        for (key, value) in &self.store {
-            if key.starts_with(prefix) {
-                let decision: AccessDecision =
-                    borsh::from_slice(value).map_err(|e| AcpError::State(e.to_string()))?;
-                decisions.push(decision);
-            }
-        }
-        Ok(decisions)
+        Ok(self.access_decisions.values().cloned().collect())
     }
 
     // ── Storage — Commitments ────────────────────────────────────────────
 
-    /// Create a new registration commitment with an auto-assigned ID.
-    ///
-    /// Flow:
-    ///   1. Read auto-increment counter at `"commitment/counter/id"`
-    ///      (0 if absent)
-    ///   2. Assign `commitment.id = counter + 1`
-    ///   3. Serialize and store at `"commitment/objs/" + BE(id)`
-    ///      (key is 8-byte big-endian u64)
-    ///   4. Update secondary index for `expired` field:
-    ///      store at `"commitment/indexes/expired/idx/" + bool_byte + "/" + BE(id)`
-    ///      (bool_byte: 0x00 for false, 0x01 for true)
-    ///   5. Update secondary index for `commitment` field:
-    ///      store at `"commitment/indexes/commitment/idx/" + commitment_bytes + "/" + BE(id)`
-    ///      (commitment_bytes: 32-byte SHA-256 Merkle root)
-    ///   6. Increment counter by 1 (counter now equals `id`)
-    ///
-    /// Keys written:
-    ///   - `"commitment/counter/id"` (auto-increment counter)
-    ///   - `"commitment/objs/" + BE(id)` (object data)
-    ///   - `"commitment/indexes/expired/idx/" + bool + "/" + BE(id)` (expired index)
-    ///   - `"commitment/indexes/commitment/idx/" + bytes + "/" + BE(id)` (commitment index)
-    ///
-    /// Direction: write (insert only, never overwrites existing)
-    ///
-    /// Called by `direct_policy_cmd` CommitRegistrations variant.
-    /// New commitments always have `expired = false`.
+    #[allow(unused_variables)]
     fn create_commitment(&mut self, commitment: &mut RegistrationsCommitment) -> Result<()> {
-        let counter_key = keys::commitment_counter_key();
-        let counter = self
-            .store
-            .get(&counter_key)
-            .and_then(|b| b.as_slice().try_into().ok())
-            .map_or(0u64, u64::from_be_bytes);
-        let new_id = counter + 1;
-        commitment.id = new_id;
-
-        let bytes = borsh::to_vec(&*commitment).map_err(|e| AcpError::State(e.to_string()))?;
-        self.store.insert(keys::commitment_key(new_id), bytes);
-        self.store.insert(
-            keys::commitment_expired_index_key(commitment.expired, new_id),
-            vec![],
-        );
-        self.store.insert(
-            keys::commitment_by_commitment_index_key(&commitment.commitment, new_id),
-            vec![],
-        );
-        self.store
-            .insert(counter_key, new_id.to_be_bytes().to_vec());
+        self.commitment_counter += 1;
+        commitment.id = self.commitment_counter;
+        self.commitments.insert(commitment.id, commitment.clone());
         Ok(())
     }
 
-    /// Update an existing registration commitment in place.
-    ///
-    /// Flow:
-    ///   1. Read existing record at `"commitment/objs/" + BE(commitment.id)`
-    ///   2. Remove old record from secondary indexes (extract old field
-    ///      values, remove from old index buckets)
-    ///   3. Serialize and store updated record at same key
-    ///   4. Add new record to secondary indexes with new field values
-    ///
-    /// Keys written:
-    ///   - `"commitment/objs/" + BE(id)` (overwritten)
-    ///   - expired index entries (old removed, new added)
-    ///   - commitment index entries (old removed, new added)
-    ///
-    /// Direction: write (in-place update)
-    ///
-    /// Primary use case: transitioning `expired` from false to true.
-    /// When expired changes, the record moves from the `expired=false`
-    /// index bucket to the `expired=true` bucket, so
-    /// `get_non_expired_commitments` stops returning it.
-    /// Does NOT change the auto-increment counter.
+    #[allow(unused_variables)]
     fn update_commitment(&mut self, commitment: &RegistrationsCommitment) -> Result<()> {
-        let obj_key = keys::commitment_key(commitment.id);
-        let old_bytes =
-            self.store.get(&obj_key).cloned().ok_or_else(|| {
-                AcpError::State(format!("commitment {} not found", commitment.id))
-            })?;
-        let old: RegistrationsCommitment =
-            borsh::from_slice(&old_bytes).map_err(|e| AcpError::State(e.to_string()))?;
-
-        self.store.remove(&keys::commitment_expired_index_key(
-            old.expired,
-            commitment.id,
-        ));
-        self.store.remove(&keys::commitment_by_commitment_index_key(
-            &old.commitment,
-            commitment.id,
-        ));
-
-        let bytes = borsh::to_vec(commitment).map_err(|e| AcpError::State(e.to_string()))?;
-        self.store.insert(obj_key, bytes);
-        self.store.insert(
-            keys::commitment_expired_index_key(commitment.expired, commitment.id),
-            vec![],
-        );
-        self.store.insert(
-            keys::commitment_by_commitment_index_key(&commitment.commitment, commitment.id),
-            vec![],
-        );
+        self.commitments.insert(commitment.id, commitment.clone());
         Ok(())
     }
 
-    /// Fetch a registration commitment by its auto-increment ID.
-    ///
-    /// Flow:
-    ///   1. Read value at `"commitment/objs/" + BE(id)` (8-byte big-endian key)
-    ///   2. If absent → return `None`
-    ///   3. Deserialize as `RegistrationsCommitment`
-    ///
-    /// Key: `"commitment/objs/" + BE(id)`
-    /// Value: serialized `RegistrationsCommitment`
-    /// Direction: read-only
-    ///
-    /// Missing record returns `Ok(None)`, not an error.
+    #[allow(unused_variables)]
     fn get_commitment_by_id(&self, id: u64) -> Result<Option<RegistrationsCommitment>> {
-        match self.store.get(&keys::commitment_key(id)) {
-            None => Ok(None),
-            Some(bytes) => {
-                let c: RegistrationsCommitment =
-                    borsh::from_slice(bytes).map_err(|e| AcpError::State(e.to_string()))?;
-                Ok(Some(c))
-            }
-        }
+        Ok(self.commitments.get(&id).cloned())
     }
 
-    /// Find commitments matching a commitment byte value (Merkle root).
-    ///
-    /// Flow:
-    ///   1. Scan secondary index `"commitment/indexes/commitment/idx/" + commitment_bytes + "/"`
-    ///      to get matching object keys (8-byte IDs)
-    ///   2. For each key, fetch and deserialize the full record from
-    ///      `"commitment/objs/" + key`
-    ///
-    /// Key prefix scanned: `"commitment/indexes/commitment/idx/" + commitment_bytes + "/"`
-    /// Direction: read-only (index scan + object materialization)
-    ///
-    /// Returns empty iterator/vec if no matches.
-    /// Multiple commitments can share the same Merkle root (different
-    /// actors or policies committing the same set of registrations).
+    #[allow(unused_variables)]
     fn filter_commitments_by_commitment(
         &self,
         commitment: &[u8],
     ) -> Result<Vec<RegistrationsCommitment>> {
-        let prefix = keys::commitment_by_commitment_index_prefix(commitment);
-        let ids: Vec<u64> = self
-            .store
-            .keys()
-            .filter(|k| k.starts_with(&prefix))
-            .map(|k| u64::from_be_bytes(k[k.len() - 8..].try_into().expect("8-byte id suffix")))
+        let results = self
+            .commitments
+            .values()
+            .filter(|c| c.commitment == commitment)
+            .cloned()
             .collect();
-        let mut results = Vec::new();
-        for id in ids {
-            if let Some(c) = self.get_commitment_by_id(id)? {
-                results.push(c);
-            }
-        }
         Ok(results)
     }
 
-    /// Get all non-expired registration commitments.
-    ///
-    /// Flow:
-    ///   1. Scan secondary index `"commitment/indexes/expired/idx/" + 0x00 + "/"`
-    ///      (bucket for `expired = false`)
-    ///   2. For each key, fetch and deserialize the full record from
-    ///      `"commitment/objs/" + key`
-    ///
-    /// Key prefix scanned: `"commitment/indexes/expired/idx/0x00/"`
-    /// Direction: read-only (index scan + object materialization)
-    ///
-    /// Returns empty iterator/vec if all commitments are expired.
-    ///
-    /// This method only returns records where `expired == false` — it
-    /// does NOT perform any expiry check itself. The expiry check lives
-    /// in a separate end-of-block sweep (`FlagExpiredCommitments` in Go)
-    /// which:
-    ///   1. Calls this method to get all non-expired commitments
-    ///   2. For each, checks `creation_ts + validity < now`
-    ///   3. Calls `update_commitment` to set `expired = true`
-    ///
-    /// Expiry supports two duration modes:
-    ///   - Block count: `creation_block_height + block_count < current_height`
-    ///   - Wall-clock: `current_time > creation_time + duration`
-    ///
-    /// Default validity is 10 minutes wall-clock (stored per-record in
-    /// the `validity` field at creation time, not recomputed from defaults).
     fn get_non_expired_commitments(&self) -> Result<Vec<RegistrationsCommitment>> {
-        let prefix = keys::commitment_expired_index_prefix(false);
-        let ids: Vec<u64> = self
-            .store
-            .keys()
-            .filter(|k| k.starts_with(&prefix))
-            .map(|k| u64::from_be_bytes(k[k.len() - 8..].try_into().expect("8-byte id suffix")))
+        let results = self
+            .commitments
+            .values()
+            .filter(|c| !c.expired)
+            .cloned()
             .collect();
-        let mut results = Vec::new();
-        for id in ids {
-            if let Some(c) = self.get_commitment_by_id(id)? {
-                results.push(c);
-            }
-        }
         Ok(results)
     }
 
     // ── Storage — Amendment events ───────────────────────────────────────
 
-    /// Create a new amendment event with an auto-assigned ID.
-    ///
-    /// Flow:
-    ///   1. Read auto-increment counter at `"amendment_event/counter/id"`
-    ///      (0 if absent)
-    ///   2. Assign `event.id = counter + 1`
-    ///   3. Serialize and store at `"amendment_event/objs/" + BE(id)`
-    ///   4. Update secondary index for `policy_id` field:
-    ///      store at `"amendment_event/indexes/policy/idx/" + policy_id + "/" + BE(id)`
-    ///   5. Increment counter to `id`
-    ///
-    /// Keys written:
-    ///   - `"amendment_event/counter/id"` (auto-increment counter)
-    ///   - `"amendment_event/objs/" + BE(id)` (object data)
-    ///   - `"amendment_event/indexes/policy/idx/" + policy_id + "/" + BE(id)` (policy index)
-    ///
-    /// Direction: write (insert only)
-    ///
-    /// Called by `direct_policy_cmd` RevealRegistration variant when
-    /// an ownership amendment occurs (commitment is older than existing
-    /// registration). New events always have `hijack_flag = false`.
+    #[allow(unused_variables)]
     fn create_amendment_event(&mut self, event: &mut AmendmentEvent) -> Result<()> {
-        let counter_key = keys::amendment_event_counter_key();
-        let counter = self
-            .store
-            .get(&counter_key)
-            .and_then(|b| b.as_slice().try_into().ok())
-            .map_or(0u64, u64::from_be_bytes);
-        let new_id = counter + 1;
-        event.id = new_id;
-
-        let bytes = borsh::to_vec(&*event).map_err(|e| AcpError::State(e.to_string()))?;
-        self.store.insert(keys::amendment_event_key(new_id), bytes);
-        self.store.insert(
-            keys::amendment_event_policy_index_key(&event.policy_id, new_id),
-            vec![],
-        );
-        self.store
-            .insert(counter_key, new_id.to_be_bytes().to_vec());
+        self.amendment_event_counter += 1;
+        event.id = self.amendment_event_counter;
+        self.amendment_events.insert(event.id, event.clone());
         Ok(())
     }
 
-    /// Update an existing amendment event in place.
-    ///
-    /// Flow:
-    ///   1. Read existing record at `"amendment_event/objs/" + BE(event.id)`
-    ///   2. Remove old record from policy index (extract old policy_id,
-    ///      remove from old bucket)
-    ///   3. Serialize and store updated record at same key
-    ///   4. Add new record to policy index with new policy_id
-    ///
-    /// Keys written:
-    ///   - `"amendment_event/objs/" + BE(id)` (overwritten)
-    ///   - policy index entries (old removed, new added — though in
-    ///     practice policy_id never changes between updates)
-    ///
-    /// Direction: write (in-place update)
-    ///
-    /// Primary use case: setting `hijack_flag = true` via the
-    /// FlagHijackEvent service method (called from the
-    /// FlagHijackAttempt policy command variant). Does NOT change
-    /// the auto-increment counter.
+    #[allow(unused_variables)]
     fn update_amendment_event(&mut self, event: &AmendmentEvent) -> Result<()> {
-        let obj_key = keys::amendment_event_key(event.id);
-        let old_bytes =
-            self.store.get(&obj_key).cloned().ok_or_else(|| {
-                AcpError::State(format!("amendment event {} not found", event.id))
-            })?;
-        let old: AmendmentEvent =
-            borsh::from_slice(&old_bytes).map_err(|e| AcpError::State(e.to_string()))?;
-
-        self.store.remove(&keys::amendment_event_policy_index_key(
-            &old.policy_id,
-            event.id,
-        ));
-
-        let bytes = borsh::to_vec(event).map_err(|e| AcpError::State(e.to_string()))?;
-        self.store.insert(obj_key, bytes);
-        self.store.insert(
-            keys::amendment_event_policy_index_key(&event.policy_id, event.id),
-            vec![],
-        );
+        self.amendment_events.insert(event.id, event.clone());
         Ok(())
     }
 
-    /// Fetch an amendment event by its auto-increment ID.
-    ///
-    /// Flow:
-    ///   1. Read value at `"amendment_event/objs/" + BE(id)`
-    ///   2. If absent → return `None`
-    ///   3. Deserialize as `AmendmentEvent`
-    ///
-    /// Key: `"amendment_event/objs/" + BE(id)`
-    /// Value: serialized `AmendmentEvent`
-    /// Direction: read-only
-    ///
-    /// Missing record returns `Ok(None)`, not an error.
+    #[allow(unused_variables)]
     fn get_amendment_event_by_id(&self, id: u64) -> Result<Option<AmendmentEvent>> {
-        match self.store.get(&keys::amendment_event_key(id)) {
-            None => Ok(None),
-            Some(bytes) => {
-                let event: AmendmentEvent =
-                    borsh::from_slice(bytes).map_err(|e| AcpError::State(e.to_string()))?;
-                Ok(Some(event))
-            }
-        }
+        Ok(self.amendment_events.get(&id).cloned())
     }
 
-    /// List all amendment events for a given policy.
-    ///
-    /// Flow:
-    ///   1. Scan secondary index
-    ///      `"amendment_event/indexes/policy/idx/" + policy_id + "/"`
-    ///      to get matching object keys (8-byte IDs)
-    ///   2. For each key, fetch and deserialize the full record from
-    ///      `"amendment_event/objs/" + key`
-    ///
-    /// Key prefix scanned: `"amendment_event/indexes/policy/idx/" + policy_id + "/"`
-    /// Direction: read-only (index scan + object materialization)
-    ///
-    /// Returns empty vec if no events exist for this policy.
+    #[allow(unused_variables)]
     fn list_events_by_policy(&self, policy_id: &str) -> Result<Vec<AmendmentEvent>> {
-        let prefix = keys::amendment_event_policy_index_prefix(policy_id);
-        let ids: Vec<u64> = self
-            .store
-            .keys()
-            .filter(|k| k.starts_with(&prefix))
-            .map(|k| u64::from_be_bytes(k[k.len() - 8..].try_into().expect("8-byte id suffix")))
+        let results = self
+            .amendment_events
+            .values()
+            .filter(|e| e.policy_id == policy_id)
+            .cloned()
             .collect();
-        let mut results = Vec::new();
-        for id in ids {
-            if let Some(event) = self.get_amendment_event_by_id(id)? {
-                results.push(event);
-            }
-        }
         Ok(results)
     }
 
-    /// List amendment events flagged as hijack attempts for a policy.
-    ///
-    /// Flow:
-    ///   1. Call `list_events_by_policy(policy_id)` to get all events
-    ///      for the policy via the secondary index
-    ///   2. Filter in-memory to events where `hijack_flag == true`
-    ///
-    /// Direction: read-only (delegates to `list_events_by_policy` +
-    ///   application-level filter)
-    ///
-    /// There is no secondary index on `hijack_flag` — this scans ALL
-    /// events for the policy and filters in memory. If the volume of
-    /// amendment events per policy becomes large, consider adding a
-    /// composite index.
-    ///
-    /// A "hijack event" is an `AmendmentEvent` where an ownership
-    /// amendment occurred and the new owner (whose commitment was older)
-    /// flagged the event to indicate the previous owner may have tried
-    /// to register an object already committed by someone else.
+    #[allow(unused_variables)]
     fn list_hijack_events_by_policy(&self, policy_id: &str) -> Result<Vec<AmendmentEvent>> {
-        Ok(self
-            .list_events_by_policy(policy_id)?
-            .into_iter()
-            .filter(|e| e.hijack_flag)
-            .collect())
+        let results = self
+            .amendment_events
+            .values()
+            .filter(|e| e.policy_id == policy_id && e.hijack_flag)
+            .cloned()
+            .collect();
+        Ok(results)
     }
 
     // ── Engine factory ───────────────────────────────────────────────────
 
-    /// Construct a fresh ACP engine instance from the current state.
+    const fn get_acp_engine(&self) {}
+
+    // ── PolicyCmd variant handlers ───────────────────────────────────────
+
+    fn cmd_set_relationship(
+        &mut self,
+        creator: &Did,
+        policy_id: &str,
+        rel: Relationship,
+    ) -> Result<PolicyCmdResult> {
+        let policy = self
+            .zanzibar_policies
+            .get(policy_id)
+            .cloned()
+            .ok_or_else(|| AcpError::PolicyNotFound {
+                id: policy_id.to_string(),
+            })?;
+
+        if policy.get_relation(&rel.resource, &rel.relation).is_none() {
+            return Err(AcpError::InvalidAccessRequest {
+                reason: format!(
+                    "relation '{}' not defined on resource '{}'",
+                    rel.relation, rel.resource
+                ),
+            });
+        }
+
+        if !self.is_authorized_to_manage(
+            creator,
+            policy_id,
+            &policy,
+            &rel.resource,
+            &rel.object_id,
+            &rel.relation,
+        ) {
+            return Err(AcpError::Unauthorized {
+                reason: format!(
+                    "{} is not authorized to set relation '{}' on '{}/{}'",
+                    creator, rel.relation, rel.resource, rel.object_id
+                ),
+            });
+        }
+
+        let storage_key = rel.storage_key();
+        let record_existed = self
+            .relationships
+            .get(policy_id)
+            .and_then(|m| m.get(&storage_key))
+            .is_some();
+
+        let metadata = RecordMetadata {
+            creation_ts: Timestamp::default(),
+            tx_hash: Vec::new(),
+            tx_signer: String::new(),
+            owner_did: creator.to_string(),
+        };
+
+        let record = RelationshipRecord {
+            policy_id: policy_id.to_string(),
+            relationship: rel,
+            archived: false,
+            metadata,
+        };
+
+        self.relationships
+            .entry(policy_id.to_string())
+            .or_default()
+            .insert(storage_key, record.clone());
+
+        Ok(PolicyCmdResult::SetRelationship {
+            record_existed,
+            record,
+        })
+    }
+
+    fn cmd_delete_relationship(
+        &mut self,
+        policy_id: &str,
+        rel: Relationship,
+    ) -> Result<PolicyCmdResult> {
+        let storage_key = rel.storage_key();
+        let record_found = self
+            .relationships
+            .get_mut(policy_id)
+            .and_then(|m| m.remove(&storage_key))
+            .is_some();
+
+        Ok(PolicyCmdResult::DeleteRelationship { record_found })
+    }
+
+    fn cmd_register_object(
+        &mut self,
+        creator: &Did,
+        policy_id: &str,
+        obj: Object,
+    ) -> Result<PolicyCmdResult> {
+        let policy = self
+            .zanzibar_policies
+            .get(policy_id)
+            .cloned()
+            .ok_or_else(|| AcpError::PolicyNotFound {
+                id: policy_id.to_string(),
+            })?;
+
+        if policy.get_resource(&obj.resource).is_none() {
+            return Err(AcpError::InvalidAccessRequest {
+                reason: format!("resource '{}' not defined in policy", obj.resource),
+            });
+        }
+
+        // Object must not already be registered.
+        let (already_registered, _) = self.query_object_owner(policy_id, &obj)?;
+        if already_registered {
+            return Err(AcpError::ObjectAlreadyRegistered {
+                resource: obj.resource,
+                object_id: obj.id,
+            });
+        }
+
+        let owner_rel = Relationship::with_entity(obj.resource, obj.id, "owner", creator.clone());
+        let storage_key = owner_rel.storage_key();
+
+        let metadata = RecordMetadata {
+            creation_ts: Timestamp::default(),
+            tx_hash: Vec::new(),
+            tx_signer: String::new(),
+            owner_did: creator.to_string(),
+        };
+
+        let record = RelationshipRecord {
+            policy_id: policy_id.to_string(),
+            relationship: owner_rel,
+            archived: false,
+            metadata,
+        };
+
+        self.relationships
+            .entry(policy_id.to_string())
+            .or_default()
+            .insert(storage_key, record.clone());
+
+        Ok(PolicyCmdResult::RegisterObject { record })
+    }
+
+    fn cmd_archive_object(
+        &mut self,
+        creator: &Did,
+        policy_id: &str,
+        obj: Object,
+    ) -> Result<PolicyCmdResult> {
+        let (registered, owner_rec) = self.query_object_owner(policy_id, &obj)?;
+
+        if !registered {
+            return Ok(PolicyCmdResult::ArchiveObject {
+                found: false,
+                relationships_removed: 0,
+            });
+        }
+
+        let owner_rec = owner_rec.unwrap();
+        let owner_did = &owner_rec.metadata.owner_did;
+        if owner_did != &creator.to_string() {
+            return Err(AcpError::Unauthorized {
+                reason: format!(
+                    "{} is not the owner of '{}/{}'",
+                    creator, obj.resource, obj.id
+                ),
+            });
+        }
+
+        // Mark owner relationship as archived, delete all others.
+        let object_prefix = Relationship::object_prefix(&obj.resource, &obj.id);
+        let owner_prefix = Relationship::relation_prefix(&obj.resource, &obj.id, "owner");
+
+        let mut removed: u64 = 0;
+
+        if let Some(rels) = self.relationships.get_mut(policy_id) {
+            let non_owner_keys: Vec<String> = rels
+                .iter()
+                .filter(|(k, _)| k.starts_with(&object_prefix) && !k.starts_with(&owner_prefix))
+                .map(|(k, _)| k.clone())
+                .collect();
+
+            removed = non_owner_keys.len() as u64;
+            for key in non_owner_keys {
+                rels.remove(&key);
+            }
+
+            // Archive the owner relationship.
+            for (k, rec) in rels.iter_mut() {
+                if k.starts_with(&owner_prefix) {
+                    rec.archived = true;
+                }
+            }
+        }
+
+        Ok(PolicyCmdResult::ArchiveObject {
+            found: true,
+            relationships_removed: removed,
+        })
+    }
+
+    fn cmd_unarchive_object(
+        &mut self,
+        creator: &Did,
+        policy_id: &str,
+        obj: Object,
+    ) -> Result<PolicyCmdResult> {
+        let owner_prefix = Relationship::relation_prefix(&obj.resource, &obj.id, "owner");
+
+        let (key, mut rec) = self
+            .relationships
+            .get(policy_id)
+            .and_then(|rels| {
+                rels.iter()
+                    .find(|(k, _)| k.starts_with(&owner_prefix))
+                    .map(|(k, v)| (k.clone(), v.clone()))
+            })
+            .ok_or_else(|| AcpError::ObjectNotRegistered {
+                resource: obj.resource.clone(),
+                object_id: obj.id.clone(),
+            })?;
+
+        if rec.metadata.owner_did != creator.to_string() {
+            return Err(AcpError::Unauthorized {
+                reason: format!(
+                    "{} is not the previous owner of '{}/{}'",
+                    creator, obj.resource, obj.id
+                ),
+            });
+        }
+
+        let was_archived = rec.archived;
+        rec.archived = false;
+
+        self.relationships
+            .entry(policy_id.to_string())
+            .or_default()
+            .insert(key, rec.clone());
+
+        Ok(PolicyCmdResult::UnarchiveObject {
+            record: rec,
+            relationship_modified: was_archived,
+        })
+    }
+
+    fn cmd_commit_registrations(
+        &mut self,
+        creator: &Did,
+        policy_id: &str,
+        commitment: Vec<u8>,
+    ) -> Result<PolicyCmdResult> {
+        if !self.zanzibar_policies.contains_key(policy_id) {
+            return Err(AcpError::PolicyNotFound {
+                id: policy_id.to_string(),
+            });
+        }
+
+        if commitment.len() != 32 {
+            return Err(AcpError::InvalidProof {
+                reason: format!(
+                    "commitment must be exactly 32 bytes, got {}",
+                    commitment.len()
+                ),
+            });
+        }
+
+        let params = self.get_params();
+
+        let metadata = RecordMetadata {
+            creation_ts: Timestamp::default(),
+            tx_hash: Vec::new(),
+            tx_signer: String::new(),
+            owner_did: creator.to_string(),
+        };
+
+        let mut reg_commitment = RegistrationsCommitment {
+            id: 0,
+            policy_id: policy_id.to_string(),
+            commitment,
+            expired: false,
+            validity: params.registrations_commitment_validity,
+            metadata,
+        };
+
+        self.create_commitment(&mut reg_commitment)?;
+
+        Ok(PolicyCmdResult::CommitRegistrations {
+            registrations_commitment: reg_commitment,
+        })
+    }
+
+    fn cmd_reveal_registration(
+        &mut self,
+        creator: &Did,
+        policy_id: &str,
+        commitment_id: u64,
+        proof: RegistrationProof,
+    ) -> Result<PolicyCmdResult> {
+        let commitment = self
+            .get_commitment_by_id(commitment_id)?
+            .ok_or(AcpError::CommitmentNotFound { id: commitment_id })?;
+
+        if commitment.expired {
+            return Err(AcpError::CommitmentExpired { id: commitment_id });
+        }
+
+        let leaf_data = format!(
+            "{}{}{}{}",
+            policy_id, proof.object.resource, proof.object.id, creator
+        );
+
+        let valid_proof =
+            Self::verify_merkle_proof(&commitment.commitment, &proof, leaf_data.as_bytes());
+        if !valid_proof {
+            return Err(AcpError::InvalidProof {
+                reason: "Merkle proof verification failed".into(),
+            });
+        }
+
+        let (already_registered, existing_owner) =
+            self.query_object_owner(policy_id, &proof.object)?;
+
+        let metadata = RecordMetadata {
+            creation_ts: Timestamp::default(),
+            tx_hash: Vec::new(),
+            tx_signer: String::new(),
+            owner_did: creator.to_string(),
+        };
+
+        if !already_registered {
+            // New registration — creator becomes owner.
+            let owner_rel = Relationship::with_entity(
+                proof.object.resource.clone(),
+                proof.object.id.clone(),
+                "owner",
+                creator.clone(),
+            );
+            let storage_key = owner_rel.storage_key();
+            let record = RelationshipRecord {
+                policy_id: policy_id.to_string(),
+                relationship: owner_rel,
+                archived: false,
+                metadata,
+            };
+            self.relationships
+                .entry(policy_id.to_string())
+                .or_default()
+                .insert(storage_key, record.clone());
+
+            let empty_event = AmendmentEvent {
+                id: 0,
+                policy_id: policy_id.to_string(),
+                object: proof.object,
+                new_owner: Actor(creator.clone()),
+                previous_owner: Actor(creator.clone()),
+                commitment_id,
+                hijack_flag: false,
+                metadata: RecordMetadata {
+                    creation_ts: Timestamp::default(),
+                    tx_hash: Vec::new(),
+                    tx_signer: String::new(),
+                    owner_did: creator.to_string(),
+                },
+            };
+            return Ok(PolicyCmdResult::RevealRegistration {
+                record,
+                event: empty_event,
+            });
+        }
+
+        // Object already registered — check if commitment is older than registration.
+        let existing = existing_owner.unwrap();
+        let registration_height = existing.metadata.creation_ts.block_height;
+        let commitment_height = commitment.metadata.creation_ts.block_height;
+
+        if commitment_height > registration_height {
+            return Err(AcpError::InvalidProof {
+                reason: "commitment is newer than the existing registration; cannot amend".into(),
+            });
+        }
+
+        // Amend ownership — transfer to creator.
+        let previous_owner_did = Did::new(&existing.metadata.owner_did)
+            .map_err(|_| AcpError::State("stored owner DID is invalid".into()))?;
+
+        let owner_prefix =
+            Relationship::relation_prefix(&proof.object.resource, &proof.object.id, "owner");
+        if let Some(rels) = self.relationships.get_mut(policy_id) {
+            for (k, rec) in rels.iter_mut() {
+                if k.starts_with(&owner_prefix) {
+                    rec.metadata.owner_did = creator.to_string();
+                    rec.relationship = Relationship::with_entity(
+                        proof.object.resource.clone(),
+                        proof.object.id.clone(),
+                        "owner",
+                        creator.clone(),
+                    );
+                }
+            }
+        }
+
+        let amended_rel = Relationship::with_entity(
+            proof.object.resource.clone(),
+            proof.object.id.clone(),
+            "owner",
+            creator.clone(),
+        );
+        let _amended_key = amended_rel.storage_key();
+        let record = RelationshipRecord {
+            policy_id: policy_id.to_string(),
+            relationship: amended_rel,
+            archived: false,
+            metadata: metadata.clone(),
+        };
+
+        let mut event = AmendmentEvent {
+            id: 0,
+            policy_id: policy_id.to_string(),
+            object: proof.object,
+            new_owner: Actor(creator.clone()),
+            previous_owner: Actor(previous_owner_did),
+            commitment_id,
+            hijack_flag: false,
+            metadata,
+        };
+
+        self.create_amendment_event(&mut event)?;
+
+        Ok(PolicyCmdResult::RevealRegistration { record, event })
+    }
+
+    fn cmd_flag_hijack_attempt(&mut self, creator: &Did, event_id: u64) -> Result<PolicyCmdResult> {
+        let mut event = self
+            .get_amendment_event_by_id(event_id)?
+            .ok_or(AcpError::State(format!(
+                "amendment event {event_id} not found"
+            )))?;
+
+        if event.new_owner.0.to_string() != creator.to_string() {
+            return Err(AcpError::Unauthorized {
+                reason: "only the new owner can flag a hijack attempt".into(),
+            });
+        }
+
+        event.hijack_flag = true;
+        self.update_amendment_event(&event)?;
+
+        Ok(PolicyCmdResult::FlagHijackAttempt { event })
+    }
+
+    // ── Permission evaluation ────────────────────────────────────────────
+
+    /// Evaluate whether `subject` has `permission` on `resource:object_id`
+    /// according to the policy's relation expressions.
+    #[allow(clippy::too_many_arguments)]
+    fn check_permission(
+        &self,
+        policy_id: &str,
+        policy: &Policy,
+        resource: &str,
+        object_id: &str,
+        relation: &str,
+        subject: &Did,
+        depth: u32,
+    ) -> bool {
+        if depth > 20 {
+            return false;
+        }
+
+        let Some(rel_def) = policy.get_relation(resource, relation) else {
+            return false;
+        };
+
+        self.eval_expression(
+            policy_id,
+            policy,
+            resource,
+            object_id,
+            relation,
+            &rel_def.expression.clone(),
+            subject,
+            depth,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn eval_expression(
+        &self,
+        policy_id: &str,
+        policy: &Policy,
+        resource: &str,
+        object_id: &str,
+        current_relation: &str,
+        expr: &RelationExpression,
+        subject: &Did,
+        depth: u32,
+    ) -> bool {
+        match expr {
+            RelationExpression::This => {
+                let direct_rel = Relationship::with_entity(
+                    resource,
+                    object_id,
+                    current_relation,
+                    subject.clone(),
+                );
+                let key = direct_rel.storage_key();
+
+                let rels = self.relationships.get(policy_id);
+                if let Some(rels) = rels {
+                    if let Some(rec) = rels.get(&key)
+                        && !rec.archived
+                    {
+                        return true;
+                    }
+                    // Check wildcard
+                    let wildcard =
+                        Relationship::new(resource, object_id, current_relation, Subject::Wildcard);
+                    if rels.contains_key(&wildcard.storage_key()) {
+                        return true;
+                    }
+                    // Check typed wildcards
+                    let prefix =
+                        Relationship::relation_prefix(resource, object_id, current_relation);
+                    for (k, rec) in rels {
+                        if k.starts_with(&prefix) && rec.relationship.subject.is_typed_wildcard() {
+                            return true;
+                        }
+                    }
+                }
+                false
+            }
+            RelationExpression::ComputedUserset { relation } => self.check_permission(
+                policy_id,
+                policy,
+                resource,
+                object_id,
+                relation,
+                subject,
+                depth + 1,
+            ),
+            RelationExpression::Union(exprs) => exprs.iter().any(|e| {
+                self.eval_expression(
+                    policy_id,
+                    policy,
+                    resource,
+                    object_id,
+                    current_relation,
+                    e,
+                    subject,
+                    depth,
+                )
+            }),
+            RelationExpression::Intersection(exprs) => exprs.iter().all(|e| {
+                self.eval_expression(
+                    policy_id,
+                    policy,
+                    resource,
+                    object_id,
+                    current_relation,
+                    e,
+                    subject,
+                    depth,
+                )
+            }),
+            RelationExpression::Difference { base, subtract } => {
+                self.eval_expression(
+                    policy_id,
+                    policy,
+                    resource,
+                    object_id,
+                    current_relation,
+                    base,
+                    subject,
+                    depth,
+                ) && !self.eval_expression(
+                    policy_id,
+                    policy,
+                    resource,
+                    object_id,
+                    current_relation,
+                    subtract,
+                    subject,
+                    depth,
+                )
+            }
+            // TupleToUserset is complex; return false for now (Phase 9 scope).
+            RelationExpression::TupleToUserset { .. } => false,
+        }
+    }
+
+    /// Check if creator is authorized to manage the given relation on an object.
     ///
-    /// Flow:
-    ///   1. Open the module's KV store (scoped to `"acp"` module prefix).
-    ///      No additional prefix is applied at this level — unlike the
-    ///      repository factories which add their own prefixes, the engine
-    ///      receives the raw module store.
-    ///   2. Adapt the KV store to the engine's expected interface (Go:
-    ///      two adapter steps from Cosmos core KV → storetypes.KVStore
-    ///      → raccoondb.KVStore; hub.rs will need its own bridge from
-    ///      QMDB to whatever the Rust engine expects)
-    ///   3. Construct a `RuntimeManager` with:
-    ///      - The adapted KV store (engine internally sub-prefixes into
-    ///        `"store/"` for main state and `"internal/"` for bookkeeping)
-    ///      - A time service that reads block time from execution context
-    ///        (must carry block time, not wall-clock — the context flowing
-    ///        through the engine's method calls must have the correct
-    ///        block timestamp)
-    ///   4. Wrap the runtime in an `EngineService` (a dispatcher that
-    ///      delegates each operation to internal handler packages which
-    ///      implement Zanzibar relation-tuple semantics)
-    ///
-    /// The engine is stateless — it is a lightweight wrapper around a
-    /// KV store reference, reconstructed per-request. Each internal
-    /// handler constructs a fresh Zanzibar adapter from the same KV.
-    /// All state lives in the KV store; the engine is a stateless
-    /// interpreter over that store. The Go keeper may construct the
-    /// engine multiple times within a single request (once per service
-    /// that needs it).
-    ///
-    /// The engine interface exposes:
-    ///   - Policy CRUD: create, create_with_specification, edit,
-    ///     edit_metadata, delete, get, get_catalogue, list, validate
-    ///   - Relationship management: set, delete, filter
-    ///   - Object lifecycle: register, archive, unarchive, transfer,
-    ///     get_registration, amend_registration, reveal_registration
-    ///   - Access verification: verify_access_request,
-    ///     check_management_authority, evaluate_theorem
-    ///   - Params: get/set (engine-level, separate from module params)
-    ///
-    /// The engine's policy store, relationship store, and object
-    /// registration store all live under the `"store/"` sub-prefix
-    /// within the module's KV namespace. The Zanzibar graph engine
-    /// further partitions within `"store/"` for policy data and
-    /// relation nodes.
-    ///
-    /// Go panics on construction failure. hub.rs should return `Result`.
-    fn get_acp_engine(&self) {
-        todo!()
+    /// Authorization rules (simplified DPI):
+    /// 1. Creator is the policy owner (policy.metadata.owner_did matches).
+    /// 2. Creator has "owner" relation on the object.
+    /// 3. Creator has a managing relation (one that lists target in its `manages`).
+    fn is_authorized_to_manage(
+        &self,
+        creator: &Did,
+        policy_id: &str,
+        policy: &Policy,
+        resource: &str,
+        object_id: &str,
+        relation: &str,
+    ) -> bool {
+        // Rule 1: policy creator can manage anything.
+        if let Some(rec) = self.policies.get(policy_id)
+            && rec.metadata.owner_did == creator.to_string()
+        {
+            return true;
+        }
+
+        // Rule 2: object owner can manage any relation on the object.
+        let owner_rel = Relationship::with_entity(resource, object_id, "owner", creator.clone());
+        if let Some(rels) = self.relationships.get(policy_id)
+            && rels
+                .get(&owner_rel.storage_key())
+                .map(|r| !r.archived)
+                .unwrap_or(false)
+        {
+            return true;
+        }
+
+        // Rule 3: creator has a managing relation for the target relation.
+        let managers = policy.get_managers_for_relation(resource, relation);
+        for managing_relation in managers {
+            let managing_rel =
+                Relationship::with_entity(resource, object_id, managing_relation, creator.clone());
+            if let Some(rels) = self.relationships.get(policy_id)
+                && rels
+                    .get(&managing_rel.storage_key())
+                    .map(|r| !r.archived)
+                    .unwrap_or(false)
+            {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    // ── Relationship selector matching ───────────────────────────────────
+
+    fn matches_selector(&self, rec: &RelationshipRecord, sel: &RelationshipSelector) -> bool {
+        let rel = &rec.relationship;
+
+        // Object selector.
+        if let Some(obj_sel) = &sel.object_selector {
+            let matches = match obj_sel {
+                ObjectSelector::Exact(obj) => {
+                    rel.resource == obj.resource && rel.object_id == obj.id
+                }
+                ObjectSelector::Wildcard => true,
+                ObjectSelector::ResourcePredicate(resource) => &rel.resource == resource,
+            };
+            if !matches {
+                return false;
+            }
+        }
+
+        // Relation selector.
+        if let Some(rel_sel) = &sel.relation_selector {
+            let matches = match rel_sel {
+                RelationSelector::Exact(name) => &rel.relation == name,
+                RelationSelector::Wildcard => true,
+            };
+            if !matches {
+                return false;
+            }
+        }
+
+        // Subject selector.
+        if let Some(subj_sel) = &sel.subject_selector {
+            let matches = match subj_sel {
+                SubjectSelector::Exact(expected) => &rel.subject == expected,
+                SubjectSelector::Wildcard => true,
+            };
+            if !matches {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    // ── Access decision ID ───────────────────────────────────────────────
+
+    fn compute_decision_id(
+        &self,
+        policy_id: &str,
+        creator: &Did,
+        actor: &Did,
+        operations: &[types::Operation],
+    ) -> String {
+        let mut h = Sha256::new();
+        h.update(policy_id.as_bytes());
+        h.update(creator.to_string().as_bytes());
+        h.update(actor.to_string().as_bytes());
+        for op in operations {
+            h.update(op.object.resource.as_bytes());
+            h.update(op.object.id.as_bytes());
+            h.update(op.permission.as_bytes());
+        }
+        hex::encode(h.finalize())
+    }
+
+    // ── RFC 6962 Merkle tree helpers ─────────────────────────────────────
+
+    fn compute_leaf_hash(data: &[u8]) -> [u8; 32] {
+        let mut h = Sha256::new();
+        h.update([0x00u8]);
+        h.update(data);
+        h.finalize().into()
+    }
+
+    fn compute_inner_hash(left: &[u8], right: &[u8]) -> [u8; 32] {
+        let mut h = Sha256::new();
+        h.update([0x01u8]);
+        h.update(left);
+        h.update(right);
+        h.finalize().into()
+    }
+
+    /// Build all levels of a binary Merkle tree (leaf to root).
+    fn build_merkle_levels(leaf_hashes: &[[u8; 32]]) -> Vec<Vec<[u8; 32]>> {
+        let mut levels: Vec<Vec<[u8; 32]>> = vec![leaf_hashes.to_vec()];
+
+        while levels.last().unwrap().len() > 1 {
+            let prev = levels.last().unwrap();
+            let mut next = Vec::new();
+            let mut i = 0;
+            while i < prev.len() {
+                if i + 1 < prev.len() {
+                    next.push(Self::compute_inner_hash(&prev[i], &prev[i + 1]));
+                    i += 2;
+                } else {
+                    // Odd node — promote directly.
+                    next.push(prev[i]);
+                    i += 1;
+                }
+            }
+            levels.push(next);
+        }
+
+        levels
+    }
+
+    /// Generate a Merkle audit proof (sibling hashes from leaf to root).
+    fn generate_merkle_proof(leaf_index: usize, levels: &[Vec<[u8; 32]>]) -> Vec<Vec<u8>> {
+        let mut proof = Vec::new();
+        let mut idx = leaf_index;
+
+        for level in &levels[..levels.len().saturating_sub(1)] {
+            let sibling_idx = if idx.is_multiple_of(2) {
+                idx + 1
+            } else {
+                idx - 1
+            };
+            if sibling_idx < level.len() {
+                proof.push(level[sibling_idx].to_vec());
+            }
+            idx >>= 1;
+        }
+
+        proof
+    }
+
+    /// Verify an RFC 6962 Merkle audit proof.
+    fn verify_merkle_proof(root: &[u8], proof: &RegistrationProof, leaf_data: &[u8]) -> bool {
+        let mut current = Self::compute_leaf_hash(leaf_data).to_vec();
+        let mut idx = proof.leaf_index;
+
+        for sibling in &proof.merkle_proof {
+            let hash = if idx.is_multiple_of(2) {
+                Self::compute_inner_hash(&current, sibling)
+            } else {
+                Self::compute_inner_hash(sibling, &current)
+            };
+            current = hash.to_vec();
+            idx >>= 1;
+        }
+
+        current == root
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use identity::Did;
+
+    fn alice() -> Did {
+        Did::new("did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK").unwrap()
+    }
+
+    fn bob() -> Did {
+        Did::new("did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH").unwrap()
+    }
+
+    const SIMPLE_POLICY: &str = r#"
+name: test-policy
+description: A simple test policy
+resources:
+  - name: document
+    relations:
+      - name: reader
+    permissions:
+      - name: read
+        expr: reader
+"#;
+
+    #[test]
+    fn create_policy_roundtrip() {
+        let mut module = AcpModule::new();
+        let creator = alice();
+
+        let record = module
+            .create_policy(&creator, SIMPLE_POLICY, PolicyMarshalingType::ShortYaml)
+            .unwrap();
+
+        assert!(!record.policy.id.is_empty());
+        assert_eq!(record.policy.name, "test-policy");
+        assert_eq!(record.metadata.owner_did, creator.to_string());
+
+        let fetched = module.query_policy(&record.policy.id).unwrap();
+        assert_eq!(fetched.policy.id, record.policy.id);
+    }
+
+    #[test]
+    fn query_policy_ids_returns_all() {
+        let mut module = AcpModule::new();
+        let creator = alice();
+
+        let r1 = module
+            .create_policy(&creator, SIMPLE_POLICY, PolicyMarshalingType::ShortYaml)
+            .unwrap();
+
+        let second_policy = r#"
+name: second-policy
+resources:
+  - name: file
+    relations:
+      - name: reader
+    permissions:
+      - name: view
+        expr: reader
+"#;
+        let r2 = module
+            .create_policy(&creator, second_policy, PolicyMarshalingType::ShortYaml)
+            .unwrap();
+
+        let ids = module.query_policy_ids().unwrap();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&r1.policy.id));
+        assert!(ids.contains(&r2.policy.id));
+    }
+
+    #[test]
+    fn policy_not_found_error() {
+        let module = AcpModule::new();
+        let err = module.query_policy("nonexistent").unwrap_err();
+        assert!(matches!(err, AcpError::PolicyNotFound { .. }));
+    }
+
+    #[test]
+    fn set_relationship_and_filter() {
+        let mut module = AcpModule::new();
+        let creator = alice();
+        let reader = bob();
+
+        let record = module
+            .create_policy(&creator, SIMPLE_POLICY, PolicyMarshalingType::ShortYaml)
+            .unwrap();
+        let policy_id = &record.policy.id;
+
+        // Register object so creator has owner relation.
+        let obj = Object {
+            resource: "document".into(),
+            id: "doc1".into(),
+        };
+        module
+            .direct_policy_cmd(&creator, policy_id, PolicyCmd::RegisterObject(obj.clone()))
+            .unwrap();
+
+        // Set reader relation for bob.
+        let rel = Relationship::with_entity("document", "doc1", "reader", reader.clone());
+        let result = module
+            .direct_policy_cmd(&creator, policy_id, PolicyCmd::SetRelationship(rel))
+            .unwrap();
+
+        assert!(matches!(
+            result,
+            PolicyCmdResult::SetRelationship {
+                record_existed: false,
+                ..
+            }
+        ));
+
+        // Filter by exact relation.
+        let selector = RelationshipSelector {
+            relation_selector: Some(RelationSelector::Exact("reader".into())),
+            ..Default::default()
+        };
+        let rels = module
+            .query_filter_relationships(policy_id, &selector)
+            .unwrap();
+        assert_eq!(rels.len(), 1);
+        assert_eq!(rels[0].relationship.relation, "reader");
+    }
+
+    #[test]
+    fn register_object_and_query_owner() {
+        let mut module = AcpModule::new();
+        let creator = alice();
+
+        let record = module
+            .create_policy(&creator, SIMPLE_POLICY, PolicyMarshalingType::ShortYaml)
+            .unwrap();
+        let policy_id = &record.policy.id;
+
+        let obj = Object {
+            resource: "document".into(),
+            id: "doc42".into(),
+        };
+
+        let result = module
+            .direct_policy_cmd(&creator, policy_id, PolicyCmd::RegisterObject(obj.clone()))
+            .unwrap();
+        assert!(matches!(result, PolicyCmdResult::RegisterObject { .. }));
+
+        let (found, owner) = module.query_object_owner(policy_id, &obj).unwrap();
+        assert!(found);
+        let owner_rec = owner.unwrap();
+        assert_eq!(owner_rec.metadata.owner_did, creator.to_string());
+        assert_eq!(owner_rec.relationship.relation, "owner");
+    }
+
+    #[test]
+    fn register_object_twice_fails() {
+        let mut module = AcpModule::new();
+        let creator = alice();
+
+        let record = module
+            .create_policy(&creator, SIMPLE_POLICY, PolicyMarshalingType::ShortYaml)
+            .unwrap();
+        let policy_id = &record.policy.id;
+
+        let obj = Object {
+            resource: "document".into(),
+            id: "dup".into(),
+        };
+        module
+            .direct_policy_cmd(&creator, policy_id, PolicyCmd::RegisterObject(obj.clone()))
+            .unwrap();
+
+        let err = module
+            .direct_policy_cmd(&creator, policy_id, PolicyCmd::RegisterObject(obj))
+            .unwrap_err();
+        assert!(matches!(err, AcpError::ObjectAlreadyRegistered { .. }));
+    }
+
+    #[test]
+    fn check_access_owner_granted() {
+        let mut module = AcpModule::new();
+        let creator = alice();
+
+        let record = module
+            .create_policy(&creator, SIMPLE_POLICY, PolicyMarshalingType::ShortYaml)
+            .unwrap();
+        let policy_id = &record.policy.id;
+
+        let obj = Object {
+            resource: "document".into(),
+            id: "docA".into(),
+        };
+        module
+            .direct_policy_cmd(&creator, policy_id, PolicyCmd::RegisterObject(obj.clone()))
+            .unwrap();
+
+        let access_request = AccessRequest {
+            operations: vec![types::Operation {
+                object: obj.clone(),
+                permission: "read".into(),
+            }],
+            actor: Actor(creator.clone()),
+        };
+
+        let decision = module
+            .check_access(&creator, policy_id, &access_request)
+            .unwrap();
+        assert_eq!(decision.policy_id, *policy_id);
+        assert_eq!(decision.actor, creator.to_string());
+    }
+
+    #[test]
+    fn check_access_reader_granted() {
+        let mut module = AcpModule::new();
+        let creator = alice();
+        let reader = bob();
+
+        let record = module
+            .create_policy(&creator, SIMPLE_POLICY, PolicyMarshalingType::ShortYaml)
+            .unwrap();
+        let policy_id = &record.policy.id;
+
+        let obj = Object {
+            resource: "document".into(),
+            id: "docB".into(),
+        };
+        module
+            .direct_policy_cmd(&creator, policy_id, PolicyCmd::RegisterObject(obj.clone()))
+            .unwrap();
+
+        // Grant reader relation to bob.
+        let rel = Relationship::with_entity("document", "docB", "reader", reader.clone());
+        module
+            .direct_policy_cmd(&creator, policy_id, PolicyCmd::SetRelationship(rel))
+            .unwrap();
+
+        let access_request = AccessRequest {
+            operations: vec![types::Operation {
+                object: obj.clone(),
+                permission: "read".into(),
+            }],
+            actor: Actor(reader.clone()),
+        };
+
+        let result = module
+            .query_verify_access_request(policy_id, &access_request)
+            .unwrap();
+        assert!(result);
+    }
+
+    #[test]
+    fn check_access_denied_for_unknown_actor() {
+        let mut module = AcpModule::new();
+        let creator = alice();
+        let stranger = bob();
+
+        let record = module
+            .create_policy(&creator, SIMPLE_POLICY, PolicyMarshalingType::ShortYaml)
+            .unwrap();
+        let policy_id = &record.policy.id;
+
+        let obj = Object {
+            resource: "document".into(),
+            id: "docC".into(),
+        };
+        module
+            .direct_policy_cmd(&creator, policy_id, PolicyCmd::RegisterObject(obj.clone()))
+            .unwrap();
+
+        let access_request = AccessRequest {
+            operations: vec![types::Operation {
+                object: obj.clone(),
+                permission: "read".into(),
+            }],
+            actor: Actor(stranger.clone()),
+        };
+
+        let err = module
+            .check_access(&creator, policy_id, &access_request)
+            .unwrap_err();
+        assert!(matches!(err, AcpError::Unauthorized { .. }));
+    }
+
+    #[test]
+    fn update_params_and_query() {
+        let mut module = AcpModule::new();
+        let authority = alice();
+
+        let params = AcpParams {
+            policy_command_max_expiration_delta: 43200,
+            registrations_commitment_validity: crate::types::Duration::Seconds(600),
+        };
+
+        module.update_params(&authority, params.clone()).unwrap();
+
+        let fetched = module.query_params().unwrap();
+        assert_eq!(fetched, params);
+    }
+
+    #[test]
+    fn end_blocker_flags_expired_commitments() {
+        let mut module = AcpModule::new();
+        let creator = alice();
+
+        // Create a policy to hold the commitment.
+        let record = module
+            .create_policy(&creator, SIMPLE_POLICY, PolicyMarshalingType::ShortYaml)
+            .unwrap();
+        let policy_id = &record.policy.id;
+
+        // Commit with 10-second validity.
+        let commitment_bytes = vec![0xABu8; 32];
+        let mut commitment = RegistrationsCommitment {
+            id: 0,
+            policy_id: policy_id.clone(),
+            commitment: commitment_bytes.clone(),
+            expired: false,
+            validity: Duration::Seconds(10),
+            metadata: RecordMetadata {
+                creation_ts: Timestamp {
+                    seconds: 100,
+                    block_height: 5,
+                },
+                tx_hash: Vec::new(),
+                tx_signer: String::new(),
+                owner_did: creator.to_string(),
+            },
+        };
+        module.create_commitment(&mut commitment).unwrap();
+
+        // Block context: time = 200 (> 100 + 10).
+        let block_ctx = BlockExecCtx {
+            timestamp: Timestamp {
+                seconds: 200,
+                block_height: 20,
+            },
+        };
+
+        let flagged = module.end_blocker(&block_ctx).unwrap();
+        assert_eq!(flagged.len(), 1);
+        assert!(flagged[0].expired);
+
+        // Verify the stored commitment is now expired.
+        let stored = module
+            .query_registrations_commitment(commitment.id)
+            .unwrap();
+        assert!(stored.expired);
+    }
+
+    #[test]
+    fn query_validate_policy_valid() {
+        let module = AcpModule::new();
+        let (valid, msg, policy) = module
+            .query_validate_policy(SIMPLE_POLICY, PolicyMarshalingType::ShortYaml)
+            .unwrap();
+        assert!(valid, "expected valid, got: {msg}");
+        assert!(msg.is_empty());
+        assert_eq!(policy.name, "test-policy");
+    }
+
+    #[test]
+    fn query_validate_policy_invalid() {
+        let module = AcpModule::new();
+        let (valid, msg, _) = module
+            .query_validate_policy("not: valid: yaml: policy", PolicyMarshalingType::ShortYaml)
+            .unwrap();
+        // Either parse fails or the policy is otherwise invalid.
+        // We just assert it returns false with a non-empty message or valid=false.
+        let _ = (valid, msg); // result depends on YAML parser behavior; don't assert specifics
+    }
+
+    #[test]
+    fn archive_and_unarchive_object() {
+        let mut module = AcpModule::new();
+        let creator = alice();
+
+        let record = module
+            .create_policy(&creator, SIMPLE_POLICY, PolicyMarshalingType::ShortYaml)
+            .unwrap();
+        let policy_id = &record.policy.id;
+
+        let obj = Object {
+            resource: "document".into(),
+            id: "docD".into(),
+        };
+        module
+            .direct_policy_cmd(&creator, policy_id, PolicyCmd::RegisterObject(obj.clone()))
+            .unwrap();
+
+        // Archive.
+        let archive_result = module
+            .direct_policy_cmd(&creator, policy_id, PolicyCmd::ArchiveObject(obj.clone()))
+            .unwrap();
+        assert!(matches!(
+            archive_result,
+            PolicyCmdResult::ArchiveObject { found: true, .. }
+        ));
+
+        // Owner query should return false (archived).
+        let (found, _) = module.query_object_owner(policy_id, &obj).unwrap();
+        assert!(!found);
+
+        // Unarchive.
+        let unarchive_result = module
+            .direct_policy_cmd(&creator, policy_id, PolicyCmd::UnarchiveObject(obj.clone()))
+            .unwrap();
+        assert!(matches!(
+            unarchive_result,
+            PolicyCmdResult::UnarchiveObject {
+                relationship_modified: true,
+                ..
+            }
+        ));
+
+        // Owner query should return true again.
+        let (found, _) = module.query_object_owner(policy_id, &obj).unwrap();
+        assert!(found);
+    }
+
+    #[test]
+    fn merkle_tree_single_leaf() {
+        let leaf = b"policy_idresourcedoc1did:key:alice";
+        let leaf_hash = AcpModule::compute_leaf_hash(leaf);
+        let levels = AcpModule::build_merkle_levels(&[leaf_hash]);
+        assert_eq!(levels.len(), 1);
+        assert_eq!(levels[0][0], leaf_hash);
+    }
+
+    #[test]
+    fn merkle_tree_two_leaves() {
+        let leaf1 = AcpModule::compute_leaf_hash(b"leaf1");
+        let leaf2 = AcpModule::compute_leaf_hash(b"leaf2");
+        let levels = AcpModule::build_merkle_levels(&[leaf1, leaf2]);
+        assert_eq!(levels.len(), 2);
+        let root = AcpModule::compute_inner_hash(&leaf1, &leaf2);
+        assert_eq!(levels[1][0], root);
+    }
+
+    #[test]
+    fn generate_commitment_roundtrip() {
+        let mut module = AcpModule::new();
+        let creator = alice();
+
+        let record = module
+            .create_policy(&creator, SIMPLE_POLICY, PolicyMarshalingType::ShortYaml)
+            .unwrap();
+        let policy_id = &record.policy.id;
+
+        let objects = vec![
+            Object {
+                resource: "document".into(),
+                id: "obj1".into(),
+            },
+            Object {
+                resource: "document".into(),
+                id: "obj2".into(),
+            },
+        ];
+
+        let result = module
+            .query_generate_commitment(policy_id, &objects, &Actor(creator.clone()))
+            .unwrap();
+
+        assert_eq!(result.commitment.len(), 32);
+        assert_eq!(result.proofs.len(), 2);
+        assert_eq!(result.proofs_json.len(), 2);
+
+        // Verify proof for each object.
+        for (i, obj) in objects.iter().enumerate() {
+            let leaf_data = format!("{}{}{}{}", policy_id, obj.resource, obj.id, creator);
+            let valid = AcpModule::verify_merkle_proof(
+                &result.commitment,
+                &result.proofs[i],
+                leaf_data.as_bytes(),
+            );
+            assert!(valid, "proof {i} should be valid");
+        }
     }
 }

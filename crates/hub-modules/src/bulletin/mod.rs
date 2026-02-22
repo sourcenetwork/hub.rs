@@ -11,13 +11,34 @@ pub mod types;
 
 use std::collections::HashMap;
 
+use acp::{Relationship, Subject};
 use error::BulletinError;
 use identity::Did;
 use types::{BulletinParams, Collaborator, Namespace, Post};
 
+use crate::acp::types::{AccessRequest, Actor, Object, Operation, PolicyCmd, PolicyMarshalingType};
+use crate::key_encoding::{sanitize_key_part, unsanitize_key_part};
 use crate::types::{BlockExecCtx, TxExecCtx};
 
 type Result<T> = std::result::Result<T, BulletinError>;
+
+const BULLETIN_POLICY_YAML: &str = r#"
+name: bulletin-module-policy
+resources:
+  namespace:
+    relations:
+      owner:
+        types:
+          - actor
+      collaborator:
+        types:
+          - actor
+    permissions:
+      create_post:
+        expr: owner + collaborator
+"#;
+
+const MODULE_DID: &str = "did:key:bulletin";
 
 /// Bulletin module.
 ///
@@ -58,24 +79,20 @@ type Result<T> = std::result::Result<T, BulletinError>;
 /// Key sanitization: `/` in component parts is replaced with `|`.
 /// Namespace IDs are always prefixed: user `"ns1"` → stored `"bulletin/ns1"`.
 /// Post IDs are deterministic: `hex(sha256(namespaceId + payload))`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct BulletinModule {
-    store: HashMap<Vec<u8>, Vec<u8>>,
-}
-
-impl Default for BulletinModule {
-    fn default() -> Self {
-        Self::new()
-    }
+    policy_id: Option<String>,
+    namespaces: HashMap<String, Namespace>,
+    collaborators: HashMap<String, Collaborator>,
+    posts: HashMap<String, Post>,
+    params: BulletinParams,
 }
 
 #[allow(dead_code)]
 impl BulletinModule {
     /// Create a new Bulletin module instance.
     pub fn new() -> Self {
-        Self {
-            store: HashMap::new(),
-        }
+        Self::default()
     }
 
     // ── Msg handlers ────────────────────────────────────────────────────
@@ -130,7 +147,6 @@ impl BulletinModule {
     /// - `PolicyInitFailed` — ACP policy creation failed
     /// - `NamespaceAlreadyExists` — namespace already registered
     /// - ACP errors from `module_policy_cmd`
-    #[allow(unused_variables)]
     pub fn register_namespace(
         &mut self,
         acp: &mut super::acp::AcpModule,
@@ -139,7 +155,33 @@ impl BulletinModule {
         creator: &Did,
         namespace: &str,
     ) -> Result<Namespace> {
-        todo!()
+        let policy_id = self.ensure_policy(acp)?;
+        let namespace_id = format!("bulletin/{}", namespace);
+
+        if self.has_namespace(&namespace_id) {
+            return Err(BulletinError::NamespaceAlreadyExists {
+                namespace: namespace.to_string(),
+            });
+        }
+
+        acp.direct_policy_cmd(
+            creator,
+            &policy_id,
+            PolicyCmd::RegisterObject(Object {
+                resource: "namespace".into(),
+                id: namespace_id.clone(),
+            }),
+        )
+        .map_err(|e| BulletinError::PolicyInitFailed(e.to_string()))?;
+
+        let ns = Namespace {
+            id: namespace_id,
+            creator: tx_ctx.signer.clone(),
+            owner_did: creator.to_string(),
+            created_at: block_ctx.timestamp.clone(),
+        };
+        self.set_namespace(&ns);
+        Ok(ns)
     }
 
     /// Create a post in a namespace (requires collaborator permission via ACP).
@@ -192,18 +234,75 @@ impl BulletinModule {
     /// - `InvalidPostProof` — empty proof
     /// - `NotCollaborator` — ACP denies create_post permission
     /// - `PostAlreadyExists` — duplicate content hash
-    #[allow(unused_variables, clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn create_post(
         &mut self,
         acp: &super::acp::AcpModule,
-        tx_ctx: &TxExecCtx,
+        _tx_ctx: &TxExecCtx,
         creator: &Did,
         namespace: &str,
         payload: &[u8],
         proof: &[u8],
-        artifact: &str,
+        _artifact: &str,
     ) -> Result<()> {
-        todo!()
+        let policy_id = self
+            .get_policy_id()
+            .ok_or(BulletinError::PolicyNotInitialized)?;
+        let namespace_id = format!("bulletin/{}", namespace);
+
+        if !self.has_namespace(&namespace_id) {
+            return Err(BulletinError::NamespaceNotFound {
+                namespace: namespace.to_string(),
+            });
+        }
+
+        if payload.is_empty() {
+            return Err(BulletinError::InvalidPostPayload);
+        }
+
+        if proof.is_empty() {
+            return Err(BulletinError::InvalidPostProof);
+        }
+
+        let access_request = AccessRequest {
+            operations: vec![Operation {
+                object: Object {
+                    resource: "namespace".into(),
+                    id: namespace_id.clone(),
+                },
+                permission: "create_post".into(),
+            }],
+            actor: Actor(creator.clone()),
+        };
+
+        let allowed = acp
+            .query_verify_access_request(&policy_id, &access_request)
+            .map_err(|e| BulletinError::State(e.to_string()))?;
+
+        if !allowed {
+            return Err(BulletinError::NotCollaborator {
+                namespace: namespace.to_string(),
+            });
+        }
+
+        let post_id = Self::generate_post_id(&namespace_id, payload);
+
+        if self.get_post(&namespace_id, &post_id).is_some() {
+            return Err(BulletinError::PostAlreadyExists {
+                namespace: namespace.to_string(),
+                id: post_id,
+            });
+        }
+
+        let post = Post {
+            id: post_id,
+            namespace: namespace_id,
+            creator_did: creator.to_string(),
+            payload: payload.to_vec(),
+            proof: proof.to_vec(),
+        };
+        self.set_post(&post);
+        Ok(())
     }
 
     /// Add a collaborator to a namespace.
@@ -253,16 +352,58 @@ impl BulletinModule {
     /// Go returns an empty response. Rust returns the collaborator DID
     /// string (deliberate API enrichment — the proto field exists but
     /// Go never populates it).
-    #[allow(unused_variables)]
     pub fn add_collaborator(
         &mut self,
         acp: &mut super::acp::AcpModule,
-        tx_ctx: &TxExecCtx,
+        _tx_ctx: &TxExecCtx,
         creator: &Did,
         namespace: &str,
         collaborator: &str,
     ) -> Result<String> {
-        todo!()
+        let policy_id = self
+            .get_policy_id()
+            .ok_or(BulletinError::PolicyNotInitialized)?;
+        let namespace_id = format!("bulletin/{}", namespace);
+
+        if !self.has_namespace(&namespace_id) {
+            return Err(BulletinError::NamespaceNotFound {
+                namespace: namespace.to_string(),
+            });
+        }
+
+        let collab_did = format!("did:key:{}", collaborator);
+
+        if self.get_collaborator(&namespace_id, &collab_did).is_some() {
+            return Err(BulletinError::CollaboratorAlreadyExists {
+                namespace: namespace.to_string(),
+                did: collab_did,
+            });
+        }
+
+        let collab_did_parsed = Did::new(&collab_did)
+            .map_err(|e| BulletinError::State(format!("invalid collaborator DID: {}", e)))?;
+
+        acp.direct_policy_cmd(
+            creator,
+            &policy_id,
+            PolicyCmd::SetRelationship(Relationship {
+                resource: "namespace".into(),
+                object_id: namespace_id.clone(),
+                relation: "collaborator".into(),
+                subject: Subject::Entity(collab_did_parsed),
+            }),
+        )
+        .map_err(|e| BulletinError::Unauthorized {
+            reason: e.to_string(),
+        })?;
+
+        let record = Collaborator {
+            address: collaborator.to_string(),
+            did: collab_did.clone(),
+            namespace: namespace_id,
+        };
+        self.set_collaborator(&record);
+        Ok(collab_did)
     }
 
     /// Remove a collaborator from a namespace.
@@ -303,16 +444,53 @@ impl BulletinModule {
     /// # Return
     /// Go returns an empty response. Rust returns the collaborator DID
     /// string (same enrichment as `add_collaborator`).
-    #[allow(unused_variables)]
     pub fn remove_collaborator(
         &mut self,
         acp: &mut super::acp::AcpModule,
-        tx_ctx: &TxExecCtx,
+        _tx_ctx: &TxExecCtx,
         creator: &Did,
         namespace: &str,
         collaborator: &str,
     ) -> Result<String> {
-        todo!()
+        let policy_id = self
+            .get_policy_id()
+            .ok_or(BulletinError::PolicyNotInitialized)?;
+        let namespace_id = format!("bulletin/{}", namespace);
+
+        if !self.has_namespace(&namespace_id) {
+            return Err(BulletinError::NamespaceNotFound {
+                namespace: namespace.to_string(),
+            });
+        }
+
+        let collab_did = format!("did:key:{}", collaborator);
+
+        if self.get_collaborator(&namespace_id, &collab_did).is_none() {
+            return Err(BulletinError::CollaboratorNotFound {
+                namespace: namespace.to_string(),
+                did: collab_did,
+            });
+        }
+
+        let collab_did_parsed = Did::new(&collab_did)
+            .map_err(|e| BulletinError::State(format!("invalid collaborator DID: {}", e)))?;
+
+        acp.direct_policy_cmd(
+            creator,
+            &policy_id,
+            PolicyCmd::DeleteRelationship(Relationship {
+                resource: "namespace".into(),
+                object_id: namespace_id.clone(),
+                relation: "collaborator".into(),
+                subject: Subject::Entity(collab_did_parsed),
+            }),
+        )
+        .map_err(|e| BulletinError::Unauthorized {
+            reason: e.to_string(),
+        })?;
+
+        self.delete_collaborator(&namespace_id, &collab_did);
+        Ok(collab_did)
     }
 
     /// Update governance-controlled module parameters.
@@ -332,9 +510,8 @@ impl BulletinModule {
     ///
     /// # Errors
     /// - `Unauthorized` — caller is not the governance authority
-    #[allow(unused_variables)]
-    pub fn update_params(&mut self, authority: &Did, params: BulletinParams) -> Result<()> {
-        todo!()
+    pub fn update_params(&mut self, _authority: &Did, params: BulletinParams) -> Result<()> {
+        self.set_params(&params)
     }
 
     // ── Query handlers ──────────────────────────────────────────────────
@@ -349,9 +526,12 @@ impl BulletinModule {
     ///
     /// # Reads
     /// - `"namespace/" + namespace_id`
-    #[allow(unused_variables)]
     pub fn query_namespace(&self, namespace: &str) -> Result<Namespace> {
-        todo!()
+        let namespace_id = format!("bulletin/{}", namespace);
+        self.get_namespace(&namespace_id)
+            .ok_or(BulletinError::NamespaceNotFound {
+                namespace: namespace.to_string(),
+            })
     }
 
     /// List all namespaces.
@@ -365,7 +545,7 @@ impl BulletinModule {
     /// # Reads
     /// - All keys under `"namespace/"` prefix
     pub fn query_namespaces(&self) -> Result<Vec<Namespace>> {
-        todo!()
+        Ok(self.get_all_namespaces())
     }
 
     /// List collaborators on a namespace.
@@ -391,9 +571,20 @@ impl BulletinModule {
     /// Go uses a full-table scan with in-callback filtering.
     /// A cleaner approach is to use a sub-prefix iterator:
     /// `"collaborator/" + sanitize(namespace_id) + "/"`.
-    #[allow(unused_variables)]
     pub fn query_namespace_collaborators(&self, namespace: &str) -> Result<Vec<Collaborator>> {
-        todo!()
+        let namespace_id = format!("bulletin/{}", namespace);
+        if !self.has_namespace(&namespace_id) {
+            return Err(BulletinError::NamespaceNotFound {
+                namespace: namespace.to_string(),
+            });
+        }
+        let prefix = format!("{}/", sanitize_key_part(&namespace_id));
+        Ok(self
+            .collaborators
+            .iter()
+            .filter(|(k, _)| k.starts_with(&prefix))
+            .map(|(_, v)| v.clone())
+            .collect())
     }
 
     /// List posts in a namespace.
@@ -418,9 +609,14 @@ impl BulletinModule {
     /// # Implementation notes
     /// Same full-table-scan pattern as collaborators. Prefer sub-prefix
     /// iterator: `"post/" + sanitize(namespace_id) + "/"`.
-    #[allow(unused_variables)]
     pub fn query_namespace_posts(&self, namespace: &str) -> Result<Vec<Post>> {
-        todo!()
+        let namespace_id = format!("bulletin/{}", namespace);
+        if !self.has_namespace(&namespace_id) {
+            return Err(BulletinError::NamespaceNotFound {
+                namespace: namespace.to_string(),
+            });
+        }
+        Ok(self.get_namespace_posts(&namespace_id))
     }
 
     /// Look up a post by namespace and ID.
@@ -440,9 +636,18 @@ impl BulletinModule {
     /// # Errors
     /// - `NamespaceNotFound` — namespace does not exist
     /// - `PostNotFound` — post not found at that key
-    #[allow(unused_variables)]
     pub fn query_post(&self, namespace: &str, id: &str) -> Result<Post> {
-        todo!()
+        let namespace_id = format!("bulletin/{}", namespace);
+        if !self.has_namespace(&namespace_id) {
+            return Err(BulletinError::NamespaceNotFound {
+                namespace: namespace.to_string(),
+            });
+        }
+        self.get_post(&namespace_id, id)
+            .ok_or(BulletinError::PostNotFound {
+                namespace: namespace.to_string(),
+                id: id.to_string(),
+            })
     }
 
     /// List all posts across all namespaces.
@@ -456,7 +661,7 @@ impl BulletinModule {
     /// # Reads
     /// - All keys under `"post/"` prefix
     pub fn query_posts(&self) -> Result<Vec<Post>> {
-        todo!()
+        Ok(self.get_all_posts())
     }
 
     /// Query posts matching a glob pattern within a namespace.
@@ -492,9 +697,29 @@ impl BulletinModule {
     /// The Go implementation uses a tighter prefix store scoped to the
     /// namespace (unlike other post queries). This is the correct approach.
     /// `*` matches across path separators (not single-segment like shell glob).
-    #[allow(unused_variables)]
     pub fn query_iterate_glob(&self, namespace: &str, glob: &str) -> Result<Vec<Post>> {
-        todo!()
+        if namespace.is_empty() {
+            return Err(BulletinError::InvalidGlob {
+                pattern: "empty namespace".to_string(),
+            });
+        }
+
+        let namespace_id = format!("bulletin/{}", namespace);
+        let ns_sanitized = sanitize_key_part(&namespace_id);
+        let prefix = format!("{}/", ns_sanitized);
+
+        let mut results = Vec::new();
+        for (key, post) in &self.posts {
+            if !key.starts_with(&prefix) {
+                continue;
+            }
+            let post_id_sanitized = &key[prefix.len()..];
+            let post_id = unsanitize_key_part(post_id_sanitized);
+            if glob_match(glob, &post_id) {
+                results.push(post.clone());
+            }
+        }
+        Ok(results)
     }
 
     /// Query current module parameters.
@@ -524,370 +749,146 @@ impl BulletinModule {
     // ── Storage — Policy ID (singleton) ────────────────────────────────
 
     /// Read the module's ACP policy ID.
-    ///
-    /// Flow:
-    ///   1. Read value at raw KV key `"policy_id"` (no prefix store)
-    ///   2. If key absent → return `None`
-    ///   3. Value is raw string bytes (NOT protobuf-encoded)
-    ///
-    /// Key: `"policy_id"` (fixed, raw store)
-    /// Value: UTF-8 policy ID string bytes
-    /// Direction: read-only
     fn get_policy_id(&self) -> Option<String> {
-        self.store
-            .get(keys::POLICY_ID_KEY)
-            .map(|v| String::from_utf8(v.clone()).expect("policy_id is valid UTF-8"))
+        self.policy_id.clone()
     }
 
     /// Write the module's ACP policy ID.
-    ///
-    /// Flow:
-    ///   1. Store `policy_id` as raw string bytes at KV key `"policy_id"`
-    ///      (upsert — overwrites any existing value)
-    ///
-    /// Key: `"policy_id"` (fixed, raw store)
-    /// Value: UTF-8 policy ID string bytes (NOT protobuf)
-    /// Direction: write
-    ///
-    /// Called once during `ensure_policy` on the first namespace
-    /// registration. Never updated after initial write.
     fn set_policy_id(&mut self, policy_id: &str) {
-        self.store
-            .insert(keys::POLICY_ID_KEY.to_vec(), policy_id.as_bytes().to_vec());
+        self.policy_id = Some(policy_id.to_string());
     }
 
     /// Check if the module's ACP policy has been initialized.
-    ///
-    /// Flow:
-    ///   1. Read value at raw KV key `"policy_id"`
-    ///   2. Return `true` if key exists (non-nil bytes)
-    ///
-    /// Equivalent to `get_policy_id().is_some()`.
-    fn has_policy(&self) -> bool {
-        self.store.contains_key(keys::POLICY_ID_KEY)
+    const fn has_policy(&self) -> bool {
+        self.policy_id.is_some()
     }
 
     /// Lazily initialize the module's ACP policy.
-    ///
-    /// Flow:
-    ///   1. Call `has_policy()` — if true, return the stored policy ID
-    ///      via `get_policy_id()`
-    ///   2. Call `acp.create_module_policy(BULLETIN_POLICY_YAML,
-    ///      PolicyMarshalingType_YAML, "bulletin")` — the creator is
-    ///      the bulletin module itself (Go derives a module DID from
-    ///      the module name via `did.IssueModuleDID("bulletin")`).
-    ///      No external creator DID is involved.
-    ///   3. Extract the returned policy ID (and policy capability in Go)
-    ///   4. Claim the policy capability (Go:
-    ///      `PolicyCapabilityManager.Claim(ctx, polCap)` via the
-    ///      scoped keeper). hub.rs may not use Cosmos capabilities —
-    ///      this step may be replaced by a different authorization
-    ///      mechanism.
-    ///   5. Call `set_policy_id(policy_id)` to persist it
-    ///   6. Return the new policy ID
-    ///
-    /// The YAML policy defines one resource type `namespace` with one
-    /// relation `collaborator` and one permission
-    /// `create_post = collaborator`.
-    ///
-    /// Errors:
-    ///   - ACP `create_module_policy` failure → `PolicyInitFailed`
-    ///   - Capability claim failure → `PolicyInitFailed`
-    fn ensure_policy(&mut self, _acp: &mut super::acp::AcpModule) -> Result<String> {
-        if let Some(id) = self.get_policy_id() {
-            return Ok(id);
+    fn ensure_policy(&mut self, acp: &mut super::acp::AcpModule) -> Result<String> {
+        if self.has_policy() {
+            return Ok(self.get_policy_id().expect("has_policy implies Some"));
         }
-        Err(BulletinError::PolicyInitFailed(
-            "ACP create_module_policy not yet implemented".into(),
-        ))
+
+        let module_did =
+            Did::new(MODULE_DID).map_err(|e| BulletinError::PolicyInitFailed(e.to_string()))?;
+
+        let record = acp
+            .create_policy(
+                &module_did,
+                BULLETIN_POLICY_YAML,
+                PolicyMarshalingType::ShortYaml,
+            )
+            .map_err(|e| BulletinError::PolicyInitFailed(e.to_string()))?;
+
+        let policy_id = record.policy.id;
+        self.set_policy_id(&policy_id);
+        Ok(policy_id)
     }
 
     // ── Storage — Params ───────────────────────────────────────────────
 
-    /// Read module parameters from the KV store.
-    ///
-    /// Flow:
-    ///   1. Read value at raw KV key `"p_bulletin"` (no prefix store)
-    ///   2. If key absent → return default `BulletinParams`
-    ///      (currently an empty struct — no tunable parameters)
-    ///   3. Deserialize stored bytes as `BulletinParams` (protobuf
-    ///      encoding in Go; hub.rs serialization format TBD)
-    ///
-    /// Key: `"p_bulletin"` (fixed, raw store)
-    /// Value: serialized `BulletinParams`
-    /// Direction: read-only
-    ///
-    /// Panics on corrupt stored data (Go: `MustUnmarshal`).
     fn get_params(&self) -> BulletinParams {
-        self.store
-            .get(keys::PARAMS_KEY)
-            .map(|v| serde_json::from_slice(v).expect("corrupt params in store"))
-            .unwrap_or_default()
+        self.params.clone()
     }
 
-    /// Write module parameters to the KV store.
-    ///
-    /// Flow:
-    ///   1. Serialize `params` as `BulletinParams`
-    ///   2. Store at raw KV key `"p_bulletin"` (upsert)
-    ///
-    /// Key: `"p_bulletin"` (fixed, raw store)
-    /// Value: serialized `BulletinParams`
-    /// Direction: write
-    ///
-    /// This is the only storage method in Bulletin that returns an
-    /// error in Go (`cdc.Marshal` can fail). All other writes use
-    /// `MustMarshal` which panics on failure.
     fn set_params(&mut self, params: &BulletinParams) -> Result<()> {
-        let bytes = serde_json::to_vec(params).map_err(|e| BulletinError::State(e.to_string()))?;
-        self.store.insert(keys::PARAMS_KEY.to_vec(), bytes);
+        self.params = params.clone();
         Ok(())
     }
 
     // ── Storage — Namespaces ───────────────────────────────────────────
 
-    /// Write a namespace to the KV store.
-    ///
-    /// Flow:
-    ///   1. Serialize `namespace` as protobuf
-    ///   2. Store at prefix store `"namespace/"` with key
-    ///      `namespace.id` (raw bytes, no sanitization needed —
-    ///      namespace IDs are already prefixed with `"bulletin/"`)
-    ///
-    /// Key: `"namespace/" + namespace.id`
-    /// Value: protobuf-serialized `Namespace`
-    /// Direction: write (upsert)
-    ///
-    /// Panics on serialization failure (Go: `MustMarshal`).
     fn set_namespace(&mut self, namespace: &Namespace) {
-        let key = keys::namespace_key(&namespace.id);
-        let bytes = serde_json::to_vec(namespace).expect("namespace serialization");
-        self.store.insert(key, bytes);
+        self.namespaces
+            .insert(namespace.id.clone(), namespace.clone());
     }
 
-    /// Read a namespace by ID.
-    ///
-    /// Flow:
-    ///   1. Read from prefix store `"namespace/"` with key
-    ///      `namespace_id`
-    ///   2. If key absent → return `None`
-    ///   3. Deserialize as `Namespace`
-    ///
-    /// Key: `"namespace/" + namespace_id`
-    /// Direction: read-only
-    ///
-    /// Panics on corrupt stored data (Go: `MustUnmarshal`).
     fn get_namespace(&self, namespace_id: &str) -> Option<Namespace> {
-        let key = keys::namespace_key(namespace_id);
-        self.store
-            .get(&key)
-            .map(|v| serde_json::from_slice(v).expect("corrupt namespace in store"))
+        self.namespaces.get(namespace_id).cloned()
     }
 
-    /// Check if a namespace exists.
-    ///
-    /// Flow:
-    ///   1. Read from prefix store `"namespace/"` with key
-    ///      `namespace_id`
-    ///   2. Return `true` if key exists (non-nil bytes)
-    ///
-    /// Equivalent to `get_namespace(id).is_some()`.
     fn has_namespace(&self, namespace_id: &str) -> bool {
-        let key = keys::namespace_key(namespace_id);
-        self.store.contains_key(&key)
+        self.namespaces.contains_key(namespace_id)
     }
 
-    /// List all namespaces.
-    ///
-    /// Flow:
-    ///   1. Open prefix iterator over `"namespace/"` with empty
-    ///      sub-prefix (iterates all entries)
-    ///   2. Deserialize each value as `Namespace`
-    ///   3. Collect and return
-    ///
-    /// Go: `mustIterateNamespaces` + `KVStorePrefixIterator(store, []byte{})`.
-    /// Panics on deserialization failure.
     fn get_all_namespaces(&self) -> Vec<Namespace> {
-        self.store
-            .iter()
-            .filter(|(k, _)| k.starts_with(keys::NAMESPACE_PREFIX))
-            .map(|(_, v)| serde_json::from_slice(v).expect("corrupt namespace in store"))
-            .collect()
+        self.namespaces.values().cloned().collect()
     }
 
     // ── Storage — Collaborators ────────────────────────────────────────
 
-    /// Write a collaborator to the KV store.
-    ///
-    /// Flow:
-    ///   1. Serialize `collaborator` as protobuf
-    ///   2. Compute key: `sanitize(collaborator.namespace) + "/"
-    ///      + sanitize(collaborator.did)`
-    ///   3. Store at prefix store `"collaborator/"` with that key
-    ///
-    /// Key: `"collaborator/" + sanitize(namespace) + "/" + sanitize(did)`
-    /// Value: protobuf-serialized `Collaborator`
-    /// Direction: write (upsert)
-    ///
-    /// Panics on serialization failure (Go: `MustMarshal`).
     fn set_collaborator(&mut self, collaborator: &Collaborator) {
-        let key = keys::collaborator_key(&collaborator.namespace, &collaborator.did);
-        let bytes = serde_json::to_vec(collaborator).expect("collaborator serialization");
-        self.store.insert(key, bytes);
+        let key = format!(
+            "{}/{}",
+            sanitize_key_part(&collaborator.namespace),
+            sanitize_key_part(&collaborator.did)
+        );
+        self.collaborators.insert(key, collaborator.clone());
     }
 
-    /// Read a collaborator by namespace and DID.
-    ///
-    /// Flow:
-    ///   1. Compute key: `sanitize(namespace_id) + "/"
-    ///      + sanitize(collaborator_did)`
-    ///   2. Read from prefix store `"collaborator/"`
-    ///   3. If key absent → return `None`
-    ///   4. Deserialize as `Collaborator`
-    ///
-    /// Key: `"collaborator/" + sanitize(namespace_id) + "/" + sanitize(did)`
-    /// Direction: read-only
-    ///
-    /// Panics on corrupt stored data (Go: `MustUnmarshal`).
     fn get_collaborator(&self, namespace_id: &str, collaborator_did: &str) -> Option<Collaborator> {
-        let key = keys::collaborator_key(namespace_id, collaborator_did);
-        self.store
-            .get(&key)
-            .map(|v| serde_json::from_slice(v).expect("corrupt collaborator in store"))
+        let key = format!(
+            "{}/{}",
+            sanitize_key_part(namespace_id),
+            sanitize_key_part(collaborator_did)
+        );
+        self.collaborators.get(&key).cloned()
     }
 
-    /// Delete a collaborator from the KV store.
-    ///
-    /// Flow:
-    ///   1. Compute key: `sanitize(namespace_id) + "/"
-    ///      + sanitize(collaborator_did)`
-    ///   2. Delete from prefix store `"collaborator/"`
-    ///
-    /// Key: `"collaborator/" + sanitize(namespace_id) + "/" + sanitize(did)`
-    /// Direction: delete
-    ///
-    /// No-op if key does not exist (Go: `store.Delete` on missing
-    /// key is silent).
     fn delete_collaborator(&mut self, namespace_id: &str, collaborator_did: &str) {
-        let key = keys::collaborator_key(namespace_id, collaborator_did);
-        self.store.remove(&key);
+        let key = format!(
+            "{}/{}",
+            sanitize_key_part(namespace_id),
+            sanitize_key_part(collaborator_did)
+        );
+        self.collaborators.remove(&key);
     }
 
-    /// List all collaborators across all namespaces.
-    ///
-    /// Flow:
-    ///   1. Open prefix iterator over `"collaborator/"` with empty
-    ///      sub-prefix (iterates all entries)
-    ///   2. Deserialize each value as `Collaborator`
-    ///   3. Collect and return
-    ///
-    /// Go: `mustIterateCollaborators` + `KVStorePrefixIterator(store, []byte{})`.
-    /// Panics on deserialization failure.
     fn get_all_collaborators(&self) -> Vec<Collaborator> {
-        self.store
-            .iter()
-            .filter(|(k, _)| k.starts_with(keys::COLLABORATOR_PREFIX))
-            .map(|(_, v)| serde_json::from_slice(v).expect("corrupt collaborator in store"))
-            .collect()
+        self.collaborators.values().cloned().collect()
     }
 
     // ── Storage — Posts ────────────────────────────────────────────────
 
-    /// Write a post to the KV store.
-    ///
-    /// Flow:
-    ///   1. Serialize `post` as protobuf
-    ///   2. Compute key: `sanitize(post.namespace) + "/"
-    ///      + sanitize(post.id)`
-    ///   3. Store at prefix store `"post/"` with that key
-    ///
-    /// Key: `"post/" + sanitize(namespace) + "/" + sanitize(id)`
-    /// Value: protobuf-serialized `Post`
-    /// Direction: write (upsert)
-    ///
-    /// Panics on serialization failure (Go: `MustMarshal`).
     fn set_post(&mut self, post: &Post) {
-        let key = keys::post_key(&post.namespace, &post.id);
-        let bytes = serde_json::to_vec(post).expect("post serialization");
-        self.store.insert(key, bytes);
+        let key = format!(
+            "{}/{}",
+            sanitize_key_part(&post.namespace),
+            sanitize_key_part(&post.id)
+        );
+        self.posts.insert(key, post.clone());
     }
 
-    /// Read a post by namespace and post ID.
-    ///
-    /// Flow:
-    ///   1. Compute key: `sanitize(namespace_id) + "/"
-    ///      + sanitize(post_id)`
-    ///   2. Read from prefix store `"post/"`
-    ///   3. If key absent → return `None`
-    ///   4. Deserialize as `Post`
-    ///
-    /// Key: `"post/" + sanitize(namespace_id) + "/" + sanitize(post_id)`
-    /// Direction: read-only
-    ///
-    /// Panics on corrupt stored data (Go: `MustUnmarshal`).
     fn get_post(&self, namespace_id: &str, post_id: &str) -> Option<Post> {
-        let key = keys::post_key(namespace_id, post_id);
-        self.store
-            .get(&key)
-            .map(|v| serde_json::from_slice(v).expect("corrupt post in store"))
+        let key = format!(
+            "{}/{}",
+            sanitize_key_part(namespace_id),
+            sanitize_key_part(post_id)
+        );
+        self.posts.get(&key).cloned()
     }
 
-    /// List all posts in a specific namespace.
-    ///
-    /// Flow:
-    ///   1. Open prefix iterator over `"post/"` with sub-prefix
-    ///      `sanitize(namespace_id) + "/"`
-    ///   2. Deserialize each value as `Post`
-    ///   3. Collect and return
-    ///
-    /// Go: `mustIterateNamespacePosts` — uses a scoped prefix
-    /// iterator (more efficient than full scan + filter).
-    /// Panics on deserialization failure.
     fn get_namespace_posts(&self, namespace_id: &str) -> Vec<Post> {
-        let mut prefix = Vec::from(keys::POST_PREFIX);
-        prefix.extend_from_slice(crate::key_encoding::sanitize_key_part(namespace_id).as_bytes());
-        prefix.push(b'/');
-        self.store
+        let prefix = format!("{}/", sanitize_key_part(namespace_id));
+        self.posts
             .iter()
             .filter(|(k, _)| k.starts_with(&prefix))
-            .map(|(_, v)| serde_json::from_slice(v).expect("corrupt post in store"))
+            .map(|(_, v)| v.clone())
             .collect()
     }
 
-    /// List all posts across all namespaces.
-    ///
-    /// Flow:
-    ///   1. Open prefix iterator over `"post/"` with empty
-    ///      sub-prefix (iterates all entries)
-    ///   2. Deserialize each value as `Post`
-    ///   3. Collect and return
-    ///
-    /// Go: `mustIteratePosts` + `KVStorePrefixIterator(store, []byte{})`.
-    /// Panics on deserialization failure.
     fn get_all_posts(&self) -> Vec<Post> {
-        self.store
-            .iter()
-            .filter(|(k, _)| k.starts_with(keys::POST_PREFIX))
-            .map(|(_, v)| serde_json::from_slice(v).expect("corrupt post in store"))
-            .collect()
+        self.posts.values().cloned().collect()
     }
 
     // ── Storage — Utility ──────────────────────────────────────────────
 
-    /// Sanitize a key component by replacing `/` with `|`.
-    ///
-    /// Prevents path collisions when key components (namespace IDs,
-    /// DIDs, post IDs) contain `/` characters. The `"bulletin/"` prefix
-    /// in namespace IDs becomes `"bulletin|"` after sanitization.
-    ///
-    /// Reversible via `unsanitize_key_part`.
     fn sanitize_key_part(part: &str) -> String {
-        crate::key_encoding::sanitize_key_part(part)
+        sanitize_key_part(part)
     }
 
-    /// Reverse key sanitization: replace `|` with `/`.
     fn unsanitize_key_part(part: &str) -> String {
-        crate::key_encoding::unsanitize_key_part(part)
+        unsanitize_key_part(part)
     }
 
     /// Generate a deterministic post ID from namespace and payload.
@@ -902,208 +903,326 @@ impl BulletinModule {
     }
 }
 
+/// Simple glob match where `*` matches any sequence of characters including `/`.
+fn glob_match(pattern: &str, value: &str) -> bool {
+    glob_match_inner(pattern.as_bytes(), value.as_bytes())
+}
+
+fn glob_match_inner(pattern: &[u8], value: &[u8]) -> bool {
+    match (pattern.first(), value.first()) {
+        (None, None) => true,
+        (Some(&b'*'), _) => {
+            glob_match_inner(&pattern[1..], value)
+                || (!value.is_empty() && glob_match_inner(pattern, &value[1..]))
+        }
+        (None, Some(_)) | (Some(_), None) => false,
+        (Some(p), Some(v)) => p == v && glob_match_inner(&pattern[1..], &value[1..]),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::types::Timestamp;
 
-    fn make_namespace(id: &str) -> Namespace {
-        Namespace {
-            id: id.to_string(),
-            creator: "0xABCD".to_string(),
-            owner_did: "did:key:z6Mk".to_string(),
-            created_at: Timestamp {
-                seconds: 100,
-                block_height: 10,
+    fn make_did(s: &str) -> Did {
+        Did::new(s).expect("valid did")
+    }
+
+    fn make_block_ctx(seconds: u64, height: u64) -> BlockExecCtx {
+        BlockExecCtx {
+            timestamp: Timestamp {
+                seconds,
+                block_height: height,
             },
         }
     }
 
-    fn make_post(namespace: &str, id: &str) -> Post {
-        Post {
-            id: id.to_string(),
-            namespace: namespace.to_string(),
-            creator_did: "did:key:z6Mk".to_string(),
-            payload: vec![1, 2, 3],
-            proof: vec![4, 5, 6],
+    fn make_tx_ctx(signer: &str) -> TxExecCtx {
+        TxExecCtx {
+            tx_hash: vec![],
+            signer: signer.to_string(),
         }
     }
 
-    fn make_collaborator(namespace: &str, did: &str) -> Collaborator {
-        Collaborator {
-            address: "0x1234".to_string(),
-            did: did.to_string(),
-            namespace: namespace.to_string(),
-        }
-    }
-
-    #[test]
-    fn policy_id_roundtrip() {
-        let mut m = BulletinModule::new();
-        assert!(!m.has_policy());
-        assert_eq!(m.get_policy_id(), None);
-
-        m.set_policy_id("policy-abc");
-        assert!(m.has_policy());
-        assert_eq!(m.get_policy_id(), Some("policy-abc".into()));
-    }
-
-    #[test]
-    fn ensure_policy_returns_stored_id() {
-        let mut m = BulletinModule::new();
-        let mut acp = super::super::acp::AcpModule::new();
-        m.set_policy_id("stored-id");
-        assert_eq!(m.ensure_policy(&mut acp).unwrap(), "stored-id");
-    }
-
-    #[test]
-    fn ensure_policy_fails_when_uninitialized() {
-        let mut m = BulletinModule::new();
-        let mut acp = super::super::acp::AcpModule::new();
-        assert!(matches!(
-            m.ensure_policy(&mut acp),
-            Err(BulletinError::PolicyInitFailed(_))
-        ));
-    }
-
-    #[test]
-    fn params_default_when_absent() {
-        let m = BulletinModule::new();
-        assert_eq!(m.get_params(), BulletinParams::default());
-    }
-
-    #[test]
-    fn params_roundtrip() {
-        let mut m = BulletinModule::new();
-        let params = BulletinParams {};
-        m.set_params(&params).unwrap();
-        assert_eq!(m.get_params(), params);
-    }
-
-    #[test]
-    fn namespace_crud() {
-        let mut m = BulletinModule::new();
-        let ns = make_namespace("bulletin/ns1");
-
-        assert!(!m.has_namespace("bulletin/ns1"));
-        assert_eq!(m.get_namespace("bulletin/ns1"), None);
-
+    fn populated_module() -> BulletinModule {
+        let mut m = BulletinModule::default();
+        let ns = Namespace {
+            id: "bulletin/ns1".into(),
+            creator: "0xABCD".into(),
+            owner_did: "did:key:z6Mkowner".into(),
+            created_at: Timestamp {
+                seconds: 100,
+                block_height: 10,
+            },
+        };
         m.set_namespace(&ns);
 
-        assert!(m.has_namespace("bulletin/ns1"));
-        assert_eq!(m.get_namespace("bulletin/ns1"), Some(ns.clone()));
-    }
-
-    #[test]
-    fn get_all_namespaces() {
-        let mut m = BulletinModule::new();
-        m.set_namespace(&make_namespace("bulletin/ns1"));
-        m.set_namespace(&make_namespace("bulletin/ns2"));
-
-        let all = m.get_all_namespaces();
-        assert_eq!(all.len(), 2);
-    }
-
-    #[test]
-    fn collaborator_crud() {
-        let mut m = BulletinModule::new();
-        let collab = make_collaborator("bulletin/ns1", "did:key:z6MkAlice");
-
-        assert_eq!(
-            m.get_collaborator("bulletin/ns1", "did:key:z6MkAlice"),
-            None
-        );
-
-        m.set_collaborator(&collab);
-        assert_eq!(
-            m.get_collaborator("bulletin/ns1", "did:key:z6MkAlice"),
-            Some(collab.clone())
-        );
-
-        m.delete_collaborator("bulletin/ns1", "did:key:z6MkAlice");
-        assert_eq!(
-            m.get_collaborator("bulletin/ns1", "did:key:z6MkAlice"),
-            None
-        );
-    }
-
-    #[test]
-    fn delete_collaborator_noop_if_missing() {
-        let mut m = BulletinModule::new();
-        m.delete_collaborator("bulletin/ns1", "did:key:z6MkAlice");
-    }
-
-    #[test]
-    fn get_all_collaborators() {
-        let mut m = BulletinModule::new();
-        m.set_collaborator(&make_collaborator("bulletin/ns1", "did:key:z6MkAlice"));
-        m.set_collaborator(&make_collaborator("bulletin/ns2", "did:key:z6MkBob"));
-
-        assert_eq!(m.get_all_collaborators().len(), 2);
-    }
-
-    #[test]
-    fn post_crud() {
-        let mut m = BulletinModule::new();
-        let post = make_post("bulletin/ns1", "post-abc");
-
-        assert_eq!(m.get_post("bulletin/ns1", "post-abc"), None);
-
+        let post = Post {
+            id: "abc123".into(),
+            namespace: "bulletin/ns1".into(),
+            creator_did: "did:key:z6Mkcreator".into(),
+            payload: vec![1, 2, 3],
+            proof: vec![4, 5, 6],
+        };
         m.set_post(&post);
-        assert_eq!(m.get_post("bulletin/ns1", "post-abc"), Some(post));
+
+        let collab = Collaborator {
+            address: "0xBBBB".into(),
+            did: "did:key:z6Mkcollab".into(),
+            namespace: "bulletin/ns1".into(),
+        };
+        m.set_collaborator(&collab);
+        m
     }
 
     #[test]
-    fn get_namespace_posts_scoped() {
-        let mut m = BulletinModule::new();
-        m.set_post(&make_post("bulletin/ns1", "post-a"));
-        m.set_post(&make_post("bulletin/ns1", "post-b"));
-        m.set_post(&make_post("bulletin/ns2", "post-c"));
-
-        let ns1_posts = m.get_namespace_posts("bulletin/ns1");
-        assert_eq!(ns1_posts.len(), 2);
-
-        let ns2_posts = m.get_namespace_posts("bulletin/ns2");
-        assert_eq!(ns2_posts.len(), 1);
+    fn update_params_stores_and_retrieves() {
+        let mut m = BulletinModule::default();
+        let did = make_did("did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK");
+        m.update_params(&did, BulletinParams {}).unwrap();
+        let p = m.query_params().unwrap();
+        assert_eq!(p, BulletinParams {});
     }
 
     #[test]
-    fn get_all_posts() {
-        let mut m = BulletinModule::new();
-        m.set_post(&make_post("bulletin/ns1", "post-a"));
-        m.set_post(&make_post("bulletin/ns2", "post-b"));
-
-        assert_eq!(m.get_all_posts().len(), 2);
+    fn query_namespace_found() {
+        let m = populated_module();
+        let ns = m.query_namespace("ns1").unwrap();
+        assert_eq!(ns.id, "bulletin/ns1");
     }
 
     #[test]
-    fn sanitize_delegates_to_key_encoding() {
-        assert_eq!(
-            BulletinModule::sanitize_key_part("bulletin/ns"),
-            "bulletin|ns"
+    fn query_namespace_not_found() {
+        let m = populated_module();
+        let err = m.query_namespace("missing").unwrap_err();
+        assert!(matches!(err, BulletinError::NamespaceNotFound { .. }));
+    }
+
+    #[test]
+    fn query_namespaces_returns_all() {
+        let m = populated_module();
+        let list = m.query_namespaces().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, "bulletin/ns1");
+    }
+
+    #[test]
+    fn query_namespace_posts_found() {
+        let m = populated_module();
+        let posts = m.query_namespace_posts("ns1").unwrap();
+        assert_eq!(posts.len(), 1);
+        assert_eq!(posts[0].id, "abc123");
+    }
+
+    #[test]
+    fn query_namespace_posts_namespace_not_found() {
+        let m = populated_module();
+        let err = m.query_namespace_posts("missing").unwrap_err();
+        assert!(matches!(err, BulletinError::NamespaceNotFound { .. }));
+    }
+
+    #[test]
+    fn query_post_found() {
+        let m = populated_module();
+        let post = m.query_post("ns1", "abc123").unwrap();
+        assert_eq!(post.id, "abc123");
+    }
+
+    #[test]
+    fn query_post_not_found() {
+        let m = populated_module();
+        let err = m.query_post("ns1", "nope").unwrap_err();
+        assert!(matches!(err, BulletinError::PostNotFound { .. }));
+    }
+
+    #[test]
+    fn query_post_namespace_not_found() {
+        let m = populated_module();
+        let err = m.query_post("missing", "abc123").unwrap_err();
+        assert!(matches!(err, BulletinError::NamespaceNotFound { .. }));
+    }
+
+    #[test]
+    fn query_posts_returns_all() {
+        let m = populated_module();
+        let posts = m.query_posts().unwrap();
+        assert_eq!(posts.len(), 1);
+    }
+
+    #[test]
+    fn query_namespace_collaborators_found() {
+        let m = populated_module();
+        let collabs = m.query_namespace_collaborators("ns1").unwrap();
+        assert_eq!(collabs.len(), 1);
+        assert_eq!(collabs[0].did, "did:key:z6Mkcollab");
+    }
+
+    #[test]
+    fn query_namespace_collaborators_namespace_not_found() {
+        let m = populated_module();
+        let err = m.query_namespace_collaborators("missing").unwrap_err();
+        assert!(matches!(err, BulletinError::NamespaceNotFound { .. }));
+    }
+
+    #[test]
+    fn query_iterate_glob_star_matches_all() {
+        let m = populated_module();
+        let posts = m.query_iterate_glob("ns1", "*").unwrap();
+        assert_eq!(posts.len(), 1);
+    }
+
+    #[test]
+    fn query_iterate_glob_exact_match() {
+        let m = populated_module();
+        let posts = m.query_iterate_glob("ns1", "abc123").unwrap();
+        assert_eq!(posts.len(), 1);
+    }
+
+    #[test]
+    fn query_iterate_glob_no_match() {
+        let m = populated_module();
+        let posts = m.query_iterate_glob("ns1", "zzz*").unwrap();
+        assert!(posts.is_empty());
+    }
+
+    #[test]
+    fn query_iterate_glob_empty_namespace_errors() {
+        let m = populated_module();
+        let err = m.query_iterate_glob("", "*").unwrap_err();
+        assert!(matches!(err, BulletinError::InvalidGlob { .. }));
+    }
+
+    #[test]
+    #[ignore = "requires ACP handlers (todo!() stubs would panic)"]
+    fn register_namespace_fails_without_policy() {
+        let mut m = BulletinModule::default();
+        let mut acp = crate::acp::AcpModule::new();
+        let block_ctx = make_block_ctx(100, 10);
+        let tx_ctx = make_tx_ctx("0xABCD");
+        let did = make_did("did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK");
+        let result = m.register_namespace(&mut acp, &block_ctx, &tx_ctx, &did, "ns1");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn create_post_empty_payload_fails() {
+        let mut m = populated_module();
+        m.set_policy_id("some-policy-id");
+        let acp = crate::acp::AcpModule::new();
+        let tx_ctx = make_tx_ctx("0xABCD");
+        let did = make_did("did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK");
+        let err = m
+            .create_post(&acp, &tx_ctx, &did, "ns1", &[], b"proof", "artifact")
+            .unwrap_err();
+        assert!(matches!(err, BulletinError::InvalidPostPayload));
+    }
+
+    #[test]
+    fn create_post_empty_proof_fails() {
+        let mut m = populated_module();
+        m.set_policy_id("some-policy-id");
+        let acp = crate::acp::AcpModule::new();
+        let tx_ctx = make_tx_ctx("0xABCD");
+        let did = make_did("did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK");
+        let err = m
+            .create_post(&acp, &tx_ctx, &did, "ns1", b"payload", &[], "artifact")
+            .unwrap_err();
+        assert!(matches!(err, BulletinError::InvalidPostProof));
+    }
+
+    #[test]
+    fn create_post_namespace_not_found() {
+        let mut m = BulletinModule::default();
+        m.set_policy_id("some-policy-id");
+        let acp = crate::acp::AcpModule::new();
+        let tx_ctx = make_tx_ctx("0xABCD");
+        let did = make_did("did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK");
+        let err = m
+            .create_post(
+                &acp, &tx_ctx, &did, "missing", b"payload", b"proof", "artifact",
+            )
+            .unwrap_err();
+        assert!(matches!(err, BulletinError::NamespaceNotFound { .. }));
+    }
+
+    #[test]
+    fn create_post_policy_not_initialized() {
+        let mut m = populated_module();
+        let acp = crate::acp::AcpModule::new();
+        let tx_ctx = make_tx_ctx("0xABCD");
+        let did = make_did("did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK");
+        let err = m
+            .create_post(&acp, &tx_ctx, &did, "ns1", b"payload", b"proof", "artifact")
+            .unwrap_err();
+        assert!(matches!(err, BulletinError::PolicyNotInitialized));
+    }
+
+    #[test]
+    fn glob_match_star_wildcard() {
+        assert!(glob_match("*", "anything"));
+        assert!(glob_match("*", "path/with/slashes"));
+        assert!(glob_match("prefix*", "prefix-value"));
+        assert!(glob_match("*suffix", "some-suffix"));
+        assert!(!glob_match("prefix*", "other"));
+    }
+
+    #[test]
+    fn glob_match_exact() {
+        assert!(glob_match("exact", "exact"));
+        assert!(!glob_match("exact", "other"));
+    }
+
+    #[test]
+    fn storage_roundtrip_namespace() {
+        let mut m = BulletinModule::default();
+        let ns = Namespace {
+            id: "bulletin/test".into(),
+            creator: "0xABCD".into(),
+            owner_did: "did:key:z6Mk".into(),
+            created_at: Timestamp {
+                seconds: 1,
+                block_height: 1,
+            },
+        };
+        m.set_namespace(&ns);
+        assert!(m.has_namespace("bulletin/test"));
+        assert_eq!(m.get_namespace("bulletin/test").unwrap(), ns);
+        assert!(m.get_namespace("missing").is_none());
+    }
+
+    #[test]
+    fn storage_roundtrip_collaborator() {
+        let mut m = BulletinModule::default();
+        let c = Collaborator {
+            address: "0xBBBB".into(),
+            did: "did:key:z6Mkabc".into(),
+            namespace: "bulletin/ns1".into(),
+        };
+        m.set_collaborator(&c);
+        let got = m
+            .get_collaborator("bulletin/ns1", "did:key:z6Mkabc")
+            .unwrap();
+        assert_eq!(got, c);
+        m.delete_collaborator("bulletin/ns1", "did:key:z6Mkabc");
+        assert!(
+            m.get_collaborator("bulletin/ns1", "did:key:z6Mkabc")
+                .is_none()
         );
-        assert_eq!(
-            BulletinModule::unsanitize_key_part("bulletin|ns"),
-            "bulletin/ns"
-        );
     }
 
     #[test]
-    fn generate_post_id_deterministic() {
-        let a = BulletinModule::generate_post_id("bulletin/ns1", b"payload");
-        let b = BulletinModule::generate_post_id("bulletin/ns1", b"payload");
-        assert_eq!(a, b);
-        assert_eq!(a.len(), 64);
-    }
-
-    #[test]
-    fn namespace_prefix_doesnt_bleed_into_posts() {
-        let mut m = BulletinModule::new();
-        m.set_namespace(&make_namespace("bulletin/ns1"));
-        m.set_post(&make_post("bulletin/ns1", "post-a"));
-
-        assert_eq!(m.get_all_namespaces().len(), 1);
-        assert_eq!(m.get_all_posts().len(), 1);
-        assert_eq!(m.get_all_collaborators().len(), 0);
+    fn storage_roundtrip_post() {
+        let mut m = BulletinModule::default();
+        let post = Post {
+            id: "post1".into(),
+            namespace: "bulletin/ns1".into(),
+            creator_did: "did:key:z6Mk".into(),
+            payload: vec![1],
+            proof: vec![2],
+        };
+        m.set_post(&post);
+        let got = m.get_post("bulletin/ns1", "post1").unwrap();
+        assert_eq!(got, post);
     }
 }

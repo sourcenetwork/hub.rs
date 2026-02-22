@@ -9,7 +9,7 @@ pub enum AcpError {
     #[error("policy not found: {id}")]
     PolicyNotFound { id: String },
 
-    #[error("invalid policy YAML: {reason}")]
+    #[error("invalid policy: {reason}")]
     InvalidPolicy { reason: String },
 
     #[error("access denied for policy {policy_id}")]
@@ -21,8 +21,14 @@ pub enum AcpError {
     #[error("object not registered: {resource}/{object_id}")]
     ObjectNotRegistered { resource: String, object_id: String },
 
+    #[error("object already registered: {resource}/{object_id}")]
+    ObjectAlreadyRegistered { resource: String, object_id: String },
+
     #[error("commitment not found: {id}")]
     CommitmentNotFound { id: u64 },
+
+    #[error("commitment expired: {id}")]
+    CommitmentExpired { id: u64 },
 
     #[error("invalid proof: {reason}")]
     InvalidProof { reason: String },
@@ -36,9 +42,15 @@ pub enum AcpError {
     #[error("invalid JWS payload: {reason}")]
     InvalidJws { reason: String },
 
+    #[error("replay detected: payload already processed")]
+    ReplayDetected,
+
+    #[error("expiration delta {delta} exceeds limit {max}")]
+    ExpirationDeltaTooLarge { delta: u64, max: u64 },
+
+    #[error("command expired at height {height}")]
+    CommandExpired { height: u64 },
+
     #[error("state error: {0}")]
     State(String),
-
-    #[error("replay detected: signed policy command already processed")]
-    ReplayDetected,
 }
