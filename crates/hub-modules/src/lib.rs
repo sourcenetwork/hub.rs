@@ -18,3 +18,6 @@ pub mod bulletin;
 pub mod hub;
 /// Native account state (DID-keyed nonce tracking).
 pub mod native_account;
+
+mod module_state;
+pub use module_state::{ModuleState, SharedModuleState};
