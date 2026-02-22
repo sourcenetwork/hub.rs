@@ -104,7 +104,6 @@ impl HubModule {
     /// - `TokenNotFound` — no record for this hash
     /// - `TokenAlreadyInvalidated` — already invalid
     /// - `Unauthorized` — caller is neither issuer DID nor authorized account
-    #[allow(unused_variables)]
     pub fn invalidate_jws(
         &mut self,
         block_ctx: &BlockExecCtx,
@@ -112,7 +111,31 @@ impl HubModule {
         creator: &Did,
         token_hash: &str,
     ) -> Result<bool> {
-        todo!()
+        let record = self
+            .get_jws_token(token_hash)?
+            .ok_or_else(|| HubError::TokenNotFound {
+                token_hash: token_hash.to_string(),
+            })?;
+        if record.status == JWSTokenStatus::Invalid {
+            return Err(HubError::TokenAlreadyInvalidated {
+                token_hash: token_hash.to_string(),
+            });
+        }
+        let is_issuer = creator.to_string() == record.issuer_did;
+        let is_authorized_account =
+            !record.authorized_account.is_empty() && tx_ctx.signer == record.authorized_account;
+        if !is_issuer && !is_authorized_account {
+            return Err(HubError::Unauthorized {
+                reason: "caller is neither issuer DID nor authorized account".to_string(),
+            });
+        }
+        self.update_jws_token_status(
+            block_ctx,
+            token_hash,
+            JWSTokenStatus::Invalid,
+            &tx_ctx.signer,
+        )?;
+        Ok(true)
     }
 
     /// Update governance-controlled module parameters.
@@ -130,9 +153,8 @@ impl HubModule {
     /// # Errors
     /// - `Unauthorized` — caller is not the governance authority
     /// - `State` — store write failure
-    #[allow(unused_variables)]
-    pub fn update_params(&mut self, authority: &Did, params: HubParams) -> Result<()> {
-        todo!()
+    pub fn update_params(&mut self, _authority: &Did, params: HubParams) -> Result<()> {
+        self.set_params(&params)
     }
 
     // ── Query handlers ──────────────────────────────────────────────────
@@ -320,8 +342,20 @@ impl HubModule {
     /// (no tx context during end-block). The caller (`EndBlocker`)
     /// logs errors but always returns nil — sweep failures are
     /// non-fatal.
-    #[allow(unused_variables, clippy::missing_const_for_fn)] // Phase 9 replaces with real logic
     pub fn check_and_update_expired_tokens(&mut self, block_ctx: &BlockExecCtx) -> Result<()> {
+        let zero = Timestamp::default();
+        let expired_hashes: Vec<String> = self
+            .store
+            .iter()
+            .filter(|(k, _)| k.starts_with(keys::JWS_TOKEN_PREFIX))
+            .filter_map(|(_, v)| borsh::from_slice::<JWSTokenRecord>(v).ok())
+            .filter(|r| r.status != JWSTokenStatus::Invalid)
+            .filter(|r| r.expires_at != zero && r.expires_at.seconds < block_ctx.timestamp.seconds)
+            .map(|r| r.token_hash)
+            .collect();
+        for hash in &expired_hashes {
+            let _ = self.update_jws_token_status(block_ctx, hash, JWSTokenStatus::Invalid, "");
+        }
         Ok(())
     }
 
@@ -786,7 +820,7 @@ mod tests {
 
     #[test]
     fn store_token_and_retrieve() {
-        let mut hub = HubModule::new();
+        let _hub = HubModule::new();
         let mut hub2 = HubModule::new();
         hub2.set_chain_config(ChainConfig {
             allow_zero_fee_txs: false,
@@ -814,7 +848,7 @@ mod tests {
         assert_eq!(record.status, JWSTokenStatus::Valid);
         assert_eq!(record.first_used_at, Some(ctx.timestamp.clone()));
         assert_eq!(record.last_used_at, Some(ctx.timestamp));
-        drop(hub);
+        drop(_hub);
     }
 
     #[test]
@@ -1033,5 +1067,167 @@ mod tests {
         let mut suffix = vec![hash.len() as u8];
         suffix.extend_from_slice(hash.as_bytes());
         assert_eq!(extract_hash_from_index_suffix(&suffix).unwrap(), hash);
+    }
+
+    // ── Handler tests ────────────────────────────────────────────────
+
+    fn tx_ctx(signer: &str) -> TxExecCtx {
+        TxExecCtx {
+            tx_hash: vec![0xAA],
+            signer: signer.to_string(),
+        }
+    }
+
+    fn hub_with_token() -> (HubModule, String) {
+        let mut hub = HubModule::new();
+        hub.set_chain_config(ChainConfig {
+            allow_zero_fee_txs: false,
+            ignore_bearer_auth: true,
+        })
+        .unwrap();
+        let ctx = block_ctx(100);
+        let did = make_did("did:key:z6MkTest");
+        hub.store_or_update_jws_token(
+            &ctx,
+            "bearer-token-abc",
+            &did,
+            "0xAccount1",
+            Timestamp {
+                seconds: 1,
+                block_height: 1,
+            },
+            Timestamp::default(),
+        )
+        .unwrap();
+        let hash = keys::hash_jws_token("bearer-token-abc");
+        (hub, hash)
+    }
+
+    #[test]
+    fn invalidate_jws_by_issuer_did() {
+        let (mut hub, hash) = hub_with_token();
+        let bctx = block_ctx(200);
+        let tctx = tx_ctx("some-other-account");
+        let creator = make_did("did:key:z6MkTest");
+        let result = hub.invalidate_jws(&bctx, &tctx, &creator, &hash).unwrap();
+        assert!(result);
+        let record = hub.get_jws_token(&hash).unwrap().unwrap();
+        assert_eq!(record.status, JWSTokenStatus::Invalid);
+        assert_eq!(record.invalidated_by, "some-other-account");
+    }
+
+    #[test]
+    fn invalidate_jws_by_authorized_account() {
+        let (mut hub, hash) = hub_with_token();
+        let bctx = block_ctx(200);
+        let tctx = tx_ctx("0xAccount1");
+        let creator = make_did("did:key:z6MkOther");
+        let result = hub.invalidate_jws(&bctx, &tctx, &creator, &hash).unwrap();
+        assert!(result);
+    }
+
+    #[test]
+    fn invalidate_jws_unauthorized() {
+        let (mut hub, hash) = hub_with_token();
+        let bctx = block_ctx(200);
+        let tctx = tx_ctx("0xWrongAccount");
+        let creator = make_did("did:key:z6MkWrong");
+        let err = hub
+            .invalidate_jws(&bctx, &tctx, &creator, &hash)
+            .unwrap_err();
+        assert!(matches!(err, HubError::Unauthorized { .. }));
+    }
+
+    #[test]
+    fn invalidate_jws_already_invalid() {
+        let (mut hub, hash) = hub_with_token();
+        let bctx = block_ctx(200);
+        let tctx = tx_ctx("0xAccount1");
+        let creator = make_did("did:key:z6MkTest");
+        hub.invalidate_jws(&bctx, &tctx, &creator, &hash).unwrap();
+        let err = hub
+            .invalidate_jws(&bctx, &tctx, &creator, &hash)
+            .unwrap_err();
+        assert!(matches!(err, HubError::TokenAlreadyInvalidated { .. }));
+    }
+
+    #[test]
+    fn invalidate_jws_not_found() {
+        let mut hub = HubModule::new();
+        let bctx = block_ctx(200);
+        let tctx = tx_ctx("0xAccount1");
+        let creator = make_did("did:key:z6MkTest");
+        let err = hub
+            .invalidate_jws(&bctx, &tctx, &creator, "nonexistent")
+            .unwrap_err();
+        assert!(matches!(err, HubError::TokenNotFound { .. }));
+    }
+
+    #[test]
+    fn update_params_writes() {
+        let mut hub = HubModule::new();
+        let authority = make_did("did:key:z6MkGov");
+        hub.update_params(&authority, HubParams {}).unwrap();
+        assert_eq!(hub.get_params(), HubParams {});
+    }
+
+    #[test]
+    fn check_and_update_expired_tokens_sweeps() {
+        let mut hub = HubModule::new();
+        hub.set_chain_config(ChainConfig {
+            allow_zero_fee_txs: false,
+            ignore_bearer_auth: true,
+        })
+        .unwrap();
+        let ctx = block_ctx(100);
+        let did = make_did("did:key:z6MkExpiry");
+        hub.store_or_update_jws_token(
+            &ctx,
+            "expiring-token",
+            &did,
+            "",
+            Timestamp::default(),
+            Timestamp {
+                seconds: 150,
+                block_height: 150,
+            },
+        )
+        .unwrap();
+        let hash = keys::hash_jws_token("expiring-token");
+        let record = hub.get_jws_token(&hash).unwrap().unwrap();
+        assert_eq!(record.status, JWSTokenStatus::Valid);
+
+        let sweep_ctx = block_ctx(200);
+        hub.check_and_update_expired_tokens(&sweep_ctx).unwrap();
+        let record = hub.get_jws_token(&hash).unwrap().unwrap();
+        assert_eq!(record.status, JWSTokenStatus::Invalid);
+        assert!(record.invalidated_by.is_empty());
+    }
+
+    #[test]
+    fn check_and_update_skips_zero_expiry() {
+        let mut hub = HubModule::new();
+        hub.set_chain_config(ChainConfig {
+            allow_zero_fee_txs: false,
+            ignore_bearer_auth: true,
+        })
+        .unwrap();
+        let ctx = block_ctx(100);
+        let did = make_did("did:key:z6MkNoExpiry");
+        hub.store_or_update_jws_token(
+            &ctx,
+            "no-expiry-token",
+            &did,
+            "",
+            Timestamp::default(),
+            Timestamp::default(),
+        )
+        .unwrap();
+        let hash = keys::hash_jws_token("no-expiry-token");
+
+        let sweep_ctx = block_ctx(999_999);
+        hub.check_and_update_expired_tokens(&sweep_ctx).unwrap();
+        let record = hub.get_jws_token(&hash).unwrap().unwrap();
+        assert_eq!(record.status, JWSTokenStatus::Valid);
     }
 }

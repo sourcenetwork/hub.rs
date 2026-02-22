@@ -683,10 +683,7 @@ mod tests {
                 &mut nonces,
             )
             .unwrap();
-        assert!(
-            receipt.success(),
-            "getParams query should succeed"
-        );
+        assert!(receipt.success(), "getParams query should succeed");
     }
 
     /// Build a signed native tx targeting ACP with a given nonce and keypair.
