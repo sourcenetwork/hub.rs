@@ -1,6 +1,7 @@
 //! Stateless EVM simulation for `eth_call` and `eth_estimateGas`.
 
 use alloy_primitives::{Address, Bytes, U256};
+use hub_modules::ModuleState;
 use hub_traits::StateDbRead;
 use revm::{
     Context, ExecuteEvm, Journal, MainBuilder,
@@ -43,12 +44,15 @@ const BASE_TX_GAS: u64 = 21_000;
 /// Execute a read-only EVM call against the given state.
 ///
 /// Builds a full REVM context with `HubPrecompiles` so that `eth_call` to
-/// precompile addresses (ACP queries, etc.) works correctly.
+/// precompile addresses (ACP queries, etc.) works correctly. When `modules`
+/// is `Some`, the precompile instances are populated with that module state
+/// so queries see persisted data.
 pub fn simulate_call<S: StateDbRead>(
     state: &S,
     chain_id: u64,
     request: &SimulateRequest,
     block_gas_limit: u64,
+    modules: Option<&ModuleState>,
 ) -> Result<SimulateResult, ExecutionError> {
     let adapter = StateDbAdapter::new(state.clone());
     let db = State::builder().with_database_ref(adapter).build();
@@ -81,9 +85,19 @@ pub fn simulate_call<S: StateDbRead>(
         .build()
         .map_err(|e| ExecutionError::TxExecution(format!("{e:?}")))?;
 
-    let mut evm = ctx
-        .build_mainnet()
-        .with_precompiles(HubPrecompiles::new(SpecId::CANCUN));
+    let precompiles = modules.map_or_else(
+        || HubPrecompiles::new(SpecId::CANCUN),
+        |m| {
+            HubPrecompiles::with_modules(
+                SpecId::CANCUN,
+                m.acp.clone(),
+                m.bulletin.clone(),
+                m.hub.clone(),
+            )
+        },
+    );
+
+    let mut evm = ctx.build_mainnet().with_precompiles(precompiles);
 
     let result_and_state = evm
         .transact(tx_env)
@@ -122,6 +136,7 @@ pub fn estimate_gas<S: StateDbRead>(
     chain_id: u64,
     request: &SimulateRequest,
     block_gas_limit: u64,
+    modules: Option<&ModuleState>,
 ) -> Result<u64, ExecutionError> {
     let cap = request.gas.unwrap_or(block_gas_limit);
 
@@ -133,7 +148,7 @@ pub fn estimate_gas<S: StateDbRead>(
         data: request.data.clone(),
         gas: Some(cap),
     };
-    let result = simulate_call(state, chain_id, &req_at_cap, block_gas_limit)?;
+    let result = simulate_call(state, chain_id, &req_at_cap, block_gas_limit, modules)?;
     if !result.success {
         return Err(ExecutionError::TxExecution(
             "execution reverted at gas cap".to_string(),
@@ -146,7 +161,7 @@ pub fn estimate_gas<S: StateDbRead>(
     while lo + 1 < hi {
         let mid = lo + (hi - lo) / 2;
         req_at_cap.gas = Some(mid);
-        let result = simulate_call(state, chain_id, &req_at_cap, block_gas_limit)?;
+        let result = simulate_call(state, chain_id, &req_at_cap, block_gas_limit, modules)?;
         if result.success {
             hi = mid;
         } else {
@@ -196,7 +211,7 @@ mod tests {
             gas: None,
         };
 
-        let result = simulate_call(&state, 1, &request, 30_000_000).unwrap();
+        let result = simulate_call(&state, 1, &request, 30_000_000, None).unwrap();
         assert!(result.success);
         assert!(result.gas_used >= BASE_TX_GAS);
     }
@@ -212,7 +227,7 @@ mod tests {
             gas: None,
         };
 
-        let gas = estimate_gas(&state, 1, &request, 30_000_000).unwrap();
+        let gas = estimate_gas(&state, 1, &request, 30_000_000, None).unwrap();
         assert!(gas >= BASE_TX_GAS);
     }
 
@@ -227,7 +242,7 @@ mod tests {
             gas: Some(100_000),
         };
 
-        let result = simulate_call(&state, 1, &request, 30_000_000).unwrap();
+        let result = simulate_call(&state, 1, &request, 30_000_000, None).unwrap();
         assert!(result.success);
     }
 }

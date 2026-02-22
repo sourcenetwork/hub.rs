@@ -42,3 +42,5 @@ mod simulate;
 pub use simulate::{SimulateRequest, SimulateResult, estimate_gas, simulate_call};
 
 pub mod precompiles;
+
+pub use hub_modules::{ModuleState, SharedModuleState};

@@ -16,5 +16,8 @@ pub mod acp;
 pub mod bulletin;
 /// Hub module (precompile `0x0812`).
 pub mod hub;
+/// Shared module state container.
+pub mod module_state;
 /// Native account state (DID-keyed nonce tracking).
 pub mod native_account;
+pub use module_state::{ModuleState, SharedModuleState};
