@@ -34,6 +34,7 @@ pub use validation::{
 
 mod executor;
 pub use executor::HubExecutor;
+pub use hub_modules::module_state::{ModuleState, SharedModuleState};
 
 mod mempool;
 pub use mempool::{MempoolValidator, TxValidationResult};

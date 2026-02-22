@@ -16,5 +16,7 @@ pub mod acp;
 pub mod bulletin;
 /// Hub module (precompile `0x0812`).
 pub mod hub;
+/// Shared module state container for block-scoped execution.
+pub mod module_state;
 /// Native account state (DID-keyed nonce tracking).
 pub mod native_account;

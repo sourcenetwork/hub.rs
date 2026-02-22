@@ -177,6 +177,11 @@ impl HubPrecompiles {
     pub fn set_signer_did(&mut self, did: String) {
         self.current_signer_did = did;
     }
+
+    /// Extract module state after block execution.
+    pub fn take_modules(self) -> (AcpModule, BulletinModule, HubModule) {
+        (self.acp_module, self.bulletin_module, self.hub_module)
+    }
 }
 
 impl<CTX: ContextTr> PrecompileProvider<CTX> for HubPrecompiles {
