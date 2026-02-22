@@ -9,6 +9,8 @@ pub mod keys;
 /// ACP domain types.
 pub mod types;
 
+use std::collections::HashMap;
+
 use acp::Policy;
 use error::AcpError;
 use identity::Did;
@@ -29,7 +31,7 @@ type Result<T> = std::result::Result<T, AcpError>;
 /// shims are thin wrappers that decode arguments and forward to these methods.
 #[derive(Clone, Debug)]
 pub struct AcpModule {
-    _private: (),
+    store: HashMap<Vec<u8>, Vec<u8>>,
 }
 
 impl Default for AcpModule {
@@ -41,8 +43,10 @@ impl Default for AcpModule {
 #[allow(dead_code)]
 impl AcpModule {
     /// Create a new ACP module instance.
-    pub const fn new() -> Self {
-        Self { _private: () }
+    pub fn new() -> Self {
+        Self {
+            store: HashMap::new(),
+        }
     }
 
     // ── Msg handlers ────────────────────────────────────────────────────
@@ -636,7 +640,7 @@ impl AcpModule {
     ///
     /// Reads: params store (KV key `"p_acp"`)
     pub fn query_params(&self) -> Result<AcpParams> {
-        todo!()
+        Ok(self.get_params())
     }
 
     // ── Lifecycle hooks ─────────────────────────────────────────────────
@@ -739,7 +743,11 @@ impl AcpModule {
     /// Panics on corrupt stored data (Go: `MustUnmarshal`).
     /// No validation of deserialized values.
     fn get_params(&self) -> AcpParams {
-        todo!()
+        self.store
+            .get(keys::PARAMS_KEY)
+            .map_or_else(AcpParams::default, |bytes| {
+                borsh::from_slice(bytes).expect("corrupt params store")
+            })
     }
 
     /// Write module parameters to the KV store.
@@ -755,9 +763,10 @@ impl AcpModule {
     ///
     /// No validation of param values — caller is responsible.
     /// Only possible error is serialization failure.
-    #[allow(unused_variables)]
     fn set_params(&mut self, params: &AcpParams) -> Result<()> {
-        todo!()
+        let bytes = borsh::to_vec(params).map_err(|e| AcpError::State(e.to_string()))?;
+        self.store.insert(keys::PARAMS_KEY.to_vec(), bytes);
+        Ok(())
     }
 
     // ── Storage — Replay cache ───────────────────────────────────────────
@@ -784,9 +793,22 @@ impl AcpModule {
     ///
     /// Silently returns false on KV store errors (no error propagation).
     /// This is the read side of the replay protection cache.
-    #[allow(unused_variables)]
     fn has_seen_signed_policy_cmd(&mut self, payload_id: &[u8], current_height: u64) -> bool {
-        todo!()
+        let key = keys::signed_policy_cmd_key(payload_id);
+        let bytes = match self.store.get(&key) {
+            None => return false,
+            Some(b) => b.clone(),
+        };
+        if bytes.len() != 8 {
+            self.store.remove(&key);
+            return false;
+        }
+        let expire_height = u64::from_be_bytes(bytes[..8].try_into().expect("8-byte slice"));
+        if expire_height < current_height {
+            self.store.remove(&key);
+            return false;
+        }
+        true
     }
 
     /// Record that a signed policy command has been processed.
@@ -813,9 +835,13 @@ impl AcpModule {
     /// `issued_height + expiration_delta`. Together with
     /// `has_seen_signed_policy_cmd`, this forms a replay-protection
     /// cache with lazy TTL cleanup on the read path.
-    #[allow(unused_variables)]
     fn mark_signed_policy_cmd_seen(&mut self, payload_id: &[u8], expire_height: u64) -> Result<()> {
-        todo!()
+        let key = keys::signed_policy_cmd_key(payload_id);
+        if self.store.contains_key(&key) {
+            return Err(AcpError::ReplayDetected);
+        }
+        self.store.insert(key, expire_height.to_be_bytes().to_vec());
+        Ok(())
     }
 
     // ── Storage — Access decisions ───────────────────────────────────────
@@ -836,9 +862,11 @@ impl AcpModule {
     /// The `decision.id` must be pre-computed by the caller before
     /// calling this method — the repository does not generate the ID.
     /// Called by `check_access` after a successful Zanzibar evaluation.
-    #[allow(unused_variables)]
     fn set_access_decision(&mut self, decision: &AccessDecision) -> Result<()> {
-        todo!()
+        let key = keys::access_decision_key(&decision.id);
+        let bytes = borsh::to_vec(decision).map_err(|e| AcpError::State(e.to_string()))?;
+        self.store.insert(key, bytes);
+        Ok(())
     }
 
     /// Fetch an access decision by its ID.
@@ -855,9 +883,16 @@ impl AcpModule {
     /// Missing decision returns `Ok(None)`, not an error.
     /// Deserialization failure on an existing key returns `Err`, not `None`.
     /// Called by `query_access_decision`.
-    #[allow(unused_variables)]
     fn get_access_decision(&self, id: &str) -> Result<Option<AccessDecision>> {
-        todo!()
+        let key = keys::access_decision_key(id);
+        match self.store.get(&key) {
+            None => Ok(None),
+            Some(bytes) => {
+                let decision: AccessDecision =
+                    borsh::from_slice(bytes).map_err(|e| AcpError::State(e.to_string()))?;
+                Ok(Some(decision))
+            }
+        }
     }
 
     /// Delete an access decision by its ID.
@@ -869,9 +904,9 @@ impl AcpModule {
     /// Direction: delete
     ///
     /// Deleting a non-existent key is a no-op (not an error).
-    #[allow(unused_variables)]
     fn delete_access_decision(&mut self, id: &str) -> Result<()> {
-        todo!()
+        self.store.remove(&keys::access_decision_key(id));
+        Ok(())
     }
 
     /// List all access decision IDs.
@@ -885,7 +920,14 @@ impl AcpModule {
     ///
     /// Returns empty vec if no decisions exist.
     fn list_access_decision_ids(&self) -> Result<Vec<String>> {
-        todo!()
+        let prefix = keys::ACCESS_DECISION_PREFIX;
+        let ids = self
+            .store
+            .keys()
+            .filter(|k| k.starts_with(prefix))
+            .map(|k| String::from_utf8_lossy(&k[prefix.len()..]).into_owned())
+            .collect();
+        Ok(ids)
     }
 
     /// List all access decisions.
@@ -901,7 +943,16 @@ impl AcpModule {
     ///
     /// Returns empty vec if no decisions exist.
     fn list_access_decisions(&self) -> Result<Vec<AccessDecision>> {
-        todo!()
+        let prefix = keys::ACCESS_DECISION_PREFIX;
+        let mut decisions = Vec::new();
+        for (key, value) in &self.store {
+            if key.starts_with(prefix) {
+                let decision: AccessDecision =
+                    borsh::from_slice(value).map_err(|e| AcpError::State(e.to_string()))?;
+                decisions.push(decision);
+            }
+        }
+        Ok(decisions)
     }
 
     // ── Storage — Commitments ────────────────────────────────────────────
@@ -932,9 +983,29 @@ impl AcpModule {
     ///
     /// Called by `direct_policy_cmd` CommitRegistrations variant.
     /// New commitments always have `expired = false`.
-    #[allow(unused_variables)]
     fn create_commitment(&mut self, commitment: &mut RegistrationsCommitment) -> Result<()> {
-        todo!()
+        let counter_key = keys::commitment_counter_key();
+        let counter = self
+            .store
+            .get(&counter_key)
+            .and_then(|b| b.as_slice().try_into().ok())
+            .map_or(0u64, u64::from_be_bytes);
+        let new_id = counter + 1;
+        commitment.id = new_id;
+
+        let bytes = borsh::to_vec(&*commitment).map_err(|e| AcpError::State(e.to_string()))?;
+        self.store.insert(keys::commitment_key(new_id), bytes);
+        self.store.insert(
+            keys::commitment_expired_index_key(commitment.expired, new_id),
+            vec![],
+        );
+        self.store.insert(
+            keys::commitment_by_commitment_index_key(&commitment.commitment, new_id),
+            vec![],
+        );
+        self.store
+            .insert(counter_key, new_id.to_be_bytes().to_vec());
+        Ok(())
     }
 
     /// Update an existing registration commitment in place.
@@ -958,9 +1029,35 @@ impl AcpModule {
     /// index bucket to the `expired=true` bucket, so
     /// `get_non_expired_commitments` stops returning it.
     /// Does NOT change the auto-increment counter.
-    #[allow(unused_variables)]
     fn update_commitment(&mut self, commitment: &RegistrationsCommitment) -> Result<()> {
-        todo!()
+        let obj_key = keys::commitment_key(commitment.id);
+        let old_bytes =
+            self.store.get(&obj_key).cloned().ok_or_else(|| {
+                AcpError::State(format!("commitment {} not found", commitment.id))
+            })?;
+        let old: RegistrationsCommitment =
+            borsh::from_slice(&old_bytes).map_err(|e| AcpError::State(e.to_string()))?;
+
+        self.store.remove(&keys::commitment_expired_index_key(
+            old.expired,
+            commitment.id,
+        ));
+        self.store.remove(&keys::commitment_by_commitment_index_key(
+            &old.commitment,
+            commitment.id,
+        ));
+
+        let bytes = borsh::to_vec(commitment).map_err(|e| AcpError::State(e.to_string()))?;
+        self.store.insert(obj_key, bytes);
+        self.store.insert(
+            keys::commitment_expired_index_key(commitment.expired, commitment.id),
+            vec![],
+        );
+        self.store.insert(
+            keys::commitment_by_commitment_index_key(&commitment.commitment, commitment.id),
+            vec![],
+        );
+        Ok(())
     }
 
     /// Fetch a registration commitment by its auto-increment ID.
@@ -975,9 +1072,15 @@ impl AcpModule {
     /// Direction: read-only
     ///
     /// Missing record returns `Ok(None)`, not an error.
-    #[allow(unused_variables)]
     fn get_commitment_by_id(&self, id: u64) -> Result<Option<RegistrationsCommitment>> {
-        todo!()
+        match self.store.get(&keys::commitment_key(id)) {
+            None => Ok(None),
+            Some(bytes) => {
+                let c: RegistrationsCommitment =
+                    borsh::from_slice(bytes).map_err(|e| AcpError::State(e.to_string()))?;
+                Ok(Some(c))
+            }
+        }
     }
 
     /// Find commitments matching a commitment byte value (Merkle root).
@@ -994,12 +1097,24 @@ impl AcpModule {
     /// Returns empty iterator/vec if no matches.
     /// Multiple commitments can share the same Merkle root (different
     /// actors or policies committing the same set of registrations).
-    #[allow(unused_variables)]
     fn filter_commitments_by_commitment(
         &self,
         commitment: &[u8],
     ) -> Result<Vec<RegistrationsCommitment>> {
-        todo!()
+        let prefix = keys::commitment_by_commitment_index_prefix(commitment);
+        let ids: Vec<u64> = self
+            .store
+            .keys()
+            .filter(|k| k.starts_with(&prefix))
+            .map(|k| u64::from_be_bytes(k[k.len() - 8..].try_into().expect("8-byte id suffix")))
+            .collect();
+        let mut results = Vec::new();
+        for id in ids {
+            if let Some(c) = self.get_commitment_by_id(id)? {
+                results.push(c);
+            }
+        }
+        Ok(results)
     }
 
     /// Get all non-expired registration commitments.
@@ -1030,7 +1145,20 @@ impl AcpModule {
     /// Default validity is 10 minutes wall-clock (stored per-record in
     /// the `validity` field at creation time, not recomputed from defaults).
     fn get_non_expired_commitments(&self) -> Result<Vec<RegistrationsCommitment>> {
-        todo!()
+        let prefix = keys::commitment_expired_index_prefix(false);
+        let ids: Vec<u64> = self
+            .store
+            .keys()
+            .filter(|k| k.starts_with(&prefix))
+            .map(|k| u64::from_be_bytes(k[k.len() - 8..].try_into().expect("8-byte id suffix")))
+            .collect();
+        let mut results = Vec::new();
+        for id in ids {
+            if let Some(c) = self.get_commitment_by_id(id)? {
+                results.push(c);
+            }
+        }
+        Ok(results)
     }
 
     // ── Storage — Amendment events ───────────────────────────────────────
@@ -1056,9 +1184,25 @@ impl AcpModule {
     /// Called by `direct_policy_cmd` RevealRegistration variant when
     /// an ownership amendment occurs (commitment is older than existing
     /// registration). New events always have `hijack_flag = false`.
-    #[allow(unused_variables)]
     fn create_amendment_event(&mut self, event: &mut AmendmentEvent) -> Result<()> {
-        todo!()
+        let counter_key = keys::amendment_event_counter_key();
+        let counter = self
+            .store
+            .get(&counter_key)
+            .and_then(|b| b.as_slice().try_into().ok())
+            .map_or(0u64, u64::from_be_bytes);
+        let new_id = counter + 1;
+        event.id = new_id;
+
+        let bytes = borsh::to_vec(&*event).map_err(|e| AcpError::State(e.to_string()))?;
+        self.store.insert(keys::amendment_event_key(new_id), bytes);
+        self.store.insert(
+            keys::amendment_event_policy_index_key(&event.policy_id, new_id),
+            vec![],
+        );
+        self.store
+            .insert(counter_key, new_id.to_be_bytes().to_vec());
+        Ok(())
     }
 
     /// Update an existing amendment event in place.
@@ -1081,9 +1225,27 @@ impl AcpModule {
     /// FlagHijackEvent service method (called from the
     /// FlagHijackAttempt policy command variant). Does NOT change
     /// the auto-increment counter.
-    #[allow(unused_variables)]
     fn update_amendment_event(&mut self, event: &AmendmentEvent) -> Result<()> {
-        todo!()
+        let obj_key = keys::amendment_event_key(event.id);
+        let old_bytes =
+            self.store.get(&obj_key).cloned().ok_or_else(|| {
+                AcpError::State(format!("amendment event {} not found", event.id))
+            })?;
+        let old: AmendmentEvent =
+            borsh::from_slice(&old_bytes).map_err(|e| AcpError::State(e.to_string()))?;
+
+        self.store.remove(&keys::amendment_event_policy_index_key(
+            &old.policy_id,
+            event.id,
+        ));
+
+        let bytes = borsh::to_vec(event).map_err(|e| AcpError::State(e.to_string()))?;
+        self.store.insert(obj_key, bytes);
+        self.store.insert(
+            keys::amendment_event_policy_index_key(&event.policy_id, event.id),
+            vec![],
+        );
+        Ok(())
     }
 
     /// Fetch an amendment event by its auto-increment ID.
@@ -1098,9 +1260,15 @@ impl AcpModule {
     /// Direction: read-only
     ///
     /// Missing record returns `Ok(None)`, not an error.
-    #[allow(unused_variables)]
     fn get_amendment_event_by_id(&self, id: u64) -> Result<Option<AmendmentEvent>> {
-        todo!()
+        match self.store.get(&keys::amendment_event_key(id)) {
+            None => Ok(None),
+            Some(bytes) => {
+                let event: AmendmentEvent =
+                    borsh::from_slice(bytes).map_err(|e| AcpError::State(e.to_string()))?;
+                Ok(Some(event))
+            }
+        }
     }
 
     /// List all amendment events for a given policy.
@@ -1116,9 +1284,21 @@ impl AcpModule {
     /// Direction: read-only (index scan + object materialization)
     ///
     /// Returns empty vec if no events exist for this policy.
-    #[allow(unused_variables)]
     fn list_events_by_policy(&self, policy_id: &str) -> Result<Vec<AmendmentEvent>> {
-        todo!()
+        let prefix = keys::amendment_event_policy_index_prefix(policy_id);
+        let ids: Vec<u64> = self
+            .store
+            .keys()
+            .filter(|k| k.starts_with(&prefix))
+            .map(|k| u64::from_be_bytes(k[k.len() - 8..].try_into().expect("8-byte id suffix")))
+            .collect();
+        let mut results = Vec::new();
+        for id in ids {
+            if let Some(event) = self.get_amendment_event_by_id(id)? {
+                results.push(event);
+            }
+        }
+        Ok(results)
     }
 
     /// List amendment events flagged as hijack attempts for a policy.
@@ -1140,9 +1320,12 @@ impl AcpModule {
     /// amendment occurred and the new owner (whose commitment was older)
     /// flagged the event to indicate the previous owner may have tried
     /// to register an object already committed by someone else.
-    #[allow(unused_variables)]
     fn list_hijack_events_by_policy(&self, policy_id: &str) -> Result<Vec<AmendmentEvent>> {
-        todo!()
+        Ok(self
+            .list_events_by_policy(policy_id)?
+            .into_iter()
+            .filter(|e| e.hijack_flag)
+            .collect())
     }
 
     // ── Engine factory ───────────────────────────────────────────────────

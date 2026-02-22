@@ -9,6 +9,8 @@ pub mod keys;
 /// Hub domain types.
 pub mod types;
 
+use std::collections::HashMap;
+
 use error::HubError;
 use identity::Did;
 use types::{ChainConfig, HubParams, JWSTokenRecord, JWSTokenStatus};
@@ -47,7 +49,7 @@ type Result<T> = std::result::Result<T, HubError>;
 /// the full record lives only in the primary 0x01 store.
 #[derive(Clone, Debug)]
 pub struct HubModule {
-    _private: (),
+    store: HashMap<Vec<u8>, Vec<u8>>,
 }
 
 impl Default for HubModule {
@@ -59,8 +61,10 @@ impl Default for HubModule {
 #[allow(dead_code)]
 impl HubModule {
     /// Create a new Hub module instance.
-    pub const fn new() -> Self {
-        Self { _private: () }
+    pub fn new() -> Self {
+        Self {
+            store: HashMap::new(),
+        }
     }
 
     // ── Msg handlers ────────────────────────────────────────────────────
@@ -144,7 +148,7 @@ impl HubModule {
     /// # Reads
     /// - `"p_hub"`
     pub fn query_params(&self) -> Result<HubParams> {
-        todo!()
+        Ok(self.get_params())
     }
 
     // ── Internal keeper methods ─────────────────────────────────────────
@@ -203,7 +207,6 @@ impl HubModule {
     /// If `authorized_account` is non-empty, validate format.
     /// If chain config `ignore_bearer_auth` is false and `authorized_account`
     /// is empty, reject (account required when bearer auth is enabled).
-    #[allow(unused_variables)]
     pub fn store_or_update_jws_token(
         &mut self,
         block_ctx: &BlockExecCtx,
@@ -213,7 +216,30 @@ impl HubModule {
         issued_at: Timestamp,
         expires_at: Timestamp,
     ) -> Result<()> {
-        todo!()
+        let token_hash = Self::hash_jws_token(bearer_token);
+        if self.get_jws_token(&token_hash)?.is_some() {
+            return self.record_jws_token_usage(block_ctx, &token_hash);
+        }
+        let zero = Timestamp::default();
+        if expires_at != zero && expires_at.seconds < block_ctx.timestamp.seconds {
+            return Err(HubError::InvalidJws {
+                reason: "token already expired at block time".to_string(),
+            });
+        }
+        let record = JWSTokenRecord {
+            token_hash,
+            bearer_token: bearer_token.to_string(),
+            issuer_did: issuer_did.to_string(),
+            authorized_account: authorized_account.to_string(),
+            issued_at,
+            expires_at,
+            status: JWSTokenStatus::Valid,
+            first_used_at: Some(block_ctx.timestamp.clone()),
+            last_used_at: Some(block_ctx.timestamp.clone()),
+            invalidated_at: None,
+            invalidated_by: String::new(),
+        };
+        self.set_jws_token(&record)
     }
 
     /// Record that a JWS token was used (updates first/last usage timestamps).
@@ -237,13 +263,21 @@ impl HubModule {
     /// # Go divergence
     /// Go uses `time.Now()` for timestamps (non-deterministic).
     /// Rust uses `block_ctx.timestamp` (deterministic).
-    #[allow(unused_variables)]
     pub fn record_jws_token_usage(
         &mut self,
         block_ctx: &BlockExecCtx,
         token_hash: &str,
     ) -> Result<()> {
-        todo!()
+        let mut record =
+            self.get_jws_token(token_hash)?
+                .ok_or_else(|| HubError::TokenNotFound {
+                    token_hash: token_hash.to_string(),
+                })?;
+        if record.first_used_at.is_none() {
+            record.first_used_at = Some(block_ctx.timestamp.clone());
+        }
+        record.last_used_at = Some(block_ctx.timestamp.clone());
+        self.set_jws_token(&record)
     }
 
     /// Sweep expired tokens (called at end of each block).
@@ -300,9 +334,13 @@ impl HubModule {
     ///
     /// # Reads
     /// - `0x01 || token_hash`
-    #[allow(unused_variables)]
     pub fn get_jws_token(&self, token_hash: &str) -> Result<Option<JWSTokenRecord>> {
-        todo!()
+        self.store
+            .get(&keys::jws_token_key(token_hash))
+            .map(|bytes| {
+                borsh::from_slice(bytes).map_err(|e: std::io::Error| HubError::State(e.to_string()))
+            })
+            .transpose()
     }
 
     /// Look up all JWS tokens issued by a DID.
@@ -317,9 +355,19 @@ impl HubModule {
     /// # Reads
     /// - `0x02 || len_prefix(did) || ...` (index scan)
     /// - `0x01 || token_hash` per match (primary lookup)
-    #[allow(unused_variables)]
     pub fn get_jws_tokens_by_did(&self, did: &Did) -> Result<Vec<JWSTokenRecord>> {
-        todo!()
+        let did_str = did.to_string();
+        let prefix = keys::jws_token_did_prefix(&did_str);
+        let hashes: Vec<String> = self
+            .store
+            .keys()
+            .filter(|k| k.starts_with(&prefix))
+            .filter_map(|k| extract_hash_from_index_suffix(&k[prefix.len()..]))
+            .collect();
+        hashes
+            .iter()
+            .filter_map(|hash| self.get_jws_token(hash).transpose())
+            .collect()
     }
 
     /// Look up all JWS tokens authorized for an account.
@@ -334,9 +382,18 @@ impl HubModule {
     /// # Reads
     /// - `0x03 || len_prefix(account) || ...` (index scan)
     /// - `0x01 || token_hash` per match (primary lookup)
-    #[allow(unused_variables)]
     pub fn get_jws_tokens_by_account(&self, account: &str) -> Result<Vec<JWSTokenRecord>> {
-        todo!()
+        let prefix = keys::jws_token_account_prefix(account);
+        let hashes: Vec<String> = self
+            .store
+            .keys()
+            .filter(|k| k.starts_with(&prefix))
+            .filter_map(|k| extract_hash_from_index_suffix(&k[prefix.len()..]))
+            .collect();
+        hashes
+            .iter()
+            .filter_map(|hash| self.get_jws_token(hash).transpose())
+            .collect()
     }
 
     /// Update a token's status (valid/invalid) and record who invalidated it.
@@ -362,7 +419,6 @@ impl HubModule {
     /// # Go divergence
     /// Go uses `time.Now()` for `invalidated_at` (non-deterministic).
     /// Rust uses `block_ctx.timestamp` (deterministic).
-    #[allow(unused_variables)]
     pub fn update_jws_token_status(
         &mut self,
         block_ctx: &BlockExecCtx,
@@ -370,7 +426,19 @@ impl HubModule {
         status: JWSTokenStatus,
         invalidated_by: &str,
     ) -> Result<()> {
-        todo!()
+        let mut record =
+            self.get_jws_token(token_hash)?
+                .ok_or_else(|| HubError::TokenNotFound {
+                    token_hash: token_hash.to_string(),
+                })?;
+        record.status = status;
+        if record.status == JWSTokenStatus::Invalid {
+            record.invalidated_at = Some(block_ctx.timestamp.clone());
+            if !invalidated_by.is_empty() {
+                record.invalidated_by = invalidated_by.to_string();
+            }
+        }
+        self.set_jws_token(&record)
     }
 
     /// Set chain configuration (write-once at genesis).
@@ -389,9 +457,13 @@ impl HubModule {
     ///
     /// # Errors
     /// - `ChainConfigAlreadySet` — config already written
-    #[allow(unused_variables)]
     pub fn set_chain_config(&mut self, config: ChainConfig) -> Result<()> {
-        todo!()
+        if self.store.contains_key(keys::CHAIN_CONFIG_KEY) {
+            return Err(HubError::ChainConfigAlreadySet);
+        }
+        let bytes = borsh::to_vec(&config).map_err(|e| HubError::State(e.to_string()))?;
+        self.store.insert(keys::CHAIN_CONFIG_KEY.to_vec(), bytes);
+        Ok(())
     }
 
     /// Get the current chain configuration.
@@ -404,7 +476,15 @@ impl HubModule {
     /// # Reads
     /// - `"chain_config"`
     pub fn get_chain_config(&self) -> Result<ChainConfig> {
-        todo!()
+        self.store.get(keys::CHAIN_CONFIG_KEY).map_or(
+            Ok(ChainConfig {
+                allow_zero_fee_txs: false,
+                ignore_bearer_auth: false,
+            }),
+            |bytes| {
+                borsh::from_slice(bytes).map_err(|e: std::io::Error| HubError::State(e.to_string()))
+            },
+        )
     }
 
     /// Delete a JWS token record by hash (cleanup and genesis export).
@@ -428,9 +508,22 @@ impl HubModule {
     ///
     /// # Errors
     /// - `TokenNotFound` — no record to delete
-    #[allow(unused_variables)]
     pub fn delete_jws_token(&mut self, token_hash: &str) -> Result<()> {
-        todo!()
+        let record = self
+            .get_jws_token(token_hash)?
+            .ok_or_else(|| HubError::TokenNotFound {
+                token_hash: token_hash.to_string(),
+            })?;
+        self.store.remove(&keys::jws_token_key(token_hash));
+        self.store
+            .remove(&keys::jws_token_by_did_key(&record.issuer_did, token_hash));
+        if !record.authorized_account.is_empty() {
+            self.store.remove(&keys::jws_token_by_account_key(
+                &record.authorized_account,
+                token_hash,
+            ));
+        }
+        Ok(())
     }
 
     /// Return all JWS token records (genesis export).
@@ -444,7 +537,13 @@ impl HubModule {
     /// # Reads
     /// - All keys under `0x01` prefix
     pub fn get_all_jws_tokens(&self) -> Result<Vec<JWSTokenRecord>> {
-        todo!()
+        self.store
+            .iter()
+            .filter(|(k, _)| k.starts_with(keys::JWS_TOKEN_PREFIX))
+            .map(|(_, v)| {
+                borsh::from_slice(v).map_err(|e: std::io::Error| HubError::State(e.to_string()))
+            })
+            .collect()
     }
 
     // ── Storage access methods ──────────────────────────────────────────
@@ -505,9 +604,34 @@ impl HubModule {
     ///   - Missing `authorized_account` when bearer auth enforced
     ///   - Invalid `authorized_account` format
     ///   - Serialization failure
-    #[allow(unused_variables)]
     fn set_jws_token(&mut self, record: &JWSTokenRecord) -> Result<()> {
-        todo!()
+        if record.token_hash.is_empty() {
+            return Err(HubError::InvalidJws {
+                reason: "token_hash is empty".to_string(),
+            });
+        }
+        if record.issuer_did.is_empty() {
+            return Err(HubError::InvalidJws {
+                reason: "issuer_did is empty".to_string(),
+            });
+        }
+        let config = self.get_chain_config()?;
+        if !config.ignore_bearer_auth && record.authorized_account.is_empty() {
+            return Err(HubError::InvalidJws {
+                reason: "authorized_account required when bearer auth is enforced".to_string(),
+            });
+        }
+        let bytes = borsh::to_vec(record).map_err(|e| HubError::State(e.to_string()))?;
+        self.store
+            .insert(keys::jws_token_key(&record.token_hash), bytes);
+        let did_key = keys::jws_token_by_did_key(&record.issuer_did, &record.token_hash);
+        self.store.insert(did_key, vec![0x01]);
+        if !record.authorized_account.is_empty() {
+            let acct_key =
+                keys::jws_token_by_account_key(&record.authorized_account, &record.token_hash);
+            self.store.insert(acct_key, vec![0x01]);
+        }
+        Ok(())
     }
 
     // ── Storage — Params ───────────────────────────────────────────────
@@ -526,7 +650,11 @@ impl HubModule {
     ///
     /// Panics on corrupt stored data (Go: `MustUnmarshal`).
     fn get_params(&self) -> HubParams {
-        todo!()
+        self.store
+            .get(keys::PARAMS_KEY)
+            .map_or_else(HubParams::default, |bytes| {
+                borsh::from_slice(bytes).expect("corrupt HubParams in store")
+            })
     }
 
     /// Write module parameters to the KV store.
@@ -541,9 +669,10 @@ impl HubModule {
     ///
     /// Returns error on marshal failure (Go uses fallible
     /// `cdc.Marshal`, not `MustMarshal`).
-    #[allow(unused_variables)]
     fn set_params(&mut self, params: &HubParams) -> Result<()> {
-        todo!()
+        let bytes = borsh::to_vec(params).map_err(|e| HubError::State(e.to_string()))?;
+        self.store.insert(keys::PARAMS_KEY.to_vec(), bytes);
+        Ok(())
     }
 
     // ── Storage — Utility ──────────────────────────────────────────────
@@ -557,8 +686,352 @@ impl HubModule {
     /// is lowercase, producing a 64-character string for SHA-256.
     ///
     /// This hash serves as the primary key in all three stores.
-    #[allow(unused_variables)]
     fn hash_jws_token(bearer_token: &str) -> String {
-        todo!()
+        keys::hash_jws_token(bearer_token)
+    }
+}
+
+/// Parse a `len_prefix(token_hash)` suffix from a secondary index key.
+///
+/// The secondary index keys end with `len_prefix(token_hash)`:
+/// `[hash_len_byte, hash_bytes...]`. Returns `None` if the suffix is
+/// malformed (too short, or non-UTF-8 hash bytes).
+fn extract_hash_from_index_suffix(suffix: &[u8]) -> Option<String> {
+    if suffix.is_empty() {
+        return None;
+    }
+    let hash_len = suffix[0] as usize;
+    if suffix.len() < 1 + hash_len {
+        return None;
+    }
+    std::str::from_utf8(&suffix[1..1 + hash_len])
+        .ok()
+        .map(str::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::Timestamp;
+
+    fn block_ctx(seconds: u64) -> BlockExecCtx {
+        BlockExecCtx {
+            timestamp: Timestamp {
+                seconds,
+                block_height: seconds,
+            },
+        }
+    }
+
+    fn make_did(s: &str) -> Did {
+        s.parse().expect("valid DID")
+    }
+
+    fn sample_record(hub: &mut HubModule, block_ctx: &BlockExecCtx) -> String {
+        let did = make_did("did:key:z6MkTest");
+        hub.store_or_update_jws_token(
+            block_ctx,
+            "bearer-token-abc",
+            &did,
+            "0xAccount1",
+            Timestamp {
+                seconds: 1,
+                block_height: 1,
+            },
+            Timestamp::default(),
+        )
+        .unwrap();
+        keys::hash_jws_token("bearer-token-abc")
+    }
+
+    #[test]
+    fn set_and_get_chain_config() {
+        let mut hub = HubModule::new();
+        let config = ChainConfig {
+            allow_zero_fee_txs: true,
+            ignore_bearer_auth: false,
+        };
+        hub.set_chain_config(config.clone()).unwrap();
+        assert_eq!(hub.get_chain_config().unwrap(), config);
+    }
+
+    #[test]
+    fn chain_config_write_once() {
+        let mut hub = HubModule::new();
+        let config = ChainConfig {
+            allow_zero_fee_txs: false,
+            ignore_bearer_auth: true,
+        };
+        hub.set_chain_config(config.clone()).unwrap();
+        let err = hub.set_chain_config(config).unwrap_err();
+        assert!(matches!(err, HubError::ChainConfigAlreadySet));
+    }
+
+    #[test]
+    fn chain_config_default_when_absent() {
+        let hub = HubModule::new();
+        let config = hub.get_chain_config().unwrap();
+        assert!(!config.allow_zero_fee_txs);
+        assert!(!config.ignore_bearer_auth);
+    }
+
+    #[test]
+    fn set_and_get_params() {
+        let mut hub = HubModule::new();
+        assert_eq!(hub.get_params(), HubParams::default());
+        let params = HubParams {};
+        hub.set_params(&params).unwrap();
+        assert_eq!(hub.get_params(), params);
+    }
+
+    #[test]
+    fn store_token_and_retrieve() {
+        let mut hub = HubModule::new();
+        let mut hub2 = HubModule::new();
+        hub2.set_chain_config(ChainConfig {
+            allow_zero_fee_txs: false,
+            ignore_bearer_auth: true,
+        })
+        .unwrap();
+        let ctx = block_ctx(100);
+        let did = make_did("did:key:z6MkAlice");
+        hub2.store_or_update_jws_token(
+            &ctx,
+            "my-bearer",
+            &did,
+            "",
+            Timestamp {
+                seconds: 50,
+                block_height: 5,
+            },
+            Timestamp::default(),
+        )
+        .unwrap();
+        let hash = keys::hash_jws_token("my-bearer");
+        let record = hub2.get_jws_token(&hash).unwrap().unwrap();
+        assert_eq!(record.bearer_token, "my-bearer");
+        assert_eq!(record.issuer_did, did.to_string());
+        assert_eq!(record.status, JWSTokenStatus::Valid);
+        assert_eq!(record.first_used_at, Some(ctx.timestamp.clone()));
+        assert_eq!(record.last_used_at, Some(ctx.timestamp));
+        drop(hub);
+    }
+
+    #[test]
+    fn store_token_requires_account_when_bearer_auth_enforced() {
+        let mut hub = HubModule::new();
+        let ctx = block_ctx(100);
+        let did = make_did("did:key:z6MkBob");
+        let err = hub
+            .store_or_update_jws_token(
+                &ctx,
+                "bearer",
+                &did,
+                "",
+                Timestamp::default(),
+                Timestamp::default(),
+            )
+            .unwrap_err();
+        assert!(matches!(err, HubError::InvalidJws { .. }));
+    }
+
+    #[test]
+    fn store_token_rejects_pre_expired() {
+        let mut hub = HubModule::new();
+        hub.set_chain_config(ChainConfig {
+            allow_zero_fee_txs: false,
+            ignore_bearer_auth: true,
+        })
+        .unwrap();
+        let ctx = block_ctx(200);
+        let did = make_did("did:key:z6MkCarol");
+        let err = hub
+            .store_or_update_jws_token(
+                &ctx,
+                "expired-bearer",
+                &did,
+                "",
+                Timestamp {
+                    seconds: 100,
+                    block_height: 10,
+                },
+                Timestamp {
+                    seconds: 100,
+                    block_height: 10,
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(err, HubError::InvalidJws { .. }));
+    }
+
+    #[test]
+    fn record_usage_updates_timestamps() {
+        let mut hub = HubModule::new();
+        hub.set_chain_config(ChainConfig {
+            allow_zero_fee_txs: false,
+            ignore_bearer_auth: true,
+        })
+        .unwrap();
+        let ctx1 = block_ctx(100);
+        let did = make_did("did:key:z6MkDave");
+        hub.store_or_update_jws_token(
+            &ctx1,
+            "token-dave",
+            &did,
+            "",
+            Timestamp::default(),
+            Timestamp::default(),
+        )
+        .unwrap();
+        let hash = keys::hash_jws_token("token-dave");
+        let ctx2 = block_ctx(200);
+        hub.record_jws_token_usage(&ctx2, &hash).unwrap();
+        let record = hub.get_jws_token(&hash).unwrap().unwrap();
+        assert_eq!(record.first_used_at, Some(ctx1.timestamp));
+        assert_eq!(record.last_used_at, Some(ctx2.timestamp));
+    }
+
+    #[test]
+    fn idempotent_store_updates_usage() {
+        let mut hub = HubModule::new();
+        hub.set_chain_config(ChainConfig {
+            allow_zero_fee_txs: false,
+            ignore_bearer_auth: true,
+        })
+        .unwrap();
+        let ctx1 = block_ctx(100);
+        let did = make_did("did:key:z6MkEve");
+        hub.store_or_update_jws_token(
+            &ctx1,
+            "token-eve",
+            &did,
+            "",
+            Timestamp::default(),
+            Timestamp::default(),
+        )
+        .unwrap();
+        let ctx2 = block_ctx(200);
+        hub.store_or_update_jws_token(
+            &ctx2,
+            "token-eve",
+            &did,
+            "",
+            Timestamp::default(),
+            Timestamp::default(),
+        )
+        .unwrap();
+        let hash = keys::hash_jws_token("token-eve");
+        let record = hub.get_jws_token(&hash).unwrap().unwrap();
+        assert_eq!(record.last_used_at, Some(ctx2.timestamp));
+    }
+
+    #[test]
+    fn update_status_to_invalid() {
+        let mut hub = HubModule::new();
+        hub.set_chain_config(ChainConfig {
+            allow_zero_fee_txs: false,
+            ignore_bearer_auth: true,
+        })
+        .unwrap();
+        let ctx = block_ctx(100);
+        let hash = sample_record_ignore_bearer(&mut hub, &ctx);
+        let ctx2 = block_ctx(200);
+        hub.update_jws_token_status(&ctx2, &hash, JWSTokenStatus::Invalid, "0xAdmin")
+            .unwrap();
+        let record = hub.get_jws_token(&hash).unwrap().unwrap();
+        assert_eq!(record.status, JWSTokenStatus::Invalid);
+        assert_eq!(record.invalidated_at, Some(ctx2.timestamp));
+        assert_eq!(record.invalidated_by, "0xAdmin");
+    }
+
+    fn sample_record_ignore_bearer(hub: &mut HubModule, ctx: &BlockExecCtx) -> String {
+        let did = make_did("did:key:z6MkTest2");
+        hub.store_or_update_jws_token(
+            ctx,
+            "bearer-ignore",
+            &did,
+            "",
+            Timestamp::default(),
+            Timestamp::default(),
+        )
+        .unwrap();
+        keys::hash_jws_token("bearer-ignore")
+    }
+
+    #[test]
+    fn delete_token_removes_all_indexes() {
+        let mut hub = HubModule::new();
+        let ctx = block_ctx(100);
+        let hash = sample_record(&mut hub, &ctx);
+        hub.delete_jws_token(&hash).unwrap();
+        assert!(hub.get_jws_token(&hash).unwrap().is_none());
+        let did = make_did("did:key:z6MkTest");
+        assert!(hub.get_jws_tokens_by_did(&did).unwrap().is_empty());
+        assert!(
+            hub.get_jws_tokens_by_account("0xAccount1")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn delete_missing_token_errors() {
+        let mut hub = HubModule::new();
+        let err = hub.delete_jws_token("nonexistent").unwrap_err();
+        assert!(matches!(err, HubError::TokenNotFound { .. }));
+    }
+
+    #[test]
+    fn get_all_jws_tokens() {
+        let mut hub = HubModule::new();
+        let ctx = block_ctx(100);
+        let hash = sample_record(&mut hub, &ctx);
+        let all = hub.get_all_jws_tokens().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].token_hash, hash);
+    }
+
+    #[test]
+    fn get_tokens_by_did() {
+        let mut hub = HubModule::new();
+        let ctx = block_ctx(100);
+        let _ = sample_record(&mut hub, &ctx);
+        let did = make_did("did:key:z6MkTest");
+        let tokens = hub.get_jws_tokens_by_did(&did).unwrap();
+        assert_eq!(tokens.len(), 1);
+    }
+
+    #[test]
+    fn get_tokens_by_account() {
+        let mut hub = HubModule::new();
+        let ctx = block_ctx(100);
+        let _ = sample_record(&mut hub, &ctx);
+        let tokens = hub.get_jws_tokens_by_account("0xAccount1").unwrap();
+        assert_eq!(tokens.len(), 1);
+    }
+
+    #[test]
+    fn hash_jws_token_delegates_to_keys() {
+        let h1 = HubModule::hash_jws_token("test");
+        let h2 = keys::hash_jws_token("test");
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn extract_hash_from_index_suffix_empty() {
+        assert!(extract_hash_from_index_suffix(&[]).is_none());
+    }
+
+    #[test]
+    fn extract_hash_from_index_suffix_truncated() {
+        assert!(extract_hash_from_index_suffix(&[10, b'a']).is_none());
+    }
+
+    #[test]
+    fn extract_hash_from_index_suffix_valid() {
+        let hash = "abc123";
+        let mut suffix = vec![hash.len() as u8];
+        suffix.extend_from_slice(hash.as_bytes());
+        assert_eq!(extract_hash_from_index_suffix(&suffix).unwrap(), hash);
     }
 }

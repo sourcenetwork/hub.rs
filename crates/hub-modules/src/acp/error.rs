@@ -38,4 +38,7 @@ pub enum AcpError {
 
     #[error("state error: {0}")]
     State(String),
+
+    #[error("replay detected: signed policy command already processed")]
+    ReplayDetected,
 }

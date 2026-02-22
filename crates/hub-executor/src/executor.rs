@@ -672,7 +672,7 @@ mod tests {
         let mut hub = HubModule::new();
         let mut nonces = NativeNonceStore::default();
 
-        // Passes BLS verification and nonce check, reaches module — panic caught as failed receipt
+        // Passes BLS verification and nonce check, dispatches to module query_params
         let receipt = executor
             .execute_native_tx(
                 &wire,
@@ -684,8 +684,8 @@ mod tests {
             )
             .unwrap();
         assert!(
-            !receipt.success(),
-            "unimplemented module should produce failed receipt"
+            receipt.success(),
+            "getParams query should succeed"
         );
     }
 

@@ -66,6 +66,54 @@ pub fn signed_policy_cmd_key(payload_id: &[u8]) -> Vec<u8> {
     key
 }
 
+/// Commitment expired-index key: `"commitment/indexes/expired/idx/" + bool_byte + "/" + BE(id)`.
+pub fn commitment_expired_index_key(expired: bool, id: u64) -> Vec<u8> {
+    let mut key = commitment_expired_index_prefix(expired);
+    key.extend_from_slice(&id.to_be_bytes());
+    key
+}
+
+/// Prefix for scanning commitments with a given expired status.
+pub fn commitment_expired_index_prefix(expired: bool) -> Vec<u8> {
+    let mut key = Vec::from(COMMITMENT_PREFIX);
+    key.extend_from_slice(b"indexes/expired/idx/");
+    key.push(u8::from(expired));
+    key.push(b'/');
+    key
+}
+
+/// Commitment-by-root index key: `"commitment/indexes/commitment/idx/" + root_bytes + "/" + BE(id)`.
+pub fn commitment_by_commitment_index_key(root: &[u8], id: u64) -> Vec<u8> {
+    let mut key = commitment_by_commitment_index_prefix(root);
+    key.extend_from_slice(&id.to_be_bytes());
+    key
+}
+
+/// Prefix for scanning commitments by Merkle root.
+pub fn commitment_by_commitment_index_prefix(root: &[u8]) -> Vec<u8> {
+    let mut key = Vec::from(COMMITMENT_PREFIX);
+    key.extend_from_slice(b"indexes/commitment/idx/");
+    key.extend_from_slice(root);
+    key.push(b'/');
+    key
+}
+
+/// Amendment event policy-index key: `"amendment_event/indexes/policy/idx/" + policy_id + "/" + BE(id)`.
+pub fn amendment_event_policy_index_key(policy_id: &str, id: u64) -> Vec<u8> {
+    let mut key = amendment_event_policy_index_prefix(policy_id);
+    key.extend_from_slice(&id.to_be_bytes());
+    key
+}
+
+/// Prefix for scanning amendment events by policy ID.
+pub fn amendment_event_policy_index_prefix(policy_id: &str) -> Vec<u8> {
+    let mut key = Vec::from(AMENDMENT_EVENT_PREFIX);
+    key.extend_from_slice(b"indexes/policy/idx/");
+    key.extend_from_slice(policy_id.as_bytes());
+    key.push(b'/');
+    key
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
