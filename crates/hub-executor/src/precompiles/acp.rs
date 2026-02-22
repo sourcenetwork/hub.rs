@@ -86,7 +86,7 @@ pub(super) fn dispatch(
             if gas_limit < WRITE_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call = IAcp::createPolicyCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let call = IAcp::createPolicyCall::abi_decode(input).map_err(decode_error)?;
             let policy_str = String::from_utf8(call.policy.to_vec())
                 .map_err(|_| PrecompileError::Other("invalid UTF-8 in policy".into()))?;
             let creator = did_from_signer(&tx_ctx.signer)?;
@@ -105,7 +105,7 @@ pub(super) fn dispatch(
             if gas_limit < WRITE_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call = IAcp::editPolicyCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let call = IAcp::editPolicyCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
             let policy_id = policy_id_to_string(&call.policyId);
             let policy_str = String::from_utf8(call.policy.to_vec())
@@ -129,7 +129,7 @@ pub(super) fn dispatch(
             if gas_limit < WRITE_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call = IAcp::setRelationshipCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let call = IAcp::setRelationshipCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
             let policy_id = policy_id_to_string(&call.policyId);
             let actor_did = did_from_actor(&call.actor)?;
@@ -164,8 +164,7 @@ pub(super) fn dispatch(
             if gas_limit < WRITE_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call =
-                IAcp::deleteRelationshipCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let call = IAcp::deleteRelationshipCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
             let policy_id = policy_id_to_string(&call.policyId);
             let actor_did = did_from_actor(&call.actor)?;
@@ -196,7 +195,7 @@ pub(super) fn dispatch(
             if gas_limit < WRITE_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call = IAcp::registerObjectCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let call = IAcp::registerObjectCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
             let policy_id = policy_id_to_string(&call.policyId);
             let cmd = PolicyCmd::RegisterObject(Object {
@@ -222,7 +221,7 @@ pub(super) fn dispatch(
             if gas_limit < WRITE_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call = IAcp::archiveObjectCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let call = IAcp::archiveObjectCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
             let policy_id = policy_id_to_string(&call.policyId);
             let cmd = PolicyCmd::ArchiveObject(Object {
@@ -254,7 +253,7 @@ pub(super) fn dispatch(
             if gas_limit < WRITE_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call = IAcp::unarchiveObjectCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let call = IAcp::unarchiveObjectCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
             let policy_id = policy_id_to_string(&call.policyId);
             let cmd = PolicyCmd::UnarchiveObject(Object {
@@ -286,8 +285,7 @@ pub(super) fn dispatch(
             if gas_limit < WRITE_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call =
-                IAcp::commitRegistrationsCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let call = IAcp::commitRegistrationsCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
             let policy_id = policy_id_to_string(&call.policyId);
             let cmd = PolicyCmd::CommitRegistrations {
@@ -314,8 +312,7 @@ pub(super) fn dispatch(
             if gas_limit < WRITE_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call =
-                IAcp::revealRegistrationCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let call = IAcp::revealRegistrationCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
             let proof: hub_modules::acp::types::RegistrationProof =
                 serde_json::from_slice(&call.proof).map_err(|e| {
@@ -342,8 +339,7 @@ pub(super) fn dispatch(
             if gas_limit < WRITE_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call =
-                IAcp::flagHijackAttemptCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let call = IAcp::flagHijackAttemptCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
             let cmd = PolicyCmd::FlagHijackAttempt {
                 event_id: call.eventId,
@@ -370,7 +366,7 @@ pub(super) fn dispatch(
             if gas_limit < WRITE_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call = IAcp::checkAccessCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let call = IAcp::checkAccessCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
             let policy_id = policy_id_to_string(&call.policyId);
             let actor_did = did_from_actor(&call.actor)?;
@@ -393,8 +389,7 @@ pub(super) fn dispatch(
             if gas_limit < READ_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call =
-                IAcp::verifyAccessRequestCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let call = IAcp::verifyAccessRequestCall::abi_decode(input).map_err(decode_error)?;
             let policy_id = policy_id_to_string(&call.policyId);
             let actor_did = did_from_actor(&call.actor)?;
             let operations = build_operations(&call.resources, &call.objectIds, &call.permissions)?;
@@ -416,7 +411,7 @@ pub(super) fn dispatch(
             if gas_limit < WRITE_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call = IAcp::signedPolicyCmdCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let call = IAcp::signedPolicyCmdCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
             let payload_str = String::from_utf8(call.payload.to_vec())
                 .map_err(|_| PrecompileError::Other("invalid UTF-8 in payload".into()))?;
@@ -435,7 +430,7 @@ pub(super) fn dispatch(
             if gas_limit < WRITE_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call = IAcp::bearerPolicyCmdCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let call = IAcp::bearerPolicyCmdCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
             let policy_id = policy_id_to_string(&call.policyId);
             let cmd: PolicyCmd = serde_json::from_slice(&call.cmd)
@@ -455,7 +450,7 @@ pub(super) fn dispatch(
             if gas_limit < WRITE_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call = IAcp::updateParamsCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let call = IAcp::updateParamsCall::abi_decode(input).map_err(decode_error)?;
             let authority = did_from_signer(&tx_ctx.signer)?;
             let params: AcpParams = serde_json::from_slice(&call.params)
                 .map_err(|e| PrecompileError::Other(format!("params JSON decode: {e}").into()))?;
@@ -473,7 +468,7 @@ pub(super) fn dispatch(
             if gas_limit < READ_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call = IAcp::hasRelationshipCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let call = IAcp::hasRelationshipCall::abi_decode(input).map_err(decode_error)?;
             let policy_id = policy_id_to_string(&call.policyId);
             let actor_did = did_from_actor(&call.actor)?;
 
@@ -506,7 +501,7 @@ pub(super) fn dispatch(
             if gas_limit < READ_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call = IAcp::getPolicyCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let call = IAcp::getPolicyCall::abi_decode(input).map_err(decode_error)?;
             let policy_id = policy_id_to_string(&call.policyId);
 
             let record = match module.query_policy(&policy_id) {
@@ -522,7 +517,7 @@ pub(super) fn dispatch(
             if gas_limit < READ_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call = IAcp::getObjectOwnerCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let call = IAcp::getObjectOwnerCall::abi_decode(input).map_err(decode_error)?;
             let policy_id = policy_id_to_string(&call.policyId);
             let object = Object {
                 resource: call.resource,
@@ -559,8 +554,7 @@ pub(super) fn dispatch(
             if gas_limit < READ_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call =
-                IAcp::filterRelationshipsCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let call = IAcp::filterRelationshipsCall::abi_decode(input).map_err(decode_error)?;
             let policy_id = policy_id_to_string(&call.policyId);
 
             let selector = build_relationship_selector(
@@ -583,7 +577,7 @@ pub(super) fn dispatch(
             if gas_limit < READ_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call = IAcp::validatePolicyCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let call = IAcp::validatePolicyCall::abi_decode(input).map_err(decode_error)?;
             let policy_str = String::from_utf8(call.policy.to_vec())
                 .map_err(|_| PrecompileError::Other("invalid UTF-8 in policy".into()))?;
             let marshal_type = marshal_type_from_u8(call.marshalType);
@@ -605,8 +599,7 @@ pub(super) fn dispatch(
             if gas_limit < READ_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call =
-                IAcp::getAccessDecisionCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let call = IAcp::getAccessDecisionCall::abi_decode(input).map_err(decode_error)?;
 
             let decision = match module.query_access_decision(&call.decisionId) {
                 Ok(r) => r,
@@ -621,8 +614,8 @@ pub(super) fn dispatch(
             if gas_limit < READ_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call = IAcp::getRegistrationsCommitmentCall::abi_decode(&input[4..])
-                .map_err(decode_error)?;
+            let call =
+                IAcp::getRegistrationsCommitmentCall::abi_decode(input).map_err(decode_error)?;
 
             let commitment = match module.query_registrations_commitment(call.commitmentId) {
                 Ok(r) => r,
@@ -638,7 +631,7 @@ pub(super) fn dispatch(
             if gas_limit < READ_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call = IAcp::getRegistrationsCommitmentByValueCall::abi_decode(&input[4..])
+            let call = IAcp::getRegistrationsCommitmentByValueCall::abi_decode(input)
                 .map_err(decode_error)?;
 
             let commitments =
@@ -657,8 +650,7 @@ pub(super) fn dispatch(
             if gas_limit < READ_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call =
-                IAcp::getHijackAttemptsCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let call = IAcp::getHijackAttemptsCall::abi_decode(input).map_err(decode_error)?;
             let policy_id = policy_id_to_string(&call.policyId);
 
             let events = match module.query_hijack_attempts_by_policy(&policy_id) {
@@ -674,8 +666,7 @@ pub(super) fn dispatch(
             if gas_limit < READ_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call =
-                IAcp::generateCommitmentCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let call = IAcp::generateCommitmentCall::abi_decode(input).map_err(decode_error)?;
             let policy_id = policy_id_to_string(&call.policyId);
             let actor_did = did_from_actor(&call.actor)?;
 
@@ -757,4 +748,59 @@ fn build_relationship_selector(
         relation_selector,
         subject_selector,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hub_modules::types::Timestamp;
+
+    const TEST_POLICY_YAML: &str = "\
+name: test-policy
+resources:
+  - name: document
+    relations:
+      - name: owner
+      - name: reader
+    permissions:
+      - name: read
+        expr: owner + reader
+      - name: update
+        expr: owner
+      - name: delete
+        expr: owner
+";
+
+    #[test]
+    fn dispatch_create_policy_roundtrip() {
+        let calldata = IAcp::createPolicyCall {
+            policy: TEST_POLICY_YAML.as_bytes().to_vec().into(),
+            marshalType: 1,
+        }
+        .abi_encode();
+
+        let mut module = AcpModule::new();
+        let block_ctx = BlockExecCtx {
+            timestamp: Timestamp {
+                seconds: 1000,
+                block_height: 5,
+            },
+        };
+        let tx_ctx = TxExecCtx {
+            tx_hash: vec![1; 32],
+            signer: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK".to_string(),
+        };
+
+        let result = dispatch(&mut module, &block_ctx, &tx_ctx, &calldata, 1_000_000);
+        match &result {
+            Ok(output) => {
+                assert!(
+                    !output.reverted,
+                    "dispatch should not revert, output bytes: {}",
+                    String::from_utf8_lossy(&output.bytes)
+                );
+            }
+            Err(e) => panic!("dispatch returned PrecompileError: {e:?}"),
+        }
+    }
 }

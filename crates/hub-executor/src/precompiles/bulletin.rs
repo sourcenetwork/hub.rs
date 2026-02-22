@@ -37,8 +37,7 @@ pub(super) fn dispatch(
             if gas_limit < WRITE_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call =
-                IBulletin::registerNamespaceCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let call = IBulletin::registerNamespaceCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
 
             let ns = match module.register_namespace(
@@ -60,7 +59,7 @@ pub(super) fn dispatch(
             if gas_limit < WRITE_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call = IBulletin::createPostCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let call = IBulletin::createPostCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
 
             match module.create_post(
@@ -88,8 +87,7 @@ pub(super) fn dispatch(
             if gas_limit < WRITE_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call =
-                IBulletin::addCollaboratorCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let call = IBulletin::addCollaboratorCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
             let collaborator_str = format!("{}", call.collaborator);
 
@@ -113,7 +111,7 @@ pub(super) fn dispatch(
                 return Err(PrecompileError::OutOfGas);
             }
             let call =
-                IBulletin::removeCollaboratorCall::abi_decode(&input[4..]).map_err(decode_error)?;
+                IBulletin::removeCollaboratorCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
             let collaborator_str = format!("{}", call.collaborator);
 
@@ -136,8 +134,7 @@ pub(super) fn dispatch(
             if gas_limit < WRITE_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call =
-                IBulletin::updateParamsCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let call = IBulletin::updateParamsCall::abi_decode(input).map_err(decode_error)?;
             let authority = did_from_signer(&tx_ctx.signer)?;
             let params: hub_modules::bulletin::types::BulletinParams =
                 serde_json::from_slice(&call.params).map_err(|e| {
@@ -157,7 +154,7 @@ pub(super) fn dispatch(
             if gas_limit < READ_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call = IBulletin::getPostCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let call = IBulletin::getPostCall::abi_decode(input).map_err(decode_error)?;
 
             let post = match module.query_post(&call.namespace, &call.postId) {
                 Ok(p) => p,
@@ -172,8 +169,7 @@ pub(super) fn dispatch(
             if gas_limit < READ_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call =
-                IBulletin::getNamespaceCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let call = IBulletin::getNamespaceCall::abi_decode(input).map_err(decode_error)?;
 
             let ns = match module.query_namespace(&call.namespace) {
                 Ok(n) => n,
@@ -202,7 +198,7 @@ pub(super) fn dispatch(
             if gas_limit < READ_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call = IBulletin::getNamespaceCollaboratorsCall::abi_decode(&input[4..])
+            let call = IBulletin::getNamespaceCollaboratorsCall::abi_decode(input)
                 .map_err(decode_error)?;
 
             let collaborators = match module.query_namespace_collaborators(&call.namespace) {
@@ -220,8 +216,7 @@ pub(super) fn dispatch(
             if gas_limit < READ_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call =
-                IBulletin::getNamespacePostsCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let call = IBulletin::getNamespacePostsCall::abi_decode(input).map_err(decode_error)?;
 
             let posts = match module.query_namespace_posts(&call.namespace) {
                 Ok(p) => p,
@@ -250,7 +245,7 @@ pub(super) fn dispatch(
             if gas_limit < READ_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call = IBulletin::iterateGlobCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let call = IBulletin::iterateGlobCall::abi_decode(input).map_err(decode_error)?;
 
             let posts = match module.query_iterate_glob(&call.namespace, &call.glob) {
                 Ok(p) => p,

@@ -36,7 +36,7 @@ pub(super) fn dispatch(
             if gas_limit < WRITE_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call = IHub::invalidateJWSCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let call = IHub::invalidateJWSCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
 
             match module.invalidate_jws(block_ctx, tx_ctx, &creator, &call.tokenHash) {
@@ -51,7 +51,7 @@ pub(super) fn dispatch(
             if gas_limit < WRITE_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call = IHub::updateParamsCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let call = IHub::updateParamsCall::abi_decode(input).map_err(decode_error)?;
             let authority = did_from_signer(&tx_ctx.signer)?;
             let params: hub_modules::hub::types::HubParams = serde_json::from_slice(&call.params)
                 .map_err(|e| {
@@ -71,7 +71,7 @@ pub(super) fn dispatch(
             if gas_limit < READ_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call = IHub::getJWSTokenCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let call = IHub::getJWSTokenCall::abi_decode(input).map_err(decode_error)?;
 
             let record = match module.get_jws_token(&call.tokenHash) {
                 Ok(r) => r,
@@ -93,8 +93,7 @@ pub(super) fn dispatch(
             if gas_limit < READ_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call =
-                IHub::getJWSTokensByDidCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let call = IHub::getJWSTokensByDidCall::abi_decode(input).map_err(decode_error)?;
             let did = Did::new(&call.did)
                 .map_err(|e| PrecompileError::Other(format!("DID parse: {e}").into()))?;
 
@@ -111,8 +110,7 @@ pub(super) fn dispatch(
             if gas_limit < READ_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
-            let call =
-                IHub::getJWSTokensByAccountCall::abi_decode(&input[4..]).map_err(decode_error)?;
+            let call = IHub::getJWSTokensByAccountCall::abi_decode(input).map_err(decode_error)?;
             let account_str = format!("{}", call.account);
 
             let tokens = match module.get_jws_tokens_by_account(&account_str) {

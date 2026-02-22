@@ -78,6 +78,7 @@ pub fn simulate_call<S: StateDbRead>(
         .gas_limit(gas_limit)
         .gas_price(0u128)
         .nonce(0)
+        .chain_id(Some(chain_id))
         .build()
         .map_err(|e| ExecutionError::TxExecution(format!("{e:?}")))?;
 
