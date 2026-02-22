@@ -1,6 +1,6 @@
 //! HubRunner — production validator node runner for hub.
 
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::tx_forward::TxForwarder;
@@ -21,7 +21,7 @@ use commonware_runtime::{Metrics as _, Spawner, buffer::paged::CacheRef, tokio};
 use commonware_utils::{NZU64, NZUsize, acknowledgement::Exact};
 use futures::StreamExt;
 use hub_domain::{Block, BlockCfg, BootstrapConfig, ConsensusDigest, LedgerEvent, Tx, TxCfg};
-use hub_executor::{BlockContext, HubExecutor, ModuleState, SharedModuleState};
+use hub_executor::{BlockContext, HubExecutor, SharedModuleState};
 use hub_indexer::BlockIndex;
 use hub_jsonrpc::IndexedStateProvider;
 use hub_ledger::{LedgerService, LedgerView};
@@ -273,8 +273,8 @@ impl NodeRunner for HubRunner {
             .map_err(|e| anyhow::anyhow!("failed to load validator key: {}", e))?;
         let my_pk = commonware_cryptography::Signer::public_key(&validator_key);
 
-        let modules: SharedModuleState = Arc::new(RwLock::new(ModuleState::default()));
         let executor = HubExecutor::new(self.chain_id);
+        let modules: SharedModuleState = executor.modules().clone();
         let context_provider = HubContextProvider {
             gas_limit: self.gas_limit,
         };

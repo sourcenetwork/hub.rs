@@ -1,8 +1,9 @@
 //! HubExecutor — EVM executor with hub precompiles (ACP, Bulletin, Hub)
 //! and native BLS transaction support.
 
+use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use crate::{
     BlockContext, BlockExecutor, ExecutionConfig, ExecutionError, ExecutionOutcome,
@@ -31,6 +32,9 @@ use crate::precompiles::{
 /// Gas budget for native BLS transactions dispatched to modules.
 const NATIVE_TX_GAS_LIMIT: u64 = 1_000_000;
 
+/// Per-block receipt cache: height → (receipts, total gas used).
+type ReceiptCache = Arc<Mutex<HashMap<u64, (Vec<ExecutionReceipt>, u64)>>>;
+
 /// Block executor with hub precompiles (ACP, Bulletin, Hub).
 ///
 /// Processes both EVM transactions (secp256k1) and native BLS transactions
@@ -38,10 +42,13 @@ const NATIVE_TX_GAS_LIMIT: u64 = 1_000_000;
 /// the path: `0x45` → native BLS, anything else → REVM.
 ///
 /// Module state persists across block executions via `SharedModuleState`.
+/// Receipts are cached per block height so the finalized block reporter
+/// can retrieve them without re-executing (which would fail nonce checks).
 #[derive(Clone, Debug)]
 pub struct HubExecutor {
     config: ExecutionConfig,
     modules: SharedModuleState,
+    receipt_cache: ReceiptCache,
 }
 
 impl HubExecutor {
@@ -50,6 +57,7 @@ impl HubExecutor {
         Self {
             config: ExecutionConfig::new(chain_id),
             modules: Arc::new(RwLock::new(ModuleState::default())),
+            receipt_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -58,6 +66,7 @@ impl HubExecutor {
         Self {
             config,
             modules: Arc::new(RwLock::new(ModuleState::default())),
+            receipt_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -317,14 +326,17 @@ impl<S: StateDb> BlockExecutor<S> for HubExecutor {
 
         Self::run_end_block_hooks(&mut modules, &block_ctx);
 
-        *self.modules.write().unwrap() = modules;
-
         if building {
             outcome.executed_tx_indices = Some(executed_indices);
         }
 
         outcome.gas_used = cumulative_gas;
         outcome.ibc_root = B256::ZERO;
+
+        self.receipt_cache.lock().unwrap().insert(
+            context.header.number,
+            (outcome.receipts.clone(), cumulative_gas),
+        );
 
         Ok(outcome)
     }
@@ -347,8 +359,8 @@ impl<S: StateDb> BlockExecutor<S> for HubExecutor {
 
     fn mark_height_verified(&self, _height: u64) {}
 
-    fn cached_receipts(&self, _height: u64) -> Option<(Vec<ExecutionReceipt>, u64)> {
-        None
+    fn cached_receipts(&self, height: u64) -> Option<(Vec<ExecutionReceipt>, u64)> {
+        self.receipt_cache.lock().unwrap().remove(&height)
     }
 }
 
