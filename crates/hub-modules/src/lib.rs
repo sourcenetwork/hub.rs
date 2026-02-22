@@ -7,6 +7,8 @@ use alloy_primitives as _;
 mod borsh_did;
 /// Shared key encoding helpers (length prefix, sanitization).
 pub mod key_encoding;
+/// Shared module state container for block-scoped execution.
+pub mod module_state;
 /// Shared types used across modules (Timestamp, Duration).
 pub mod types;
 
@@ -19,5 +21,4 @@ pub mod hub;
 /// Native account state (DID-keyed nonce tracking).
 pub mod native_account;
 
-mod module_state;
 pub use module_state::{ModuleState, SharedModuleState};

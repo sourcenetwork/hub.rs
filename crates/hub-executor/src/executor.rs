@@ -2,6 +2,7 @@
 //! and native BLS transaction support.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::{Arc, RwLock};
 
 use crate::{
     BlockContext, BlockExecutor, ExecutionConfig, ExecutionError, ExecutionOutcome,
@@ -13,6 +14,7 @@ use hub_domain::NativeTx;
 use hub_modules::acp::AcpModule;
 use hub_modules::bulletin::BulletinModule;
 use hub_modules::hub::HubModule;
+use hub_modules::module_state::{ModuleState, SharedModuleState};
 use hub_modules::native_account::NativeNonceStore;
 use hub_modules::types::{BlockExecCtx, Timestamp, TxExecCtx};
 use hub_traits::StateDb;
@@ -34,13 +36,12 @@ const NATIVE_TX_GAS_LIMIT: u64 = 1_000_000;
 /// Processes both EVM transactions (secp256k1) and native BLS transactions
 /// (BLS12-381) in block order. The first byte of each transaction determines
 /// the path: `0x45` → native BLS, anything else → REVM.
+///
+/// Module state persists across block executions via `SharedModuleState`.
 #[derive(Clone, Debug)]
 pub struct HubExecutor {
     config: ExecutionConfig,
-    acp_module: AcpModule,
-    bulletin_module: BulletinModule,
-    hub_module: HubModule,
-    nonce_store: NativeNonceStore,
+    modules: SharedModuleState,
 }
 
 impl HubExecutor {
@@ -48,10 +49,7 @@ impl HubExecutor {
     pub fn new(chain_id: u64) -> Self {
         Self {
             config: ExecutionConfig::new(chain_id),
-            acp_module: AcpModule::new(),
-            bulletin_module: BulletinModule::new(),
-            hub_module: HubModule::new(),
-            nonce_store: NativeNonceStore::default(),
+            modules: Arc::new(RwLock::new(ModuleState::default())),
         }
     }
 
@@ -59,10 +57,7 @@ impl HubExecutor {
     pub fn with_config(config: ExecutionConfig) -> Self {
         Self {
             config,
-            acp_module: AcpModule::new(),
-            bulletin_module: BulletinModule::new(),
-            hub_module: HubModule::new(),
-            nonce_store: NativeNonceStore::default(),
+            modules: Arc::new(RwLock::new(ModuleState::default())),
         }
     }
 
@@ -74,6 +69,11 @@ impl HubExecutor {
     /// Get the execution configuration.
     pub const fn config(&self) -> &ExecutionConfig {
         &self.config
+    }
+
+    /// Get the shared module state.
+    pub const fn modules(&self) -> &SharedModuleState {
+        &self.modules
     }
 
     /// Execute a native BLS transaction: verify signature, derive DID, dispatch to module.
@@ -173,14 +173,12 @@ impl HubExecutor {
     }
 
     /// Run end-of-block hooks for modules that need per-block maintenance.
-    fn run_end_block_hooks(&self, block_ctx: &BlockExecCtx) {
-        let mut acp = self.acp_module.clone();
-        if let Err(e) = acp.end_blocker(block_ctx) {
+    fn run_end_block_hooks(modules: &mut ModuleState, block_ctx: &BlockExecCtx) {
+        if let Err(e) = modules.acp.end_blocker(block_ctx) {
             warn!(?e, "ACP end_blocker failed");
         }
 
-        let mut hub = self.hub_module.clone();
-        if let Err(e) = hub.check_and_update_expired_tokens(block_ctx) {
+        if let Err(e) = modules.hub.check_and_update_expired_tokens(block_ctx) {
             warn!(?e, "Hub expired token sweep failed");
         }
     }
@@ -195,6 +193,51 @@ impl<S: StateDb> BlockExecutor<S> for HubExecutor {
         context: &BlockContext,
         txs: &[Self::Tx],
     ) -> Result<ExecutionOutcome, ExecutionError> {
+        let mut modules = self.modules.read().unwrap().clone();
+
+        let block_ctx = BlockExecCtx {
+            timestamp: Timestamp {
+                seconds: context.header.timestamp,
+                block_height: context.header.number,
+            },
+        };
+
+        let mut outcome = ExecutionOutcome::new();
+        let mut cumulative_gas = 0u64;
+        let building = !context.is_verification;
+        let mut executed_indices: Vec<usize> = Vec::new();
+
+        for (i, tx_bytes) in txs.iter().enumerate() {
+            if tx_bytes.is_empty() || !NativeTx::is_native_tx(tx_bytes[0]) {
+                continue;
+            }
+
+            let receipt = match self.execute_native_tx(
+                tx_bytes,
+                &block_ctx,
+                &mut modules.acp,
+                &mut modules.bulletin,
+                &mut modules.hub,
+                &mut modules.nonces,
+            ) {
+                Ok(r) => r,
+                Err(e) if building => {
+                    let tx_hash = keccak256(tx_bytes);
+                    warn!(%tx_hash, ?e, "skipping native tx");
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
+
+            executed_indices.push(i);
+            let gas_used = receipt.gas_used;
+            cumulative_gas = cumulative_gas.saturating_add(gas_used);
+
+            let mut receipt = receipt;
+            receipt.receipt.cumulative_gas_used = cumulative_gas;
+            outcome.receipts.push(receipt);
+        }
+
         let adapter = StateDbAdapter::new(state.clone());
         let db = State::builder().with_database_ref(adapter).build();
 
@@ -218,96 +261,63 @@ impl<S: StateDb> BlockExecutor<S> for HubExecutor {
             .build_mainnet()
             .with_precompiles(HubPrecompiles::with_modules(
                 self.config.spec_id,
-                self.acp_module.clone(),
-                self.bulletin_module.clone(),
-                self.hub_module.clone(),
+                modules.acp.clone(),
+                modules.bulletin.clone(),
+                modules.hub.clone(),
             ));
-
-        let block_ctx = BlockExecCtx {
-            timestamp: Timestamp {
-                seconds: context.header.timestamp,
-                block_height: context.header.number,
-            },
-        };
-
-        let mut outcome = ExecutionOutcome::new();
-        let mut cumulative_gas = 0u64;
-        let building = !context.is_verification;
-        let mut executed_indices: Vec<usize> = Vec::new();
-
-        let mut acp_module = self.acp_module.clone();
-        let mut bulletin_module = self.bulletin_module.clone();
-        let mut hub_module = self.hub_module.clone();
-        let mut nonce_store = self.nonce_store.clone();
 
         for (i, tx_bytes) in txs.iter().enumerate() {
             if !tx_bytes.is_empty() && NativeTx::is_native_tx(tx_bytes[0]) {
-                let receipt = match self.execute_native_tx(
-                    tx_bytes,
-                    &block_ctx,
-                    &mut acp_module,
-                    &mut bulletin_module,
-                    &mut hub_module,
-                    &mut nonce_store,
-                ) {
-                    Ok(r) => r,
-                    Err(e) if building => {
-                        let tx_hash = keccak256(tx_bytes);
-                        warn!(%tx_hash, ?e, "skipping native tx");
-                        continue;
-                    }
-                    Err(e) => return Err(e),
-                };
-
-                executed_indices.push(i);
-                let gas_used = receipt.gas_used;
-                cumulative_gas = cumulative_gas.saturating_add(gas_used);
-
-                let mut receipt = receipt;
-                receipt.receipt.cumulative_gas_used = cumulative_gas;
-                outcome.receipts.push(receipt);
-            } else {
-                let tx_hash = keccak256(tx_bytes);
-
-                let (tx_env, signer_did) = match decode_evm_tx(tx_bytes, self.config.chain_id) {
-                    Ok(r) => r,
-                    Err(ExecutionError::TxDecode(msg)) if building => {
-                        warn!(%tx_hash, msg, "skipping tx: decode error");
-                        continue;
-                    }
-                    Err(e) => return Err(e),
-                };
-
-                evm.set_tx(tx_env);
-                evm.precompiles.set_tx_hash(tx_hash);
-                evm.precompiles.set_signer_did(signer_did);
-
-                let result_and_state = match evm.replay() {
-                    Ok(r) => r,
-                    Err(e) if building => {
-                        warn!(%tx_hash, ?e, "skipping tx: execution error");
-                        continue;
-                    }
-                    Err(e) => {
-                        return Err(ExecutionError::TxExecution(format!("{e:?}")));
-                    }
-                };
-
-                executed_indices.push(i);
-
-                let gas_used = result_and_state.result.gas_used();
-                cumulative_gas = cumulative_gas.saturating_add(gas_used);
-
-                let receipt =
-                    build_receipt(&result_and_state.result, tx_hash, gas_used, cumulative_gas);
-                outcome.receipts.push(receipt);
-
-                let changes = extract_changes(result_and_state.state);
-                outcome.changes.merge(changes);
+                continue;
             }
+
+            let tx_hash = keccak256(tx_bytes);
+
+            let (tx_env, signer_did) = match decode_evm_tx(tx_bytes, self.config.chain_id) {
+                Ok(r) => r,
+                Err(ExecutionError::TxDecode(msg)) if building => {
+                    warn!(%tx_hash, msg, "skipping tx: decode error");
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
+
+            evm.set_tx(tx_env);
+            evm.precompiles.set_tx_hash(tx_hash);
+            evm.precompiles.set_signer_did(signer_did);
+
+            let result_and_state = match evm.replay() {
+                Ok(r) => r,
+                Err(e) if building => {
+                    warn!(%tx_hash, ?e, "skipping tx: execution error");
+                    continue;
+                }
+                Err(e) => {
+                    return Err(ExecutionError::TxExecution(format!("{e:?}")));
+                }
+            };
+
+            executed_indices.push(i);
+
+            let gas_used = result_and_state.result.gas_used();
+            cumulative_gas = cumulative_gas.saturating_add(gas_used);
+
+            let receipt =
+                build_receipt(&result_and_state.result, tx_hash, gas_used, cumulative_gas);
+            outcome.receipts.push(receipt);
+
+            let changes = extract_changes(result_and_state.state);
+            outcome.changes.merge(changes);
         }
 
-        self.run_end_block_hooks(&block_ctx);
+        let (acp, bulletin, hub) = evm.precompiles.take_modules();
+        modules.acp = acp;
+        modules.bulletin = bulletin;
+        modules.hub = hub;
+
+        Self::run_end_block_hooks(&mut modules, &block_ctx);
+
+        *self.modules.write().unwrap() = modules;
 
         if building {
             outcome.executed_tx_indices = Some(executed_indices);

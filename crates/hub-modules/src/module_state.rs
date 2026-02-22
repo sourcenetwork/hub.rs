@@ -1,37 +1,23 @@
-//! Bundled module state shared between executor and RPC layer.
+//! Shared module state container for block-scoped execution.
 
 use std::sync::{Arc, RwLock};
 
-use crate::acp::AcpModule;
-use crate::bulletin::BulletinModule;
-use crate::hub::HubModule;
-use crate::native_account::NativeNonceStore;
+use crate::{
+    acp::AcpModule, bulletin::BulletinModule, hub::HubModule, native_account::NativeNonceStore,
+};
 
-/// All hub module state, bundled for sharing between the executor
-/// (mutation during block execution) and the RPC layer (read-only
-/// for `eth_call` queries).
-#[derive(Clone, Debug)]
+/// All four mutable module instances for a single block execution.
+#[derive(Clone, Debug, Default)]
 pub struct ModuleState {
-    /// Access control policies (Zanzibar relation tuples).
+    /// Access Control Policy module.
     pub acp: AcpModule,
-    /// Bulletin board (namespaces, posts, collaborators).
+    /// Bulletin module.
     pub bulletin: BulletinModule,
-    /// Hub identity (JWS tokens, chain config).
+    /// Hub module.
     pub hub: HubModule,
-    /// BLS native account nonce tracking.
+    /// Native account nonce store.
     pub nonces: NativeNonceStore,
 }
 
-impl Default for ModuleState {
-    fn default() -> Self {
-        Self {
-            acp: AcpModule::new(),
-            bulletin: BulletinModule::new(),
-            hub: HubModule::new(),
-            nonces: NativeNonceStore::default(),
-        }
-    }
-}
-
-/// Thread-safe handle to shared module state.
+/// Thread-safe shared module state for use across block executions.
 pub type SharedModuleState = Arc<RwLock<ModuleState>>;
