@@ -96,6 +96,8 @@ async fn create_and_query_policies() {
         .expect("EVM create_policy tx should succeed");
 
     // -- EVM receipt structure assertions --
+    // Note: create_policy() already returns Err on status == 0, so this
+    // assertion is documentation rather than a safety net.
     assert_eq!(evm_receipt.status, 1, "EVM create_policy should succeed");
     assert!(
         evm_receipt.block_number > 0,
@@ -292,6 +294,13 @@ async fn create_and_query_policies() {
     }
 
     // -- Cluster health assertions --
+    // Ensure all nodes have advanced past the last tx before checking
+    // convergence — assert_heights_converged reads snapshots once
+    // without retry, so stale data can cause spurious failures.
+    state
+        .wait_for_height(bls_receipt.block_number + 1, Duration::from_secs(15))
+        .await
+        .expect("all nodes should advance past BLS tx block");
     state
         .assert_heights_converged(2)
         .expect("block heights should converge within 2 blocks");
