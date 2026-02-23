@@ -37,7 +37,7 @@ pub use executor::{HubExecutor, ModuleTrees};
 pub use hub_modules::module_state::{ModuleState, SharedModuleState};
 
 mod mempool;
-pub use mempool::{MempoolValidator, TxValidationResult};
+pub use mempool::{MempoolValidator, PreValidatedNativeTx, TxValidationResult};
 
 mod simulate;
 pub use simulate::{SimulateRequest, SimulateResult, estimate_gas, simulate_call};

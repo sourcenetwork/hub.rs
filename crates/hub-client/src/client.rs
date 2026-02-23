@@ -226,8 +226,10 @@ impl HubClient {
     ) -> Result<TransactionReceipt, ClientError> {
         let wire = signer.sign_native_tx(target, calldata)?;
         let tx_hash = self.send_native_tx(&wire).await?;
+        // Native txs may need P2P gossip forwarding to the leader,
+        // so use a longer timeout than EVM txs.
         let receipt = self
-            .wait_for_receipt(tx_hash, Duration::from_millis(200), 100)
+            .wait_for_receipt(tx_hash, Duration::from_millis(300), 200)
             .await?;
         if receipt.status == 0 {
             return Err(ClientError::TxReverted {

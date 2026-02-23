@@ -15,7 +15,9 @@ use hub_consensus::{
     ConsensusError, Mempool as _, SeedTracker as _, Snapshot, SnapshotStore as _,
     components::{InMemoryMempool, InMemorySeedTracker, InMemorySnapshotStore},
 };
-use hub_domain::{Block, BlockId, ConsensusDigest, LedgerEvent, LedgerEvents, StateRoot, Tx, TxId};
+use hub_domain::{
+    Block, BlockId, ConsensusDigest, LedgerEvent, LedgerEvents, NativeTx, StateRoot, Tx, TxId,
+};
 use hub_executor::{ExecutionConfig, MempoolValidator};
 use hub_modules::ModuleState;
 use hub_overlay::OverlayState;
@@ -54,6 +56,8 @@ pub struct LedgerView {
     inner: Arc<Mutex<LedgerState>>,
     /// Genesis block stored so the automaton can replay from height 0.
     genesis_block: Block,
+    /// Chain ID for stateless tx pre-validation (BLS verify outside mutex).
+    chain_id: u64,
 }
 
 impl fmt::Debug for LedgerView {
@@ -134,6 +138,7 @@ impl LedgerView {
                 validator,
             })),
             genesis_block,
+            chain_id,
         })
     }
 
@@ -143,14 +148,32 @@ impl LedgerView {
     }
 
     /// Submit a transaction into the mempool after validation.
+    ///
+    /// For native BLS transactions, signature verification runs **before**
+    /// acquiring the mutex so the expensive ~1s (debug) crypto doesn't
+    /// block proposal building or finalization.
     pub async fn submit_tx(&self, tx: Tx) -> Result<bool, String> {
-        let mut inner = self.inner.lock().await;
-        inner
-            .validator
-            .validate_tx(&tx.bytes)
-            .await
-            .map_err(|e| e.to_string())?;
-        Ok(inner.mempool.insert(tx))
+        let is_native = !tx.bytes.is_empty() && NativeTx::is_native_tx(tx.bytes[0]);
+
+        if is_native {
+            let pre = MempoolValidator::<QmdbState>::pre_validate_native(self.chain_id, &tx.bytes)
+                .map_err(|e| e.to_string())?;
+
+            let mut inner = self.inner.lock().await;
+            inner
+                .validator
+                .admit_native(&pre)
+                .map_err(|e| e.to_string())?;
+            Ok(inner.mempool.insert(tx))
+        } else {
+            let mut inner = self.inner.lock().await;
+            inner
+                .validator
+                .validate_tx(&tx.bytes)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(inner.mempool.insert(tx))
+        }
     }
 
     /// Insert a transaction without validation (bootstrap txs).

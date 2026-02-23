@@ -28,6 +28,19 @@ pub struct TxValidationResult {
     pub is_native: bool,
 }
 
+/// Pre-validated native BLS transaction.
+///
+/// Contains the results of expensive stateless validation (BLS signature
+/// verification and DID derivation) so that the stateful nonce check can
+/// run separately inside the mutex without repeating the crypto work.
+#[derive(Clone, Debug)]
+pub struct PreValidatedNativeTx {
+    /// `did:key:` identifier derived from the BLS public key.
+    pub signer_did: String,
+    /// Transaction nonce from the wire format.
+    pub nonce: u64,
+}
+
 /// Stateful transaction validator — mempool admission gate.
 ///
 /// Maintains branched state across calls so sequential validations
@@ -105,10 +118,82 @@ impl<S: StateDb> MempoolValidator<S> {
         Ok(())
     }
 
+    /// Stateless pre-validation for native BLS transactions.
+    ///
+    /// Performs decode, chain ID check, target check, BLS signature
+    /// verification, and DID derivation — all without needing mutable
+    /// state. Call this **outside** the ledger mutex, then pass the
+    /// result to [`admit_native`] inside the mutex for the nonce check.
+    pub fn pre_validate_native(
+        chain_id: u64,
+        tx_bytes: &[u8],
+    ) -> Result<PreValidatedNativeTx, ExecutionError> {
+        let native_tx = NativeTx::decode_wire(tx_bytes)
+            .map_err(|e| ExecutionError::TxDecode(format!("native tx: {e}")))?;
+
+        if native_tx.chain_id != chain_id {
+            return Err(ExecutionError::ChainIdMismatch {
+                expected: chain_id,
+                got: native_tx.chain_id,
+            });
+        }
+
+        if native_tx.target != ACP_ADDRESS
+            && native_tx.target != BULLETIN_ADDRESS
+            && native_tx.target != HUB_ADDRESS
+        {
+            return Err(ExecutionError::UnknownNativeTarget(native_tx.target));
+        }
+
+        let pubkey = bls::deserialize_pubkey(native_tx.bls_pubkey.as_slice())
+            .map_err(|e| ExecutionError::BlsVerification(format!("pubkey: {e}")))?;
+
+        let signing_data = native_tx.signing_data();
+        bls::verify(&pubkey, &signing_data, native_tx.signature.as_slice())
+            .map_err(|e| ExecutionError::BlsVerification(format!("signature: {e}")))?;
+
+        let signer_did = bls::did_from_bls_pubkey(&pubkey)
+            .map_err(|e| ExecutionError::BlsVerification(format!("DID: {e}")))?;
+
+        Ok(PreValidatedNativeTx {
+            signer_did,
+            nonce: native_tx.nonce,
+        })
+    }
+
+    /// Admit a pre-validated native BLS transaction into branched state.
+    ///
+    /// Only performs the nonce check — all expensive crypto was already
+    /// done by [`pre_validate_native`]. Call this inside the mutex.
+    pub fn admit_native(
+        &mut self,
+        pre: &PreValidatedNativeTx,
+    ) -> Result<TxValidationResult, ExecutionError> {
+        self.native_nonces
+            .check_and_increment(&pre.signer_did, pre.nonce)
+            .map_err(|e| match e {
+                hub_modules::native_account::NonceError::Mismatch { did, expected, got } => {
+                    ExecutionError::NonceMismatch { did, expected, got }
+                }
+                hub_modules::native_account::NonceError::Overflow(did) => {
+                    ExecutionError::InvalidTx(format!("nonce overflow for {did}"))
+                }
+            })?;
+
+        Ok(TxValidationResult {
+            sender: pre.signer_did.clone(),
+            nonce: pre.nonce,
+            is_native: true,
+        })
+    }
+
     /// Validate a transaction for mempool admission.
     ///
     /// Detects format by first byte (`0x45` = BLS native, else EVM).
     /// On success, increments the sender's nonce in the branched state.
+    ///
+    /// For native BLS transactions, prefer using [`pre_validate_native`]
+    /// + [`admit_native`] to avoid holding locks during BLS verification.
     pub async fn validate_tx(
         &mut self,
         tx_bytes: &[u8],
