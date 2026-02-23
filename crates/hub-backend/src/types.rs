@@ -75,17 +75,12 @@ impl Read for StorageValue {
     }
 }
 
-pub(crate) type ModuleKey = FixedBytes<1>;
-
 pub(crate) type AccountDb =
     any::unordered::variable::Db<Context, AccountKey, AccountValue, QmdbHasher, EightCap>;
 pub(crate) type StorageDb =
     any::unordered::variable::Db<Context, StorageKey, StorageValue, QmdbHasher, EightCap>;
 pub(crate) type CodeDb =
     any::unordered::variable::Db<Context, CodeKey, Vec<u8>, QmdbHasher, EightCap>;
-pub(crate) type ModuleDb =
-    any::unordered::variable::Db<Context, ModuleKey, Vec<u8>, QmdbHasher, EightCap>;
-
 pub(crate) type AccountDbDirty = any::unordered::variable::Db<
     Context,
     AccountKey,

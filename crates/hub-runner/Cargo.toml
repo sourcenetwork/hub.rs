@@ -8,9 +8,11 @@ description = "Node runner assembly for hub validators"
 [dependencies]
 hub-backend.workspace = true
 hub-config.workspace = true
+hub-state.workspace = true
 hub-consensus.workspace = true
 hub-domain.workspace = true
 hub-executor.workspace = true
+hub-modules.workspace = true
 hub-indexer.workspace = true
 hub-jsonrpc.workspace = true
 hub-ledger.workspace = true

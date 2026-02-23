@@ -6,8 +6,6 @@
 
 use std::{fmt, marker::PhantomData, sync::Arc};
 
-use hub_backend::ModuleStateBackend;
-
 // Re-import tokio broadcast from the crate (not commonware_runtime::tokio).
 use ::tokio::sync::broadcast;
 use alloy_consensus::{Transaction as _, TxEnvelope, transaction::SignerRecoverable as _};
@@ -124,7 +122,6 @@ async fn handle_finalized_update<E, P>(
     update: Update<Block>,
     block_index: Option<Arc<BlockIndex>>,
     subscriptions: Option<SubscriptionSenders>,
-    module_backend: Option<Arc<::tokio::sync::Mutex<ModuleStateBackend>>>,
 ) where
     E: BlockExecutor<OverlayState<QmdbState>, Tx = Bytes>,
     P: BlockContextProvider,
@@ -228,14 +225,6 @@ async fn handle_finalized_update<E, P>(
                 executor.set_base_modules(modules.clone());
             }
             executor.cleanup_module_cache(block.height.saturating_sub(1));
-
-            // Persist module state to QMDB for crash recovery.
-            if let Some(ref backend) = module_backend {
-                let state = finalized_modules.unwrap_or_default();
-                if let Err(e) = backend.lock().await.save(&state).await {
-                    error!(?digest, error = ?e, "failed to persist module state");
-                }
-            }
 
             // Prune mempool BEFORE marking the snapshot as persisted.
             // `collect_pending_tx_ids` walks ancestor snapshots and stops
@@ -593,8 +582,6 @@ pub struct FinalizedReporter<E, P> {
     subscription_heads: Option<broadcast::Sender<RpcBlock>>,
     /// Optional broadcast sender for new logs (WebSocket subscriptions).
     subscription_logs: Option<broadcast::Sender<Vec<RpcLog>>>,
-    /// Optional module state backend for persisting module state to QMDB.
-    module_backend: Option<Arc<::tokio::sync::Mutex<ModuleStateBackend>>>,
 }
 
 impl<E, P> fmt::Debug for FinalizedReporter<E, P> {
@@ -623,7 +610,6 @@ where
             block_index: None,
             subscription_heads: None,
             subscription_logs: None,
-            module_backend: None,
         }
     }
 
@@ -645,16 +631,6 @@ where
         self.subscription_logs = Some(logs_tx);
         self
     }
-
-    /// Set the module state backend for persisting module state on finalization.
-    #[must_use]
-    pub fn with_module_backend(
-        mut self,
-        backend: Arc<::tokio::sync::Mutex<ModuleStateBackend>>,
-    ) -> Self {
-        self.module_backend = Some(backend);
-        self
-    }
 }
 
 impl<E, P> Reporter for FinalizedReporter<E, P>
@@ -670,7 +646,6 @@ where
         let executor = self.executor.clone();
         let provider = self.provider.clone();
         let block_index = self.block_index.clone();
-        let module_backend = self.module_backend.clone();
         let subscriptions = self
             .subscription_heads
             .as_ref()
@@ -688,7 +663,6 @@ where
                 update,
                 block_index,
                 subscriptions,
-                module_backend,
             )
             .await;
         }

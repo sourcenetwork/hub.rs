@@ -65,6 +65,7 @@ hub-client = { path = "crates/hub-client" }
 hub-executor = { path = "crates/hub-executor" }
 hub-genesis = { path = "crates/hub-genesis" }
 hub-runner = { path = "crates/hub-runner" }
+hub-state = { path = "crates/hub-state" }
 
 # Commonware (calver 2026.2.0)
 commonware-p2p = "2026.2.0"

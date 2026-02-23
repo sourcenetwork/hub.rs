@@ -15,9 +15,10 @@ use hub_domain::NativeTx;
 use hub_modules::acp::AcpModule;
 use hub_modules::bulletin::BulletinModule;
 use hub_modules::hub::HubModule;
-use hub_modules::module_state::{ModuleState, SharedModuleState};
+use hub_modules::module_state::{ModuleState, SharedModuleState, state_root_from_jmt};
 use hub_modules::native_account::NativeNonceStore;
 use hub_modules::types::{BlockExecCtx, Timestamp, TxExecCtx};
+use hub_state::ModuleStateTree;
 use hub_traits::StateDb;
 use revm::{
     Context, ExecuteEvm, Journal, MainBuilder, context::block::BlockEnv,
@@ -38,6 +39,9 @@ type ReceiptCache = Arc<Mutex<HashMap<u64, (Vec<ExecutionReceipt>, u64)>>>;
 /// Per-block module state cache: height → post-execution ModuleState.
 type ModuleCache = Arc<Mutex<HashMap<u64, ModuleState>>>;
 
+/// Per-module JMT-backed state trees: [acp, bulletin, hub, nonces].
+pub type ModuleTrees = [Arc<Mutex<ModuleStateTree>>; 4];
+
 /// Block executor with hub precompiles (ACP, Bulletin, Hub).
 ///
 /// Processes both EVM transactions (secp256k1) and native BLS transactions
@@ -56,6 +60,7 @@ pub struct HubExecutor {
     modules: SharedModuleState,
     receipt_cache: ReceiptCache,
     module_cache: ModuleCache,
+    module_trees: Option<ModuleTrees>,
 }
 
 impl HubExecutor {
@@ -66,6 +71,7 @@ impl HubExecutor {
             modules: Arc::new(RwLock::new(ModuleState::default())),
             receipt_cache: Arc::new(Mutex::new(HashMap::new())),
             module_cache: Arc::new(Mutex::new(HashMap::new())),
+            module_trees: None,
         }
     }
 
@@ -76,7 +82,15 @@ impl HubExecutor {
             modules: Arc::new(RwLock::new(ModuleState::default())),
             receipt_cache: Arc::new(Mutex::new(HashMap::new())),
             module_cache: Arc::new(Mutex::new(HashMap::new())),
+            module_trees: None,
         }
+    }
+
+    /// Attach JMT-backed module state trees for authenticated state roots.
+    #[must_use]
+    pub fn with_module_trees(mut self, trees: ModuleTrees) -> Self {
+        self.module_trees = Some(trees);
+        self
     }
 
     /// Get the chain ID.
@@ -230,7 +244,8 @@ impl<S: StateDb> BlockExecutor<S> for HubExecutor {
         context: &BlockContext,
         txs: &[Self::Tx],
     ) -> Result<ExecutionOutcome, ExecutionError> {
-        let mut modules = self.modules.read().unwrap().clone();
+        let base_modules = self.modules.read().unwrap().clone();
+        let mut modules = base_modules.clone();
 
         let block_ctx = BlockExecCtx {
             timestamp: Timestamp {
@@ -359,7 +374,39 @@ impl<S: StateDb> BlockExecutor<S> for HubExecutor {
         }
 
         outcome.gas_used = cumulative_gas;
-        outcome.module_state_root = modules.state_root();
+        outcome.module_state_root = if let Some(ref trees) = self.module_trees {
+            let stores = [
+                modules.acp.store(),
+                modules.bulletin.store(),
+                modules.hub.store(),
+                modules.nonces.store(),
+            ];
+            let base_stores = [
+                base_modules.acp.store(),
+                base_modules.bulletin.store(),
+                base_modules.hub.store(),
+                base_modules.nonces.store(),
+            ];
+            let mut jmt_roots = [[0u8; 32]; 4];
+            for (i, tree_lock) in trees.iter().enumerate() {
+                let dirty = stores[i].diff_from(base_stores[i]);
+                let mut tree = tree_lock.lock().unwrap();
+                tree.begin_execution(context.header.number);
+                for (key, value) in &dirty {
+                    tree.put(key, value.clone())
+                        .map_err(|e| ExecutionError::ModuleTree(e.to_string()))?;
+                }
+                tree.flush_overlay()
+                    .map_err(|e| ExecutionError::ModuleTree(e.to_string()))?;
+                jmt_roots[i] = tree
+                    .root()
+                    .map_err(|e| ExecutionError::ModuleTree(e.to_string()))?
+                    .0;
+            }
+            state_root_from_jmt(&jmt_roots)
+        } else {
+            modules.state_root()
+        };
 
         self.receipt_cache.lock().unwrap().insert(
             context.header.number,

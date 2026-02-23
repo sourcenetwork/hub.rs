@@ -12,7 +12,6 @@ workspace = true
 
 [dependencies]
 # Local crates
-hub-backend.workspace = true
 hub-consensus.workspace = true
 hub-domain.workspace = true
 hub-executor.workspace = true

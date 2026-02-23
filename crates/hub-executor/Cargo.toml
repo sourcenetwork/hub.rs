@@ -9,6 +9,7 @@ description = "Block execution abstractions, REVM implementation, and hub precom
 hub-crypto.workspace = true
 hub-domain.workspace = true
 hub-modules.workspace = true
+hub-state.workspace = true
 hub-overlay.workspace = true
 hub-traits.workspace = true
 hub-qmdb.workspace = true

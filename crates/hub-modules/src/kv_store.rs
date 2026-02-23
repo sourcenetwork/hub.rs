@@ -1,6 +1,6 @@
 //! Module-level KV store trait and in-memory implementation.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 /// Key-value store abstraction for module state.
 ///
@@ -28,12 +28,34 @@ pub trait ModuleKvStore: Clone + std::fmt::Debug + Default + Send + Sync {
 }
 
 /// `BTreeMap`-backed in-memory KV store.
-#[derive(Clone, Debug, Default)]
+///
+/// Tracks dirty keys modified since the last `reset_dirty()` call (or clone).
+/// Cloning produces a copy with an empty dirty set — execution isolation
+/// starts from a clean slate so only that execution's mutations are captured.
+#[derive(Debug, Default)]
 pub struct InMemoryKvStore {
     data: BTreeMap<Vec<u8>, Vec<u8>>,
+    dirty: HashSet<Vec<u8>>,
+}
+
+impl Clone for InMemoryKvStore {
+    fn clone(&self) -> Self {
+        Self {
+            data: self.data.clone(),
+            dirty: HashSet::new(),
+        }
+    }
 }
 
 impl InMemoryKvStore {
+    /// Construct a store from raw key-value pairs (e.g. loaded from RocksDB raw_kv CF).
+    pub fn from_pairs(pairs: Vec<(Vec<u8>, Vec<u8>)>) -> Self {
+        Self {
+            data: pairs.into_iter().collect(),
+            dirty: HashSet::new(),
+        }
+    }
+
     /// Serialize the entire store contents to a Borsh byte vector.
     pub fn serialize(&self) -> Vec<u8> {
         borsh::to_vec(&self.data).expect("BTreeMap serialization cannot fail")
@@ -42,12 +64,51 @@ impl InMemoryKvStore {
     /// Reconstruct a store from Borsh-serialized bytes.
     pub fn deserialize(bytes: &[u8]) -> Result<Self, borsh::io::Error> {
         let data: BTreeMap<Vec<u8>, Vec<u8>> = borsh::from_slice(bytes)?;
-        Ok(Self { data })
+        Ok(Self {
+            data,
+            dirty: HashSet::new(),
+        })
     }
 
     /// Check whether the store contains any entries.
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
+    }
+
+    /// Returns each dirty key and its current value (`None` if deleted).
+    pub fn dirty_entries(&self) -> Vec<(Vec<u8>, Option<Vec<u8>>)> {
+        self.dirty
+            .iter()
+            .map(|k| {
+                let val = self.data.get(k).cloned();
+                (k.clone(), val)
+            })
+            .collect()
+    }
+
+    /// Clear the dirty set.
+    pub fn reset_dirty(&mut self) {
+        self.dirty.clear();
+    }
+
+    /// Compute the diff between `self` and `base`, returning all changed/added/deleted keys.
+    ///
+    /// Each entry is `(key, Some(value))` for additions/updates, `(key, None)` for deletions.
+    /// This captures ALL mutations regardless of clone boundaries, making it safe to use
+    /// when intermediate clones reset the dirty set (e.g. the precompile clone path).
+    pub fn diff_from(&self, base: &Self) -> Vec<(Vec<u8>, Option<Vec<u8>>)> {
+        let mut changes = Vec::new();
+        for (k, v) in &self.data {
+            if base.data.get(k) != Some(v) {
+                changes.push((k.clone(), Some(v.clone())));
+            }
+        }
+        for k in base.data.keys() {
+            if !self.data.contains_key(k) {
+                changes.push((k.clone(), None));
+            }
+        }
+        changes
     }
 }
 
@@ -57,10 +118,12 @@ impl ModuleKvStore for InMemoryKvStore {
     }
 
     fn put(&mut self, key: &[u8], value: Vec<u8>) {
+        self.dirty.insert(key.to_vec());
         self.data.insert(key.to_vec(), value);
     }
 
     fn delete(&mut self, key: &[u8]) {
+        self.dirty.insert(key.to_vec());
         self.data.remove(key);
     }
 
@@ -156,5 +219,92 @@ mod tests {
         fork.put(b"key", b"new".to_vec());
         assert_eq!(store.get(b"key").unwrap(), b"val");
         assert_eq!(fork.get(b"key").unwrap(), b"new");
+    }
+
+    #[test]
+    fn dirty_tracks_puts() {
+        let mut store = InMemoryKvStore::default();
+        store.put(b"a", b"1".to_vec());
+        store.put(b"b", b"2".to_vec());
+        let dirty = store.dirty_entries();
+        assert_eq!(dirty.len(), 2);
+        assert!(
+            dirty
+                .iter()
+                .any(|(k, v)| k == b"a" && v.as_deref() == Some(b"1".as_slice()))
+        );
+        assert!(
+            dirty
+                .iter()
+                .any(|(k, v)| k == b"b" && v.as_deref() == Some(b"2".as_slice()))
+        );
+    }
+
+    #[test]
+    fn dirty_tracks_deletes() {
+        let mut store = InMemoryKvStore::default();
+        store.put(b"key", b"val".to_vec());
+        store.reset_dirty();
+        store.delete(b"key");
+        let dirty = store.dirty_entries();
+        assert_eq!(dirty.len(), 1);
+        assert_eq!(dirty[0], (b"key".to_vec(), None));
+    }
+
+    #[test]
+    fn clone_resets_dirty() {
+        let mut store = InMemoryKvStore::default();
+        store.put(b"key", b"val".to_vec());
+        assert!(!store.dirty_entries().is_empty());
+        let fork = store.clone();
+        assert!(fork.dirty_entries().is_empty());
+        assert_eq!(fork.get(b"key").unwrap(), b"val");
+    }
+
+    #[test]
+    fn reset_dirty_clears() {
+        let mut store = InMemoryKvStore::default();
+        store.put(b"a", b"1".to_vec());
+        store.put(b"b", b"2".to_vec());
+        assert_eq!(store.dirty_entries().len(), 2);
+        store.reset_dirty();
+        assert!(store.dirty_entries().is_empty());
+        assert_eq!(store.get(b"a").unwrap(), b"1");
+    }
+
+    #[test]
+    fn diff_from_captures_adds_updates_deletes() {
+        let mut base = InMemoryKvStore::default();
+        base.put(b"keep", b"same".to_vec());
+        base.put(b"update", b"old".to_vec());
+        base.put(b"delete", b"gone".to_vec());
+
+        let mut current = base.clone();
+        current.put(b"update", b"new".to_vec());
+        current.delete(b"delete");
+        current.put(b"add", b"fresh".to_vec());
+
+        let diff = current.diff_from(&base);
+        assert_eq!(diff.len(), 3);
+        assert!(
+            diff.iter()
+                .any(|(k, v)| k == b"update" && v.as_deref() == Some(b"new".as_slice()))
+        );
+        assert!(diff.iter().any(|(k, v)| k == b"delete" && v.is_none()));
+        assert!(
+            diff.iter()
+                .any(|(k, v)| k == b"add" && v.as_deref() == Some(b"fresh".as_slice()))
+        );
+    }
+
+    #[test]
+    fn from_pairs_no_dirty() {
+        let store = InMemoryKvStore::from_pairs(vec![
+            (b"k1".to_vec(), b"v1".to_vec()),
+            (b"k2".to_vec(), b"v2".to_vec()),
+        ]);
+        assert!(store.dirty_entries().is_empty());
+        assert_eq!(store.get(b"k1").unwrap(), b"v1");
+        assert_eq!(store.get(b"k2").unwrap(), b"v2");
     }
 }

@@ -65,6 +65,20 @@ impl ModuleState {
     }
 }
 
+/// Compute the combined module state root from pre-computed per-module JMT roots.
+///
+/// `keccak256(namespace || roots[0] || roots[1] || roots[2] || roots[3])`
+///
+/// Root order: `[acp, bulletin, hub, nonces]`.
+pub fn state_root_from_jmt(roots: &[[u8; 32]; 4]) -> B256 {
+    let mut buf = Vec::with_capacity(MODULE_ROOT_NAMESPACE.len() + 128);
+    buf.extend_from_slice(MODULE_ROOT_NAMESPACE);
+    for root in roots {
+        buf.extend_from_slice(root);
+    }
+    keccak256(buf)
+}
+
 /// Thread-safe shared module state for use across block executions.
 pub type SharedModuleState = Arc<RwLock<ModuleState>>;
 
@@ -92,6 +106,22 @@ mod tests {
         let root_with_nonce = s2.state_root();
 
         assert_ne!(root_empty, root_with_nonce);
+    }
+
+    #[test]
+    fn state_root_from_jmt_deterministic() {
+        let roots = [[0xAAu8; 32], [0xBBu8; 32], [0xCCu8; 32], [0xDDu8; 32]];
+        let r1 = state_root_from_jmt(&roots);
+        let r2 = state_root_from_jmt(&roots);
+        assert_eq!(r1, r2);
+        assert_ne!(r1, B256::ZERO);
+    }
+
+    #[test]
+    fn state_root_from_jmt_sensitive_to_order() {
+        let roots_a = [[1u8; 32], [2u8; 32], [3u8; 32], [4u8; 32]];
+        let roots_b = [[2u8; 32], [1u8; 32], [3u8; 32], [4u8; 32]];
+        assert_ne!(state_root_from_jmt(&roots_a), state_root_from_jmt(&roots_b));
     }
 
     #[test]

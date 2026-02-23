@@ -22,9 +22,6 @@ pub use config::QmdbBackendConfig;
 mod error;
 pub use error::BackendError;
 
-mod module_state;
-pub use module_state::ModuleStateBackend;
-
 mod partition;
 pub use partition::PartitionState;
 

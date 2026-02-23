@@ -33,7 +33,7 @@ pub use validation::{
 };
 
 mod executor;
-pub use executor::HubExecutor;
+pub use executor::{HubExecutor, ModuleTrees};
 pub use hub_modules::module_state::{ModuleState, SharedModuleState};
 
 mod mempool;

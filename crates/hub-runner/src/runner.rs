@@ -1,6 +1,6 @@
 //! HubRunner — production validator node runner for hub.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::tx_forward::TxForwarder;
@@ -20,18 +20,20 @@ use commonware_parallel::Sequential;
 use commonware_runtime::{Metrics as _, Spawner, buffer::paged::CacheRef, tokio};
 use commonware_utils::{NZU64, NZUsize, acknowledgement::Exact};
 use futures::StreamExt;
-use hub_backend::{ModuleStateBackend, QmdbBackendConfig};
+use hub_backend as _;
 use hub_domain::{Block, BlockCfg, BootstrapConfig, ConsensusDigest, LedgerEvent, Tx, TxCfg};
-use hub_executor::{BlockContext, HubExecutor, SharedModuleState};
+use hub_executor::{BlockContext, HubExecutor, ModuleState, ModuleTrees, SharedModuleState};
 use hub_indexer::BlockIndex;
 use hub_jsonrpc::IndexedStateProvider;
 use hub_ledger::{LedgerService, LedgerView};
 use hub_marshal::{ArchiveInitializer, BroadcastInitializer, PeerInitializer};
+use hub_modules::kv_store::InMemoryKvStore;
 use hub_reporters::{
     BlockContextProvider, FinalizedReporter, NodeStateReporter, SeedReporter, ViewTracker,
 };
 use hub_service::{NodeRunContext, NodeRunner};
 use hub_simplex::{DEFAULT_MAILBOX_SIZE as MAILBOX_SIZE, DefaultPool};
+use hub_state::ModuleStateTree;
 use hub_transport::NetworkTransport;
 use tracing::{debug, error, info, trace};
 
@@ -274,19 +276,32 @@ impl NodeRunner for HubRunner {
             .map_err(|e| anyhow::anyhow!("failed to load validator key: {}", e))?;
         let my_pk = commonware_cryptography::Signer::public_key(&validator_key);
 
-        let executor = HubExecutor::new(self.chain_id);
-        let modules: SharedModuleState = executor.modules().clone();
+        // Open per-module JMT state trees and load persisted state.
+        let data_dir = &config.data_dir;
+        let module_names = ["acp", "bulletin", "hub", "nonces"];
+        let mut module_stores: [InMemoryKvStore; 4] = Default::default();
+        let mut trees: Vec<Arc<Mutex<ModuleStateTree>>> = Vec::with_capacity(4);
+        for (i, name) in module_names.iter().enumerate() {
+            let path = data_dir.join("state").join(name);
+            let tree = ModuleStateTree::open(&path, 0)
+                .with_context(|| format!("open module state tree: {name}"))?;
+            let pairs = tree
+                .load_all()
+                .with_context(|| format!("load module state: {name}"))?;
+            module_stores[i] = InMemoryKvStore::from_pairs(pairs);
+            trees.push(Arc::new(Mutex::new(tree)));
+        }
+        let module_trees: ModuleTrees = [
+            trees[0].clone(),
+            trees[1].clone(),
+            trees[2].clone(),
+            trees[3].clone(),
+        ];
+        let persisted_modules = ModuleState::from_stores(module_stores);
 
-        // Open module state backend and load persisted state.
-        let module_backend_config =
-            QmdbBackendConfig::new(format!("{}-modules", PARTITION_PREFIX), page_cache.clone());
-        let module_backend =
-            ModuleStateBackend::open(context.with_label("module-state"), &module_backend_config)
-                .await
-                .context("init module state backend")?;
-        let persisted_modules = module_backend.load().await.context("load module state")?;
+        let executor = HubExecutor::new(self.chain_id).with_module_trees(module_trees);
+        let modules: SharedModuleState = executor.modules().clone();
         executor.set_base_modules(persisted_modules);
-        let module_backend = Arc::new(::tokio::sync::Mutex::new(module_backend));
 
         let context_provider = HubContextProvider {
             gas_limit: self.gas_limit,
@@ -297,8 +312,7 @@ impl NodeRunner for HubRunner {
             executor.clone(),
             context_provider,
         )
-        .with_block_index(block_index.clone())
-        .with_module_backend(module_backend);
+        .with_block_index(block_index.clone());
 
         let scheme_provider = ConstantSchemeProvider::from(self.scheme.clone());
 
