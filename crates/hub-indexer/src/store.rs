@@ -252,6 +252,7 @@ mod tests {
             gas_price: 1_000_000_000,
             input: Bytes::new(),
             nonce: 0,
+            signer_did: None,
         }
     }
 
@@ -268,6 +269,7 @@ mod tests {
             contract_address: None,
             logs: vec![],
             status: true,
+            signer_did: None,
         }
     }
 
@@ -350,6 +352,7 @@ mod tests {
             contract_address: None,
             logs: vec![log],
             status: true,
+            signer_did: None,
         };
 
         index.insert_block(create_test_block(1, block_hash), vec![], vec![receipt]);

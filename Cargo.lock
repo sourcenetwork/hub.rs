@@ -3689,6 +3689,7 @@ dependencies = [
  "commonware-runtime",
  "commonware-utils",
  "hub-consensus",
+ "hub-crypto",
  "hub-domain",
  "hub-executor",
  "hub-indexer",

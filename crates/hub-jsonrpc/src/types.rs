@@ -196,6 +196,51 @@ pub struct RpcTransactionReceipt {
     pub effective_gas_price: U256,
 }
 
+/// Extended transaction receipt for `hub_getTransactionReceipt`.
+///
+/// Includes all standard receipt fields plus BLS identity info for native txs.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RpcNativeReceipt {
+    /// Transaction hash.
+    pub transaction_hash: B256,
+    /// Transaction index in block.
+    pub transaction_index: U64,
+    /// Block hash.
+    pub block_hash: B256,
+    /// Block number.
+    pub block_number: U64,
+    /// Sender address.
+    pub from: Address,
+    /// Recipient address.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to: Option<Address>,
+    /// Cumulative gas used.
+    pub cumulative_gas_used: U64,
+    /// Gas used by this transaction.
+    pub gas_used: U64,
+    /// Contract address created (if any).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contract_address: Option<Address>,
+    /// Logs generated.
+    pub logs: Vec<RpcLog>,
+    /// Logs bloom filter.
+    pub logs_bloom: Bytes,
+    /// Transaction type.
+    #[serde(rename = "type")]
+    pub tx_type: U64,
+    /// Status (1 = success, 0 = failure).
+    pub status: U64,
+    /// Effective gas price.
+    pub effective_gas_price: U256,
+    /// DID of the BLS signer (`None` for EVM transactions).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signer_did: Option<String>,
+    /// Native transaction nonce (`None` for EVM transactions).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_nonce: Option<U64>,
+}
+
 /// Log entry for JSON-RPC responses.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

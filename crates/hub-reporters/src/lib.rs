@@ -425,50 +425,59 @@ fn index_finalized_block<P: BlockContextProvider>(
     for (i, tx) in block.txs.iter().enumerate() {
         let is_native = !tx.bytes.is_empty() && NativeTx::is_native_tx(tx.bytes[0]);
 
-        let (tx_hash, sender, to, value, gas_limit, gas_price, input, nonce) = if is_native {
-            match NativeTx::decode_wire(&tx.bytes) {
-                Ok(native_tx) => (
-                    native_tx.tx_id().0,
-                    Address::ZERO,
-                    Some(native_tx.target),
-                    U256::ZERO,
-                    0u64,
-                    0u128,
-                    native_tx.calldata.clone(),
-                    native_tx.nonce,
-                ),
-                Err(e) => {
-                    let fallback_hash = keccak256(&tx.bytes);
-                    error!(height = block.height, index = i, %fallback_hash, error = %e, "failed to decode native tx for indexing");
-                    tx_hashes.push(fallback_hash);
-                    continue;
+        let (tx_hash, sender, to, value, gas_limit, gas_price, input, nonce, signer_did) =
+            if is_native {
+                match NativeTx::decode_wire(&tx.bytes) {
+                    Ok(native_tx) => {
+                        let did =
+                            hub_crypto::bls::deserialize_pubkey(native_tx.bls_pubkey.as_slice())
+                                .ok()
+                                .and_then(|pk| hub_crypto::bls::did_from_bls_pubkey(&pk).ok());
+                        (
+                            native_tx.tx_id().0,
+                            Address::ZERO,
+                            Some(native_tx.target),
+                            U256::ZERO,
+                            0u64,
+                            0u128,
+                            native_tx.calldata.clone(),
+                            native_tx.nonce,
+                            did,
+                        )
+                    }
+                    Err(e) => {
+                        let fallback_hash = keccak256(&tx.bytes);
+                        error!(height = block.height, index = i, %fallback_hash, error = %e, "failed to decode native tx for indexing");
+                        tx_hashes.push(fallback_hash);
+                        continue;
+                    }
                 }
-            }
-        } else {
-            let evm_hash = keccak256(&tx.bytes);
-            let Ok(envelope) = TxEnvelope::decode_2718(&mut tx.bytes.as_ref()) else {
-                error!(height = block.height, index = i, %evm_hash, "failed to decode tx for indexing");
-                tx_hashes.push(evm_hash);
-                continue;
+            } else {
+                let evm_hash = keccak256(&tx.bytes);
+                let Ok(envelope) = TxEnvelope::decode_2718(&mut tx.bytes.as_ref()) else {
+                    error!(height = block.height, index = i, %evm_hash, "failed to decode tx for indexing");
+                    tx_hashes.push(evm_hash);
+                    continue;
+                };
+                let Ok(sender) = envelope.recover_signer() else {
+                    error!(height = block.height, index = i, %evm_hash, "failed to recover sender for indexing");
+                    tx_hashes.push(evm_hash);
+                    continue;
+                };
+                (
+                    evm_hash,
+                    sender,
+                    envelope.to(),
+                    envelope.value(),
+                    envelope.gas_limit(),
+                    envelope
+                        .gas_price()
+                        .unwrap_or_else(|| envelope.max_fee_per_gas()),
+                    envelope.input().clone(),
+                    envelope.nonce(),
+                    None,
+                )
             };
-            let Ok(sender) = envelope.recover_signer() else {
-                error!(height = block.height, index = i, %evm_hash, "failed to recover sender for indexing");
-                tx_hashes.push(evm_hash);
-                continue;
-            };
-            (
-                evm_hash,
-                sender,
-                envelope.to(),
-                envelope.value(),
-                envelope.gas_limit(),
-                envelope
-                    .gas_price()
-                    .unwrap_or_else(|| envelope.max_fee_per_gas()),
-                envelope.input().clone(),
-                envelope.nonce(),
-            )
-        };
 
         tx_hashes.push(tx_hash);
 
@@ -484,6 +493,7 @@ fn index_finalized_block<P: BlockContextProvider>(
             gas_price,
             input,
             nonce,
+            signer_did: signer_did.clone(),
         });
 
         if let Some(receipt) = receipt_map.get(&tx_hash) {
@@ -518,6 +528,7 @@ fn index_finalized_block<P: BlockContextProvider>(
                 contract_address: receipt.contract_address,
                 logs,
                 status: receipt.success(),
+                signer_did,
             });
         } else {
             warn!(

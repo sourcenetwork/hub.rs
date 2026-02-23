@@ -21,4 +21,4 @@ pub use client::{ACP_ADDRESS, BULLETIN_ADDRESS, HUB_ADDRESS, HubClient};
 pub use document_acp::HubDocumentACP;
 pub use error::ClientError;
 pub use signer::EvmSigner;
-pub use types::{Log, NodeStatus, TransactionReceipt};
+pub use types::{Log, NativeReceipt, NodeStatus, TransactionReceipt};

@@ -52,6 +52,8 @@ pub struct IndexedTransaction {
     pub input: Bytes,
     /// Sender nonce.
     pub nonce: u64,
+    /// DID of the BLS signer (`None` for EVM transactions).
+    pub signer_did: Option<String>,
 }
 
 /// An indexed transaction receipt.
@@ -79,6 +81,8 @@ pub struct IndexedReceipt {
     pub logs: Vec<IndexedLog>,
     /// Transaction status (true = success, false = revert).
     pub status: bool,
+    /// DID of the BLS signer (`None` for EVM transactions).
+    pub signer_did: Option<String>,
 }
 
 /// An indexed log entry.

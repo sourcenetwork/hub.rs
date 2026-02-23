@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 # Local crates
 hub-consensus.workspace = true
+hub-crypto.workspace = true
 hub-domain.workspace = true
 hub-executor.workspace = true
 hub-ledger.workspace = true

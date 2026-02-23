@@ -2,13 +2,17 @@
 
 use std::sync::Arc;
 
-use alloy_primitives::{B256, Bytes};
+use alloy_primitives::{B256, Bytes, U64};
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
+
+use hub_executor::SharedModuleState;
+use hub_indexer::BlockIndex;
 
 use crate::{
     error::RpcError,
     eth::TxSubmitCallback,
     state::{NodeState, NodeStatus},
+    types::{RpcLog, RpcNativeReceipt},
 };
 
 /// Hub-specific JSON-RPC API trait.
@@ -27,12 +31,25 @@ pub trait HubApi {
     /// Rejects bytes that do not start with the native tx type byte.
     #[method(name = "sendNativeTx")]
     async fn send_native_tx(&self, data: Bytes) -> RpcResult<B256>;
+
+    /// Returns an extended transaction receipt with BLS signer identity info.
+    ///
+    /// For native BLS transactions, includes `signer_did` and `native_nonce`.
+    /// For EVM transactions, these fields are `None`.
+    #[method(name = "getTransactionReceipt")]
+    async fn get_transaction_receipt(&self, hash: B256) -> RpcResult<Option<RpcNativeReceipt>>;
+
+    /// Returns the on-chain native nonce for a BLS identity.
+    #[method(name = "getNativeNonce")]
+    async fn get_native_nonce(&self, did: String) -> RpcResult<U64>;
 }
 
 /// Implementation of the hub RPC API.
 pub struct HubApiImpl {
     state: Arc<NodeState>,
     tx_submit: Option<TxSubmitCallback>,
+    index: Option<Arc<BlockIndex>>,
+    modules: Option<SharedModuleState>,
 }
 
 impl std::fmt::Debug for HubApiImpl {
@@ -40,6 +57,8 @@ impl std::fmt::Debug for HubApiImpl {
         f.debug_struct("HubApiImpl")
             .field("state", &self.state)
             .field("tx_submit", &self.tx_submit.is_some())
+            .field("index", &self.index.is_some())
+            .field("modules", &self.modules.is_some())
             .finish()
     }
 }
@@ -48,7 +67,24 @@ impl HubApiImpl {
     /// Create a new hub API implementation.
     #[must_use]
     pub fn new(state: Arc<NodeState>, tx_submit: Option<TxSubmitCallback>) -> Self {
-        Self { state, tx_submit }
+        Self {
+            state,
+            tx_submit,
+            index: None,
+            modules: None,
+        }
+    }
+
+    /// Set the block index and shared module state for receipt/nonce queries.
+    #[must_use]
+    pub fn with_index_and_modules(
+        mut self,
+        index: Arc<BlockIndex>,
+        modules: SharedModuleState,
+    ) -> Self {
+        self.index = Some(index);
+        self.modules = Some(modules);
+        self
     }
 }
 
@@ -87,6 +123,76 @@ impl HubApiServer for HubApiImpl {
         }
 
         Ok(tx_hash)
+    }
+
+    async fn get_transaction_receipt(&self, hash: B256) -> RpcResult<Option<RpcNativeReceipt>> {
+        let Some(ref index) = self.index else {
+            return Err(RpcError::Internal("block index not available".into()).into());
+        };
+
+        let Some(receipt) = index.get_receipt(&hash) else {
+            return Ok(None);
+        };
+
+        let tx = index.get_transaction(&hash);
+        let native_nonce = tx.as_ref().and_then(|t| {
+            if receipt.signer_did.is_some() {
+                Some(U64::from(t.nonce))
+            } else {
+                None
+            }
+        });
+
+        let logs = receipt
+            .logs
+            .into_iter()
+            .map(|log| RpcLog {
+                address: log.address,
+                topics: log.topics,
+                data: log.data,
+                block_number: U64::from(receipt.block_number),
+                transaction_hash: receipt.transaction_hash,
+                transaction_index: U64::from(receipt.transaction_index),
+                block_hash: receipt.block_hash,
+                log_index: U64::from(log.log_index),
+                removed: false,
+            })
+            .collect();
+
+        Ok(Some(RpcNativeReceipt {
+            transaction_hash: receipt.transaction_hash,
+            transaction_index: U64::from(receipt.transaction_index),
+            block_hash: receipt.block_hash,
+            block_number: U64::from(receipt.block_number),
+            from: receipt.from,
+            to: receipt.to,
+            cumulative_gas_used: U64::from(receipt.cumulative_gas_used),
+            gas_used: U64::from(receipt.gas_used),
+            contract_address: receipt.contract_address,
+            logs,
+            logs_bloom: Bytes::new(),
+            tx_type: U64::ZERO,
+            status: if receipt.status {
+                U64::from(1)
+            } else {
+                U64::ZERO
+            },
+            effective_gas_price: alloy_primitives::U256::ZERO,
+            signer_did: receipt.signer_did,
+            native_nonce,
+        }))
+    }
+
+    async fn get_native_nonce(&self, did: String) -> RpcResult<U64> {
+        let Some(ref modules) = self.modules else {
+            return Err(RpcError::Internal("module state not available".into()).into());
+        };
+
+        let guard = modules
+            .read()
+            .map_err(|_| RpcError::Internal("lock poisoned".into()))?;
+        let nonce = guard.nonces.get_nonce(&did);
+        Ok(U64::from(nonce))
     }
 }
 

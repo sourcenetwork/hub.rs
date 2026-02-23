@@ -8,7 +8,7 @@ use serde::de::DeserializeOwned;
 use tracing::debug;
 
 use crate::error::ClientError;
-use crate::types::{NodeStatus, TransactionReceipt};
+use crate::types::{NativeReceipt, NodeStatus, TransactionReceipt};
 
 /// ACP precompile address (`0x0810`).
 pub const ACP_ADDRESS: Address = address_from_last_two_bytes(0x08, 0x10);
@@ -213,6 +213,35 @@ impl HubClient {
     pub async fn node_status(&self) -> Result<NodeStatus, ClientError> {
         self.rpc_call_typed("hub_nodeStatus", serde_json::json!([]))
             .await
+    }
+
+    /// Fetch an extended transaction receipt with BLS identity info (`hub_getTransactionReceipt`).
+    ///
+    /// Returns `None` if the transaction has not yet been included.
+    pub async fn get_native_receipt(
+        &self,
+        tx_hash: B256,
+    ) -> Result<Option<NativeReceipt>, ClientError> {
+        let result = self
+            .rpc_call(
+                "hub_getTransactionReceipt",
+                serde_json::json!([format!("{tx_hash:?}")]),
+            )
+            .await?;
+
+        if result.is_null() {
+            return Ok(None);
+        }
+
+        Ok(Some(serde_json::from_value(result)?))
+    }
+
+    /// Fetch the on-chain native nonce for a BLS identity (`hub_getNativeNonce`).
+    pub async fn get_native_nonce(&self, did: &str) -> Result<u64, ClientError> {
+        let hex: String = self
+            .rpc_call_typed("hub_getNativeNonce", serde_json::json!([did]))
+            .await?;
+        parse_hex_u64(&hex)
     }
 
     // ── BLS native write helper ────────────────────────────────────

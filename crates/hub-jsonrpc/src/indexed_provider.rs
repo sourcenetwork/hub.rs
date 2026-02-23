@@ -451,6 +451,7 @@ mod tests {
             gas_price: 1_000_000_000,
             input: Bytes::new(),
             nonce: 0,
+            signer_did: None,
         }
     }
 
@@ -476,6 +477,7 @@ mod tests {
                 transaction_index: 0,
             }],
             status: true,
+            signer_did: None,
         }
     }
 

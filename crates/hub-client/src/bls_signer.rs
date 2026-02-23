@@ -74,6 +74,11 @@ impl BlsSigner {
         self.chain_id
     }
 
+    /// Return the current local nonce counter.
+    pub fn nonce(&self) -> u64 {
+        self.nonce.load(Ordering::SeqCst)
+    }
+
     /// Build, sign, and encode a native transaction in wire format.
     ///
     /// Increments the local nonce counter on success.

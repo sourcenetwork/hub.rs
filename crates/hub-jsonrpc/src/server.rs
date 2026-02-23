@@ -9,6 +9,9 @@ use tower::limit::ConcurrencyLimitLayer;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tracing::{error, info};
 
+use hub_executor::SharedModuleState;
+use hub_indexer::BlockIndex;
+
 use crate::{
     config::{CorsConfig, RpcServerConfig},
     eth::{
@@ -92,6 +95,8 @@ pub struct RpcServer<S: StateProvider = NoopStateProvider> {
     subscription_heads: Option<broadcast::Sender<RpcBlock>>,
     subscription_logs: Option<broadcast::Sender<Vec<RpcLog>>>,
     extra_modules: Vec<jsonrpsee::RpcModule<()>>,
+    hub_index: Option<Arc<BlockIndex>>,
+    hub_modules: Option<SharedModuleState>,
 }
 
 impl<S: StateProvider> std::fmt::Debug for RpcServer<S> {
@@ -120,6 +125,8 @@ impl RpcServer<NoopStateProvider> {
             subscription_heads: None,
             subscription_logs: None,
             extra_modules: Vec::new(),
+            hub_index: None,
+            hub_modules: None,
         }
     }
 
@@ -136,6 +143,8 @@ impl RpcServer<NoopStateProvider> {
             subscription_heads: None,
             subscription_logs: None,
             extra_modules: Vec::new(),
+            hub_index: None,
+            hub_modules: None,
         }
     }
 }
@@ -159,6 +168,8 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             subscription_heads: None,
             subscription_logs: None,
             extra_modules: Vec::new(),
+            hub_index: None,
+            hub_modules: None,
         }
     }
 
@@ -202,6 +213,18 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
         self
     }
 
+    /// Set the block index and shared module state for hub API receipt/nonce queries.
+    #[must_use]
+    pub fn with_hub_index_and_modules(
+        mut self,
+        index: Arc<BlockIndex>,
+        modules: SharedModuleState,
+    ) -> Self {
+        self.hub_index = Some(index);
+        self.hub_modules = Some(modules);
+        self
+    }
+
     /// Create from configuration.
     pub fn from_config(state: NodeState, config: RpcServerConfig, state_provider: S) -> Self {
         Self {
@@ -215,6 +238,8 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             subscription_heads: None,
             subscription_logs: None,
             extra_modules: Vec::new(),
+            hub_index: None,
+            hub_modules: None,
         }
     }
 
@@ -232,6 +257,8 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
         let state_provider = self.state_provider;
         let subscription_heads = self.subscription_heads;
         let subscription_logs = self.subscription_logs;
+        let hub_index = self.hub_index;
+        let hub_modules = self.hub_modules;
 
         // Signal from the JSON-RPC task to the HTTP task indicating whether it
         // successfully bound the port. The HTTP status server waits for this
@@ -264,7 +291,14 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             );
             let net_api = NetApiImpl::new(chain_id);
             let web3_api = Web3ApiImpl::new();
-            let hub_api = HubApiImpl::new(node_state_for_jsonrpc, tx_submit);
+            let hub_api = {
+                let api = HubApiImpl::new(node_state_for_jsonrpc, tx_submit);
+                if let (Some(idx), Some(mods)) = (hub_index, hub_modules) {
+                    api.with_index_and_modules(idx, mods)
+                } else {
+                    api
+                }
+            };
 
             let mut module = jsonrpsee::RpcModule::new(());
             if let Err(e) = module.merge(eth_api.into_rpc()) {
@@ -402,6 +436,8 @@ pub struct JsonRpcServer<S: StateProvider = NoopStateProvider> {
     subscription_heads: Option<broadcast::Sender<RpcBlock>>,
     subscription_logs: Option<broadcast::Sender<Vec<RpcLog>>>,
     extra_modules: Vec<jsonrpsee::RpcModule<()>>,
+    hub_index: Option<Arc<BlockIndex>>,
+    hub_modules: Option<SharedModuleState>,
 }
 
 impl<S: StateProvider> std::fmt::Debug for JsonRpcServer<S> {
@@ -427,6 +463,8 @@ impl JsonRpcServer<NoopStateProvider> {
             subscription_heads: None,
             subscription_logs: None,
             extra_modules: Vec::new(),
+            hub_index: None,
+            hub_modules: None,
         }
     }
 }
@@ -444,6 +482,8 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
             subscription_heads: None,
             subscription_logs: None,
             extra_modules: Vec::new(),
+            hub_index: None,
+            hub_modules: None,
         }
     }
 
@@ -487,6 +527,18 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
         self
     }
 
+    /// Set the block index and shared module state for hub API receipt/nonce queries.
+    #[must_use]
+    pub fn with_hub_index_and_modules(
+        mut self,
+        index: Arc<BlockIndex>,
+        modules: SharedModuleState,
+    ) -> Self {
+        self.hub_index = Some(index);
+        self.hub_modules = Some(modules);
+        self
+    }
+
     /// Start the JSON-RPC server.
     ///
     /// Returns the server handle and the actual bound address (useful when binding to port 0).
@@ -519,7 +571,14 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
         module.merge(net_api.into_rpc())?;
         module.merge(web3_api.into_rpc())?;
         if let Some(node_state) = self.node_state {
-            let hub_api = HubApiImpl::new(node_state, self.tx_submit);
+            let hub_api = {
+                let api = HubApiImpl::new(node_state, self.tx_submit);
+                if let (Some(idx), Some(mods)) = (self.hub_index, self.hub_modules) {
+                    api.with_index_and_modules(idx, mods)
+                } else {
+                    api
+                }
+            };
             module.merge(hub_api.into_rpc())?;
         }
         if let (Some(heads_tx), Some(logs_tx)) = (self.subscription_heads, self.subscription_logs) {

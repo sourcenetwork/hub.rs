@@ -430,6 +430,8 @@ impl NodeRunner for HubRunner {
 
         if let Some((node_state, addr)) = &self.rpc_config {
             let qmdb_state = ledger.qmdb_state().await;
+            let hub_index = block_index.clone();
+            let hub_modules = modules.clone();
             let provider = IndexedStateProvider::new(
                 block_index,
                 qmdb_state,
@@ -475,7 +477,8 @@ impl NodeRunner for HubRunner {
                 self.chain_id,
                 provider,
             )
-            .with_tx_submit(tx_submit);
+            .with_tx_submit(tx_submit)
+            .with_hub_index_and_modules(hub_index, hub_modules);
             let rpc_handle = rpc.start();
             context.clone().shared(true).spawn(move |_| async move {
                 rpc_handle.stopped().await;
