@@ -4,7 +4,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
-use std::{fmt, marker::PhantomData, sync::Arc};
+use std::{collections::HashMap, fmt, marker::PhantomData, sync::Arc};
 
 // Re-import tokio broadcast from the crate (not commonware_runtime::tokio).
 use ::tokio::sync::broadcast;
@@ -213,6 +213,20 @@ async fn handle_finalized_update<E, P>(
             // with nonce/balance mismatches.
             if block_index.is_some() && cached_receipts.is_none() {
                 cached_receipts = executor.cached_receipts(block.height);
+                // The receipt cache is keyed by height. If competing proposals
+                // at the same height were executed (view changes / forks), the
+                // cached receipts may belong to the non-finalized block.
+                // Validate that the receipt tx_hashes match the finalized block
+                // before trusting the cache; otherwise discard and re-execute.
+                if let Some(ref cached) = cached_receipts
+                    && !receipts_match_block(&cached.0, &block)
+                {
+                    trace!(
+                        height = block.height,
+                        "discarding stale cached receipts (fork mismatch)"
+                    );
+                    cached_receipts = None;
+                }
                 if cached_receipts.is_none() {
                     cached_receipts =
                         re_execute_for_receipts(&state, &executor, &provider, &block).await;
@@ -259,10 +273,17 @@ async fn handle_finalized_update<E, P>(
                 let receipts_result = match cached_receipts {
                     Some(cached) => Some(cached),
                     None => {
-                        // Snapshot was already cached (from propose/verify), so no receipts
-                        // were captured during finalization. Check executor cache first,
-                        // then fall back to re-execution.
-                        match executor.cached_receipts(block.height) {
+                        let mut fallback = executor.cached_receipts(block.height);
+                        if let Some(ref fb) = fallback
+                            && !receipts_match_block(&fb.0, &block)
+                        {
+                            trace!(
+                                height = block.height,
+                                "discarding stale cached receipts (fork mismatch, post-persist)"
+                            );
+                            fallback = None;
+                        }
+                        match fallback {
                             Some(cached) => Some(cached),
                             None => {
                                 re_execute_for_receipts(&state, &executor, &provider, &block).await
@@ -319,6 +340,30 @@ async fn handle_finalized_update<E, P>(
     }
 }
 
+/// Check that cached receipts correspond to the finalized block's transactions.
+///
+/// The receipt cache is keyed by block height, so competing proposals at the
+/// same height (view changes / forks) can overwrite the cache entry. This
+/// function detects the mismatch by comparing receipt `tx_hash` values against
+/// the block's transaction list.
+fn receipts_match_block(receipts: &[ExecutionReceipt], block: &Block) -> bool {
+    use std::collections::HashSet;
+    let receipt_hashes: HashSet<B256> = receipts.iter().map(|r| r.tx_hash).collect();
+    for tx in &block.txs {
+        let is_native = !tx.bytes.is_empty() && NativeTx::is_native_tx(tx.bytes[0]);
+        let tx_hash = if is_native {
+            NativeTx::decode_wire(&tx.bytes)
+                .map_or_else(|_| keccak256(&tx.bytes), |ntx| ntx.tx_id().0)
+        } else {
+            keccak256(&tx.bytes)
+        };
+        if !receipt_hashes.contains(&tx_hash) {
+            return false;
+        }
+    }
+    true
+}
+
 /// Re-execute a finalized block to obtain receipts for indexing.
 async fn re_execute_for_receipts<E, P>(
     state: &LedgerService,
@@ -366,6 +411,11 @@ fn index_finalized_block<P: BlockContextProvider>(
 ) {
     let block_hash = block.id().0;
     let block_context = provider.context(block);
+
+    // Build a lookup map from tx_hash → receipt. Receipts are ordered by
+    // execution order (natives first, then EVMs), not by block tx position.
+    let receipt_map: HashMap<B256, &ExecutionReceipt> =
+        receipts.iter().map(|r| (r.tx_hash, r)).collect();
 
     let mut tx_hashes = Vec::with_capacity(block.txs.len());
     let mut indexed_txs = Vec::with_capacity(block.txs.len());
@@ -436,7 +486,7 @@ fn index_finalized_block<P: BlockContextProvider>(
             nonce,
         });
 
-        if let Some(receipt) = receipts.get(i) {
+        if let Some(receipt) = receipt_map.get(&tx_hash) {
             let logs = receipt
                 .logs()
                 .iter()
@@ -529,15 +579,37 @@ fn build_subscription_data<P: BlockContextProvider>(
         uncles: vec![],
         size: U64::ZERO,
         transactions: hub_jsonrpc::BlockTransactions::Hashes(
-            block.txs.iter().map(|tx| keccak256(&tx.bytes)).collect(),
+            block
+                .txs
+                .iter()
+                .map(|tx| {
+                    if !tx.bytes.is_empty() && NativeTx::is_native_tx(tx.bytes[0]) {
+                        NativeTx::decode_wire(&tx.bytes)
+                            .map(|ntx| ntx.tx_id().0)
+                            .unwrap_or_else(|_| keccak256(&tx.bytes))
+                    } else {
+                        keccak256(&tx.bytes)
+                    }
+                })
+                .collect(),
         ),
     };
+
+    let receipt_map: HashMap<B256, &ExecutionReceipt> =
+        receipts.iter().map(|r| (r.tx_hash, r)).collect();
 
     let mut rpc_logs = Vec::new();
     let mut block_log_index: u64 = 0;
     for (i, tx) in block.txs.iter().enumerate() {
-        let tx_hash = keccak256(&tx.bytes);
-        if let Some(receipt) = receipts.get(i) {
+        let is_native = !tx.bytes.is_empty() && NativeTx::is_native_tx(tx.bytes[0]);
+        let tx_hash = if is_native {
+            NativeTx::decode_wire(&tx.bytes)
+                .map(|ntx| ntx.tx_id().0)
+                .unwrap_or_else(|_| keccak256(&tx.bytes))
+        } else {
+            keccak256(&tx.bytes)
+        };
+        if let Some(receipt) = receipt_map.get(&tx_hash) {
             for log in receipt.logs() {
                 let idx = block_log_index;
                 block_log_index += 1;
