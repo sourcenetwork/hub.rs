@@ -1,23 +1,26 @@
-//! Integration test for the ACP create_policy pipeline.
+//! Canonical integration test — full module lifecycle.
 //!
-//! Exercises both EVM and BLS transaction paths through the full pipeline:
-//! cluster startup -> RPC connectivity -> transaction signing -> submission ->
-//! block execution -> AcpModule::create_policy() -> query policy back.
+//! Exercises both EVM and BLS transaction paths through every module:
+//! ACP (policy, object, relationship, access control),
+//! Bulletin (namespace, collaborator, post),
+//! and cross-path verification (BLS write + EVM query, EVM write + BLS query).
 //!
-//! Validates receipt structure, policy content, cross-node consistency,
-//! consensus health, nonce accounting, and block progression.
+//! One cluster startup, one comprehensive test.
 //!
 //! Requires `cargo build -p hubd` before running.
 
 use std::time::Duration;
 
-use alloy_primitives::{B256, Bytes, U256};
+use alloy_primitives::{Address, B256, Bytes, FixedBytes, U256};
 use alloy_sol_types::SolCall;
 
-use hub_client::{ACP_ADDRESS, BlsSigner, EvmSigner, HubClient};
+use hub_client::{
+    ACP_ADDRESS, BULLETIN_ADDRESS, BlsSigner, EvmSigner, HubClient, TransactionReceipt,
+};
 use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, TestCluster};
 use hub_e2e::observe::ClusterAssertions;
 use hub_modules::acp::abi::IAcp;
+use hub_modules::bulletin::abi::IBulletin;
 
 /// Hardhat account 0 private key (pre-funded by `GenesisBuilder::funded_accounts`).
 const HARDHAT_KEY_0: &str = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
@@ -39,20 +42,141 @@ resources:
         expr: owner
 ";
 
-/// Create ACP policies via both EVM and BLS paths, then query them back.
+/// Receipt polling: 300ms interval, 200 attempts = 60s max.
+const RECEIPT_INTERVAL: Duration = Duration::from_millis(300);
+const RECEIPT_ATTEMPTS: u32 = 200;
+
+fn parse_policy_id(hex_str: &str) -> FixedBytes<32> {
+    let mut bytes = [0u8; 32];
+    let hex = hex_str.strip_prefix("0x").unwrap_or(hex_str);
+    hex::decode_to_slice(hex, &mut bytes).expect("policy ID should be valid hex");
+    FixedBytes::from(bytes)
+}
+
+/// Sign an EVM transaction and broadcast to all nodes in the cluster.
 ///
-/// Validates the full transaction + persistence pipeline:
-/// 1. Cluster starts and produces blocks (consensus + block execution)
-/// 2. RPC layer responds (chain_id, balance queries)
-/// 3. EVM create_policy -> receipt assertions
-/// 4. Nonce/balance accounting after EVM tx
-/// 5. BLS create_policy (parallel broadcast) -> receipt assertions
-/// 6. Policy content verification (get_policy for each ID)
-/// 7. Cross-node state consistency (all nodes agree)
-/// 8. Cluster health (convergence, no errors, chain_id)
-/// 9. Node status assertions (finalized_count, peer_count)
+/// Simplex leader rotation means the tx may sit in a non-leader's mempool;
+/// broadcasting to every node ensures the current leader has it.
+async fn broadcast_evm_tx(
+    cluster: &TestCluster,
+    client: &HubClient,
+    signer: &EvmSigner,
+    target: Address,
+    calldata: Vec<u8>,
+) -> TransactionReceipt {
+    let nonce = client
+        .get_nonce(signer.address())
+        .await
+        .expect("get_nonce should work");
+    let raw = signer
+        .sign_tx(target, Bytes::from(calldata), nonce)
+        .expect("EVM sign should succeed");
+
+    let futs: Vec<_> = (0..cluster.node_count())
+        .map(|i| {
+            let r = raw.clone();
+            let url = cluster.node(i).rpc_url();
+            tokio::spawn(async move {
+                let result = HubClient::new(url).send_raw_transaction(&r).await;
+                (i, result)
+            })
+        })
+        .collect();
+    let mut tx_hash = None;
+    for fut in futs {
+        if let Ok((node_idx, result)) = fut.await {
+            match result {
+                Ok(hash) => {
+                    eprintln!("[broadcast_evm] node{node_idx} accepted: {hash:?}");
+                    tx_hash = Some(hash);
+                }
+                Err(e) => {
+                    eprintln!("[broadcast_evm] node{node_idx} rejected: {e}");
+                }
+            }
+        }
+    }
+    let tx_hash = tx_hash.expect("at least one node should accept the EVM tx");
+
+    client
+        .wait_for_receipt(tx_hash, RECEIPT_INTERVAL, RECEIPT_ATTEMPTS)
+        .await
+        .expect("EVM receipt should appear")
+}
+
+/// Sign a native BLS transaction and broadcast to all nodes in the cluster.
+///
+/// P2P forwarding of native txs to the current leader is not yet reliable
+/// under test conditions, so we submit to every node.
+async fn broadcast_native_tx(
+    cluster: &TestCluster,
+    client: &HubClient,
+    signer: &BlsSigner,
+    target: Address,
+    calldata: Vec<u8>,
+) -> TransactionReceipt {
+    let wire = signer
+        .sign_native_tx(target, Bytes::from(calldata))
+        .expect("BLS sign should succeed");
+
+    let futs: Vec<_> = (0..cluster.node_count())
+        .map(|i| {
+            let w = wire.clone();
+            let url = cluster.node(i).rpc_url();
+            tokio::spawn(async move {
+                let result = HubClient::new(url).send_native_tx(&w).await;
+                (i, result)
+            })
+        })
+        .collect();
+    let mut tx_hash = None;
+    for fut in futs {
+        if let Ok((node_idx, result)) = fut.await {
+            match result {
+                Ok(hash) => {
+                    eprintln!("[broadcast_bls] node{node_idx} accepted: {hash:?}");
+                    tx_hash = Some(hash);
+                }
+                Err(e) => {
+                    eprintln!("[broadcast_bls] node{node_idx} rejected: {e}");
+                }
+            }
+        }
+    }
+    let tx_hash = tx_hash.expect("at least one node should accept the BLS tx");
+
+    // Check block production during wait.
+    let start_height = client.block_number().await.unwrap_or(0);
+    eprintln!("[broadcast_bls] polling for receipt {tx_hash:?}, start_height={start_height}");
+
+    for attempt in 0..RECEIPT_ATTEMPTS {
+        if let Some(receipt) = client
+            .get_transaction_receipt(tx_hash)
+            .await
+            .expect("receipt RPC should not error")
+        {
+            eprintln!("[broadcast_bls] receipt found at attempt {attempt}");
+            return receipt;
+        }
+        if attempt % 20 == 0 && attempt > 0 {
+            let height = client.block_number().await.unwrap_or(0);
+            eprintln!("[broadcast_bls] attempt {attempt}/{RECEIPT_ATTEMPTS}, height={height}");
+        }
+        tokio::time::sleep(RECEIPT_INTERVAL).await;
+    }
+
+    let final_height = client.block_number().await.unwrap_or(0);
+    panic!(
+        "BLS receipt not found after {RECEIPT_ATTEMPTS} attempts. \
+         tx_hash={tx_hash:?}, start_height={start_height}, final_height={final_height}"
+    );
+}
+
+/// Full module lifecycle: ACP + Bulletin, EVM + BLS, writes + queries.
 #[tokio::test]
-async fn create_and_query_policies() {
+async fn canonical_module_test() {
+    // ── SETUP ─────────────────────────────────────────────────────
+
     let chain_id = 9001;
     let genesis = GenesisBuilder::devnet().funded_accounts(1, "1000000000000000000000000");
 
@@ -81,23 +205,35 @@ async fn create_and_query_policies() {
     let reported_chain_id = client.chain_id().await.expect("eth_chainId should work");
     assert_eq!(reported_chain_id, chain_id, "chain ID should match");
 
-    // -- EVM path: create policy via eth_sendRawTransaction --
     let evm_signer = EvmSigner::from_hex(HARDHAT_KEY_0, chain_id).expect("valid signer");
+    let bls_signer = BlsSigner::random(chain_id).expect("random BLS signer");
 
+    let evm_did = evm_signer.did();
+    let bls_did = bls_signer.did().to_owned();
+
+    // ── A: ACP Policy Creation ────────────────────────────────────
+
+    // A1. EVM create_policy
     let balance_before = client
         .get_balance(evm_signer.address())
         .await
         .expect("eth_getBalance should work");
     assert!(balance_before > U256::ZERO, "test account should be funded");
 
-    let evm_receipt = client
-        .create_policy(&evm_signer, TEST_POLICY_YAML.as_bytes(), 1)
-        .await
-        .expect("EVM create_policy tx should succeed");
+    let evm_create_calldata = IAcp::createPolicyCall {
+        policy: TEST_POLICY_YAML.as_bytes().to_vec().into(),
+        marshalType: 1,
+    }
+    .abi_encode();
+    let evm_receipt = broadcast_evm_tx(
+        &cluster,
+        &client,
+        &evm_signer,
+        ACP_ADDRESS,
+        evm_create_calldata,
+    )
+    .await;
 
-    // -- EVM receipt structure assertions --
-    // Note: create_policy() already returns Err on status == 0, so this
-    // assertion is documentation rather than a safety net.
     assert_eq!(evm_receipt.status, 1, "EVM create_policy should succeed");
     assert!(
         evm_receipt.block_number > 0,
@@ -120,7 +256,6 @@ async fn create_and_query_policies() {
         "EVM receipt 'to' should be the ACP precompile"
     );
 
-    // -- Nonce accounting after EVM tx --
     let nonce_after_evm = client
         .get_nonce(evm_signer.address())
         .await
@@ -139,42 +274,15 @@ async fn create_and_query_policies() {
         "balance should decrease after paying gas (before={balance_before}, after={balance_after})"
     );
 
-    // -- BLS path: create policy via hub_sendNativeTx --
-    // Submit to all nodes in parallel so every potential leader has
-    // the tx in its mempool. P2P forwarding of native txs to the
-    // current leader is not yet reliable under test conditions.
-    let bls_signer = BlsSigner::random(chain_id).expect("random BLS signer");
-    let calldata = IAcp::createPolicyCall {
+    // A2. BLS create_policy (broadcast)
+    let bls_calldata = IAcp::createPolicyCall {
         policy: TEST_POLICY_YAML.as_bytes().to_vec().into(),
         marshalType: 1,
     }
     .abi_encode();
+    let bls_receipt =
+        broadcast_native_tx(&cluster, &client, &bls_signer, ACP_ADDRESS, bls_calldata).await;
 
-    let wire = bls_signer
-        .sign_native_tx(ACP_ADDRESS, Bytes::from(calldata))
-        .expect("BLS sign should succeed");
-
-    let futs: Vec<_> = (0..cluster.node_count())
-        .map(|i| {
-            let w = wire.clone();
-            let url = cluster.node(i).rpc_url();
-            tokio::spawn(async move { HubClient::new(url).send_native_tx(&w).await })
-        })
-        .collect();
-    let mut tx_hash = None;
-    for fut in futs {
-        if let Ok(Ok(hash)) = fut.await {
-            tx_hash = Some(hash);
-        }
-    }
-    let tx_hash = tx_hash.expect("at least one node should accept the BLS tx");
-
-    let bls_receipt = client
-        .wait_for_receipt(tx_hash, Duration::from_millis(250), 200)
-        .await
-        .expect("BLS create_policy receipt should appear");
-
-    // -- BLS receipt structure assertions --
     assert_eq!(bls_receipt.status, 1, "BLS create_policy should succeed");
     assert!(
         bls_receipt.block_number > 0,
@@ -187,7 +295,6 @@ async fn create_and_query_policies() {
         "BLS tx hash should be non-degenerate"
     );
 
-    // -- Block progression --
     assert!(
         evm_receipt.block_number <= bls_receipt.block_number,
         "BLS tx should be in same block or later than EVM tx \
@@ -196,41 +303,28 @@ async fn create_and_query_policies() {
         bls_receipt.block_number
     );
 
-    let current_height = client
-        .block_number()
+    // A3. get_policy_ids → 2 policies
+    state
+        .wait_for_height(bls_receipt.block_number + 1, Duration::from_secs(15))
         .await
-        .expect("eth_blockNumber should work");
-    assert!(
-        bls_receipt.block_number <= current_height,
-        "BLS receipt block ({}) should not exceed current height ({})",
-        bls_receipt.block_number,
-        current_height
-    );
-
-    // -- Query: verify both policies are persisted and queryable --
-    tokio::time::sleep(Duration::from_millis(500)).await;
+        .expect("cluster should advance past BLS create_policy block");
 
     let policy_ids = client
         .get_policy_ids()
         .await
         .expect("get_policy_ids should succeed");
-
     assert_eq!(
         policy_ids.len(),
         2,
         "should have 2 policies (EVM + BLS), got: {policy_ids:?}"
     );
 
-    // -- Policy content assertions --
-    // get_policy returns a JSON-serialized PolicyRecord with structure:
-    //   { "policy": { "name": ..., "resources": [...] }, "raw_policy": "...",
-    //     "marshal_type": ..., "metadata": { ... } }
+    let evm_policy_id = parse_policy_id(&policy_ids[0]);
+    let _bls_policy_id = parse_policy_id(&policy_ids[1]);
+
+    // A4. Policy content verification
     for (i, policy_id_str) in policy_ids.iter().enumerate() {
-        let mut id_bytes = [0u8; 32];
-        let hex = policy_id_str.strip_prefix("0x").unwrap_or(policy_id_str);
-        hex::decode_to_slice(hex, &mut id_bytes)
-            .unwrap_or_else(|e| panic!("policy ID {i} should be valid hex: {e}"));
-        let policy_id = alloy_primitives::FixedBytes::from(id_bytes);
+        let policy_id = parse_policy_id(policy_id_str);
 
         let policy_bytes = client
             .get_policy(policy_id)
@@ -271,7 +365,285 @@ async fn create_and_query_policies() {
         );
     }
 
-    // -- Cross-node state consistency --
+    // ── B: ACP Object Registration ───────────────────────────────
+
+    // B1. EVM register_object
+    let b1_calldata = IAcp::registerObjectCall {
+        policyId: evm_policy_id,
+        objectId: "doc-evm".into(),
+        resource: "document".into(),
+    }
+    .abi_encode();
+    let b1_receipt =
+        broadcast_evm_tx(&cluster, &client, &evm_signer, ACP_ADDRESS, b1_calldata).await;
+    assert_eq!(b1_receipt.status, 1, "EVM register_object should succeed");
+
+    let (registered, _) = client
+        .get_object_owner(evm_policy_id, "document", "doc-evm")
+        .await
+        .expect("get_object_owner should succeed");
+    assert!(registered, "doc-evm should be registered");
+
+    // B2. BLS register_object (cross-path: BLS writes to EVM-created policy)
+    let b2_calldata = IAcp::registerObjectCall {
+        policyId: evm_policy_id,
+        objectId: "doc-bls".into(),
+        resource: "document".into(),
+    }
+    .abi_encode();
+    let b2_receipt =
+        broadcast_native_tx(&cluster, &client, &bls_signer, ACP_ADDRESS, b2_calldata).await;
+    assert_eq!(b2_receipt.status, 1, "BLS register_object should succeed");
+
+    let (registered, _) = client
+        .get_object_owner(evm_policy_id, "document", "doc-bls")
+        .await
+        .expect("get_object_owner should succeed");
+    assert!(registered, "doc-bls should be registered");
+
+    // ── C: ACP Relationships + Access ────────────────────────────
+
+    // C1. EVM set_relationship: grant bls_did "reader" on "doc-evm"
+    let c1_calldata = IAcp::setRelationshipCall {
+        policyId: evm_policy_id,
+        resource: "document".into(),
+        objectId: "doc-evm".into(),
+        relation: "reader".into(),
+        actor: bls_did.clone().into(),
+    }
+    .abi_encode();
+    let c1_receipt =
+        broadcast_evm_tx(&cluster, &client, &evm_signer, ACP_ADDRESS, c1_calldata).await;
+    assert_eq!(c1_receipt.status, 1, "EVM set_relationship should succeed");
+
+    // C2. Verify relationship exists
+    let has_rel = client
+        .has_relationship(evm_policy_id, "document", "doc-evm", "reader", &bls_did)
+        .await
+        .expect("has_relationship should succeed");
+    assert!(has_rel, "bls_did should have reader relationship");
+
+    // C3. Verify access: bls_did can read but not update
+    let can_read = client
+        .verify_access_request(
+            evm_policy_id,
+            vec!["document".into()],
+            vec!["doc-evm".into()],
+            vec!["read".into()],
+            &bls_did,
+        )
+        .await
+        .expect("verify_access_request should succeed");
+    assert!(can_read, "bls_did should have read access");
+
+    let can_update = client
+        .verify_access_request(
+            evm_policy_id,
+            vec!["document".into()],
+            vec!["doc-evm".into()],
+            vec!["update".into()],
+            &bls_did,
+        )
+        .await
+        .expect("verify_access_request should succeed");
+    assert!(!can_update, "bls_did should NOT have update access");
+
+    // C4. Owner retains full access
+    let owner_can_read = client
+        .verify_access_request(
+            evm_policy_id,
+            vec!["document".into()],
+            vec!["doc-evm".into()],
+            vec!["read".into()],
+            &evm_did,
+        )
+        .await
+        .expect("verify_access_request should succeed");
+    assert!(owner_can_read, "owner (evm_did) should have read access");
+
+    // ── D: ACP Delete + Access Revocation ────────────────────────
+
+    // D1. BLS delete_relationship (cross-path: BLS revokes relationship on EVM object)
+    let d1_calldata = IAcp::deleteRelationshipCall {
+        policyId: evm_policy_id,
+        resource: "document".into(),
+        objectId: "doc-evm".into(),
+        relation: "reader".into(),
+        actor: bls_did.clone().into(),
+    }
+    .abi_encode();
+    let d1_receipt =
+        broadcast_native_tx(&cluster, &client, &bls_signer, ACP_ADDRESS, d1_calldata).await;
+    assert_eq!(
+        d1_receipt.status, 1,
+        "BLS delete_relationship should succeed"
+    );
+
+    // D2. Relationship removed
+    let has_rel = client
+        .has_relationship(evm_policy_id, "document", "doc-evm", "reader", &bls_did)
+        .await
+        .expect("has_relationship should succeed");
+    assert!(!has_rel, "bls_did reader relationship should be deleted");
+
+    // D3. Access revoked for bls_did
+    let can_read = client
+        .verify_access_request(
+            evm_policy_id,
+            vec!["document".into()],
+            vec!["doc-evm".into()],
+            vec!["read".into()],
+            &bls_did,
+        )
+        .await
+        .expect("verify_access_request should succeed");
+    assert!(
+        !can_read,
+        "bls_did should NOT have read access after revocation"
+    );
+
+    // D4. Owner still has access
+    let owner_can_read = client
+        .verify_access_request(
+            evm_policy_id,
+            vec!["document".into()],
+            vec!["doc-evm".into()],
+            vec!["read".into()],
+            &evm_did,
+        )
+        .await
+        .expect("verify_access_request should succeed");
+    assert!(
+        owner_can_read,
+        "owner (evm_did) should still have read access"
+    );
+
+    // ── E: Bulletin Namespace + Post ─────────────────────────────
+
+    // E1. EVM register_namespace
+    let e1_calldata = IBulletin::registerNamespaceCall {
+        namespace: "test-ns-evm".into(),
+    }
+    .abi_encode();
+    let e1_receipt = broadcast_evm_tx(
+        &cluster,
+        &client,
+        &evm_signer,
+        BULLETIN_ADDRESS,
+        e1_calldata,
+    )
+    .await;
+    assert_eq!(
+        e1_receipt.status, 1,
+        "EVM register_namespace should succeed"
+    );
+
+    // E2. BLS register_namespace
+    let e2_calldata = IBulletin::registerNamespaceCall {
+        namespace: "test-ns-bls".into(),
+    }
+    .abi_encode();
+    let e2_receipt = broadcast_native_tx(
+        &cluster,
+        &client,
+        &bls_signer,
+        BULLETIN_ADDRESS,
+        e2_calldata,
+    )
+    .await;
+    assert_eq!(
+        e2_receipt.status, 1,
+        "BLS register_namespace should succeed"
+    );
+
+    // E3. EVM add_collaborator (add EVM signer as collaborator to its own namespace)
+    let e3_calldata = IBulletin::addCollaboratorCall {
+        namespace: "test-ns-evm".into(),
+        collaborator: evm_signer.address(),
+    }
+    .abi_encode();
+    let e3_receipt = broadcast_evm_tx(
+        &cluster,
+        &client,
+        &evm_signer,
+        BULLETIN_ADDRESS,
+        e3_calldata,
+    )
+    .await;
+    assert_eq!(e3_receipt.status, 1, "EVM add_collaborator should succeed");
+
+    // E4. EVM create_post
+    let e4_calldata = IBulletin::createPostCall {
+        namespace: "test-ns-evm".into(),
+        payload: b"hello-evm".to_vec().into(),
+        proof: b"proof".to_vec().into(),
+        artifact: "art".into(),
+    }
+    .abi_encode();
+    let e4_receipt = broadcast_evm_tx(
+        &cluster,
+        &client,
+        &evm_signer,
+        BULLETIN_ADDRESS,
+        e4_calldata,
+    )
+    .await;
+    assert_eq!(e4_receipt.status, 1, "EVM create_post should succeed");
+
+    // E5. BLS create_post
+    let e5_calldata = IBulletin::createPostCall {
+        namespace: "test-ns-bls".into(),
+        payload: b"hello-bls".to_vec().into(),
+        proof: b"proof".to_vec().into(),
+        artifact: "art".into(),
+    }
+    .abi_encode();
+    let e5_receipt = broadcast_native_tx(
+        &cluster,
+        &client,
+        &bls_signer,
+        BULLETIN_ADDRESS,
+        e5_calldata,
+    )
+    .await;
+    assert_eq!(e5_receipt.status, 1, "BLS create_post should succeed");
+
+    // E6. Query namespaces and posts
+    let ns_evm = client
+        .get_namespace("test-ns-evm")
+        .await
+        .expect("get_namespace(test-ns-evm) should succeed");
+    assert!(!ns_evm.is_empty(), "EVM namespace should be non-empty");
+
+    let ns_bls = client
+        .get_namespace("test-ns-bls")
+        .await
+        .expect("get_namespace(test-ns-bls) should succeed");
+    assert!(!ns_bls.is_empty(), "BLS namespace should be non-empty");
+
+    let posts_evm = client
+        .get_namespace_posts("test-ns-evm")
+        .await
+        .expect("get_namespace_posts(test-ns-evm) should succeed");
+    assert!(!posts_evm.is_empty(), "EVM namespace should have posts");
+
+    let posts_bls = client
+        .get_namespace_posts("test-ns-bls")
+        .await
+        .expect("get_namespace_posts(test-ns-bls) should succeed");
+    assert!(!posts_bls.is_empty(), "BLS namespace should have posts");
+
+    // ── F: Cross-Node Consistency + Health ────────────────────────
+
+    // F1. All nodes agree on policy IDs and namespace queries
+    let last_block = e5_receipt.block_number;
+    state
+        .wait_for_height(last_block + 1, Duration::from_secs(15))
+        .await
+        .expect("all nodes should advance past last tx block");
+
+    // Bulletin's ensure_policy creates an internal ACP policy on first
+    // register_namespace, so we expect 3 total: 2 user + 1 bulletin.
     for node_idx in 0..cluster.node_count() {
         let node_client = HubClient::new(cluster.node(node_idx).rpc_url());
         let node_policy_ids = node_client
@@ -280,27 +652,40 @@ async fn create_and_query_policies() {
             .unwrap_or_else(|e| panic!("node{node_idx} get_policy_ids should succeed: {e}"));
         assert_eq!(
             node_policy_ids.len(),
-            2,
-            "node{node_idx} should have 2 policies, got: {node_policy_ids:?}"
+            3,
+            "node{node_idx} should have 3 policies (2 user + 1 bulletin), got: {node_policy_ids:?}"
         );
-        let mut expected_sorted = policy_ids.clone();
-        expected_sorted.sort();
-        let mut actual_sorted = node_policy_ids.clone();
-        actual_sorted.sort();
-        assert_eq!(
-            actual_sorted, expected_sorted,
-            "node{node_idx} policy IDs should match node0"
+        for user_pid in &policy_ids {
+            assert!(
+                node_policy_ids.contains(user_pid),
+                "node{node_idx} should contain user policy {user_pid}"
+            );
+        }
+
+        let node_ns_evm = node_client
+            .get_namespace("test-ns-evm")
+            .await
+            .unwrap_or_else(|e| {
+                panic!("node{node_idx} get_namespace(test-ns-evm) should succeed: {e}")
+            });
+        assert!(
+            !node_ns_evm.is_empty(),
+            "node{node_idx} EVM namespace should be non-empty"
+        );
+
+        let node_ns_bls = node_client
+            .get_namespace("test-ns-bls")
+            .await
+            .unwrap_or_else(|e| {
+                panic!("node{node_idx} get_namespace(test-ns-bls) should succeed: {e}")
+            });
+        assert!(
+            !node_ns_bls.is_empty(),
+            "node{node_idx} BLS namespace should be non-empty"
         );
     }
 
-    // -- Cluster health assertions --
-    // Ensure all nodes have advanced past the last tx before checking
-    // convergence — assert_heights_converged reads snapshots once
-    // without retry, so stale data can cause spurious failures.
-    state
-        .wait_for_height(bls_receipt.block_number + 1, Duration::from_secs(15))
-        .await
-        .expect("all nodes should advance past BLS tx block");
+    // F2. Cluster health
     state
         .assert_heights_converged(2)
         .expect("block heights should converge within 2 blocks");
@@ -311,7 +696,7 @@ async fn create_and_query_policies() {
         .assert_chain_id(chain_id)
         .expect("chain ID should be consistent across nodes");
 
-    // -- Node status assertions --
+    // F3. Node status
     for node_idx in 0..cluster.node_count() {
         let node_client = HubClient::new(cluster.node(node_idx).rpc_url());
         let status = node_client

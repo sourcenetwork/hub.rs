@@ -49,13 +49,26 @@ impl EvmSigner {
         self.inner.address()
     }
 
+    /// Return the `did:key:` identifier derived from this signer's secp256k1 public key.
+    pub fn did(&self) -> String {
+        let compressed = self
+            .inner
+            .credential()
+            .verifying_key()
+            .to_encoded_point(true)
+            .as_bytes()
+            .to_vec();
+        hub_crypto::secp256k1::did_from_secp256k1_pubkey(&compressed)
+            .expect("valid DID from signer pubkey")
+    }
+
     /// Return the chain ID this signer targets.
     pub const fn chain_id(&self) -> u64 {
         self.chain_id
     }
 
     /// Build a [`TxLegacy`], sign it, and return the EIP-2718 encoded bytes.
-    pub(crate) fn sign_tx(
+    pub fn sign_tx(
         &self,
         to: Address,
         calldata: Bytes,

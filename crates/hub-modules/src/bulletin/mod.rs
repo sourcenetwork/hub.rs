@@ -20,21 +20,17 @@ use crate::types::{BlockExecCtx, TxExecCtx};
 
 type Result<T> = std::result::Result<T, BulletinError>;
 
-const BULLETIN_POLICY_YAML: &str = r#"
+const BULLETIN_POLICY_YAML: &str = "\
 name: bulletin-module-policy
 resources:
-  namespace:
+  - name: namespace
     relations:
-      owner:
-        types:
-          - actor
-      collaborator:
-        types:
-          - actor
+      - name: owner
+      - name: collaborator
     permissions:
-      create_post:
+      - name: create_post
         expr: owner + collaborator
-"#;
+";
 
 const MODULE_DID: &str = "did:key:bulletin";
 

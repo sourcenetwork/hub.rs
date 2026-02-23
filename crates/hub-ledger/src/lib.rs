@@ -78,6 +78,8 @@ struct LedgerState {
     qmdb: QmdbLedger,
     /// Mempool admission gate — validates txs before insertion.
     validator: MempoolValidator<QmdbState>,
+    /// Shared module state for reading finalized native nonces during recheck.
+    modules: Option<hub_modules::SharedModuleState>,
 }
 
 impl LedgerView {
@@ -136,10 +138,18 @@ impl LedgerView {
                 seeds: InMemorySeedTracker::new(genesis_digest),
                 qmdb,
                 validator,
+                modules: None,
             })),
             genesis_block,
             chain_id,
         })
+    }
+
+    /// Attach the shared module state so finalized native nonces
+    /// survive validator resets after block finalization.
+    pub async fn set_modules(&self, modules: hub_modules::SharedModuleState) {
+        let mut inner = self.inner.lock().await;
+        inner.modules = Some(modules);
     }
 
     /// Return the genesis block of this ledger.
@@ -186,7 +196,12 @@ impl LedgerView {
     pub async fn recheck_mempool(&self) {
         let mut inner = self.inner.lock().await;
         let fresh_state = inner.qmdb.state();
-        inner.validator.reset(fresh_state);
+        let finalized_nonces = inner
+            .modules
+            .as_ref()
+            .map(|m| m.read().expect("module state lock").nonces.clone())
+            .unwrap_or_default();
+        inner.validator.reset(fresh_state, finalized_nonces);
 
         let pending = inner.mempool.build(usize::MAX, &BTreeSet::new());
         let mut evict_ids = Vec::new();

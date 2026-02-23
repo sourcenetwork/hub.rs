@@ -303,6 +303,10 @@ impl NodeRunner for HubRunner {
         let modules: SharedModuleState = executor.modules().clone();
         executor.set_base_modules(persisted_modules);
 
+        // Attach module state to the ledger so finalized native nonces
+        // survive validator resets.
+        state.set_modules(modules.clone()).await;
+
         let context_provider = HubContextProvider {
             gas_limit: self.gas_limit,
         };

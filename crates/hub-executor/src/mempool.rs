@@ -68,10 +68,14 @@ impl<S: StateDb> MempoolValidator<S> {
     }
 
     /// Reset branched state after block finalization.
-    pub fn reset(&mut self, base: S) {
+    ///
+    /// Native nonces are loaded from the finalized module state so the
+    /// validator correctly rejects replayed nonces and accepts the next
+    /// valid nonce for each BLS identity.
+    pub fn reset(&mut self, base: S, native_nonces: NativeNonceStore) {
         self.base = base;
         self.evm_changes = ChangeSet::new();
-        self.native_nonces = NativeNonceStore::default();
+        self.native_nonces = native_nonces;
     }
 
     /// Stateless recheck against committed base state.
@@ -669,12 +673,36 @@ mod tests {
         let tx0 = signed_native_tx(&sk, &pk_bytes, 0);
         validator.validate_tx(&tx0).await.unwrap();
 
-        // After reset, nonce 0 should be accepted again (fresh state).
-        validator.reset(state);
+        // After reset with empty nonces, nonce 0 should be accepted again.
+        validator.reset(state, NativeNonceStore::default());
 
         let tx0_again = signed_native_tx(&sk, &pk_bytes, 0);
         let result = validator.validate_tx(&tx0_again).await.unwrap();
         assert_eq!(result.nonce, 0);
+    }
+
+    #[tokio::test]
+    async fn reset_preserves_finalized_nonces() {
+        let (sk, pk_bytes) = test_bls_keypair();
+        let state = MockStateDb::new();
+        let mut validator = MempoolValidator::new(state.clone(), test_config(), 0);
+
+        let tx0 = signed_native_tx(&sk, &pk_bytes, 0);
+        validator.validate_tx(&tx0).await.unwrap();
+
+        // Simulate finalization: pass the committed nonce store.
+        let committed_nonces = validator.native_nonces.clone();
+        validator.reset(state, committed_nonces);
+
+        // Nonce 0 should now be rejected (already finalized).
+        let tx0_replay = signed_native_tx(&sk, &pk_bytes, 0);
+        let err = validator.validate_tx(&tx0_replay).await.unwrap_err();
+        assert!(matches!(err, ExecutionError::NonceMismatch { .. }));
+
+        // Nonce 1 should be accepted.
+        let tx1 = signed_native_tx(&sk, &pk_bytes, 1);
+        let result = validator.validate_tx(&tx1).await.unwrap();
+        assert_eq!(result.nonce, 1);
     }
 
     #[tokio::test]
@@ -689,7 +717,7 @@ mod tests {
         validator.validate_tx(&tx0).await.unwrap();
 
         // After reset, nonce 0 should be accepted again.
-        validator.reset(state);
+        validator.reset(state, NativeNonceStore::default());
 
         let tx0_again = signed_evm_tx(&signer, 0);
         let result = validator.validate_tx(&tx0_again).await.unwrap();
