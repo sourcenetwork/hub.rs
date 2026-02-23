@@ -23,6 +23,8 @@ pub struct BlockContext {
     pub is_verification: bool,
     /// Expected module state root from the block being verified.
     pub expected_module_state_root: Option<B256>,
+    /// When true, skip JMT tree writes (receipt-only re-execution).
+    pub receipt_only: bool,
 }
 
 impl BlockContext {
@@ -36,6 +38,7 @@ impl BlockContext {
             blob_base_fee: None,
             is_verification: false,
             expected_module_state_root: None,
+            receipt_only: false,
         }
     }
 
@@ -50,6 +53,13 @@ impl BlockContext {
     #[must_use]
     pub const fn with_expected_module_state_root(mut self, root: B256) -> Self {
         self.expected_module_state_root = Some(root);
+        self
+    }
+
+    /// Mark this execution as receipt-only (skips JMT tree writes).
+    #[must_use]
+    pub const fn with_receipt_only(mut self) -> Self {
+        self.receipt_only = true;
         self
     }
 

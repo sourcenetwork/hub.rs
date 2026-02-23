@@ -9,6 +9,10 @@ use sha2::{Digest, Sha256};
 
 use crate::store::JmtStore;
 
+/// Maximum number of height→version entries to retain. Only the most recent
+/// `HEIGHT_RETENTION` heights are kept; older entries are evicted.
+const HEIGHT_RETENTION: u64 = 64;
+
 /// Module state tree backed by JMT with overlay-based execution isolation.
 ///
 /// During block execution (between `begin_execution` and `flush_overlay`),
@@ -55,14 +59,18 @@ pub struct ModuleStateTree {
 }
 
 impl ModuleStateTree {
-    /// Opens (or creates) a module state tree at the given path, starting
-    /// at the specified version.
-    pub fn open(path: impl AsRef<Path>, version: u64) -> Result<Self> {
+    /// Opens (or creates) a module state tree at the given path.
+    ///
+    /// Canonical version and height are loaded from persisted metadata
+    /// in the `raw_kv` column family. Fresh stores start at version 0.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let store = JmtStore::open(path)?;
+        let canonical_version = store.read_canonical_version()?.unwrap_or(0);
+        let canonical_height = store.read_canonical_height()?.unwrap_or(0);
         Ok(Self {
             store,
-            canonical_version: version,
-            canonical_height: 0,
+            canonical_version,
+            canonical_height,
             height_versions: HashMap::new(),
             in_execution: false,
             execution_height: 0,
@@ -108,6 +116,8 @@ impl ModuleStateTree {
             .write_batch(&batch.node_batch, &[(key_hash, key)])?;
         self.store.raw_kv_write_batch(&[(key.to_vec(), value)])?;
         self.canonical_version = next;
+        self.store
+            .write_metadata(self.canonical_version, self.canonical_height)?;
         Ok(root)
     }
 
@@ -201,6 +211,8 @@ impl ModuleStateTree {
         self.store.raw_kv_write_batch(&raw_ops)?;
 
         self.canonical_version = next;
+        self.store
+            .write_metadata(self.canonical_version, self.canonical_height)?;
         Ok(root)
     }
 
@@ -230,6 +242,9 @@ impl ModuleStateTree {
                 .insert(self.execution_height, self.execution_base_version);
             self.canonical_version = self.execution_base_version;
             self.canonical_height = self.canonical_height.max(self.execution_height);
+            self.store
+                .write_metadata(self.canonical_version, self.canonical_height)?;
+            self.evict_old_heights();
             return Ok(());
         }
 
@@ -270,6 +285,9 @@ impl ModuleStateTree {
         self.height_versions
             .insert(self.execution_height, self.canonical_version);
         self.canonical_height = self.canonical_height.max(self.execution_height);
+        self.store
+            .write_metadata(self.canonical_version, self.canonical_height)?;
+        self.evict_old_heights();
         Ok(())
     }
 
@@ -292,6 +310,11 @@ impl ModuleStateTree {
         }
         self.canonical_version
     }
+
+    fn evict_old_heights(&mut self) {
+        let cutoff = self.canonical_height.saturating_sub(HEIGHT_RETENTION);
+        self.height_versions.retain(|&h, _| h >= cutoff);
+    }
 }
 
 fn empty_root() -> [u8; 32] {
@@ -304,7 +327,7 @@ mod tests {
     use tempfile::TempDir;
 
     fn open_tree(dir: &TempDir) -> ModuleStateTree {
-        ModuleStateTree::open(dir.path().join("db"), 0).unwrap()
+        ModuleStateTree::open(dir.path().join("db")).unwrap()
     }
 
     #[test]
@@ -465,7 +488,8 @@ mod tests {
             tree.put(b"persist-b", Some(b"val-b".to_vec())).unwrap();
         }
 
-        let tree = ModuleStateTree::open(dir.path().join("db"), 2).unwrap();
+        let tree = ModuleStateTree::open(dir.path().join("db")).unwrap();
+        assert_eq!(tree.version(), 2);
         let all = tree.load_all().unwrap();
         assert_eq!(all.len(), 2);
         assert_eq!(all[0], (b"persist-a".to_vec(), b"val-a".to_vec()));
@@ -687,7 +711,8 @@ mod tests {
             tree.put(b"key-b", Some(b"val-b".to_vec())).unwrap();
             root_at_close = tree.root().unwrap();
         }
-        let tree = ModuleStateTree::open(dir.path().join("db"), 2).unwrap();
+        let tree = ModuleStateTree::open(dir.path().join("db")).unwrap();
+        assert_eq!(tree.version(), 2);
         assert_eq!(tree.get(b"key-a").unwrap(), Some(b"val-a".to_vec()));
         assert_eq!(tree.get(b"key-b").unwrap(), Some(b"val-b".to_vec()));
         assert_eq!(tree.root().unwrap().0, root_at_close.0);

@@ -27,7 +27,8 @@ pub struct ModuleState {
 impl ModuleState {
     /// Compute a deterministic state root from all module stores.
     ///
-    /// The root is `keccak256(namespace || keccak256(acp) || keccak256(bulletin) || keccak256(hub) || keccak256(nonces))`.
+    /// Uses keccak256-based hashing of serialized stores. Production code
+    /// uses `state_root_from_jmt` with JMT-backed per-module roots instead.
     pub fn state_root(&self) -> B256 {
         let acp_bytes = self.acp.store().serialize();
         let bulletin_bytes = self.bulletin.store().serialize();

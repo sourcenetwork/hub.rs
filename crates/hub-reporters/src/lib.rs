@@ -339,7 +339,7 @@ where
         );
         return None;
     };
-    let block_context = provider.context(block);
+    let block_context = provider.context(block).with_receipt_only();
     let execution =
         match BlockExecution::execute(&parent_snapshot, executor, &block_context, &block.txs).await
         {

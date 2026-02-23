@@ -9,7 +9,7 @@ use crate::{
     BlockContext, BlockExecutor, ExecutionConfig, ExecutionError, ExecutionOutcome,
     ExecutionReceipt, StateDbAdapter, build_receipt, decode_evm_tx, extract_changes,
 };
-use alloy_primitives::{Bytes, U256, keccak256};
+use alloy_primitives::{B256, Bytes, U256, keccak256};
 use hub_crypto::bls;
 use hub_domain::NativeTx;
 use hub_modules::acp::AcpModule;
@@ -374,7 +374,9 @@ impl<S: StateDb> BlockExecutor<S> for HubExecutor {
         }
 
         outcome.gas_used = cumulative_gas;
-        outcome.module_state_root = if let Some(ref trees) = self.module_trees {
+        outcome.module_state_root = if context.receipt_only {
+            B256::ZERO
+        } else if let Some(ref trees) = self.module_trees {
             let stores = [
                 modules.acp.store(),
                 modules.bulletin.store(),
@@ -387,24 +389,50 @@ impl<S: StateDb> BlockExecutor<S> for HubExecutor {
                 base_modules.hub.store(),
                 base_modules.nonces.store(),
             ];
-            let mut jmt_roots = [[0u8; 32]; 4];
+
+            // Phase 1: Begin execution and populate overlays on all trees.
+            let height = context.header.number;
             for (i, tree_lock) in trees.iter().enumerate() {
                 let dirty = stores[i].diff_from(base_stores[i]);
                 let mut tree = tree_lock.lock().unwrap();
-                tree.begin_execution(context.header.number);
+                tree.begin_execution(height);
                 for (key, value) in &dirty {
                     tree.put(key, value.clone())
                         .map_err(|e| ExecutionError::ModuleTree(e.to_string()))?;
                 }
-                tree.flush_overlay()
-                    .map_err(|e| ExecutionError::ModuleTree(e.to_string()))?;
+            }
+
+            // Phase 2: Compute speculative roots from overlays (no persistence).
+            let mut jmt_roots = [[0u8; 32]; 4];
+            for (i, tree_lock) in trees.iter().enumerate() {
+                let tree = tree_lock.lock().unwrap();
                 jmt_roots[i] = tree
                     .root()
                     .map_err(|e| ExecutionError::ModuleTree(e.to_string()))?
                     .0;
             }
+
+            // Phase 3: Flush all overlays. If any fails, discard remaining.
+            let mut flush_error = None;
+            for (i, tree_lock) in trees.iter().enumerate() {
+                let mut tree = tree_lock.lock().unwrap();
+                if flush_error.is_some() {
+                    tree.discard_overlay();
+                } else if let Err(e) = tree.flush_overlay() {
+                    flush_error = Some((i, e));
+                    tree.discard_overlay();
+                }
+            }
+            if let Some((idx, e)) = flush_error {
+                return Err(ExecutionError::ModuleTree(format!(
+                    "flush failed on tree {idx}: {e}"
+                )));
+            }
+
             state_root_from_jmt(&jmt_roots)
         } else {
+            // Fallback for tests without JMT trees. Production code always
+            // provides module_trees, so this path should never run in prod.
             modules.state_root()
         };
 

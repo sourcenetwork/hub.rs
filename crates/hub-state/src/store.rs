@@ -1,6 +1,7 @@
 //! RocksDB-backed JMT store with four column families.
 
 use std::path::Path;
+use std::sync::Mutex;
 
 use anyhow::{Context, Result};
 use borsh::BorshDeserialize;
@@ -15,6 +16,13 @@ const CF_VALUES: &str = "jmt_values";
 const CF_PREIMAGES: &str = "jmt_preimages";
 const CF_RAW_KV: &str = "raw_kv";
 
+/// Well-known key in `raw_kv` for persisting the canonical JMT version.
+/// Starts with a null byte so it sorts before any module data key.
+const META_VERSION_KEY: &[u8] = b"\x00__canonical_version__";
+
+/// Well-known key in `raw_kv` for persisting the canonical height.
+const META_HEIGHT_KEY: &[u8] = b"\x00__canonical_height__";
+
 /// RocksDB-backed JMT store with four column families:
 /// - `jmt_nodes`: `Borsh<NodeKey> -> Borsh<Node>`
 /// - `jmt_values`: `KeyHash (32B) ++ Version (8B BE) -> Borsh<Option<OwnedValue>>`
@@ -22,6 +30,8 @@ const CF_RAW_KV: &str = "raw_kv";
 /// - `raw_kv`: `raw key bytes -> raw value bytes` (sorted, for startup load + prefix iteration)
 pub struct JmtStore {
     db: DB,
+    /// Cached rightmost leaf node. `None` outer = not yet populated.
+    rightmost_leaf_cache: Mutex<Option<Option<(NodeKey, LeafNode)>>>,
 }
 
 impl std::fmt::Debug for JmtStore {
@@ -43,7 +53,10 @@ impl JmtStore {
             .map(|name| ColumnFamilyDescriptor::new(name, cf_opts.clone()));
 
         let db = DB::open_cf_descriptors(&opts, path, cfs).context("failed to open JmtStore")?;
-        Ok(Self { db })
+        Ok(Self {
+            db,
+            rightmost_leaf_cache: Mutex::new(None),
+        })
     }
 
     fn get_raw(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>> {
@@ -56,7 +69,7 @@ impl JmtStore {
             .with_context(|| format!("rocksdb get failed in {cf}"))
     }
 
-    /// Iterate all entries in the `raw_kv` column family.
+    /// Iterate all entries in the `raw_kv` column family, excluding metadata keys.
     pub fn raw_kv_iter(&self) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
         let handle = self
             .db
@@ -66,6 +79,9 @@ impl JmtStore {
         let mut result = Vec::new();
         for item in iter {
             let (k, v) = item.context("rocksdb iterator error in raw_kv")?;
+            if k.first() == Some(&0x00) {
+                continue;
+            }
             result.push((k.to_vec(), v.to_vec()));
         }
         Ok(result)
@@ -87,6 +103,43 @@ impl JmtStore {
             .write(batch)
             .context("rocksdb raw_kv batch write failed")
     }
+
+    /// Read the persisted canonical JMT version from `raw_kv` metadata.
+    pub fn read_canonical_version(&self) -> Result<Option<u64>> {
+        match self.get_raw(CF_RAW_KV, META_VERSION_KEY)? {
+            Some(bytes) => {
+                let arr: [u8; 8] = bytes
+                    .try_into()
+                    .map_err(|_| anyhow::anyhow!("corrupt canonical version metadata"))?;
+                Ok(Some(u64::from_be_bytes(arr)))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Read the persisted canonical height from `raw_kv` metadata.
+    pub fn read_canonical_height(&self) -> Result<Option<u64>> {
+        match self.get_raw(CF_RAW_KV, META_HEIGHT_KEY)? {
+            Some(bytes) => {
+                let arr: [u8; 8] = bytes
+                    .try_into()
+                    .map_err(|_| anyhow::anyhow!("corrupt canonical height metadata"))?;
+                Ok(Some(u64::from_be_bytes(arr)))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Persist canonical version and height to `raw_kv` metadata atomically.
+    pub fn write_metadata(&self, version: u64, height: u64) -> Result<()> {
+        let handle = self.db.cf_handle(CF_RAW_KV).context("missing raw_kv CF")?;
+        let mut batch = rocksdb::WriteBatch::default();
+        batch.put_cf(&handle, META_VERSION_KEY, version.to_be_bytes());
+        batch.put_cf(&handle, META_HEIGHT_KEY, height.to_be_bytes());
+        self.db
+            .write(batch)
+            .context("rocksdb metadata write failed")
+    }
 }
 
 impl TreeReader for JmtStore {
@@ -99,6 +152,11 @@ impl TreeReader for JmtStore {
     }
 
     fn get_rightmost_leaf(&self) -> Result<Option<(NodeKey, LeafNode)>> {
+        let mut cache = self.rightmost_leaf_cache.lock().unwrap();
+        if let Some(ref cached) = *cache {
+            return Ok(cached.clone());
+        }
+
         let handle = self
             .db
             .cf_handle(CF_NODES)
@@ -116,6 +174,7 @@ impl TreeReader for JmtStore {
                 }
             }
         }
+        *cache = Some(result.clone());
         Ok(result)
     }
 
@@ -194,16 +253,41 @@ impl JmtStore {
         for (key_hash, preimage) in preimages {
             batch.put_cf(&preimages_cf, key_hash.0, preimage);
         }
+
+        // Track the rightmost leaf among new nodes for cache update.
+        let mut new_rightmost: Option<(NodeKey, LeafNode)> = None;
         for (node_key, node) in node_batch.nodes() {
             let key_bytes = borsh::to_vec(node_key).context("failed to serialize JMT node key")?;
             let val_bytes = borsh::to_vec(node).context("failed to serialize JMT node")?;
             batch.put_cf(&nodes_cf, key_bytes, val_bytes);
+
+            if let Node::Leaf(leaf) = node
+                && (new_rightmost.is_none()
+                    || leaf.key_hash() > new_rightmost.as_ref().unwrap().1.key_hash())
+            {
+                new_rightmost = Some((node_key.clone(), leaf.clone()));
+            }
         }
         for ((version, key_hash), value) in node_batch.values() {
             let val_bytes = borsh::to_vec(value).context("failed to serialize JMT value")?;
             batch.put_cf(&values_cf, value_key(*version, *key_hash), val_bytes);
         }
-        self.db.write(batch).context("rocksdb batch write failed")
+        self.db.write(batch).context("rocksdb batch write failed")?;
+
+        // Update rightmost leaf cache if a new leaf exceeds the cached one.
+        if let Some(new) = new_rightmost {
+            let mut cache = self.rightmost_leaf_cache.lock().unwrap();
+            let should_update = match &*cache {
+                None => true,
+                Some(None) => true,
+                Some(Some((_, existing))) => new.1.key_hash() >= existing.key_hash(),
+            };
+            if should_update {
+                *cache = Some(Some(new));
+            }
+        }
+
+        Ok(())
     }
 }
 

@@ -283,7 +283,7 @@ impl NodeRunner for HubRunner {
         let mut trees: Vec<Arc<Mutex<ModuleStateTree>>> = Vec::with_capacity(4);
         for (i, name) in module_names.iter().enumerate() {
             let path = data_dir.join("state").join(name);
-            let tree = ModuleStateTree::open(&path, 0)
+            let tree = ModuleStateTree::open(&path)
                 .with_context(|| format!("open module state tree: {name}"))?;
             let pairs = tree
                 .load_all()
