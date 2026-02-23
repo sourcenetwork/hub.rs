@@ -15,7 +15,7 @@ use alloy_primitives::{Address, B256, Bytes, FixedBytes, U256};
 use alloy_sol_types::SolCall;
 
 use hub_client::{
-    ACP_ADDRESS, BULLETIN_ADDRESS, BlsSigner, EvmSigner, HubClient, TransactionReceipt,
+    ACP_ADDRESS, BULLETIN_ADDRESS, BlsSigner, ClientError, EvmSigner, HubClient, TransactionReceipt,
 };
 use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, TestCluster};
 use hub_e2e::observe::ClusterAssertions;
@@ -740,24 +740,102 @@ async fn canonical_module_test() {
         "BLS namespace owner_did should match BLS signer DID"
     );
 
-    // Final EVM nonce check: 6 EVM txs total (A1, B1, C1, E1, E3, E4)
+    // ── G: Hub Module — Config, Params, Token Queries + Invalidation ─
+
+    // G1. Read chain config (eth_call to 0x0812)
+    let chain_config = client
+        .get_chain_config()
+        .await
+        .expect("get_chain_config should work");
+    assert!(!chain_config.is_empty(), "chain config should be non-empty");
+    let config_json: serde_json::Value =
+        serde_json::from_slice(&chain_config).expect("chain config should be valid JSON");
+    assert!(
+        config_json.is_object(),
+        "chain config should be a JSON object"
+    );
+
+    // G2. Read Hub params (eth_call to 0x0812)
+    let hub_params = client
+        .get_hub_params()
+        .await
+        .expect("get_hub_params should work");
+    assert!(!hub_params.is_empty(), "hub params should be non-empty");
+    let params_json: serde_json::Value =
+        serde_json::from_slice(&hub_params).expect("hub params should be valid JSON");
+    assert!(
+        params_json.is_object(),
+        "hub params should be a JSON object"
+    );
+
+    // G3. Query non-existent token — should return found=false
+    let (found, record) = client
+        .get_jws_token("0000000000000000000000000000000000000000000000000000000000000000")
+        .await
+        .expect("get_jws_token should work for non-existent hash");
+    assert!(!found, "non-existent token should not be found");
+    assert!(
+        record.is_empty(),
+        "non-existent token record should be empty"
+    );
+
+    // G4. Query tokens by BLS DID — should be empty (no JWS tokens created)
+    let tokens_by_did = client
+        .get_jws_tokens_by_did(&bls_did)
+        .await
+        .expect("get_jws_tokens_by_did should work");
+    let did_tokens: Vec<serde_json::Value> =
+        serde_json::from_slice(&tokens_by_did).expect("tokens_by_did should be valid JSON");
+    assert!(did_tokens.is_empty(), "BLS DID should have no JWS tokens");
+
+    // G5. Query tokens by EVM account — should be empty
+    let tokens_by_account = client
+        .get_jws_tokens_by_account(evm_signer.address())
+        .await
+        .expect("get_jws_tokens_by_account should work");
+    let acct_tokens: Vec<serde_json::Value> =
+        serde_json::from_slice(&tokens_by_account).expect("tokens_by_account should be valid JSON");
+    assert!(
+        acct_tokens.is_empty(),
+        "EVM account should have no JWS tokens"
+    );
+
+    // G6. Invalidate non-existent token via EVM — should revert
+    let evm_invalidate_err = client
+        .invalidate_jws(&evm_signer, "nonexistent_token_hash")
+        .await;
+    assert!(
+        matches!(evm_invalidate_err, Err(ClientError::TxReverted { .. })),
+        "EVM invalidate of non-existent token should revert, got: {evm_invalidate_err:?}"
+    );
+
+    // G7. Invalidate non-existent token via BLS — should revert
+    let bls_invalidate_err = client
+        .native_invalidate_jws(&bls_signer, "nonexistent_token_hash")
+        .await;
+    assert!(
+        matches!(bls_invalidate_err, Err(ClientError::TxReverted { .. })),
+        "BLS invalidate of non-existent token should revert, got: {bls_invalidate_err:?}"
+    );
+
+    // Final EVM nonce check: 7 EVM txs total (A1, B1, C1, E1, E3, E4, G6)
     let final_evm_nonce = client
         .get_nonce(evm_signer.address())
         .await
         .expect("get_nonce should work");
     assert_eq!(
-        final_evm_nonce, 6,
-        "final EVM nonce should be 6 (A1+B1+C1+E1+E3+E4)"
+        final_evm_nonce, 7,
+        "final EVM nonce should be 7 (A1+B1+C1+E1+E3+E4+G6)"
     );
 
-    // Final BLS native nonce check: 5 BLS txs total (A2, B2, D1, E2, E5)
+    // Final BLS native nonce check: 6 BLS txs total (A2, B2, D1, E2, E5, G7)
     let final_bls_nonce = client
         .get_native_nonce(&bls_did)
         .await
         .expect("hub_getNativeNonce should work");
     assert_eq!(
-        final_bls_nonce, 5,
-        "final BLS native nonce should be 5 (A2+B2+D1+E2+E5)"
+        final_bls_nonce, 6,
+        "final BLS native nonce should be 6 (A2+B2+D1+E2+E5+G7)"
     );
 
     // ── F: Cross-Node Consistency + Health ────────────────────────
@@ -884,8 +962,8 @@ async fn canonical_module_test() {
             .await
             .unwrap_or_else(|e| panic!("node{node_idx} get_native_nonce: {e}"));
         assert_eq!(
-            node_bls_nonce, 5,
-            "node{node_idx} BLS native nonce should be 5"
+            node_bls_nonce, 6,
+            "node{node_idx} BLS native nonce should be 6"
         );
     }
 
