@@ -6,7 +6,7 @@ Rust rewrite of SourceHub on Commonware consensus with EVM execution. Trust laye
 
 The implementation plan lives in GitHub issues. **#23 is the master tracking issue.**
 
-**Current phase: Phase 1** — Copy bankd-commonware infrastructure, get running, strip to skeleton (#1).
+**Current phase: Phase 10** — Production hardening (#22). Phases 1-9 complete.
 
 | Phase | What | Tracking |
 |-------|------|----------|
@@ -155,6 +155,9 @@ Borrowed from [defradb.rs](https://github.com/sourcenetwork/defradb.rs):
 2. `cargo test --workspace` passes
 3. `cargo clippy --all -- -D warnings` clean
 4. `cargo fmt --all` applied
+5. `cargo test -p hub-e2e --test acp_create_policy` passes (requires `cargo build -p hubd` first)
+
+The e2e test (`acp_create_policy`) is the baseline gate. It exercises both EVM and BLS transaction paths through a 4-node cluster: create policies, verify receipts, query state back, check cross-node consistency, and assert cluster health. Any change that breaks this test has broken the core pipeline.
 
 ## Git Conventions
 
