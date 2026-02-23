@@ -4,6 +4,12 @@
 //! `objs/` and `counter/` sub-prefixes as defined by the mod.rs
 //! storage spec.
 
+/// Policy record prefix (string-keyed by policy ID).
+pub const POLICY_PREFIX: &[u8] = b"policy/objs/";
+/// Policy autoincrement counter key.
+pub const POLICY_COUNTER_KEY: &[u8] = b"policy/counter/id";
+/// Relationship prefix: `relationship/ + policy_id + "/" + storage_key`.
+pub const RELATIONSHIP_PREFIX: &[u8] = b"relationship/";
 /// Access decision prefix (string-keyed objects).
 pub const ACCESS_DECISION_PREFIX: &[u8] = b"access_decision/";
 /// Registration commitment prefix (auto-increment objects).
@@ -19,6 +25,37 @@ pub const PARAMS_KEY: &[u8] = b"p_acp";
 pub const OBJS_SUBPREFIX: &[u8] = b"objs/";
 /// Counter sub-prefix (within auto-increment stores).
 pub const COUNTER_SUBPREFIX: &[u8] = b"counter/";
+
+/// Policy record key: `"policy/objs/" + policy_id`.
+pub fn policy_key(id: &str) -> Vec<u8> {
+    let mut key = Vec::from(POLICY_PREFIX);
+    key.extend_from_slice(id.as_bytes());
+    key
+}
+
+/// Relationship key: `"relationship/" + policy_id + "/" + storage_key`.
+pub fn relationship_key(policy_id: &str, storage_key: &str) -> Vec<u8> {
+    let mut key = Vec::from(RELATIONSHIP_PREFIX);
+    key.extend_from_slice(policy_id.as_bytes());
+    key.push(b'/');
+    key.extend_from_slice(storage_key.as_bytes());
+    key
+}
+
+/// Prefix for scanning all relationships under a policy.
+pub fn relationship_policy_prefix(policy_id: &str) -> Vec<u8> {
+    let mut key = Vec::from(RELATIONSHIP_PREFIX);
+    key.extend_from_slice(policy_id.as_bytes());
+    key.push(b'/');
+    key
+}
+
+/// Prefix for scanning relationships matching a storage key prefix within a policy.
+pub fn relationship_storage_prefix(policy_id: &str, storage_prefix: &str) -> Vec<u8> {
+    let mut key = relationship_policy_prefix(policy_id);
+    key.extend_from_slice(storage_prefix.as_bytes());
+    key
+}
 
 /// Access decision key: `prefix + decision_id`.
 pub fn access_decision_key(decision_id: &str) -> Vec<u8> {

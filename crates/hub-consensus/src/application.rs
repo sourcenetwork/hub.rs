@@ -141,7 +141,7 @@ mod tests {
                 timestamp: 1_700_000_000,
                 prevrandao: alloy_primitives::B256::ZERO,
                 state_root: hub_domain::StateRoot(alloy_primitives::B256::ZERO),
-                ibc_root: alloy_primitives::B256::ZERO,
+                module_state_root: alloy_primitives::B256::ZERO,
                 txs: Vec::new(),
             })
         }
@@ -174,7 +174,7 @@ mod tests {
             timestamp: 1_700_000_000,
             prevrandao: alloy_primitives::B256::ZERO,
             state_root: hub_domain::StateRoot(alloy_primitives::B256::ZERO),
-            ibc_root: alloy_primitives::B256::ZERO,
+            module_state_root: alloy_primitives::B256::ZERO,
             txs: Vec::new(),
         };
         let digest = app.verify(&block).unwrap();

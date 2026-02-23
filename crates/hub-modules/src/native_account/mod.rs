@@ -2,9 +2,9 @@
 
 pub mod keys;
 
-use std::collections::HashMap;
-
 use thiserror::Error;
+
+use crate::kv_store::{InMemoryKvStore, ModuleKvStore};
 
 /// Nonce validation error.
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -32,13 +32,26 @@ pub enum NonceError {
 /// fits the existing clone-per-block pattern.
 #[derive(Clone, Debug, Default)]
 pub struct NativeNonceStore {
-    nonces: HashMap<String, u64>,
+    store: InMemoryKvStore,
 }
 
 impl NativeNonceStore {
+    /// Read access to the underlying KV store (for serialization).
+    pub const fn store(&self) -> &InMemoryKvStore {
+        &self.store
+    }
+
+    /// Reconstruct from a deserialized store.
+    pub const fn from_store(store: InMemoryKvStore) -> Self {
+        Self { store }
+    }
+
     /// Return the current nonce for the given DID (0 for new accounts).
     pub fn get_nonce(&self, did: &str) -> u64 {
-        self.nonces.get(did).copied().unwrap_or(0)
+        self.store
+            .get(&keys::native_nonce_key(did))
+            .map(|bytes| u64::from_le_bytes(bytes.try_into().expect("nonce is 8 bytes")))
+            .unwrap_or(0)
     }
 
     /// Validate `tx_nonce == stored` and increment. Returns an error on mismatch.
@@ -54,7 +67,8 @@ impl NativeNonceStore {
         let next = expected
             .checked_add(1)
             .ok_or_else(|| NonceError::Overflow(did.to_string()))?;
-        self.nonces.insert(did.to_string(), next);
+        self.store
+            .put(&keys::native_nonce_key(did), next.to_le_bytes().to_vec());
         Ok(())
     }
 }
@@ -164,13 +178,15 @@ mod tests {
 
     #[test]
     fn overflow_rejected() {
-        let mut store = NativeNonceStore::default();
+        let mut nonce_store = NativeNonceStore::default();
         let did = "did:key:z6MkMax";
-        store.nonces.insert(did.to_string(), u64::MAX);
+        nonce_store.store.put(
+            &keys::native_nonce_key(did),
+            u64::MAX.to_le_bytes().to_vec(),
+        );
 
-        let err = store.check_and_increment(did, u64::MAX).unwrap_err();
+        let err = nonce_store.check_and_increment(did, u64::MAX).unwrap_err();
         assert_eq!(err, NonceError::Overflow(did.to_string()));
-        // Nonce unchanged.
-        assert_eq!(store.get_nonce(did), u64::MAX);
+        assert_eq!(nonce_store.get_nonce(did), u64::MAX);
     }
 }

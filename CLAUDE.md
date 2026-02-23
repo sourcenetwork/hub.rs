@@ -89,11 +89,12 @@ All module state is stored in QMDB (same Merkle-ized KV store that backs EVM sta
 
 ```
 Block state commitment:
-    evm_state_root:    QMDB/MPT root (EVM account + storage state)
-    native_state_root: Combined root of module state trees
-        acp_root:      Policies, relationships, objects (zanzi engine → QMDB)
-        bulletin_root: Namespaces, collaborators, posts
-        hub_root:      JWS tokens, invalidation records
+    state_root:             QMDB root (EVM accounts + storage + code)
+    module_state_root:      Combined root of module state trees
+        acp_root:           Policies, relationships, objects (zanzi engine)
+        bulletin_root:      Namespaces, collaborators, posts
+        hub_root:           JWS tokens, invalidation records
+        native_nonce_root:  BLS identity nonces
 ```
 
 ### RPC surfaces

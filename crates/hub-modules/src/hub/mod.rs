@@ -9,12 +9,11 @@ pub mod keys;
 /// Hub domain types.
 pub mod types;
 
-use std::collections::HashMap;
-
 use error::HubError;
 use identity::Did;
 use types::{ChainConfig, HubParams, JWSTokenRecord, JWSTokenStatus};
 
+use crate::kv_store::{InMemoryKvStore, ModuleKvStore};
 use crate::types::{BlockExecCtx, Timestamp, TxExecCtx};
 
 type Result<T> = std::result::Result<T, HubError>;
@@ -47,24 +46,26 @@ type Result<T> = std::result::Result<T, HubError>;
 ///
 /// DID and account indices are presence markers (value=0x01);
 /// the full record lives only in the primary 0x01 store.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct HubModule {
-    store: HashMap<Vec<u8>, Vec<u8>>,
-}
-
-impl Default for HubModule {
-    fn default() -> Self {
-        Self::new()
-    }
+    store: InMemoryKvStore,
 }
 
 #[allow(dead_code)]
 impl HubModule {
     /// Create a new Hub module instance.
     pub fn new() -> Self {
-        Self {
-            store: HashMap::new(),
-        }
+        Self::default()
+    }
+
+    /// Read access to the underlying KV store (for serialization).
+    pub const fn store(&self) -> &InMemoryKvStore {
+        &self.store
+    }
+
+    /// Reconstruct from a deserialized store.
+    pub const fn from_store(store: InMemoryKvStore) -> Self {
+        Self { store }
     }
 
     // ── Msg handlers ────────────────────────────────────────────────────
@@ -346,8 +347,8 @@ impl HubModule {
         let zero = Timestamp::default();
         let expired_hashes: Vec<String> = self
             .store
+            .prefix_scan(keys::JWS_TOKEN_PREFIX)
             .iter()
-            .filter(|(k, _)| k.starts_with(keys::JWS_TOKEN_PREFIX))
             .filter_map(|(_, v)| borsh::from_slice::<JWSTokenRecord>(v).ok())
             .filter(|r| r.status != JWSTokenStatus::Invalid)
             .filter(|r| r.expires_at != zero && r.expires_at.seconds < block_ctx.timestamp.seconds)
@@ -372,7 +373,8 @@ impl HubModule {
         self.store
             .get(&keys::jws_token_key(token_hash))
             .map(|bytes| {
-                borsh::from_slice(bytes).map_err(|e: std::io::Error| HubError::State(e.to_string()))
+                borsh::from_slice(&bytes)
+                    .map_err(|e: std::io::Error| HubError::State(e.to_string()))
             })
             .transpose()
     }
@@ -394,9 +396,9 @@ impl HubModule {
         let prefix = keys::jws_token_did_prefix(&did_str);
         let hashes: Vec<String> = self
             .store
-            .keys()
-            .filter(|k| k.starts_with(&prefix))
-            .filter_map(|k| extract_hash_from_index_suffix(&k[prefix.len()..]))
+            .prefix_scan(&prefix)
+            .iter()
+            .filter_map(|(k, _)| extract_hash_from_index_suffix(&k[prefix.len()..]))
             .collect();
         hashes
             .iter()
@@ -420,9 +422,9 @@ impl HubModule {
         let prefix = keys::jws_token_account_prefix(account);
         let hashes: Vec<String> = self
             .store
-            .keys()
-            .filter(|k| k.starts_with(&prefix))
-            .filter_map(|k| extract_hash_from_index_suffix(&k[prefix.len()..]))
+            .prefix_scan(&prefix)
+            .iter()
+            .filter_map(|(k, _)| extract_hash_from_index_suffix(&k[prefix.len()..]))
             .collect();
         hashes
             .iter()
@@ -492,11 +494,11 @@ impl HubModule {
     /// # Errors
     /// - `ChainConfigAlreadySet` — config already written
     pub fn set_chain_config(&mut self, config: ChainConfig) -> Result<()> {
-        if self.store.contains_key(keys::CHAIN_CONFIG_KEY) {
+        if self.store.has(keys::CHAIN_CONFIG_KEY) {
             return Err(HubError::ChainConfigAlreadySet);
         }
         let bytes = borsh::to_vec(&config).map_err(|e| HubError::State(e.to_string()))?;
-        self.store.insert(keys::CHAIN_CONFIG_KEY.to_vec(), bytes);
+        self.store.put(keys::CHAIN_CONFIG_KEY, bytes);
         Ok(())
     }
 
@@ -516,7 +518,8 @@ impl HubModule {
                 ignore_bearer_auth: false,
             }),
             |bytes| {
-                borsh::from_slice(bytes).map_err(|e: std::io::Error| HubError::State(e.to_string()))
+                borsh::from_slice(&bytes)
+                    .map_err(|e: std::io::Error| HubError::State(e.to_string()))
             },
         )
     }
@@ -548,11 +551,11 @@ impl HubModule {
             .ok_or_else(|| HubError::TokenNotFound {
                 token_hash: token_hash.to_string(),
             })?;
-        self.store.remove(&keys::jws_token_key(token_hash));
+        self.store.delete(&keys::jws_token_key(token_hash));
         self.store
-            .remove(&keys::jws_token_by_did_key(&record.issuer_did, token_hash));
+            .delete(&keys::jws_token_by_did_key(&record.issuer_did, token_hash));
         if !record.authorized_account.is_empty() {
-            self.store.remove(&keys::jws_token_by_account_key(
+            self.store.delete(&keys::jws_token_by_account_key(
                 &record.authorized_account,
                 token_hash,
             ));
@@ -572,8 +575,8 @@ impl HubModule {
     /// - All keys under `0x01` prefix
     pub fn get_all_jws_tokens(&self) -> Result<Vec<JWSTokenRecord>> {
         self.store
+            .prefix_scan(keys::JWS_TOKEN_PREFIX)
             .iter()
-            .filter(|(k, _)| k.starts_with(keys::JWS_TOKEN_PREFIX))
             .map(|(_, v)| {
                 borsh::from_slice(v).map_err(|e: std::io::Error| HubError::State(e.to_string()))
             })
@@ -657,13 +660,13 @@ impl HubModule {
         }
         let bytes = borsh::to_vec(record).map_err(|e| HubError::State(e.to_string()))?;
         self.store
-            .insert(keys::jws_token_key(&record.token_hash), bytes);
+            .put(&keys::jws_token_key(&record.token_hash), bytes);
         let did_key = keys::jws_token_by_did_key(&record.issuer_did, &record.token_hash);
-        self.store.insert(did_key, vec![0x01]);
+        self.store.put(&did_key, vec![0x01]);
         if !record.authorized_account.is_empty() {
             let acct_key =
                 keys::jws_token_by_account_key(&record.authorized_account, &record.token_hash);
-            self.store.insert(acct_key, vec![0x01]);
+            self.store.put(&acct_key, vec![0x01]);
         }
         Ok(())
     }
@@ -687,7 +690,7 @@ impl HubModule {
         self.store
             .get(keys::PARAMS_KEY)
             .map_or_else(HubParams::default, |bytes| {
-                borsh::from_slice(bytes).expect("corrupt HubParams in store")
+                borsh::from_slice(&bytes).expect("corrupt HubParams in store")
             })
     }
 
@@ -705,7 +708,7 @@ impl HubModule {
     /// `cdc.Marshal`, not `MustMarshal`).
     fn set_params(&mut self, params: &HubParams) -> Result<()> {
         let bytes = borsh::to_vec(params).map_err(|e| HubError::State(e.to_string()))?;
-        self.store.insert(keys::PARAMS_KEY.to_vec(), bytes);
+        self.store.put(keys::PARAMS_KEY, bytes);
         Ok(())
     }
 

@@ -1,6 +1,7 @@
 //! Core execution traits.
 
 use alloy_consensus::Header;
+use hub_modules::module_state::ModuleState;
 use hub_traits::StateDb;
 
 use crate::{BlockContext, ExecutionError, ExecutionOutcome};
@@ -41,4 +42,15 @@ pub trait BlockExecutor<S: StateDb>: Clone + Send + Sync + 'static {
     fn cached_receipts(&self, _height: u64) -> Option<(Vec<crate::ExecutionReceipt>, u64)> {
         None
     }
+
+    /// Get the cached post-execution module state for a given height.
+    fn get_cached_modules(&self, _height: u64) -> Option<ModuleState> {
+        None
+    }
+
+    /// Write module state to the executor's shared base state.
+    fn set_base_modules(&self, _modules: ModuleState) {}
+
+    /// Remove module cache entries at or below the given height.
+    fn cleanup_module_cache(&self, _up_to_height: u64) {}
 }

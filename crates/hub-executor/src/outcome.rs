@@ -13,8 +13,8 @@ pub struct ExecutionOutcome {
     pub receipts: Vec<ExecutionReceipt>,
     /// Total gas used by all transactions.
     pub gas_used: u64,
-    /// JMT root of the IBC state tree after execution.
-    pub ibc_root: B256,
+    /// Module state root after execution.
+    pub module_state_root: B256,
     /// Indices of input txs that were actually executed.
     ///
     /// During block building, txs that fail validation (e.g. NonceTooLow) are
@@ -32,7 +32,7 @@ impl ExecutionOutcome {
             changes: ChangeSet::new(),
             receipts: Vec::new(),
             gas_used: 0,
-            ibc_root: B256::ZERO,
+            module_state_root: B256::ZERO,
             executed_tx_indices: None,
         }
     }

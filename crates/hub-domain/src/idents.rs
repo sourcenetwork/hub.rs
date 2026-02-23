@@ -136,7 +136,7 @@ mod tests {
             timestamp: 1_700_000_000,
             prevrandao: B256::from([0x55u8; 32]),
             state_root: StateRoot(B256::from([0xBBu8; 32])),
-            ibc_root: B256::ZERO,
+            module_state_root: B256::ZERO,
             txs,
         };
         let encoded = block.encode();

@@ -170,7 +170,7 @@ struct DirtyStores {
     code: CodeStoreDirty,
 }
 
-fn store_config<C>(
+pub(crate) fn store_config<C>(
     prefix: &str,
     name: &str,
     page_cache: CacheRef,

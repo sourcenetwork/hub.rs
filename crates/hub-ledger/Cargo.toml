@@ -15,6 +15,7 @@ workspace = true
 hub-consensus.workspace = true
 hub-domain.workspace = true
 hub-executor.workspace = true
+hub-modules.workspace = true
 hub-overlay.workspace = true
 hub-qmdb-ledger.workspace = true
 hub-traits.workspace = true

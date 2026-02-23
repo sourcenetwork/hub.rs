@@ -7,6 +7,8 @@ use alloy_primitives as _;
 mod borsh_did;
 /// Shared key encoding helpers (length prefix, sanitization).
 pub mod key_encoding;
+/// Module-level KV store trait and in-memory implementation.
+pub mod kv_store;
 /// Shared module state container.
 pub mod module_state;
 /// Shared types used across modules (Timestamp, Duration).

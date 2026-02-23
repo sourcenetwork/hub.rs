@@ -85,6 +85,22 @@ pub fn parse_collaborator_key(key: &[u8]) -> (String, String) {
     (unsanitize_key_part(ns), unsanitize_key_part(did))
 }
 
+/// Collaborator iteration prefix: `prefix + sanitize(namespace_id) + "/"`.
+pub fn collaborator_prefix(namespace_id: &str) -> Vec<u8> {
+    let mut key = Vec::from(COLLABORATOR_PREFIX);
+    key.extend_from_slice(sanitize_key_part(namespace_id).as_bytes());
+    key.push(b'/');
+    key
+}
+
+/// Post iteration prefix: `prefix + sanitize(namespace_id) + "/"`.
+pub fn post_prefix(namespace_id: &str) -> Vec<u8> {
+    let mut key = Vec::from(POST_PREFIX);
+    key.extend_from_slice(sanitize_key_part(namespace_id).as_bytes());
+    key.push(b'/');
+    key
+}
+
 /// Deterministic post ID: `hex(SHA-256(namespace_id + payload))`.
 pub fn generate_post_id(namespace_id: &str, payload: &[u8]) -> String {
     let mut hasher = Sha256::new();

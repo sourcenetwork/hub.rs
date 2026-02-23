@@ -9,7 +9,7 @@ use crate::{
     BlockContext, BlockExecutor, ExecutionConfig, ExecutionError, ExecutionOutcome,
     ExecutionReceipt, StateDbAdapter, build_receipt, decode_evm_tx, extract_changes,
 };
-use alloy_primitives::{B256, Bytes, U256, keccak256};
+use alloy_primitives::{Bytes, U256, keccak256};
 use hub_crypto::bls;
 use hub_domain::NativeTx;
 use hub_modules::acp::AcpModule;
@@ -35,6 +35,9 @@ const NATIVE_TX_GAS_LIMIT: u64 = 1_000_000;
 /// Per-block receipt cache: height → (receipts, total gas used).
 type ReceiptCache = Arc<Mutex<HashMap<u64, (Vec<ExecutionReceipt>, u64)>>>;
 
+/// Per-block module state cache: height → post-execution ModuleState.
+type ModuleCache = Arc<Mutex<HashMap<u64, ModuleState>>>;
+
 /// Block executor with hub precompiles (ACP, Bulletin, Hub).
 ///
 /// Processes both EVM transactions (secp256k1) and native BLS transactions
@@ -42,6 +45,9 @@ type ReceiptCache = Arc<Mutex<HashMap<u64, (Vec<ExecutionReceipt>, u64)>>>;
 /// the path: `0x45` → native BLS, anything else → REVM.
 ///
 /// Module state persists across block executions via `SharedModuleState`.
+/// Post-execution module state is cached per height so consensus can chain
+/// parent→child state across proposals, and finalization can commit the
+/// winning fork's state.
 /// Receipts are cached per block height so the finalized block reporter
 /// can retrieve them without re-executing (which would fail nonce checks).
 #[derive(Clone, Debug)]
@@ -49,6 +55,7 @@ pub struct HubExecutor {
     config: ExecutionConfig,
     modules: SharedModuleState,
     receipt_cache: ReceiptCache,
+    module_cache: ModuleCache,
 }
 
 impl HubExecutor {
@@ -58,6 +65,7 @@ impl HubExecutor {
             config: ExecutionConfig::new(chain_id),
             modules: Arc::new(RwLock::new(ModuleState::default())),
             receipt_cache: Arc::new(Mutex::new(HashMap::new())),
+            module_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -67,6 +75,7 @@ impl HubExecutor {
             config,
             modules: Arc::new(RwLock::new(ModuleState::default())),
             receipt_cache: Arc::new(Mutex::new(HashMap::new())),
+            module_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -83,6 +92,25 @@ impl HubExecutor {
     /// Get the shared module state.
     pub const fn modules(&self) -> &SharedModuleState {
         &self.modules
+    }
+
+    /// Get the cached module state for a given height (clone without removing).
+    pub fn get_cached_modules(&self, height: u64) -> Option<ModuleState> {
+        self.module_cache.lock().unwrap().get(&height).cloned()
+    }
+
+    /// Remove module cache entries at or below the given height.
+    pub fn cleanup_module_cache(&self, up_to_height: u64) {
+        self.module_cache
+            .lock()
+            .unwrap()
+            .retain(|&h, _| h > up_to_height);
+    }
+
+    /// Write module state to `SharedModuleState` (used by build/verify
+    /// to set parent state before execute, and by finalization to commit).
+    pub fn set_base_modules(&self, modules: ModuleState) {
+        *self.modules.write().unwrap() = modules;
     }
 
     /// Execute a native BLS transaction: verify signature, derive DID, dispatch to module.
@@ -331,12 +359,17 @@ impl<S: StateDb> BlockExecutor<S> for HubExecutor {
         }
 
         outcome.gas_used = cumulative_gas;
-        outcome.ibc_root = B256::ZERO;
+        outcome.module_state_root = modules.state_root();
 
         self.receipt_cache.lock().unwrap().insert(
             context.header.number,
             (outcome.receipts.clone(), cumulative_gas),
         );
+
+        self.module_cache
+            .lock()
+            .unwrap()
+            .insert(context.header.number, modules);
 
         Ok(outcome)
     }
@@ -361,6 +394,18 @@ impl<S: StateDb> BlockExecutor<S> for HubExecutor {
 
     fn cached_receipts(&self, height: u64) -> Option<(Vec<ExecutionReceipt>, u64)> {
         self.receipt_cache.lock().unwrap().remove(&height)
+    }
+
+    fn get_cached_modules(&self, height: u64) -> Option<ModuleState> {
+        self.get_cached_modules(height)
+    }
+
+    fn set_base_modules(&self, modules: ModuleState) {
+        self.set_base_modules(modules);
+    }
+
+    fn cleanup_module_cache(&self, up_to_height: u64) {
+        self.cleanup_module_cache(up_to_height);
     }
 }
 
@@ -448,7 +493,7 @@ mod tests {
         let outcome = executor.execute(&state, &context, &txs).unwrap();
         assert_eq!(outcome.gas_used, 0);
         assert!(outcome.receipts.is_empty());
-        assert_eq!(outcome.ibc_root, B256::ZERO);
+        assert_ne!(outcome.module_state_root, B256::ZERO);
     }
 
     #[test]

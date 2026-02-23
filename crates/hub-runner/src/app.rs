@@ -101,6 +101,11 @@ where
         let excluded = self.collect_pending_tx_ids(&snapshots, parent_digest);
         let txs = mempool.build(self.max_txs, &excluded);
 
+        // Chain module state from parent block (falls back to SharedModuleState for genesis).
+        if let Some(parent_modules) = self.executor.get_cached_modules(parent.height) {
+            self.executor.set_base_modules(parent_modules);
+        }
+
         let prevrandao = self.get_prevrandao(parent_digest).await;
         let height = parent.height + 1;
         let timestamp = SystemTime::now()
@@ -146,7 +151,7 @@ where
             .ok()?;
         let root_elapsed = root_start.elapsed();
 
-        let ibc_root = outcome.ibc_root;
+        let module_state_root = outcome.module_state_root;
         let block = Block {
             context: consensus_context,
             parent: parent.id(),
@@ -154,7 +159,7 @@ where
             timestamp,
             prevrandao,
             state_root,
-            ibc_root,
+            module_state_root,
             txs,
         };
 
@@ -236,10 +241,16 @@ where
         };
         let snapshot_elapsed = start.elapsed();
 
+        // Chain module state from parent block (falls back to SharedModuleState for genesis).
+        let parent_height = block.height.saturating_sub(1);
+        if let Some(parent_modules) = self.executor.get_cached_modules(parent_height) {
+            self.executor.set_base_modules(parent_modules);
+        }
+
         let context = self
             .block_context(block.height, block.timestamp, block.prevrandao)
             .with_verification()
-            .with_expected_ibc_root(block.ibc_root);
+            .with_expected_module_state_root(block.module_state_root);
         let exec_start = Instant::now();
         let execution =
             match BlockExecution::execute(&parent_snapshot, &self.executor, &context, &block.txs)
@@ -277,12 +288,12 @@ where
             return false;
         }
 
-        if execution.outcome.ibc_root != block.ibc_root {
+        if execution.outcome.module_state_root != block.module_state_root {
             warn!(
                 ?digest,
-                expected = ?block.ibc_root,
-                computed = ?execution.outcome.ibc_root,
-                "ibc root mismatch"
+                expected = ?block.module_state_root,
+                computed = ?execution.outcome.module_state_root,
+                "module state root mismatch"
             );
             return false;
         }

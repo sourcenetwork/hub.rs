@@ -20,6 +20,7 @@ use commonware_parallel::Sequential;
 use commonware_runtime::{Metrics as _, Spawner, buffer::paged::CacheRef, tokio};
 use commonware_utils::{NZU64, NZUsize, acknowledgement::Exact};
 use futures::StreamExt;
+use hub_backend::{ModuleStateBackend, QmdbBackendConfig};
 use hub_domain::{Block, BlockCfg, BootstrapConfig, ConsensusDigest, LedgerEvent, Tx, TxCfg};
 use hub_executor::{BlockContext, HubExecutor, SharedModuleState};
 use hub_indexer::BlockIndex;
@@ -275,6 +276,18 @@ impl NodeRunner for HubRunner {
 
         let executor = HubExecutor::new(self.chain_id);
         let modules: SharedModuleState = executor.modules().clone();
+
+        // Open module state backend and load persisted state.
+        let module_backend_config =
+            QmdbBackendConfig::new(format!("{}-modules", PARTITION_PREFIX), page_cache.clone());
+        let module_backend =
+            ModuleStateBackend::open(context.with_label("module-state"), &module_backend_config)
+                .await
+                .context("init module state backend")?;
+        let persisted_modules = module_backend.load().await.context("load module state")?;
+        executor.set_base_modules(persisted_modules);
+        let module_backend = Arc::new(::tokio::sync::Mutex::new(module_backend));
+
         let context_provider = HubContextProvider {
             gas_limit: self.gas_limit,
         };
@@ -284,7 +297,8 @@ impl NodeRunner for HubRunner {
             executor.clone(),
             context_provider,
         )
-        .with_block_index(block_index.clone());
+        .with_block_index(block_index.clone())
+        .with_module_backend(module_backend);
 
         let scheme_provider = ConstantSchemeProvider::from(self.scheme.clone());
 

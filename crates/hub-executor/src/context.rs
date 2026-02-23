@@ -18,14 +18,11 @@ pub struct BlockContext {
     pub blob_base_fee: Option<u128>,
     /// True when re-executing a block for verification or finalization
     /// (as opposed to building a new proposal). Executors use this to
-    /// decide whether speculative state (e.g. IBC JMT) should be
+    /// decide whether speculative module state should be
     /// overwritten on re-execution at the same height.
     pub is_verification: bool,
-    /// Expected IBC root from the block being verified. When set,
-    /// the executor skips flushing speculative IBC state if the
-    /// computed root doesn't match (preventing failed verifications
-    /// from polluting the JMT).
-    pub expected_ibc_root: Option<B256>,
+    /// Expected module state root from the block being verified.
+    pub expected_module_state_root: Option<B256>,
 }
 
 impl BlockContext {
@@ -38,7 +35,7 @@ impl BlockContext {
             prevrandao,
             blob_base_fee: None,
             is_verification: false,
-            expected_ibc_root: None,
+            expected_module_state_root: None,
         }
     }
 
@@ -49,10 +46,10 @@ impl BlockContext {
         self
     }
 
-    /// Set the expected IBC root for verification.
+    /// Set the expected module state root for verification.
     #[must_use]
-    pub const fn with_expected_ibc_root(mut self, root: B256) -> Self {
-        self.expected_ibc_root = Some(root);
+    pub const fn with_expected_module_state_root(mut self, root: B256) -> Self {
+        self.expected_module_state_root = Some(root);
         self
     }
 

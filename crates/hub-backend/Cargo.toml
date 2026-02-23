@@ -11,6 +11,7 @@ description = "Commonware-storage based backend for hub QMDB"
 workspace = true
 
 [dependencies]
+hub-modules.workspace = true
 hub-qmdb.workspace = true
 hub-handlers.workspace = true
 

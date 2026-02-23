@@ -17,6 +17,7 @@ use error::AcpError;
 use identity::Did;
 use sha2::{Digest, Sha256};
 
+use crate::kv_store::{InMemoryKvStore, ModuleKvStore};
 use crate::types::{BlockExecCtx, Duration, Timestamp};
 use types::{
     AccessDecision, AccessRequest, AcpParams, Actor, AmendmentEvent, ContentType, DecisionParams,
@@ -33,35 +34,27 @@ type Result<T> = std::result::Result<T, AcpError>;
 /// and access checks. Business logic lives here; precompile and native-tx
 /// shims are thin wrappers that decode arguments and forward to these methods.
 ///
-/// # Storage layout (in-memory HashMaps)
+/// # KV store layout
 ///
 /// ```text
-/// policies:           policy_id → PolicyRecord
-/// zanzibar_policies:  policy_id → Policy (for permission evaluation)
-/// policy_counter:     monotonic u64 for ID generation
-/// relationships:      policy_id → (storage_key → RelationshipRecord)
-/// access_decisions:   decision_id → AccessDecision
-/// commitments:        id → RegistrationsCommitment
-/// commitment_counter: monotonic u64
-/// amendment_events:   id → AmendmentEvent
-/// amendment_event_counter: monotonic u64
-/// params:             Option<AcpParams>
-/// replay_cache:       payload_id_bytes → expire_height
+/// "policy/objs/" + policy_id                           → PolicyRecord (serde_json)
+/// "policy/counter/id"                                  → u64 BE
+/// "relationship/" + policy_id + "/" + storage_key       → RelationshipRecord (serde_json)
+/// "access_decision/" + decision_id                     → AccessDecision (Borsh)
+/// "commitment/objs/" + BE(id)                          → RegistrationsCommitment (Borsh)
+/// "commitment/counter/id"                              → u64 BE
+/// "amendment_event/objs/" + BE(id)                     → AmendmentEvent (Borsh)
+/// "amendment_event/counter/id"                         → u64 BE
+/// "p_acp"                                              → AcpParams (Borsh)
+/// "spc_seen/" + payload_id                             → u64 LE (expire height)
 /// ```
+///
+/// `zanzibar_policies` is an in-memory cache populated on `create_policy` /
+/// `edit_policy` and cloned with the module. Not persisted to the KV store.
 #[derive(Clone, Debug)]
 pub struct AcpModule {
-    policies: HashMap<String, PolicyRecord>,
+    store: InMemoryKvStore,
     zanzibar_policies: HashMap<String, Policy>,
-    policy_counter: u64,
-    /// policy_id → (storage_key → RelationshipRecord)
-    relationships: HashMap<String, HashMap<String, RelationshipRecord>>,
-    access_decisions: HashMap<String, AccessDecision>,
-    commitments: HashMap<u64, RegistrationsCommitment>,
-    commitment_counter: u64,
-    amendment_events: HashMap<u64, AmendmentEvent>,
-    amendment_event_counter: u64,
-    params: Option<AcpParams>,
-    replay_cache: HashMap<Vec<u8>, u64>,
 }
 
 impl Default for AcpModule {
@@ -75,17 +68,27 @@ impl AcpModule {
     /// Create a new ACP module instance.
     pub fn new() -> Self {
         Self {
-            policies: HashMap::new(),
+            store: InMemoryKvStore::default(),
             zanzibar_policies: HashMap::new(),
-            policy_counter: 0,
-            relationships: HashMap::new(),
-            access_decisions: HashMap::new(),
-            commitments: HashMap::new(),
-            commitment_counter: 0,
-            amendment_events: HashMap::new(),
-            amendment_event_counter: 0,
-            params: None,
-            replay_cache: HashMap::new(),
+        }
+    }
+
+    /// Read access to the underlying KV store (for serialization).
+    pub const fn store(&self) -> &InMemoryKvStore {
+        &self.store
+    }
+
+    /// Reconstruct from a deserialized store, rebuilding the zanzibar cache.
+    pub fn from_store(store: InMemoryKvStore) -> Self {
+        let mut zanzibar_policies = HashMap::new();
+        for (_, value) in store.prefix_scan(keys::POLICY_PREFIX) {
+            if let Ok(record) = serde_json::from_slice::<PolicyRecord>(&value) {
+                zanzibar_policies.insert(record.policy.id.clone(), record.policy.clone());
+            }
+        }
+        Self {
+            store,
+            zanzibar_policies,
         }
     }
 
@@ -111,8 +114,7 @@ impl AcpModule {
         let parsed = policy_yaml::parse_policy_yaml(policy)
             .map_err(|reason| AcpError::InvalidPolicy { reason })?;
 
-        self.policy_counter += 1;
-        let counter = self.policy_counter;
+        let counter = self.next_policy_counter();
 
         let zanzibar_policy =
             Policy::from_parsed(&parsed, counter).map_err(|e| AcpError::InvalidPolicy {
@@ -134,7 +136,7 @@ impl AcpModule {
         };
 
         let policy_id = zanzibar_policy.id.clone();
-        self.policies.insert(policy_id.clone(), record.clone());
+        self.set_policy_record(&policy_id, &record);
         self.zanzibar_policies.insert(policy_id, zanzibar_policy);
 
         Ok(record)
@@ -150,9 +152,7 @@ impl AcpModule {
         marshal_type: PolicyMarshalingType,
     ) -> Result<(u64, PolicyRecord)> {
         let existing =
-            self.policies
-                .get(policy_id)
-                .cloned()
+            self.get_policy_record(policy_id)
                 .ok_or_else(|| AcpError::PolicyNotFound {
                     id: policy_id.to_string(),
                 })?;
@@ -197,22 +197,24 @@ impl AcpModule {
         new_zanzibar.id = policy_id.to_string();
 
         // Prune orphaned relationships: relations that existed in old policy but not new.
-        let mut removed: u64 = 0;
-        if let Some(rels) = self.relationships.get_mut(policy_id) {
-            let mut to_delete = Vec::new();
-            for (key, rec) in rels.iter() {
+        let all_rels = self
+            .store
+            .prefix_scan(&keys::relationship_policy_prefix(policy_id));
+        let mut to_delete = Vec::new();
+        for (kv_key, value) in &all_rels {
+            if let Ok(rec) = serde_json::from_slice::<RelationshipRecord>(value) {
                 let rel = &rec.relationship;
-                let relation_exists = new_zanzibar
+                if new_zanzibar
                     .get_relation(&rel.resource, &rel.relation)
-                    .is_some();
-                if !relation_exists {
-                    to_delete.push(key.clone());
+                    .is_none()
+                {
+                    to_delete.push(kv_key.clone());
                 }
             }
-            removed = to_delete.len() as u64;
-            for key in to_delete {
-                rels.remove(&key);
-            }
+        }
+        let removed = to_delete.len() as u64;
+        for kv_key in to_delete {
+            self.store.delete(&kv_key);
         }
 
         let new_record = PolicyRecord {
@@ -222,8 +224,7 @@ impl AcpModule {
             metadata: existing.metadata.clone(),
         };
 
-        self.policies
-            .insert(policy_id.to_string(), new_record.clone());
+        self.set_policy_record(policy_id, &new_record);
         self.zanzibar_policies
             .insert(policy_id.to_string(), new_zanzibar);
 
@@ -362,15 +363,22 @@ impl AcpModule {
     /// Fetch a policy by ID.
     #[allow(unused_variables)]
     pub fn query_policy(&self, id: &str) -> Result<PolicyRecord> {
-        self.policies
-            .get(id)
-            .cloned()
+        self.get_policy_record(id)
             .ok_or_else(|| AcpError::PolicyNotFound { id: id.to_string() })
     }
 
     /// List all stored policy IDs.
     pub fn query_policy_ids(&self) -> Result<Vec<String>> {
-        Ok(self.policies.keys().cloned().collect())
+        let prefix = keys::POLICY_PREFIX;
+        let ids = self
+            .store
+            .prefix_scan(prefix)
+            .into_iter()
+            .map(|(k, _)| {
+                String::from_utf8(k[prefix.len()..].to_vec()).expect("policy ID is valid UTF-8")
+            })
+            .collect();
+        Ok(ids)
     }
 
     /// Filter relationships within a policy using a selector.
@@ -380,14 +388,10 @@ impl AcpModule {
         policy_id: &str,
         selector: &RelationshipSelector,
     ) -> Result<Vec<RelationshipRecord>> {
-        let Some(rels) = self.relationships.get(policy_id) else {
-            return Ok(Vec::new());
-        };
-
-        let results = rels
-            .values()
+        let results = self
+            .scan_policy_relationships(policy_id)
+            .into_iter()
             .filter(|rec| self.matches_selector(rec, selector))
-            .cloned()
             .collect();
 
         Ok(results)
@@ -461,15 +465,13 @@ impl AcpModule {
         policy_id: &str,
         object: &Object,
     ) -> Result<(bool, Option<RelationshipRecord>)> {
-        let Some(rels) = self.relationships.get(policy_id) else {
-            return Ok((false, None));
-        };
-
-        let prefix = Relationship::relation_prefix(&object.resource, &object.id, "owner");
-        let owner_rec = rels
-            .iter()
-            .find(|(k, _)| k.starts_with(&prefix))
-            .map(|(_, v)| v.clone());
+        let owner_prefix = Relationship::relation_prefix(&object.resource, &object.id, "owner");
+        let scan_prefix = keys::relationship_storage_prefix(policy_id, &owner_prefix);
+        let owner_rec = self
+            .store
+            .prefix_scan(&scan_prefix)
+            .into_iter()
+            .find_map(|(_, v)| serde_json::from_slice::<RelationshipRecord>(&v).ok());
 
         match owner_rec {
             Some(rec) if !rec.archived => Ok((true, Some(rec))),
@@ -613,15 +615,82 @@ impl AcpModule {
 
     // ── Storage access methods ──────────────────────────────────────────
 
+    // ── Storage — Policy records ─────────────────────────────────────────
+
+    fn get_policy_record(&self, id: &str) -> Option<PolicyRecord> {
+        self.store
+            .get(&keys::policy_key(id))
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+    }
+
+    fn set_policy_record(&mut self, id: &str, record: &PolicyRecord) {
+        let bytes = serde_json::to_vec(record).expect("serialize PolicyRecord");
+        self.store.put(&keys::policy_key(id), bytes);
+    }
+
+    fn next_policy_counter(&mut self) -> u64 {
+        let counter = self
+            .store
+            .get(keys::POLICY_COUNTER_KEY)
+            .map(|bytes| u64::from_be_bytes(bytes.try_into().expect("counter is 8 bytes")))
+            .unwrap_or(0);
+        let next = counter + 1;
+        self.store
+            .put(keys::POLICY_COUNTER_KEY, next.to_be_bytes().to_vec());
+        next
+    }
+
+    // ── Storage — Relationships ──────────────────────────────────────────
+
+    fn get_relationship(&self, policy_id: &str, storage_key: &str) -> Option<RelationshipRecord> {
+        self.store
+            .get(&keys::relationship_key(policy_id, storage_key))
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+    }
+
+    fn set_relationship(
+        &mut self,
+        policy_id: &str,
+        storage_key: &str,
+        record: &RelationshipRecord,
+    ) {
+        let bytes = serde_json::to_vec(record).expect("serialize RelationshipRecord");
+        self.store
+            .put(&keys::relationship_key(policy_id, storage_key), bytes);
+    }
+
+    fn delete_relationship(&mut self, policy_id: &str, storage_key: &str) {
+        self.store
+            .delete(&keys::relationship_key(policy_id, storage_key));
+    }
+
+    fn has_relationship(&self, policy_id: &str, storage_key: &str) -> bool {
+        self.store
+            .has(&keys::relationship_key(policy_id, storage_key))
+    }
+
+    fn scan_policy_relationships(&self, policy_id: &str) -> Vec<RelationshipRecord> {
+        self.store
+            .prefix_scan(&keys::relationship_policy_prefix(policy_id))
+            .into_iter()
+            .filter_map(|(_, v)| serde_json::from_slice(&v).ok())
+            .collect()
+    }
+
     // ── Storage — Params ─────────────────────────────────────────────────
 
     fn get_params(&self) -> AcpParams {
-        self.params.clone().unwrap_or_default()
+        self.store
+            .get(keys::PARAMS_KEY)
+            .and_then(|bytes| borsh::from_slice(&bytes).ok())
+            .unwrap_or_default()
     }
 
     #[allow(unused_variables)]
     fn set_params(&mut self, params: &AcpParams) -> Result<()> {
-        self.params = Some(params.clone());
+        let bytes =
+            borsh::to_vec(params).map_err(|e| AcpError::State(format!("serialize params: {e}")))?;
+        self.store.put(keys::PARAMS_KEY, bytes);
         Ok(())
     }
 
@@ -629,22 +698,29 @@ impl AcpModule {
 
     #[allow(unused_variables)]
     fn has_seen_signed_policy_cmd(&mut self, payload_id: &[u8], current_height: u64) -> bool {
-        match self.replay_cache.get(payload_id) {
+        let key = keys::signed_policy_cmd_key(payload_id);
+        match self.store.get(&key) {
             None => false,
-            Some(&expire_height) if expire_height < current_height => {
-                self.replay_cache.remove(payload_id);
-                false
+            Some(bytes) => {
+                let expire_height =
+                    u64::from_le_bytes(bytes.try_into().expect("replay cache is 8 bytes"));
+                if expire_height < current_height {
+                    self.store.delete(&key);
+                    false
+                } else {
+                    true
+                }
             }
-            Some(_) => true,
         }
     }
 
     #[allow(unused_variables)]
     fn mark_signed_policy_cmd_seen(&mut self, payload_id: &[u8], expire_height: u64) -> Result<()> {
-        if self.replay_cache.contains_key(payload_id) {
+        let key = keys::signed_policy_cmd_key(payload_id);
+        if self.store.has(&key) {
             return Err(AcpError::ReplayDetected);
         }
-        self.replay_cache.insert(payload_id.to_vec(), expire_height);
+        self.store.put(&key, expire_height.to_le_bytes().to_vec());
         Ok(())
     }
 
@@ -652,49 +728,86 @@ impl AcpModule {
 
     #[allow(unused_variables)]
     fn set_access_decision(&mut self, decision: &AccessDecision) -> Result<()> {
-        self.access_decisions
-            .insert(decision.id.clone(), decision.clone());
+        let bytes = borsh::to_vec(decision)
+            .map_err(|e| AcpError::State(format!("serialize AccessDecision: {e}")))?;
+        self.store
+            .put(&keys::access_decision_key(&decision.id), bytes);
         Ok(())
     }
 
     #[allow(unused_variables)]
     fn get_access_decision(&self, id: &str) -> Result<Option<AccessDecision>> {
-        Ok(self.access_decisions.get(id).cloned())
+        Ok(self
+            .store
+            .get(&keys::access_decision_key(id))
+            .and_then(|bytes| borsh::from_slice(&bytes).ok()))
     }
 
     #[allow(unused_variables)]
     fn delete_access_decision(&mut self, id: &str) -> Result<()> {
-        self.access_decisions.remove(id);
+        self.store.delete(&keys::access_decision_key(id));
         Ok(())
     }
 
     fn list_access_decision_ids(&self) -> Result<Vec<String>> {
-        Ok(self.access_decisions.keys().cloned().collect())
+        let prefix = keys::ACCESS_DECISION_PREFIX;
+        let ids = self
+            .store
+            .prefix_scan(prefix)
+            .into_iter()
+            .map(|(k, _)| {
+                String::from_utf8(k[prefix.len()..].to_vec()).expect("decision ID is valid UTF-8")
+            })
+            .collect();
+        Ok(ids)
     }
 
     fn list_access_decisions(&self) -> Result<Vec<AccessDecision>> {
-        Ok(self.access_decisions.values().cloned().collect())
+        Ok(self
+            .store
+            .prefix_scan(keys::ACCESS_DECISION_PREFIX)
+            .into_iter()
+            .filter_map(|(_, v)| borsh::from_slice(&v).ok())
+            .collect())
     }
 
     // ── Storage — Commitments ────────────────────────────────────────────
 
+    fn commitment_objs_prefix() -> Vec<u8> {
+        [keys::COMMITMENT_PREFIX, keys::OBJS_SUBPREFIX].concat()
+    }
+
     #[allow(unused_variables)]
     fn create_commitment(&mut self, commitment: &mut RegistrationsCommitment) -> Result<()> {
-        self.commitment_counter += 1;
-        commitment.id = self.commitment_counter;
-        self.commitments.insert(commitment.id, commitment.clone());
+        let counter = self
+            .store
+            .get(&keys::commitment_counter_key())
+            .map(|b| u64::from_be_bytes(b.try_into().expect("counter is 8 bytes")))
+            .unwrap_or(0);
+        let next = counter + 1;
+        self.store
+            .put(&keys::commitment_counter_key(), next.to_be_bytes().to_vec());
+        commitment.id = next;
+        let bytes = borsh::to_vec(commitment)
+            .map_err(|e| AcpError::State(format!("serialize commitment: {e}")))?;
+        self.store.put(&keys::commitment_key(commitment.id), bytes);
         Ok(())
     }
 
     #[allow(unused_variables)]
     fn update_commitment(&mut self, commitment: &RegistrationsCommitment) -> Result<()> {
-        self.commitments.insert(commitment.id, commitment.clone());
+        let bytes = borsh::to_vec(commitment)
+            .map_err(|e| AcpError::State(format!("serialize commitment: {e}")))?;
+        self.store.put(&keys::commitment_key(commitment.id), bytes);
         Ok(())
     }
 
     #[allow(unused_variables)]
     fn get_commitment_by_id(&self, id: u64) -> Result<Option<RegistrationsCommitment>> {
-        Ok(self.commitments.get(&id).cloned())
+        Ok(self
+            .store
+            .get(&keys::commitment_key(id))
+            .and_then(|bytes| borsh::from_slice(&bytes).ok()))
     }
 
     #[allow(unused_variables)]
@@ -703,52 +816,75 @@ impl AcpModule {
         commitment: &[u8],
     ) -> Result<Vec<RegistrationsCommitment>> {
         let results = self
-            .commitments
-            .values()
+            .store
+            .prefix_scan(&Self::commitment_objs_prefix())
+            .into_iter()
+            .filter_map(|(_, v)| borsh::from_slice::<RegistrationsCommitment>(&v).ok())
             .filter(|c| c.commitment == commitment)
-            .cloned()
             .collect();
         Ok(results)
     }
 
     fn get_non_expired_commitments(&self) -> Result<Vec<RegistrationsCommitment>> {
         let results = self
-            .commitments
-            .values()
+            .store
+            .prefix_scan(&Self::commitment_objs_prefix())
+            .into_iter()
+            .filter_map(|(_, v)| borsh::from_slice::<RegistrationsCommitment>(&v).ok())
             .filter(|c| !c.expired)
-            .cloned()
             .collect();
         Ok(results)
     }
 
     // ── Storage — Amendment events ───────────────────────────────────────
 
+    fn amendment_event_objs_prefix() -> Vec<u8> {
+        [keys::AMENDMENT_EVENT_PREFIX, keys::OBJS_SUBPREFIX].concat()
+    }
+
     #[allow(unused_variables)]
     fn create_amendment_event(&mut self, event: &mut AmendmentEvent) -> Result<()> {
-        self.amendment_event_counter += 1;
-        event.id = self.amendment_event_counter;
-        self.amendment_events.insert(event.id, event.clone());
+        let counter = self
+            .store
+            .get(&keys::amendment_event_counter_key())
+            .map(|b| u64::from_be_bytes(b.try_into().expect("counter is 8 bytes")))
+            .unwrap_or(0);
+        let next = counter + 1;
+        self.store.put(
+            &keys::amendment_event_counter_key(),
+            next.to_be_bytes().to_vec(),
+        );
+        event.id = next;
+        let bytes = borsh::to_vec(event)
+            .map_err(|e| AcpError::State(format!("serialize amendment event: {e}")))?;
+        self.store.put(&keys::amendment_event_key(event.id), bytes);
         Ok(())
     }
 
     #[allow(unused_variables)]
     fn update_amendment_event(&mut self, event: &AmendmentEvent) -> Result<()> {
-        self.amendment_events.insert(event.id, event.clone());
+        let bytes = borsh::to_vec(event)
+            .map_err(|e| AcpError::State(format!("serialize amendment event: {e}")))?;
+        self.store.put(&keys::amendment_event_key(event.id), bytes);
         Ok(())
     }
 
     #[allow(unused_variables)]
     fn get_amendment_event_by_id(&self, id: u64) -> Result<Option<AmendmentEvent>> {
-        Ok(self.amendment_events.get(&id).cloned())
+        Ok(self
+            .store
+            .get(&keys::amendment_event_key(id))
+            .and_then(|bytes| borsh::from_slice(&bytes).ok()))
     }
 
     #[allow(unused_variables)]
     fn list_events_by_policy(&self, policy_id: &str) -> Result<Vec<AmendmentEvent>> {
         let results = self
-            .amendment_events
-            .values()
+            .store
+            .prefix_scan(&Self::amendment_event_objs_prefix())
+            .into_iter()
+            .filter_map(|(_, v)| borsh::from_slice::<AmendmentEvent>(&v).ok())
             .filter(|e| e.policy_id == policy_id)
-            .cloned()
             .collect();
         Ok(results)
     }
@@ -756,10 +892,11 @@ impl AcpModule {
     #[allow(unused_variables)]
     fn list_hijack_events_by_policy(&self, policy_id: &str) -> Result<Vec<AmendmentEvent>> {
         let results = self
-            .amendment_events
-            .values()
+            .store
+            .prefix_scan(&Self::amendment_event_objs_prefix())
+            .into_iter()
+            .filter_map(|(_, v)| borsh::from_slice::<AmendmentEvent>(&v).ok())
             .filter(|e| e.policy_id == policy_id && e.hijack_flag)
-            .cloned()
             .collect();
         Ok(results)
     }
@@ -810,11 +947,7 @@ impl AcpModule {
         }
 
         let storage_key = rel.storage_key();
-        let record_existed = self
-            .relationships
-            .get(policy_id)
-            .and_then(|m| m.get(&storage_key))
-            .is_some();
+        let record_existed = self.has_relationship(policy_id, &storage_key);
 
         let metadata = RecordMetadata {
             creation_ts: Timestamp::default(),
@@ -830,10 +963,7 @@ impl AcpModule {
             metadata,
         };
 
-        self.relationships
-            .entry(policy_id.to_string())
-            .or_default()
-            .insert(storage_key, record.clone());
+        self.set_relationship(policy_id, &storage_key, &record);
 
         Ok(PolicyCmdResult::SetRelationship {
             record_existed,
@@ -847,11 +977,8 @@ impl AcpModule {
         rel: Relationship,
     ) -> Result<PolicyCmdResult> {
         let storage_key = rel.storage_key();
-        let record_found = self
-            .relationships
-            .get_mut(policy_id)
-            .and_then(|m| m.remove(&storage_key))
-            .is_some();
+        let record_found = self.has_relationship(policy_id, &storage_key);
+        self.delete_relationship(policy_id, &storage_key);
 
         Ok(PolicyCmdResult::DeleteRelationship { record_found })
     }
@@ -902,10 +1029,7 @@ impl AcpModule {
             metadata,
         };
 
-        self.relationships
-            .entry(policy_id.to_string())
-            .or_default()
-            .insert(storage_key, record.clone());
+        self.set_relationship(policy_id, &storage_key, &record);
 
         Ok(PolicyCmdResult::RegisterObject { record })
     }
@@ -939,26 +1063,27 @@ impl AcpModule {
         // Mark owner relationship as archived, delete all others.
         let object_prefix = Relationship::object_prefix(&obj.resource, &obj.id);
         let owner_prefix = Relationship::relation_prefix(&obj.resource, &obj.id, "owner");
+        let policy_prefix = keys::relationship_policy_prefix(policy_id);
 
+        let all_rels = self.store.prefix_scan(&policy_prefix);
         let mut removed: u64 = 0;
 
-        if let Some(rels) = self.relationships.get_mut(policy_id) {
-            let non_owner_keys: Vec<String> = rels
-                .iter()
-                .filter(|(k, _)| k.starts_with(&object_prefix) && !k.starts_with(&owner_prefix))
-                .map(|(k, _)| k.clone())
-                .collect();
-
-            removed = non_owner_keys.len() as u64;
-            for key in non_owner_keys {
-                rels.remove(&key);
+        for (kv_key, value) in &all_rels {
+            let storage_key_part =
+                std::str::from_utf8(&kv_key[policy_prefix.len()..]).unwrap_or("");
+            if !storage_key_part.starts_with(&object_prefix) {
+                continue;
             }
-
-            // Archive the owner relationship.
-            for (k, rec) in rels.iter_mut() {
-                if k.starts_with(&owner_prefix) {
+            if storage_key_part.starts_with(&owner_prefix) {
+                // Archive the owner relationship.
+                if let Ok(mut rec) = serde_json::from_slice::<RelationshipRecord>(value) {
                     rec.archived = true;
+                    let bytes = serde_json::to_vec(&rec).expect("serialize RelationshipRecord");
+                    self.store.put(kv_key, bytes);
                 }
+            } else {
+                self.store.delete(kv_key);
+                removed += 1;
             }
         }
 
@@ -975,14 +1100,16 @@ impl AcpModule {
         obj: Object,
     ) -> Result<PolicyCmdResult> {
         let owner_prefix = Relationship::relation_prefix(&obj.resource, &obj.id, "owner");
+        let scan_prefix = keys::relationship_storage_prefix(policy_id, &owner_prefix);
 
-        let (key, mut rec) = self
-            .relationships
-            .get(policy_id)
-            .and_then(|rels| {
-                rels.iter()
-                    .find(|(k, _)| k.starts_with(&owner_prefix))
-                    .map(|(k, v)| (k.clone(), v.clone()))
+        let (kv_key, mut rec) = self
+            .store
+            .prefix_scan(&scan_prefix)
+            .into_iter()
+            .find_map(|(k, v)| {
+                serde_json::from_slice::<RelationshipRecord>(&v)
+                    .ok()
+                    .map(|r| (k, r))
             })
             .ok_or_else(|| AcpError::ObjectNotRegistered {
                 resource: obj.resource.clone(),
@@ -1001,10 +1128,8 @@ impl AcpModule {
         let was_archived = rec.archived;
         rec.archived = false;
 
-        self.relationships
-            .entry(policy_id.to_string())
-            .or_default()
-            .insert(key, rec.clone());
+        let bytes = serde_json::to_vec(&rec).expect("serialize RelationshipRecord");
+        self.store.put(&kv_key, bytes);
 
         Ok(PolicyCmdResult::UnarchiveObject {
             record: rec,
@@ -1111,10 +1236,7 @@ impl AcpModule {
                 archived: false,
                 metadata,
             };
-            self.relationships
-                .entry(policy_id.to_string())
-                .or_default()
-                .insert(storage_key, record.clone());
+            self.set_relationship(policy_id, &storage_key, &record);
 
             let empty_event = AmendmentEvent {
                 id: 0,
@@ -1152,19 +1274,20 @@ impl AcpModule {
         let previous_owner_did = Did::new(&existing.metadata.owner_did)
             .map_err(|_| AcpError::State("stored owner DID is invalid".into()))?;
 
-        let owner_prefix =
+        let owner_rel_prefix =
             Relationship::relation_prefix(&proof.object.resource, &proof.object.id, "owner");
-        if let Some(rels) = self.relationships.get_mut(policy_id) {
-            for (k, rec) in rels.iter_mut() {
-                if k.starts_with(&owner_prefix) {
-                    rec.metadata.owner_did = creator.to_string();
-                    rec.relationship = Relationship::with_entity(
-                        proof.object.resource.clone(),
-                        proof.object.id.clone(),
-                        "owner",
-                        creator.clone(),
-                    );
-                }
+        let scan_prefix = keys::relationship_storage_prefix(policy_id, &owner_rel_prefix);
+        for (kv_key, value) in self.store.prefix_scan(&scan_prefix) {
+            if let Ok(mut rec) = serde_json::from_slice::<RelationshipRecord>(&value) {
+                rec.metadata.owner_did = creator.to_string();
+                rec.relationship = Relationship::with_entity(
+                    proof.object.resource.clone(),
+                    proof.object.id.clone(),
+                    "owner",
+                    creator.clone(),
+                );
+                let bytes = serde_json::to_vec(&rec).expect("serialize RelationshipRecord");
+                self.store.put(&kv_key, bytes);
             }
         }
 
@@ -1174,7 +1297,6 @@ impl AcpModule {
             "owner",
             creator.clone(),
         );
-        let _amended_key = amended_rel.storage_key();
         let record = RelationshipRecord {
             policy_id: policy_id.to_string(),
             relationship: amended_rel,
@@ -1272,28 +1394,29 @@ impl AcpModule {
                     current_relation,
                     subject.clone(),
                 );
-                let key = direct_rel.storage_key();
+                let storage_key = direct_rel.storage_key();
 
-                let rels = self.relationships.get(policy_id);
-                if let Some(rels) = rels {
-                    if let Some(rec) = rels.get(&key)
-                        && !rec.archived
+                // Direct relationship check.
+                if let Some(rec) = self.get_relationship(policy_id, &storage_key)
+                    && !rec.archived
+                {
+                    return true;
+                }
+                // Check wildcard.
+                let wildcard =
+                    Relationship::new(resource, object_id, current_relation, Subject::Wildcard);
+                if self.has_relationship(policy_id, &wildcard.storage_key()) {
+                    return true;
+                }
+                // Check typed wildcards.
+                let rel_prefix =
+                    Relationship::relation_prefix(resource, object_id, current_relation);
+                let scan_prefix = keys::relationship_storage_prefix(policy_id, &rel_prefix);
+                for (_, value) in self.store.prefix_scan(&scan_prefix) {
+                    if let Ok(rec) = serde_json::from_slice::<RelationshipRecord>(&value)
+                        && rec.relationship.subject.is_typed_wildcard()
                     {
                         return true;
-                    }
-                    // Check wildcard
-                    let wildcard =
-                        Relationship::new(resource, object_id, current_relation, Subject::Wildcard);
-                    if rels.contains_key(&wildcard.storage_key()) {
-                        return true;
-                    }
-                    // Check typed wildcards
-                    let prefix =
-                        Relationship::relation_prefix(resource, object_id, current_relation);
-                    for (k, rec) in rels {
-                        if k.starts_with(&prefix) && rec.relationship.subject.is_typed_wildcard() {
-                            return true;
-                        }
                     }
                 }
                 false
@@ -1373,7 +1496,7 @@ impl AcpModule {
         relation: &str,
     ) -> bool {
         // Rule 1: policy creator can manage anything.
-        if let Some(rec) = self.policies.get(policy_id)
+        if let Some(rec) = self.get_policy_record(policy_id)
             && rec.metadata.owner_did == creator.to_string()
         {
             return true;
@@ -1381,11 +1504,8 @@ impl AcpModule {
 
         // Rule 2: object owner can manage any relation on the object.
         let owner_rel = Relationship::with_entity(resource, object_id, "owner", creator.clone());
-        if let Some(rels) = self.relationships.get(policy_id)
-            && rels
-                .get(&owner_rel.storage_key())
-                .map(|r| !r.archived)
-                .unwrap_or(false)
+        if let Some(rec) = self.get_relationship(policy_id, &owner_rel.storage_key())
+            && !rec.archived
         {
             return true;
         }
@@ -1395,11 +1515,8 @@ impl AcpModule {
         for managing_relation in managers {
             let managing_rel =
                 Relationship::with_entity(resource, object_id, managing_relation, creator.clone());
-            if let Some(rels) = self.relationships.get(policy_id)
-                && rels
-                    .get(&managing_rel.storage_key())
-                    .map(|r| !r.archived)
-                    .unwrap_or(false)
+            if let Some(rec) = self.get_relationship(policy_id, &managing_rel.storage_key())
+                && !rec.archived
             {
                 return true;
             }

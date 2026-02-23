@@ -17,6 +17,7 @@ use hub_consensus::{
 };
 use hub_domain::{Block, BlockId, ConsensusDigest, LedgerEvent, LedgerEvents, StateRoot, Tx, TxId};
 use hub_executor::{ExecutionConfig, MempoolValidator};
+use hub_modules::ModuleState;
 use hub_overlay::OverlayState;
 use hub_qmdb_ledger::{Error as QmdbError, QmdbChangeSet, QmdbConfig, QmdbLedger, QmdbState};
 use hub_traits::{StateDbError, StateDbRead, StateDbWrite};
@@ -105,7 +106,7 @@ impl LedgerView {
             timestamp: 0,
             prevrandao: B256::ZERO,
             state_root: genesis_root,
-            ibc_root: B256::ZERO,
+            module_state_root: ModuleState::default().state_root(),
             txs: Vec::new(),
         };
         let genesis_digest = genesis_block.commitment();
@@ -632,7 +633,7 @@ mod tests {
             timestamp: 1_700_000_000 + height,
             prevrandao: PREVRANDAO,
             state_root: root,
-            ibc_root: B256::ZERO,
+            module_state_root: B256::ZERO,
             txs,
         };
         let digest = block.commitment();

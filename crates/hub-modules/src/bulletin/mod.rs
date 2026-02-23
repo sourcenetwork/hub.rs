@@ -9,15 +9,13 @@ pub mod keys;
 /// Bulletin domain types.
 pub mod types;
 
-use std::collections::HashMap;
-
 use acp::{Relationship, Subject};
 use error::BulletinError;
 use identity::Did;
 use types::{BulletinParams, Collaborator, Namespace, Post};
 
 use crate::acp::types::{AccessRequest, Actor, Object, Operation, PolicyCmd, PolicyMarshalingType};
-use crate::key_encoding::{sanitize_key_part, unsanitize_key_part};
+use crate::kv_store::{InMemoryKvStore, ModuleKvStore};
 use crate::types::{BlockExecCtx, TxExecCtx};
 
 type Result<T> = std::result::Result<T, BulletinError>;
@@ -81,11 +79,7 @@ const MODULE_DID: &str = "did:key:bulletin";
 /// Post IDs are deterministic: `hex(sha256(namespaceId + payload))`.
 #[derive(Clone, Debug, Default)]
 pub struct BulletinModule {
-    policy_id: Option<String>,
-    namespaces: HashMap<String, Namespace>,
-    collaborators: HashMap<String, Collaborator>,
-    posts: HashMap<String, Post>,
-    params: BulletinParams,
+    store: InMemoryKvStore,
 }
 
 #[allow(dead_code)]
@@ -93,6 +87,16 @@ impl BulletinModule {
     /// Create a new Bulletin module instance.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Read access to the underlying KV store (for serialization).
+    pub const fn store(&self) -> &InMemoryKvStore {
+        &self.store
+    }
+
+    /// Reconstruct from a deserialized store.
+    pub const fn from_store(store: InMemoryKvStore) -> Self {
+        Self { store }
     }
 
     // ── Msg handlers ────────────────────────────────────────────────────
@@ -578,13 +582,7 @@ impl BulletinModule {
                 namespace: namespace.to_string(),
             });
         }
-        let prefix = format!("{}/", sanitize_key_part(&namespace_id));
-        Ok(self
-            .collaborators
-            .iter()
-            .filter(|(k, _)| k.starts_with(&prefix))
-            .map(|(_, v)| v.clone())
-            .collect())
+        Ok(self.get_namespace_collaborators(&namespace_id))
     }
 
     /// List posts in a namespace.
@@ -705,18 +703,15 @@ impl BulletinModule {
         }
 
         let namespace_id = format!("bulletin/{}", namespace);
-        let ns_sanitized = sanitize_key_part(&namespace_id);
-        let prefix = format!("{}/", ns_sanitized);
+        let scan_prefix = keys::post_prefix(&namespace_id);
 
         let mut results = Vec::new();
-        for (key, post) in &self.posts {
-            if !key.starts_with(&prefix) {
-                continue;
-            }
-            let post_id_sanitized = &key[prefix.len()..];
-            let post_id = unsanitize_key_part(post_id_sanitized);
-            if glob_match(glob, &post_id) {
-                results.push(post.clone());
+        for (key, value) in self.store.prefix_scan(&scan_prefix) {
+            let (_, post_id) = keys::parse_post_key(&key);
+            if glob_match(glob, &post_id)
+                && let Ok(post) = borsh::from_slice::<Post>(&value)
+            {
+                results.push(post);
             }
         }
         Ok(results)
@@ -750,17 +745,20 @@ impl BulletinModule {
 
     /// Read the module's ACP policy ID.
     fn get_policy_id(&self) -> Option<String> {
-        self.policy_id.clone()
+        self.store
+            .get(keys::POLICY_ID_KEY)
+            .and_then(|bytes| String::from_utf8(bytes).ok())
     }
 
     /// Write the module's ACP policy ID.
     fn set_policy_id(&mut self, policy_id: &str) {
-        self.policy_id = Some(policy_id.to_string());
+        self.store
+            .put(keys::POLICY_ID_KEY, policy_id.as_bytes().to_vec());
     }
 
     /// Check if the module's ACP policy has been initialized.
-    const fn has_policy(&self) -> bool {
-        self.policy_id.is_some()
+    fn has_policy(&self) -> bool {
+        self.store.has(keys::POLICY_ID_KEY)
     }
 
     /// Lazily initialize the module's ACP policy.
@@ -788,116 +786,103 @@ impl BulletinModule {
     // ── Storage — Params ───────────────────────────────────────────────
 
     fn get_params(&self) -> BulletinParams {
-        self.params.clone()
+        self.store
+            .get(keys::PARAMS_KEY)
+            .map(|bytes| borsh::from_slice(&bytes).expect("corrupt BulletinParams"))
+            .unwrap_or_default()
     }
 
     fn set_params(&mut self, params: &BulletinParams) -> Result<()> {
-        self.params = params.clone();
+        let bytes = borsh::to_vec(params)
+            .map_err(|e| BulletinError::State(format!("serialize params: {e}")))?;
+        self.store.put(keys::PARAMS_KEY, bytes);
         Ok(())
     }
 
     // ── Storage — Namespaces ───────────────────────────────────────────
 
     fn set_namespace(&mut self, namespace: &Namespace) {
-        self.namespaces
-            .insert(namespace.id.clone(), namespace.clone());
+        let bytes = borsh::to_vec(namespace).expect("serialize Namespace");
+        self.store.put(&keys::namespace_key(&namespace.id), bytes);
     }
 
     fn get_namespace(&self, namespace_id: &str) -> Option<Namespace> {
-        self.namespaces.get(namespace_id).cloned()
+        self.store
+            .get(&keys::namespace_key(namespace_id))
+            .and_then(|bytes| borsh::from_slice(&bytes).ok())
     }
 
     fn has_namespace(&self, namespace_id: &str) -> bool {
-        self.namespaces.contains_key(namespace_id)
+        self.store.has(&keys::namespace_key(namespace_id))
     }
 
     fn get_all_namespaces(&self) -> Vec<Namespace> {
-        self.namespaces.values().cloned().collect()
+        self.store
+            .prefix_scan(keys::NAMESPACE_PREFIX)
+            .iter()
+            .filter_map(|(_, v)| borsh::from_slice(v).ok())
+            .collect()
     }
 
     // ── Storage — Collaborators ────────────────────────────────────────
 
     fn set_collaborator(&mut self, collaborator: &Collaborator) {
-        let key = format!(
-            "{}/{}",
-            sanitize_key_part(&collaborator.namespace),
-            sanitize_key_part(&collaborator.did)
-        );
-        self.collaborators.insert(key, collaborator.clone());
+        let key = keys::collaborator_key(&collaborator.namespace, &collaborator.did);
+        let bytes = borsh::to_vec(collaborator).expect("serialize Collaborator");
+        self.store.put(&key, bytes);
     }
 
     fn get_collaborator(&self, namespace_id: &str, collaborator_did: &str) -> Option<Collaborator> {
-        let key = format!(
-            "{}/{}",
-            sanitize_key_part(namespace_id),
-            sanitize_key_part(collaborator_did)
-        );
-        self.collaborators.get(&key).cloned()
+        self.store
+            .get(&keys::collaborator_key(namespace_id, collaborator_did))
+            .and_then(|bytes| borsh::from_slice(&bytes).ok())
     }
 
     fn delete_collaborator(&mut self, namespace_id: &str, collaborator_did: &str) {
-        let key = format!(
-            "{}/{}",
-            sanitize_key_part(namespace_id),
-            sanitize_key_part(collaborator_did)
-        );
-        self.collaborators.remove(&key);
+        self.store
+            .delete(&keys::collaborator_key(namespace_id, collaborator_did));
     }
 
-    fn get_all_collaborators(&self) -> Vec<Collaborator> {
-        self.collaborators.values().cloned().collect()
+    fn get_namespace_collaborators(&self, namespace_id: &str) -> Vec<Collaborator> {
+        self.store
+            .prefix_scan(&keys::collaborator_prefix(namespace_id))
+            .iter()
+            .filter_map(|(_, v)| borsh::from_slice(v).ok())
+            .collect()
     }
 
     // ── Storage — Posts ────────────────────────────────────────────────
 
     fn set_post(&mut self, post: &Post) {
-        let key = format!(
-            "{}/{}",
-            sanitize_key_part(&post.namespace),
-            sanitize_key_part(&post.id)
-        );
-        self.posts.insert(key, post.clone());
+        let key = keys::post_key(&post.namespace, &post.id);
+        let bytes = borsh::to_vec(post).expect("serialize Post");
+        self.store.put(&key, bytes);
     }
 
     fn get_post(&self, namespace_id: &str, post_id: &str) -> Option<Post> {
-        let key = format!(
-            "{}/{}",
-            sanitize_key_part(namespace_id),
-            sanitize_key_part(post_id)
-        );
-        self.posts.get(&key).cloned()
+        self.store
+            .get(&keys::post_key(namespace_id, post_id))
+            .and_then(|bytes| borsh::from_slice(&bytes).ok())
     }
 
     fn get_namespace_posts(&self, namespace_id: &str) -> Vec<Post> {
-        let prefix = format!("{}/", sanitize_key_part(namespace_id));
-        self.posts
+        self.store
+            .prefix_scan(&keys::post_prefix(namespace_id))
             .iter()
-            .filter(|(k, _)| k.starts_with(&prefix))
-            .map(|(_, v)| v.clone())
+            .filter_map(|(_, v)| borsh::from_slice(v).ok())
             .collect()
     }
 
     fn get_all_posts(&self) -> Vec<Post> {
-        self.posts.values().cloned().collect()
+        self.store
+            .prefix_scan(keys::POST_PREFIX)
+            .iter()
+            .filter_map(|(_, v)| borsh::from_slice(v).ok())
+            .collect()
     }
 
     // ── Storage — Utility ──────────────────────────────────────────────
 
-    fn sanitize_key_part(part: &str) -> String {
-        sanitize_key_part(part)
-    }
-
-    fn unsanitize_key_part(part: &str) -> String {
-        unsanitize_key_part(part)
-    }
-
-    /// Generate a deterministic post ID from namespace and payload.
-    ///
-    /// Formula: `hex(sha256(namespace_id + payload))`
-    ///
-    /// The namespace_id includes the `"bulletin/"` prefix, so posts
-    /// in different namespaces with identical payloads get different
-    /// IDs. The hex encoding is lowercase.
     fn generate_post_id(namespace_id: &str, payload: &[u8]) -> String {
         keys::generate_post_id(namespace_id, payload)
     }

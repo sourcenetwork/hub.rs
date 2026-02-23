@@ -32,8 +32,8 @@ pub struct Block {
     pub prevrandao: B256,
     /// State commitment resulting from this block (pre-commit QMDB root).
     pub state_root: StateRoot,
-    /// IBC state tree root (JMT Merkle root).
-    pub ibc_root: B256,
+    /// Module state root (combined hash of ACP, Bulletin, Hub, NativeNonce state).
+    pub module_state_root: B256,
     /// Transactions included in the block.
     pub txs: Vec<Tx>,
 }
@@ -106,7 +106,7 @@ impl Write for Block {
         self.timestamp.write(buf);
         Idents::write_b256(&self.prevrandao, buf);
         self.state_root.write(buf);
-        Idents::write_b256(&self.ibc_root, buf);
+        Idents::write_b256(&self.module_state_root, buf);
         self.txs.write(buf);
     }
 }
@@ -134,7 +134,7 @@ impl Read for Block {
         let timestamp = u64::read(buf)?;
         let prevrandao = Idents::read_b256(buf)?;
         let state_root = StateRoot::read(buf)?;
-        let ibc_root = Idents::read_b256(buf)?;
+        let module_state_root = Idents::read_b256(buf)?;
         let txs = Vec::<Tx>::read_cfg(buf, &(RangeCfg::new(0..=cfg.max_txs), cfg.tx))?;
         Ok(Self {
             context,
@@ -143,7 +143,7 @@ impl Read for Block {
             timestamp,
             prevrandao,
             state_root,
-            ibc_root,
+            module_state_root,
             txs,
         })
     }
@@ -174,7 +174,7 @@ mod tests {
             timestamp: 1_700_000_000,
             prevrandao: B256::repeat_byte(0xab),
             state_root: StateRoot(B256::repeat_byte(0xcd)),
-            ibc_root: B256::ZERO,
+            module_state_root: B256::ZERO,
             txs: vec![Tx::new(Bytes::from_static(&[0xde, 0xad, 0xbe, 0xef]))],
         }
     }
@@ -240,7 +240,7 @@ mod tests {
             timestamp: 0,
             prevrandao: B256::ZERO,
             state_root: StateRoot(B256::ZERO),
-            ibc_root: B256::ZERO,
+            module_state_root: B256::ZERO,
             txs: vec![],
         };
         let encoded = block.encode();

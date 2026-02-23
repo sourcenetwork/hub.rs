@@ -127,7 +127,7 @@ where
             .map_err(ConsensusError::StateDb)?;
         let state_root = StateRoot(state_root);
 
-        let ibc_root = outcome.ibc_root;
+        let module_state_root = outcome.module_state_root;
         let block = Block {
             context: consensus_context,
             parent: parent.id(),
@@ -135,7 +135,7 @@ where
             timestamp,
             prevrandao,
             state_root,
-            ibc_root,
+            module_state_root,
             txs,
         };
         let tx_ids = self.tx_ids_from_block(&block);
@@ -185,7 +185,7 @@ where
             .map_err(ConsensusError::StateDb)?;
         let state_root = StateRoot(state_root);
 
-        let ibc_root = outcome.ibc_root;
+        let module_state_root = outcome.module_state_root;
         let block = Block {
             context: consensus_context,
             parent: parent.id(),
@@ -193,7 +193,7 @@ where
             timestamp,
             prevrandao,
             state_root,
-            ibc_root,
+            module_state_root,
             txs,
         };
         let tx_ids = self.tx_ids_from_block(&block);
@@ -430,7 +430,7 @@ mod tests {
                 changes: ChangeSet::new(),
                 receipts: Vec::new(),
                 gas_used: txs.len() as u64 * 21000,
-                ibc_root: B256::ZERO,
+                module_state_root: B256::ZERO,
                 executed_tx_indices: None,
             })
         }
@@ -452,7 +452,7 @@ mod tests {
             timestamp: 1_700_000_000,
             prevrandao: B256::ZERO,
             state_root: StateRoot(B256::ZERO),
-            ibc_root: B256::ZERO,
+            module_state_root: B256::ZERO,
             txs: Vec::new(),
         }
     }
@@ -678,7 +678,7 @@ mod tests {
             timestamp: 1_700_000_000,
             prevrandao: B256::ZERO,
             state_root: StateRoot(B256::ZERO),
-            ibc_root: B256::ZERO,
+            module_state_root: B256::ZERO,
             txs: vec![tx.clone()],
         };
         let parent_digest = parent.commitment();
