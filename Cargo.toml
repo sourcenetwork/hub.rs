@@ -32,6 +32,17 @@ debug = "line-tables-only"
 split-debuginfo = "packed"
 incremental = false
 
+# Arkworks BLS field arithmetic is ~1000x slower at opt-level 0.
+# Optimize these in dev/test so BLS verification takes ~1ms, not ~1s.
+[profile.dev.package.ark-ff]
+opt-level = 3
+[profile.dev.package.ark-ec]
+opt-level = 3
+[profile.dev.package.ark-bls12-381]
+opt-level = 3
+[profile.dev.package.ark-serialize]
+opt-level = 3
+
 [profile.release]
 opt-level = 3
 lto = "thin"
