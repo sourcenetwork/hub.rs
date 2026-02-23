@@ -49,6 +49,11 @@ impl TestNode {
     pub fn rpc_url(&self) -> String {
         format!("http://127.0.0.1:{}", self.rpc_port)
     }
+
+    /// WebSocket URL for this node (same port as JSON-RPC).
+    pub fn ws_url(&self) -> String {
+        format!("ws://127.0.0.1:{}", self.rpc_port)
+    }
 }
 
 impl TestCluster {

@@ -36,6 +36,7 @@ tracing.workspace = true
 [dev-dependencies]
 alloy-sol-types.workspace = true
 hub-client.workspace = true
+hub-modules.workspace = true
 tempfile.workspace = true
 toml = "0.8"
 tokio = { workspace = true, features = ["full", "test-util"] }

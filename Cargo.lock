@@ -3470,6 +3470,7 @@ dependencies = [
  "hub-config",
  "hub-crypto",
  "hub-genesis",
+ "hub-modules",
  "hub-runner",
  "libc",
  "parking_lot",

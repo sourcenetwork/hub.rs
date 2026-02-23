@@ -77,11 +77,7 @@ impl BlsSigner {
     /// Build, sign, and encode a native transaction in wire format.
     ///
     /// Increments the local nonce counter on success.
-    pub(crate) fn sign_native_tx(
-        &self,
-        target: Address,
-        calldata: Bytes,
-    ) -> Result<Vec<u8>, ClientError> {
+    pub fn sign_native_tx(&self, target: Address, calldata: Bytes) -> Result<Vec<u8>, ClientError> {
         let nonce = self.nonce.load(Ordering::SeqCst);
 
         let mut tx = NativeTx {
