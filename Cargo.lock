@@ -3422,6 +3422,7 @@ dependencies = [
  "commonware-consensus",
  "commonware-cryptography",
  "commonware-utils",
+ "hex",
  "hub-domain",
  "k256",
  "multibase",

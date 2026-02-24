@@ -50,3 +50,4 @@ rand = { workspace = true, optional = true }
 
 [dev-dependencies]
 ark-std.workspace = true
+hex.workspace = true
