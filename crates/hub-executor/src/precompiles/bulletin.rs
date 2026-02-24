@@ -6,9 +6,12 @@ use hub_modules::acp::AcpModule;
 use hub_modules::bulletin::BulletinModule;
 use hub_modules::bulletin::abi::IBulletin;
 use hub_modules::types::{BlockExecCtx, TxExecCtx};
-use revm::precompile::{PrecompileError, PrecompileResult};
+use revm::precompile::PrecompileError;
 
-use super::{decode_error, did_from_signer, json_bytes, module_error, ok_output};
+use super::{
+    BULLETIN_ADDRESS, DispatchReturn, decode_error, did_from_signer, err_dispatch, event_log,
+    json_bytes, ok_dispatch,
+};
 
 /// Flat gas cost for read operations (real metering is Phase 10).
 const READ_GAS: u64 = 1000;
@@ -23,7 +26,7 @@ pub(super) fn dispatch(
     tx_ctx: &TxExecCtx,
     input: &[u8],
     gas_limit: u64,
-) -> PrecompileResult {
+) -> DispatchReturn {
     if input.len() < 4 {
         return Err(PrecompileError::Other(
             "input too short for selector".into(),
@@ -48,11 +51,19 @@ pub(super) fn dispatch(
                 &call.namespace,
             ) {
                 Ok(r) => r,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
+            let event = IBulletin::NamespaceCreated {
+                namespace: alloy_primitives::keccak256(call.namespace.as_bytes()),
+                owner: tx_ctx.signer.clone(),
+            };
             let ret = IBulletin::registerNamespaceCall::abi_encode_returns(&json_bytes(&ns));
-            Ok(ok_output(WRITE_GAS, ret))
+            Ok(ok_dispatch(
+                WRITE_GAS,
+                ret,
+                vec![event_log(BULLETIN_ADDRESS, &event)],
+            ))
         }
 
         IBulletin::createPostCall::SELECTOR => {
@@ -72,15 +83,19 @@ pub(super) fn dispatch(
                 &call.artifact,
             ) {
                 Ok(()) => {}
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             }
 
-            // Post ID is sha256(namespace_id + payload), computed inside module.
-            // The ABI returns bytes32 postId but create_post returns ().
-            // When Phase 9 implements the module, create_post should return
-            // the post ID. For now, return zeroed bytes32.
+            let event = IBulletin::PostCreated {
+                namespace: alloy_primitives::keccak256(call.namespace.as_bytes()),
+                postId: B256::ZERO,
+            };
             let ret = IBulletin::createPostCall::abi_encode_returns(&B256::ZERO);
-            Ok(ok_output(WRITE_GAS, ret))
+            Ok(ok_dispatch(
+                WRITE_GAS,
+                ret,
+                vec![event_log(BULLETIN_ADDRESS, &event)],
+            ))
         }
 
         IBulletin::addCollaboratorCall::SELECTOR => {
@@ -99,11 +114,19 @@ pub(super) fn dispatch(
                 &collaborator_str,
             ) {
                 Ok(r) => r,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
+            let event = IBulletin::CollaboratorAdded {
+                namespace: alloy_primitives::keccak256(call.namespace.as_bytes()),
+                collaborator: collaborator_did.clone(),
+            };
             let ret = IBulletin::addCollaboratorCall::abi_encode_returns(&collaborator_did);
-            Ok(ok_output(WRITE_GAS, ret))
+            Ok(ok_dispatch(
+                WRITE_GAS,
+                ret,
+                vec![event_log(BULLETIN_ADDRESS, &event)],
+            ))
         }
 
         IBulletin::removeCollaboratorCall::SELECTOR => {
@@ -123,11 +146,19 @@ pub(super) fn dispatch(
                 &collaborator_str,
             ) {
                 Ok(r) => r,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
+            let event = IBulletin::CollaboratorRemoved {
+                namespace: alloy_primitives::keccak256(call.namespace.as_bytes()),
+                collaborator: collaborator_did.clone(),
+            };
             let ret = IBulletin::removeCollaboratorCall::abi_encode_returns(&collaborator_did);
-            Ok(ok_output(WRITE_GAS, ret))
+            Ok(ok_dispatch(
+                WRITE_GAS,
+                ret,
+                vec![event_log(BULLETIN_ADDRESS, &event)],
+            ))
         }
 
         IBulletin::updateParamsCall::SELECTOR => {
@@ -143,10 +174,10 @@ pub(super) fn dispatch(
 
             match module.update_params(&authority, params) {
                 Ok(()) => {}
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             }
 
-            Ok(ok_output(WRITE_GAS, Vec::new()))
+            Ok(ok_dispatch(WRITE_GAS, Vec::new(), vec![]))
         }
 
         // ── Read methods ─────────────────────────────────────────────
@@ -158,11 +189,11 @@ pub(super) fn dispatch(
 
             let post = match module.query_post(&call.namespace, &call.postId) {
                 Ok(p) => p,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
             let ret = IBulletin::getPostCall::abi_encode_returns(&json_bytes(&post));
-            Ok(ok_output(READ_GAS, ret))
+            Ok(ok_dispatch(READ_GAS, ret, vec![]))
         }
 
         IBulletin::getNamespaceCall::SELECTOR => {
@@ -173,11 +204,11 @@ pub(super) fn dispatch(
 
             let ns = match module.query_namespace(&call.namespace) {
                 Ok(n) => n,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
             let ret = IBulletin::getNamespaceCall::abi_encode_returns(&json_bytes(&ns));
-            Ok(ok_output(READ_GAS, ret))
+            Ok(ok_dispatch(READ_GAS, ret, vec![]))
         }
 
         IBulletin::getNamespacesCall::SELECTOR => {
@@ -187,11 +218,11 @@ pub(super) fn dispatch(
 
             let namespaces = match module.query_namespaces() {
                 Ok(ns) => ns,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
             let ret = IBulletin::getNamespacesCall::abi_encode_returns(&json_bytes(&namespaces));
-            Ok(ok_output(READ_GAS, ret))
+            Ok(ok_dispatch(READ_GAS, ret, vec![]))
         }
 
         IBulletin::getNamespaceCollaboratorsCall::SELECTOR => {
@@ -203,13 +234,13 @@ pub(super) fn dispatch(
 
             let collaborators = match module.query_namespace_collaborators(&call.namespace) {
                 Ok(c) => c,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
             let ret = IBulletin::getNamespaceCollaboratorsCall::abi_encode_returns(&json_bytes(
                 &collaborators,
             ));
-            Ok(ok_output(READ_GAS, ret))
+            Ok(ok_dispatch(READ_GAS, ret, vec![]))
         }
 
         IBulletin::getNamespacePostsCall::SELECTOR => {
@@ -220,11 +251,11 @@ pub(super) fn dispatch(
 
             let posts = match module.query_namespace_posts(&call.namespace) {
                 Ok(p) => p,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
             let ret = IBulletin::getNamespacePostsCall::abi_encode_returns(&json_bytes(&posts));
-            Ok(ok_output(READ_GAS, ret))
+            Ok(ok_dispatch(READ_GAS, ret, vec![]))
         }
 
         IBulletin::getPostsCall::SELECTOR => {
@@ -234,11 +265,11 @@ pub(super) fn dispatch(
 
             let posts = match module.query_posts() {
                 Ok(p) => p,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
             let ret = IBulletin::getPostsCall::abi_encode_returns(&json_bytes(&posts));
-            Ok(ok_output(READ_GAS, ret))
+            Ok(ok_dispatch(READ_GAS, ret, vec![]))
         }
 
         IBulletin::iterateGlobCall::SELECTOR => {
@@ -249,11 +280,11 @@ pub(super) fn dispatch(
 
             let posts = match module.query_iterate_glob(&call.namespace, &call.glob) {
                 Ok(p) => p,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
             let ret = IBulletin::iterateGlobCall::abi_encode_returns(&json_bytes(&posts));
-            Ok(ok_output(READ_GAS, ret))
+            Ok(ok_dispatch(READ_GAS, ret, vec![]))
         }
 
         IBulletin::getParamsCall::SELECTOR => {
@@ -263,11 +294,11 @@ pub(super) fn dispatch(
 
             let params = match module.query_params() {
                 Ok(p) => p,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
             let ret = IBulletin::getParamsCall::abi_encode_returns(&json_bytes(&params));
-            Ok(ok_output(READ_GAS, ret))
+            Ok(ok_dispatch(READ_GAS, ret, vec![]))
         }
 
         _ => Err(PrecompileError::Other(

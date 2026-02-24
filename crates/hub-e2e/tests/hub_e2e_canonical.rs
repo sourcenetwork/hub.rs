@@ -12,7 +12,7 @@
 use std::time::Duration;
 
 use alloy_primitives::{Address, B256, Bytes, FixedBytes, U256};
-use alloy_sol_types::SolCall;
+use alloy_sol_types::{SolCall, SolEvent};
 
 use hub_client::{
     ACP_ADDRESS, BULLETIN_ADDRESS, BlsSigner, ClientError, EvmSigner, HubClient, TransactionReceipt,
@@ -21,6 +21,9 @@ use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, TestCluster};
 use hub_e2e::observe::ClusterAssertions;
 use hub_modules::acp::abi::IAcp;
 use hub_modules::bulletin::abi::IBulletin;
+use jsonrpsee::core::client::SubscriptionClientT;
+use jsonrpsee::rpc_params;
+use jsonrpsee::ws_client::WsClientBuilder;
 
 /// Hardhat account 0 private key (pre-funded by `GenesisBuilder::funded_accounts`).
 const HARDHAT_KEY_0: &str = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
@@ -160,6 +163,21 @@ fn assert_bls_receipt(receipt: &TransactionReceipt, target: Address, label: &str
     );
 }
 
+/// Assert that a receipt contains at least one log matching the expected precompile address and event topic.
+fn assert_event_log(receipt: &TransactionReceipt, address: Address, topic: B256, label: &str) {
+    assert!(!receipt.logs.is_empty(), "{label} should emit event logs");
+    let log = &receipt.logs[0];
+    assert_eq!(
+        log.address, address,
+        "{label} log address should be the precompile"
+    );
+    assert!(!log.topics.is_empty(), "{label} log should have topics");
+    assert_eq!(
+        log.topics[0], topic,
+        "{label} log topic[0] should match event signature"
+    );
+}
+
 /// Full module lifecycle: ACP + Bulletin, EVM + BLS, writes + queries.
 #[tokio::test]
 async fn canonical_module_test() {
@@ -249,6 +267,14 @@ async fn canonical_module_test() {
         "EVM receipt 'to' should be the ACP precompile"
     );
 
+    // A1 event log
+    assert_event_log(
+        &evm_receipt,
+        ACP_ADDRESS,
+        IAcp::PolicyCreated::SIGNATURE_HASH,
+        "A1 EVM createPolicy",
+    );
+
     // A1 extended receipt: EVM tx should have no signer_did
     let a1_native = client
         .get_native_receipt(evm_receipt.transaction_hash)
@@ -284,6 +310,12 @@ async fn canonical_module_test() {
 
     // A2 assertions
     assert_bls_receipt(&bls_receipt, ACP_ADDRESS, "BLS create_policy");
+    assert_event_log(
+        &bls_receipt,
+        ACP_ADDRESS,
+        IAcp::PolicyCreated::SIGNATURE_HASH,
+        "A2 BLS createPolicy",
+    );
 
     // A2 extended receipt: hub_getTransactionReceipt should include signer_did
     let a2_native = client
@@ -389,7 +421,19 @@ async fn canonical_module_test() {
     );
 
     assert_eq!(b1_receipt.status, 1, "EVM register_object should succeed");
+    assert_event_log(
+        &b1_receipt,
+        ACP_ADDRESS,
+        IAcp::ObjectRegistered::SIGNATURE_HASH,
+        "B1 EVM registerObject",
+    );
     assert_bls_receipt(&b2_receipt, ACP_ADDRESS, "BLS register_object");
+    assert_event_log(
+        &b2_receipt,
+        ACP_ADDRESS,
+        IAcp::ObjectRegistered::SIGNATURE_HASH,
+        "B2 BLS registerObject",
+    );
 
     assert!(
         b1_receipt.block_number >= max_block,
@@ -437,6 +481,12 @@ async fn canonical_module_test() {
     let c1_receipt =
         broadcast_evm_tx(&cluster, &client, &evm_signer, ACP_ADDRESS, c1_calldata).await;
     assert_eq!(c1_receipt.status, 1, "EVM set_relationship should succeed");
+    assert_event_log(
+        &c1_receipt,
+        ACP_ADDRESS,
+        IAcp::RelationshipSet::SIGNATURE_HASH,
+        "C1 EVM setRelationship",
+    );
     assert!(
         c1_receipt.block_number >= max_block,
         "C1 block should be >= previous max"
@@ -511,6 +561,12 @@ async fn canonical_module_test() {
         "BLS delete_relationship should succeed"
     );
     assert_bls_receipt(&d1_receipt, ACP_ADDRESS, "BLS delete_relationship");
+    assert_event_log(
+        &d1_receipt,
+        ACP_ADDRESS,
+        IAcp::RelationshipDeleted::SIGNATURE_HASH,
+        "D1 BLS deleteRelationship",
+    );
     assert!(
         d1_receipt.block_number >= max_block,
         "D1 block should be >= previous max"
@@ -593,7 +649,19 @@ async fn canonical_module_test() {
         e1_receipt.status, 1,
         "EVM register_namespace should succeed"
     );
+    assert_event_log(
+        &e1_receipt,
+        BULLETIN_ADDRESS,
+        IBulletin::NamespaceCreated::SIGNATURE_HASH,
+        "E1 EVM registerNamespace",
+    );
     assert_bls_receipt(&e2_receipt, BULLETIN_ADDRESS, "BLS register_namespace");
+    assert_event_log(
+        &e2_receipt,
+        BULLETIN_ADDRESS,
+        IBulletin::NamespaceCreated::SIGNATURE_HASH,
+        "E2 BLS registerNamespace",
+    );
     assert!(
         e1_receipt.block_number >= max_block,
         "E1 block should be >= previous max"
@@ -621,6 +689,12 @@ async fn canonical_module_test() {
     )
     .await;
     assert_eq!(e3_receipt.status, 1, "EVM add_collaborator should succeed");
+    assert_event_log(
+        &e3_receipt,
+        BULLETIN_ADDRESS,
+        IBulletin::CollaboratorAdded::SIGNATURE_HASH,
+        "E3 EVM addCollaborator",
+    );
     assert!(
         e3_receipt.block_number >= max_block,
         "E3 block should be >= previous max"
@@ -671,7 +745,19 @@ async fn canonical_module_test() {
     );
 
     assert_eq!(e4_receipt.status, 1, "EVM create_post should succeed");
+    assert_event_log(
+        &e4_receipt,
+        BULLETIN_ADDRESS,
+        IBulletin::PostCreated::SIGNATURE_HASH,
+        "E4 EVM createPost",
+    );
     assert_bls_receipt(&e5_receipt, BULLETIN_ADDRESS, "BLS create_post");
+    assert_event_log(
+        &e5_receipt,
+        BULLETIN_ADDRESS,
+        IBulletin::PostCreated::SIGNATURE_HASH,
+        "E5 BLS createPost",
+    );
     assert!(
         e4_receipt.block_number >= max_block,
         "E4 block should be >= previous max"
@@ -804,19 +890,29 @@ async fn canonical_module_test() {
     let evm_invalidate_err = client
         .invalidate_jws(&evm_signer, "nonexistent_token_hash")
         .await;
-    assert!(
-        matches!(evm_invalidate_err, Err(ClientError::TxReverted { .. })),
-        "EVM invalidate of non-existent token should revert, got: {evm_invalidate_err:?}"
-    );
+    match &evm_invalidate_err {
+        Err(ClientError::TxReverted { receipt, .. }) => {
+            assert!(
+                receipt.logs.is_empty(),
+                "G6 reverted EVM tx should have empty logs"
+            );
+        }
+        other => panic!("EVM invalidate of non-existent token should revert, got: {other:?}"),
+    }
 
     // G7. Invalidate non-existent token via BLS — should revert
     let bls_invalidate_err = client
         .native_invalidate_jws(&bls_signer, "nonexistent_token_hash")
         .await;
-    assert!(
-        matches!(bls_invalidate_err, Err(ClientError::TxReverted { .. })),
-        "BLS invalidate of non-existent token should revert, got: {bls_invalidate_err:?}"
-    );
+    match &bls_invalidate_err {
+        Err(ClientError::TxReverted { receipt, .. }) => {
+            assert!(
+                receipt.logs.is_empty(),
+                "G7 reverted BLS tx should have empty logs"
+            );
+        }
+        other => panic!("BLS invalidate of non-existent token should revert, got: {other:?}"),
+    }
 
     // Final EVM nonce check: 7 EVM txs total (A1, B1, C1, E1, E3, E4, G6)
     let final_evm_nonce = client
@@ -1012,5 +1108,193 @@ async fn canonical_module_test() {
     assert!(
         total_finalized >= 4 * max_block,
         "total finalized across all nodes ({total_finalized}) should be >= 4 * {max_block}"
+    );
+
+    // ── H: WebSocket Event Subscriptions ─────────────────────────
+
+    let ws_client = WsClientBuilder::default()
+        .build(&cluster.node(0).ws_url())
+        .await
+        .expect("WebSocket connection should succeed");
+
+    // H1. Subscribe to logs for each precompile address
+    let mut acp_sub = ws_client
+        .subscribe::<serde_json::Value, _>(
+            "eth_subscribe",
+            rpc_params![
+                "logs",
+                serde_json::json!({"address": format!("{:#x}", ACP_ADDRESS)})
+            ],
+            "eth_unsubscribe",
+        )
+        .await
+        .expect("ACP log subscription should succeed");
+
+    let mut bulletin_sub = ws_client
+        .subscribe::<serde_json::Value, _>(
+            "eth_subscribe",
+            rpc_params![
+                "logs",
+                serde_json::json!({"address": format!("{:#x}", BULLETIN_ADDRESS)})
+            ],
+            "eth_unsubscribe",
+        )
+        .await
+        .expect("Bulletin log subscription should succeed");
+
+    // H2. Submit EVM createPolicy → expect PolicyCreated on ACP subscription
+    let h2_calldata = IAcp::createPolicyCall {
+        policy: TEST_POLICY_YAML.as_bytes().to_vec().into(),
+        marshalType: 1,
+    }
+    .abi_encode();
+    let h2_receipt =
+        broadcast_evm_tx(&cluster, &client, &evm_signer, ACP_ADDRESS, h2_calldata).await;
+    assert_eq!(h2_receipt.status, 1, "H2 EVM createPolicy should succeed");
+    assert_event_log(
+        &h2_receipt,
+        ACP_ADDRESS,
+        IAcp::PolicyCreated::SIGNATURE_HASH,
+        "H2 EVM createPolicy",
+    );
+
+    let acp_event = tokio::time::timeout(Duration::from_secs(10), acp_sub.next())
+        .await
+        .expect("H2 ACP event should arrive within timeout")
+        .expect("ACP subscription should not be closed")
+        .expect("ACP event should deserialize");
+    let acp_addr = acp_event
+        .get("address")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert_eq!(
+        acp_addr,
+        format!("{:#x}", ACP_ADDRESS),
+        "H2 WS event address should be ACP precompile"
+    );
+
+    // H3. Submit BLS createPolicy → expect PolicyCreated on ACP subscription
+    let h3_calldata = IAcp::createPolicyCall {
+        policy: TEST_POLICY_YAML.as_bytes().to_vec().into(),
+        marshalType: 1,
+    }
+    .abi_encode();
+    let h3_receipt =
+        broadcast_native_tx(&cluster, &client, &bls_signer, ACP_ADDRESS, h3_calldata).await;
+    assert_eq!(h3_receipt.status, 1, "H3 BLS createPolicy should succeed");
+    assert_event_log(
+        &h3_receipt,
+        ACP_ADDRESS,
+        IAcp::PolicyCreated::SIGNATURE_HASH,
+        "H3 BLS createPolicy",
+    );
+
+    let acp_event2 = tokio::time::timeout(Duration::from_secs(10), acp_sub.next())
+        .await
+        .expect("H3 ACP event should arrive within timeout")
+        .expect("ACP subscription should not be closed")
+        .expect("ACP event should deserialize");
+    let acp_addr2 = acp_event2
+        .get("address")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert_eq!(
+        acp_addr2,
+        format!("{:#x}", ACP_ADDRESS),
+        "H3 WS event address should be ACP precompile"
+    );
+
+    // H4. Submit EVM registerNamespace → expect NamespaceCreated on Bulletin subscription
+    let h4_calldata = IBulletin::registerNamespaceCall {
+        namespace: "h-ns-evm".into(),
+    }
+    .abi_encode();
+    let h4_receipt = broadcast_evm_tx(
+        &cluster,
+        &client,
+        &evm_signer,
+        BULLETIN_ADDRESS,
+        h4_calldata,
+    )
+    .await;
+    assert_eq!(
+        h4_receipt.status, 1,
+        "H4 EVM registerNamespace should succeed"
+    );
+    assert_event_log(
+        &h4_receipt,
+        BULLETIN_ADDRESS,
+        IBulletin::NamespaceCreated::SIGNATURE_HASH,
+        "H4 EVM registerNamespace",
+    );
+
+    let bulletin_event = tokio::time::timeout(Duration::from_secs(10), bulletin_sub.next())
+        .await
+        .expect("H4 Bulletin event should arrive within timeout")
+        .expect("Bulletin subscription should not be closed")
+        .expect("Bulletin event should deserialize");
+    let bulletin_addr = bulletin_event
+        .get("address")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert_eq!(
+        bulletin_addr,
+        format!("{:#x}", BULLETIN_ADDRESS),
+        "H4 WS event address should be Bulletin precompile"
+    );
+
+    // H5. Submit BLS registerNamespace → expect NamespaceCreated on Bulletin subscription
+    let h5_calldata = IBulletin::registerNamespaceCall {
+        namespace: "h-ns-bls".into(),
+    }
+    .abi_encode();
+    let h5_receipt = broadcast_native_tx(
+        &cluster,
+        &client,
+        &bls_signer,
+        BULLETIN_ADDRESS,
+        h5_calldata,
+    )
+    .await;
+    assert_eq!(
+        h5_receipt.status, 1,
+        "H5 BLS registerNamespace should succeed"
+    );
+    assert_event_log(
+        &h5_receipt,
+        BULLETIN_ADDRESS,
+        IBulletin::NamespaceCreated::SIGNATURE_HASH,
+        "H5 BLS registerNamespace",
+    );
+
+    let bulletin_event2 = tokio::time::timeout(Duration::from_secs(10), bulletin_sub.next())
+        .await
+        .expect("H5 Bulletin event should arrive within timeout")
+        .expect("Bulletin subscription should not be closed")
+        .expect("Bulletin event should deserialize");
+    let bulletin_addr2 = bulletin_event2
+        .get("address")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert_eq!(
+        bulletin_addr2,
+        format!("{:#x}", BULLETIN_ADDRESS),
+        "H5 WS event address should be Bulletin precompile"
+    );
+
+    // H6. No cross-talk: ACP subscription should NOT have received Bulletin events
+    // and Bulletin subscription should NOT have received ACP events.
+    // After H2-H5 we consumed exactly 2 ACP events and 2 Bulletin events.
+    // Any additional event on either subscription within a short window = cross-talk.
+    let acp_extra = tokio::time::timeout(Duration::from_millis(500), acp_sub.next()).await;
+    assert!(
+        acp_extra.is_err(),
+        "ACP subscription should have no extra events (no cross-talk from Bulletin)"
+    );
+    let bulletin_extra =
+        tokio::time::timeout(Duration::from_millis(500), bulletin_sub.next()).await;
+    assert!(
+        bulletin_extra.is_err(),
+        "Bulletin subscription should have no extra events (no cross-talk from ACP)"
     );
 }

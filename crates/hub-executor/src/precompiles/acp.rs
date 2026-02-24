@@ -10,9 +10,12 @@ use hub_modules::acp::types::{
 };
 use hub_modules::types::{BlockExecCtx, TxExecCtx};
 use identity::Did;
-use revm::precompile::{PrecompileError, PrecompileResult};
+use revm::precompile::PrecompileError;
 
-use super::{decode_error, did_from_signer, json_bytes, module_error, ok_output};
+use super::{
+    ACP_ADDRESS, DispatchReturn, decode_error, did_from_signer, err_dispatch, event_log,
+    json_bytes, ok_dispatch,
+};
 
 /// Flat gas cost for read operations (real metering is Phase 10).
 const READ_GAS: u64 = 1000;
@@ -72,7 +75,7 @@ pub(super) fn dispatch(
     tx_ctx: &TxExecCtx,
     input: &[u8],
     gas_limit: u64,
-) -> PrecompileResult {
+) -> DispatchReturn {
     if input.len() < 4 {
         return Err(PrecompileError::Other(
             "input too short for selector".into(),
@@ -94,11 +97,20 @@ pub(super) fn dispatch(
 
             let record = match module.create_policy(&creator, &policy_str, marshal_type) {
                 Ok(r) => r,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
+            let policy_id = record.policy.id.clone();
+            let event = IAcp::PolicyCreated {
+                policyId: alloy_primitives::keccak256(policy_id.as_bytes()),
+                creator: tx_ctx.signer.clone(),
+            };
             let ret = IAcp::createPolicyCall::abi_encode_returns(&json_bytes(&record));
-            Ok(ok_output(WRITE_GAS, ret))
+            Ok(ok_dispatch(
+                WRITE_GAS,
+                ret,
+                vec![event_log(ACP_ADDRESS, &event)],
+            ))
         }
 
         IAcp::editPolicyCall::SELECTOR => {
@@ -115,14 +127,23 @@ pub(super) fn dispatch(
             let (relationships_removed, record) =
                 match module.edit_policy(&creator, &policy_id, &policy_str, marshal_type) {
                     Ok(r) => r,
-                    Err(e) => return Ok(module_error(e)),
+                    Err(e) => return Ok(err_dispatch(e)),
                 };
 
+            let event = IAcp::PolicyEdited {
+                policyId: alloy_primitives::keccak256(policy_id.as_bytes()),
+                creator: tx_ctx.signer.clone(),
+                relationshipsRemoved: alloy_primitives::U256::from(relationships_removed),
+            };
             let ret = IAcp::editPolicyCall::abi_encode_returns(&IAcp::editPolicyReturn {
                 relationshipsRemoved: relationships_removed,
                 record: json_bytes(&record),
             });
-            Ok(ok_output(WRITE_GAS, ret))
+            Ok(ok_dispatch(
+                WRITE_GAS,
+                ret,
+                vec![event_log(ACP_ADDRESS, &event)],
+            ))
         }
 
         IAcp::setRelationshipCall::SELECTOR => {
@@ -142,7 +163,7 @@ pub(super) fn dispatch(
 
             let result = match module.direct_policy_cmd(&creator, &policy_id, cmd) {
                 Ok(r) => r,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
             let (record_existed, record) = match result {
@@ -153,11 +174,22 @@ pub(super) fn dispatch(
                 _ => return Err(PrecompileError::Other("unexpected result variant".into())),
             };
 
+            let event = IAcp::RelationshipSet {
+                policyId: alloy_primitives::keccak256(policy_id.as_bytes()),
+                resource: call.resource.clone(),
+                objectId: call.objectId.clone(),
+                relation: call.relation.clone(),
+                actor: call.actor,
+            };
             let ret = IAcp::setRelationshipCall::abi_encode_returns(&IAcp::setRelationshipReturn {
                 recordExisted: record_existed,
                 record: json_bytes(&record),
             });
-            Ok(ok_output(WRITE_GAS, ret))
+            Ok(ok_dispatch(
+                WRITE_GAS,
+                ret,
+                vec![event_log(ACP_ADDRESS, &event)],
+            ))
         }
 
         IAcp::deleteRelationshipCall::SELECTOR => {
@@ -177,7 +209,7 @@ pub(super) fn dispatch(
 
             let result = match module.direct_policy_cmd(&creator, &policy_id, cmd) {
                 Ok(r) => r,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
             let record_found = match result {
@@ -187,8 +219,19 @@ pub(super) fn dispatch(
                 _ => return Err(PrecompileError::Other("unexpected result variant".into())),
             };
 
+            let event = IAcp::RelationshipDeleted {
+                policyId: alloy_primitives::keccak256(policy_id.as_bytes()),
+                resource: call.resource.clone(),
+                objectId: call.objectId.clone(),
+                relation: call.relation.clone(),
+                actor: call.actor,
+            };
             let ret = IAcp::deleteRelationshipCall::abi_encode_returns(&record_found);
-            Ok(ok_output(WRITE_GAS, ret))
+            Ok(ok_dispatch(
+                WRITE_GAS,
+                ret,
+                vec![event_log(ACP_ADDRESS, &event)],
+            ))
         }
 
         IAcp::registerObjectCall::SELECTOR => {
@@ -198,6 +241,8 @@ pub(super) fn dispatch(
             let call = IAcp::registerObjectCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
             let policy_id = policy_id_to_string(&call.policyId);
+            let resource = call.resource.clone();
+            let object_id = call.objectId.clone();
             let cmd = PolicyCmd::RegisterObject(Object {
                 resource: call.resource,
                 id: call.objectId,
@@ -205,7 +250,7 @@ pub(super) fn dispatch(
 
             let result = match module.direct_policy_cmd(&creator, &policy_id, cmd) {
                 Ok(r) => r,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
             let record = match result {
@@ -213,8 +258,18 @@ pub(super) fn dispatch(
                 _ => return Err(PrecompileError::Other("unexpected result variant".into())),
             };
 
+            let event = IAcp::ObjectRegistered {
+                policyId: alloy_primitives::keccak256(policy_id.as_bytes()),
+                resource,
+                objectId: object_id,
+                owner: tx_ctx.signer.clone(),
+            };
             let ret = IAcp::registerObjectCall::abi_encode_returns(&json_bytes(&record));
-            Ok(ok_output(WRITE_GAS, ret))
+            Ok(ok_dispatch(
+                WRITE_GAS,
+                ret,
+                vec![event_log(ACP_ADDRESS, &event)],
+            ))
         }
 
         IAcp::archiveObjectCall::SELECTOR => {
@@ -224,6 +279,8 @@ pub(super) fn dispatch(
             let call = IAcp::archiveObjectCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
             let policy_id = policy_id_to_string(&call.policyId);
+            let resource = call.resource.clone();
+            let object_id = call.objectId.clone();
             let cmd = PolicyCmd::ArchiveObject(Object {
                 resource: call.resource,
                 id: call.objectId,
@@ -231,7 +288,7 @@ pub(super) fn dispatch(
 
             let result = match module.direct_policy_cmd(&creator, &policy_id, cmd) {
                 Ok(r) => r,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
             let (found, relationships_removed) = match result {
@@ -242,11 +299,20 @@ pub(super) fn dispatch(
                 _ => return Err(PrecompileError::Other("unexpected result variant".into())),
             };
 
+            let event = IAcp::ObjectUnregistered {
+                policyId: alloy_primitives::keccak256(policy_id.as_bytes()),
+                resource,
+                objectId: object_id,
+            };
             let ret = IAcp::archiveObjectCall::abi_encode_returns(&IAcp::archiveObjectReturn {
                 found,
                 relationshipsRemoved: relationships_removed,
             });
-            Ok(ok_output(WRITE_GAS, ret))
+            Ok(ok_dispatch(
+                WRITE_GAS,
+                ret,
+                vec![event_log(ACP_ADDRESS, &event)],
+            ))
         }
 
         IAcp::unarchiveObjectCall::SELECTOR => {
@@ -263,7 +329,7 @@ pub(super) fn dispatch(
 
             let result = match module.direct_policy_cmd(&creator, &policy_id, cmd) {
                 Ok(r) => r,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
             let (record, relationship_modified) = match result {
@@ -278,7 +344,7 @@ pub(super) fn dispatch(
                 record: json_bytes(&record),
                 relationshipModified: relationship_modified,
             });
-            Ok(ok_output(WRITE_GAS, ret))
+            Ok(ok_dispatch(WRITE_GAS, ret, vec![]))
         }
 
         IAcp::commitRegistrationsCall::SELECTOR => {
@@ -294,7 +360,7 @@ pub(super) fn dispatch(
 
             let result = match module.direct_policy_cmd(&creator, &policy_id, cmd) {
                 Ok(r) => r,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
             let commitment_id = match result {
@@ -305,7 +371,7 @@ pub(super) fn dispatch(
             };
 
             let ret = IAcp::commitRegistrationsCall::abi_encode_returns(&commitment_id);
-            Ok(ok_output(WRITE_GAS, ret))
+            Ok(ok_dispatch(WRITE_GAS, ret, vec![]))
         }
 
         IAcp::revealRegistrationCall::SELECTOR => {
@@ -326,13 +392,13 @@ pub(super) fn dispatch(
             // policy_id is not needed — the commitment record carries it.
             let result = match module.direct_policy_cmd(&creator, "", cmd) {
                 Ok(r) => r,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
             let encoded = serde_json::to_vec(&result).unwrap_or_default();
             let ret_bytes = Bytes::from(encoded);
             let ret = IAcp::revealRegistrationCall::abi_encode_returns(&ret_bytes);
-            Ok(ok_output(WRITE_GAS, ret))
+            Ok(ok_dispatch(WRITE_GAS, ret, vec![]))
         }
 
         IAcp::flagHijackAttemptCall::SELECTOR => {
@@ -350,7 +416,7 @@ pub(super) fn dispatch(
             // The module implementation must ignore policy_id for this variant.
             let result = match module.direct_policy_cmd(&creator, "", cmd) {
                 Ok(r) => r,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
             let event = match result {
@@ -359,7 +425,7 @@ pub(super) fn dispatch(
             };
 
             let ret = IAcp::flagHijackAttemptCall::abi_encode_returns(&json_bytes(&event));
-            Ok(ok_output(WRITE_GAS, ret))
+            Ok(ok_dispatch(WRITE_GAS, ret, vec![]))
         }
 
         IAcp::checkAccessCall::SELECTOR => {
@@ -378,11 +444,11 @@ pub(super) fn dispatch(
 
             let decision = match module.check_access(&creator, &policy_id, &access_request) {
                 Ok(d) => d,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
             let ret = IAcp::checkAccessCall::abi_encode_returns(&json_bytes(&decision));
-            Ok(ok_output(WRITE_GAS, ret))
+            Ok(ok_dispatch(WRITE_GAS, ret, vec![]))
         }
 
         IAcp::verifyAccessRequestCall::SELECTOR => {
@@ -400,11 +466,11 @@ pub(super) fn dispatch(
 
             let allowed = match module.query_verify_access_request(&policy_id, &access_request) {
                 Ok(v) => v,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
             let ret = IAcp::verifyAccessRequestCall::abi_encode_returns(&allowed);
-            Ok(ok_output(READ_GAS, ret))
+            Ok(ok_dispatch(READ_GAS, ret, vec![]))
         }
 
         IAcp::signedPolicyCmdCall::SELECTOR => {
@@ -419,11 +485,11 @@ pub(super) fn dispatch(
 
             let result = match module.signed_policy_cmd(&creator, &payload_str, content_type) {
                 Ok(r) => r,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
             let ret = IAcp::signedPolicyCmdCall::abi_encode_returns(&json_bytes(&result));
-            Ok(ok_output(WRITE_GAS, ret))
+            Ok(ok_dispatch(WRITE_GAS, ret, vec![]))
         }
 
         IAcp::bearerPolicyCmdCall::SELECTOR => {
@@ -439,11 +505,11 @@ pub(super) fn dispatch(
             let result =
                 match module.bearer_policy_cmd(&creator, &call.bearerToken, &policy_id, cmd) {
                     Ok(r) => r,
-                    Err(e) => return Ok(module_error(e)),
+                    Err(e) => return Ok(err_dispatch(e)),
                 };
 
             let ret = IAcp::bearerPolicyCmdCall::abi_encode_returns(&json_bytes(&result));
-            Ok(ok_output(WRITE_GAS, ret))
+            Ok(ok_dispatch(WRITE_GAS, ret, vec![]))
         }
 
         IAcp::updateParamsCall::SELECTOR => {
@@ -457,10 +523,10 @@ pub(super) fn dispatch(
 
             match module.update_params(&authority, params) {
                 Ok(()) => {}
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             }
 
-            Ok(ok_output(WRITE_GAS, Vec::new()))
+            Ok(ok_dispatch(WRITE_GAS, Vec::new(), vec![]))
         }
 
         // ── Read methods ─────────────────────────────────────────────
@@ -487,14 +553,14 @@ pub(super) fn dispatch(
 
             let rels = match module.query_filter_relationships(&policy_id, &selector) {
                 Ok(r) => r,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
             // Phase 9: verify that query_filter_relationships excludes archived
             // records. If it doesn't, add `.iter().any(|r| !r.archived)` here.
             let has = !rels.is_empty();
             let ret = IAcp::hasRelationshipCall::abi_encode_returns(&has);
-            Ok(ok_output(READ_GAS, ret))
+            Ok(ok_dispatch(READ_GAS, ret, vec![]))
         }
 
         IAcp::getPolicyCall::SELECTOR => {
@@ -506,11 +572,11 @@ pub(super) fn dispatch(
 
             let record = match module.query_policy(&policy_id) {
                 Ok(r) => r,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
             let ret = IAcp::getPolicyCall::abi_encode_returns(&json_bytes(&record));
-            Ok(ok_output(READ_GAS, ret))
+            Ok(ok_dispatch(READ_GAS, ret, vec![]))
         }
 
         IAcp::getObjectOwnerCall::SELECTOR => {
@@ -526,14 +592,14 @@ pub(super) fn dispatch(
 
             let (registered, record) = match module.query_object_owner(&policy_id, &object) {
                 Ok(r) => r,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
             let ret = IAcp::getObjectOwnerCall::abi_encode_returns(&IAcp::getObjectOwnerReturn {
                 registered,
                 record: json_bytes(&record),
             });
-            Ok(ok_output(READ_GAS, ret))
+            Ok(ok_dispatch(READ_GAS, ret, vec![]))
         }
 
         IAcp::getPolicyIdsCall::SELECTOR => {
@@ -543,11 +609,11 @@ pub(super) fn dispatch(
             // Zero-parameter function — no ABI decoding needed.
             let ids = match module.query_policy_ids() {
                 Ok(r) => r,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
             let ret = IAcp::getPolicyIdsCall::abi_encode_returns(&ids);
-            Ok(ok_output(READ_GAS, ret))
+            Ok(ok_dispatch(READ_GAS, ret, vec![]))
         }
 
         IAcp::filterRelationshipsCall::SELECTOR => {
@@ -566,11 +632,11 @@ pub(super) fn dispatch(
 
             let rels = match module.query_filter_relationships(&policy_id, &selector) {
                 Ok(r) => r,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
             let ret = IAcp::filterRelationshipsCall::abi_encode_returns(&json_bytes(&rels));
-            Ok(ok_output(READ_GAS, ret))
+            Ok(ok_dispatch(READ_GAS, ret, vec![]))
         }
 
         IAcp::validatePolicyCall::SELECTOR => {
@@ -585,14 +651,14 @@ pub(super) fn dispatch(
             let (valid, reason, _policy) =
                 match module.query_validate_policy(&policy_str, marshal_type) {
                     Ok(r) => r,
-                    Err(e) => return Ok(module_error(e)),
+                    Err(e) => return Ok(err_dispatch(e)),
                 };
 
             let ret = IAcp::validatePolicyCall::abi_encode_returns(&IAcp::validatePolicyReturn {
                 valid,
                 reason,
             });
-            Ok(ok_output(READ_GAS, ret))
+            Ok(ok_dispatch(READ_GAS, ret, vec![]))
         }
 
         IAcp::getAccessDecisionCall::SELECTOR => {
@@ -603,11 +669,11 @@ pub(super) fn dispatch(
 
             let decision = match module.query_access_decision(&call.decisionId) {
                 Ok(r) => r,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
             let ret = IAcp::getAccessDecisionCall::abi_encode_returns(&json_bytes(&decision));
-            Ok(ok_output(READ_GAS, ret))
+            Ok(ok_dispatch(READ_GAS, ret, vec![]))
         }
 
         IAcp::getRegistrationsCommitmentCall::SELECTOR => {
@@ -619,12 +685,12 @@ pub(super) fn dispatch(
 
             let commitment = match module.query_registrations_commitment(call.commitmentId) {
                 Ok(r) => r,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
             let ret =
                 IAcp::getRegistrationsCommitmentCall::abi_encode_returns(&json_bytes(&commitment));
-            Ok(ok_output(READ_GAS, ret))
+            Ok(ok_dispatch(READ_GAS, ret, vec![]))
         }
 
         IAcp::getRegistrationsCommitmentByValueCall::SELECTOR => {
@@ -637,13 +703,13 @@ pub(super) fn dispatch(
             let commitments =
                 match module.query_registrations_commitment_by_commitment(&call.commitment) {
                     Ok(r) => r,
-                    Err(e) => return Ok(module_error(e)),
+                    Err(e) => return Ok(err_dispatch(e)),
                 };
 
             let ret = IAcp::getRegistrationsCommitmentByValueCall::abi_encode_returns(&json_bytes(
                 &commitments,
             ));
-            Ok(ok_output(READ_GAS, ret))
+            Ok(ok_dispatch(READ_GAS, ret, vec![]))
         }
 
         IAcp::getHijackAttemptsCall::SELECTOR => {
@@ -655,11 +721,11 @@ pub(super) fn dispatch(
 
             let events = match module.query_hijack_attempts_by_policy(&policy_id) {
                 Ok(r) => r,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
             let ret = IAcp::getHijackAttemptsCall::abi_encode_returns(&json_bytes(&events));
-            Ok(ok_output(READ_GAS, ret))
+            Ok(ok_dispatch(READ_GAS, ret, vec![]))
         }
 
         IAcp::generateCommitmentCall::SELECTOR => {
@@ -686,11 +752,11 @@ pub(super) fn dispatch(
             let result =
                 match module.query_generate_commitment(&policy_id, &objects, &Actor(actor_did)) {
                     Ok(r) => r,
-                    Err(e) => return Ok(module_error(e)),
+                    Err(e) => return Ok(err_dispatch(e)),
                 };
 
             let ret = IAcp::generateCommitmentCall::abi_encode_returns(&json_bytes(&result));
-            Ok(ok_output(READ_GAS, ret))
+            Ok(ok_dispatch(READ_GAS, ret, vec![]))
         }
 
         IAcp::getParamsCall::SELECTOR => {
@@ -700,11 +766,11 @@ pub(super) fn dispatch(
             // Zero-parameter function — no ABI decoding needed.
             let params = match module.query_params() {
                 Ok(r) => r,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
             let ret = IAcp::getParamsCall::abi_encode_returns(&json_bytes(&params));
-            Ok(ok_output(READ_GAS, ret))
+            Ok(ok_dispatch(READ_GAS, ret, vec![]))
         }
 
         _ => Err(PrecompileError::Other(
@@ -793,11 +859,11 @@ resources:
 
         let result = dispatch(&mut module, &block_ctx, &tx_ctx, &calldata, 1_000_000);
         match &result {
-            Ok(output) => {
+            Ok(dr) => {
                 assert!(
-                    !output.reverted,
+                    !dr.precompile.reverted,
                     "dispatch should not revert, output bytes: {}",
-                    String::from_utf8_lossy(&output.bytes)
+                    String::from_utf8_lossy(&dr.precompile.bytes)
                 );
             }
             Err(e) => panic!("dispatch returned PrecompileError: {e:?}"),

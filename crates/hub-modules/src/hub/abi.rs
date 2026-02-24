@@ -5,6 +5,11 @@ use alloy_sol_types::sol;
 sol! {
     /// Solidity interface for the Hub precompile at `0x0812`.
     interface IHub {
+        // ── Events ──────────────────────────────────────────────────────
+
+        event JWSTokenCreated(string indexed tokenHash, string issuerDid);
+        event JWSTokenInvalidated(string indexed tokenHash, string issuerDid);
+
         // ── Write methods ───────────────────────────────────────────────
 
         function invalidateJWS(string tokenHash) external;

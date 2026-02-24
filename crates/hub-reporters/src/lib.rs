@@ -4,7 +4,12 @@
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
-use std::{collections::{BTreeSet, HashMap}, fmt, marker::PhantomData, sync::Arc};
+use std::{
+    collections::{BTreeSet, HashMap},
+    fmt,
+    marker::PhantomData,
+    sync::Arc,
+};
 
 // Re-import tokio broadcast from the crate (not commonware_runtime::tokio).
 use ::tokio::sync::broadcast;
@@ -23,13 +28,13 @@ use commonware_cryptography::{Committable as _, bls12381::primitives::variant::V
 use commonware_runtime::{Spawner as _, tokio};
 use commonware_utils::acknowledgement::Acknowledgement as _;
 use hub_consensus::{BlockExecution, Snapshot};
-use hub_qmdb_ledger::QmdbChangeSet;
 use hub_domain::{Block, ConsensusDigest, NativeTx, PublicKey};
 use hub_executor::{BlockContext, BlockExecutor, ExecutionReceipt};
 use hub_indexer::{BlockIndex, IndexedBlock, IndexedLog, IndexedReceipt, IndexedTransaction};
 use hub_jsonrpc::{NodeState, RpcBlock, RpcLog};
 use hub_ledger::LedgerService;
 use hub_overlay::OverlayState;
+use hub_qmdb_ledger::QmdbChangeSet;
 use hub_qmdb_ledger::QmdbState;
 use tracing::{error, trace, warn};
 
@@ -145,8 +150,7 @@ async fn handle_finalized_update<E, P>(
                     // so the next block has a valid parent state to execute against.
                     if block.height == last_committed_height {
                         let qmdb = state.qmdb_state().await;
-                        let synthetic_state =
-                            OverlayState::new(qmdb, Default::default());
+                        let synthetic_state = OverlayState::new(qmdb, Default::default());
                         let snapshot = Snapshot::new(
                             Some(block.parent()),
                             synthetic_state,

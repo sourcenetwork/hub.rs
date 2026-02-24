@@ -5,6 +5,13 @@ use alloy_sol_types::sol;
 sol! {
     /// Solidity interface for the Bulletin precompile at `0x0811`.
     interface IBulletin {
+        // ── Events ──────────────────────────────────────────────────────
+
+        event NamespaceCreated(string indexed namespace, string owner);
+        event CollaboratorAdded(string indexed namespace, string collaborator);
+        event CollaboratorRemoved(string indexed namespace, string collaborator);
+        event PostCreated(string indexed namespace, bytes32 postId);
+
         // ── Write methods ───────────────────────────────────────────────
 
         function registerNamespace(string namespace) external returns (bytes);

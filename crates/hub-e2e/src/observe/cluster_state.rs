@@ -121,11 +121,7 @@ impl ClusterState {
     }
 
     /// Wait until at least `min_nodes` are healthy and not backfilling.
-    pub async fn wait_for_synced(
-        &self,
-        min_nodes: usize,
-        timeout: Duration,
-    ) -> eyre::Result<()> {
+    pub async fn wait_for_synced(&self, min_nodes: usize, timeout: Duration) -> eyre::Result<()> {
         let deadline = tokio::time::Instant::now() + timeout;
 
         loop {

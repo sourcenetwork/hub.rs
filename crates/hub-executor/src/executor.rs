@@ -207,14 +207,21 @@ impl HubExecutor {
         };
 
         match dispatch_result {
-            Ok(Ok(output)) => Ok(ExecutionReceipt::new(
-                tx_hash,
-                !output.reverted,
-                output.gas_used,
-                0, // cumulative gas set by caller
-                vec![],
-                None,
-            )),
+            Ok(Ok(result)) => {
+                let logs = if result.precompile.reverted {
+                    vec![]
+                } else {
+                    result.logs
+                };
+                Ok(ExecutionReceipt::new(
+                    tx_hash,
+                    !result.precompile.reverted,
+                    result.precompile.gas_used,
+                    0, // cumulative gas set by caller
+                    logs,
+                    None,
+                ))
+            }
             Ok(Err(_)) => Ok(failed_receipt()),
             Err(_) => {
                 warn!(%tx_hash, "native tx module panicked");

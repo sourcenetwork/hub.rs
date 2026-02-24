@@ -151,7 +151,8 @@ async fn poll_until(
     description: &str,
     timeout: Duration,
     interval: Duration,
-    mut check: impl FnMut() -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send>>,
+    mut check: impl FnMut()
+        -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send>>,
 ) {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
@@ -198,14 +199,24 @@ async fn node_restart_preserves_state() {
 
     // ── 1. Submit EVM + BLS policies before kill ───────────────────
 
-    let evm_receipt =
-        broadcast_evm_tx(&cluster, &client, &evm_signer, ACP_ADDRESS, create_policy_calldata())
-            .await;
+    let evm_receipt = broadcast_evm_tx(
+        &cluster,
+        &client,
+        &evm_signer,
+        ACP_ADDRESS,
+        create_policy_calldata(),
+    )
+    .await;
     assert_eq!(evm_receipt.status, 1, "EVM create_policy should succeed");
 
-    let bls_receipt =
-        broadcast_native_tx(&cluster, &client, &bls_signer, ACP_ADDRESS, create_policy_calldata())
-            .await;
+    let bls_receipt = broadcast_native_tx(
+        &cluster,
+        &client,
+        &bls_signer,
+        ACP_ADDRESS,
+        create_policy_calldata(),
+    )
+    .await;
     assert_eq!(bls_receipt.status, 1, "BLS create_policy should succeed");
 
     let max_block = evm_receipt.block_number.max(bls_receipt.block_number);
@@ -463,14 +474,17 @@ async fn node_restart_preserves_state() {
                     let Ok(status) = HubClient::new(url).node_status().await else {
                         return Some("node unreachable".to_string());
                     };
-                    if status.current_view > view_before && status.finalized_count > finalized_before
+                    if status.current_view > view_before
+                        && status.finalized_count > finalized_before
                     {
                         None
                     } else {
                         Some(format!(
                             "view {} -> {}, finalized {} -> {}",
-                            view_before, status.current_view,
-                            finalized_before, status.finalized_count
+                            view_before,
+                            status.current_view,
+                            finalized_before,
+                            status.finalized_count
                         ))
                     }
                 })

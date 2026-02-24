@@ -6,9 +6,12 @@ use hub_modules::hub::HubModule;
 use hub_modules::hub::abi::IHub;
 use hub_modules::types::{BlockExecCtx, TxExecCtx};
 use identity::Did;
-use revm::precompile::{PrecompileError, PrecompileResult};
+use revm::precompile::PrecompileError;
 
-use super::{decode_error, did_from_signer, json_bytes, module_error, ok_output};
+use super::{
+    DispatchReturn, HUB_ADDRESS, decode_error, did_from_signer, err_dispatch, event_log,
+    json_bytes, ok_dispatch,
+};
 
 /// Flat gas cost for read operations (real metering is Phase 10).
 const READ_GAS: u64 = 1000;
@@ -22,7 +25,7 @@ pub(super) fn dispatch(
     tx_ctx: &TxExecCtx,
     input: &[u8],
     gas_limit: u64,
-) -> PrecompileResult {
+) -> DispatchReturn {
     if input.len() < 4 {
         return Err(PrecompileError::Other(
             "input too short for selector".into(),
@@ -41,10 +44,18 @@ pub(super) fn dispatch(
 
             match module.invalidate_jws(block_ctx, tx_ctx, &creator, &call.tokenHash) {
                 Ok(_) => {}
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             }
 
-            Ok(ok_output(WRITE_GAS, Vec::new()))
+            let event = IHub::JWSTokenInvalidated {
+                tokenHash: alloy_primitives::keccak256(call.tokenHash.as_bytes()),
+                issuerDid: tx_ctx.signer.clone(),
+            };
+            Ok(ok_dispatch(
+                WRITE_GAS,
+                Vec::new(),
+                vec![event_log(HUB_ADDRESS, &event)],
+            ))
         }
 
         IHub::updateParamsCall::SELECTOR => {
@@ -60,10 +71,10 @@ pub(super) fn dispatch(
 
             match module.update_params(&authority, params) {
                 Ok(()) => {}
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             }
 
-            Ok(ok_output(WRITE_GAS, Vec::new()))
+            Ok(ok_dispatch(WRITE_GAS, Vec::new(), vec![]))
         }
 
         // ── Read methods ─────────────────────────────────────────────
@@ -75,7 +86,7 @@ pub(super) fn dispatch(
 
             let record = match module.get_jws_token(&call.tokenHash) {
                 Ok(r) => r,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
             let (found, record_bytes) = record
@@ -86,7 +97,7 @@ pub(super) fn dispatch(
                 found,
                 record: record_bytes,
             });
-            Ok(ok_output(READ_GAS, ret))
+            Ok(ok_dispatch(READ_GAS, ret, vec![]))
         }
 
         IHub::getJWSTokensByDidCall::SELECTOR => {
@@ -99,11 +110,11 @@ pub(super) fn dispatch(
 
             let tokens = match module.get_jws_tokens_by_did(&did) {
                 Ok(r) => r,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
             let ret = IHub::getJWSTokensByDidCall::abi_encode_returns(&json_bytes(&tokens));
-            Ok(ok_output(READ_GAS, ret))
+            Ok(ok_dispatch(READ_GAS, ret, vec![]))
         }
 
         IHub::getJWSTokensByAccountCall::SELECTOR => {
@@ -115,11 +126,11 @@ pub(super) fn dispatch(
 
             let tokens = match module.get_jws_tokens_by_account(&account_str) {
                 Ok(r) => r,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
             let ret = IHub::getJWSTokensByAccountCall::abi_encode_returns(&json_bytes(&tokens));
-            Ok(ok_output(READ_GAS, ret))
+            Ok(ok_dispatch(READ_GAS, ret, vec![]))
         }
 
         IHub::getChainConfigCall::SELECTOR => {
@@ -129,11 +140,11 @@ pub(super) fn dispatch(
             // Zero-parameter function — no ABI decoding needed.
             let config = match module.get_chain_config() {
                 Ok(c) => c,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
             let ret = IHub::getChainConfigCall::abi_encode_returns(&json_bytes(&config));
-            Ok(ok_output(READ_GAS, ret))
+            Ok(ok_dispatch(READ_GAS, ret, vec![]))
         }
 
         IHub::getParamsCall::SELECTOR => {
@@ -143,11 +154,11 @@ pub(super) fn dispatch(
             // Zero-parameter function — no ABI decoding needed.
             let params = match module.query_params() {
                 Ok(p) => p,
-                Err(e) => return Ok(module_error(e)),
+                Err(e) => return Ok(err_dispatch(e)),
             };
 
             let ret = IHub::getParamsCall::abi_encode_returns(&json_bytes(&params));
-            Ok(ok_output(READ_GAS, ret))
+            Ok(ok_dispatch(READ_GAS, ret, vec![]))
         }
 
         _ => Err(PrecompileError::Other(

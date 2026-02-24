@@ -9,7 +9,7 @@ mod acp;
 mod bulletin;
 mod hub;
 
-use alloy_primitives::{Address, B256, Bytes};
+use alloy_primitives::{Address, B256, Bytes, Log};
 use hub_modules::acp::AcpModule;
 use hub_modules::bulletin::BulletinModule;
 use hub_modules::hub::HubModule;
@@ -17,7 +17,7 @@ use hub_modules::types::{BlockExecCtx, Timestamp, TxExecCtx};
 use identity::Did;
 use revm::{
     context::Cfg,
-    context_interface::{Block, ContextTr},
+    context_interface::{Block, ContextTr, JournalTr},
     handler::{EthPrecompiles, PrecompileProvider},
     interpreter::{CallInputs, InterpreterResult},
     precompile::{
@@ -72,6 +72,39 @@ pub(super) fn ok_output(gas: u64, ret: Vec<u8>) -> PrecompileOutput {
     }
 }
 
+/// Result of dispatching to a hub module, including any emitted event logs.
+#[derive(Debug)]
+pub struct DispatchResult {
+    /// The precompile output (gas, return data, revert status).
+    pub precompile: PrecompileOutput,
+    /// EVM-compatible logs emitted during the dispatch.
+    pub logs: Vec<Log>,
+}
+
+/// Return type for module dispatch functions.
+pub type DispatchReturn = Result<DispatchResult, PrecompileError>;
+
+pub(super) fn ok_dispatch(gas: u64, ret: Vec<u8>, logs: Vec<Log>) -> DispatchResult {
+    DispatchResult {
+        precompile: ok_output(gas, ret),
+        logs,
+    }
+}
+
+pub(super) fn err_dispatch(e: impl core::fmt::Display) -> DispatchResult {
+    DispatchResult {
+        precompile: module_error(e),
+        logs: vec![],
+    }
+}
+
+pub(super) fn event_log<E: alloy_sol_types::SolEvent>(address: Address, event: &E) -> Log {
+    Log {
+        address,
+        data: event.encode_log_data(),
+    }
+}
+
 const fn stub_precompile(_input: &[u8], _gas_limit: u64) -> PrecompileResult {
     Ok(PrecompileOutput {
         gas_used: 0,
@@ -108,7 +141,7 @@ pub fn dispatch_to_module(
     block_ctx: &BlockExecCtx,
     tx_ctx: &TxExecCtx,
     gas_limit: u64,
-) -> Option<PrecompileResult> {
+) -> Option<DispatchReturn> {
     if target == ACP_ADDRESS {
         Some(acp::dispatch(acp, block_ctx, tx_ctx, calldata, gas_limit))
     } else if target == BULLETIN_ADDRESS {
@@ -209,7 +242,11 @@ impl<CTX: ContextTr> PrecompileProvider<CTX> for HubPrecompiles {
                 signer: self.current_signer_did.clone(),
             };
             let calldata = inputs.input.bytes(context);
-            return self.run_custom(inputs, &calldata, &block_ctx, &tx_ctx);
+            let (result, logs) = self.run_custom(inputs, &calldata, &block_ctx, &tx_ctx)?;
+            for log in logs {
+                context.journal_mut().log(log);
+            }
+            return Ok(result);
         }
         self.eth.run(context, inputs)
     }
@@ -232,10 +269,10 @@ impl HubPrecompiles {
         calldata: &[u8],
         block_ctx: &BlockExecCtx,
         tx_ctx: &TxExecCtx,
-    ) -> Result<Option<InterpreterResult>, String> {
+    ) -> Result<(Option<InterpreterResult>, Vec<Log>), String> {
         use revm::interpreter::{Gas, InstructionResult};
 
-        let precompile_result = match dispatch_to_module(
+        let dispatch_result = match dispatch_to_module(
             &mut self.acp_module,
             &mut self.bulletin_module,
             &mut self.hub_module,
@@ -246,7 +283,7 @@ impl HubPrecompiles {
             inputs.gas_limit,
         ) {
             Some(r) => r,
-            None => return Ok(None),
+            None => return Ok((None, vec![])),
         };
 
         let mut result = InterpreterResult {
@@ -254,30 +291,36 @@ impl HubPrecompiles {
             gas: Gas::new(inputs.gas_limit),
             output: revm::primitives::Bytes::new(),
         };
-        match precompile_result {
-            Ok(output) => {
-                result.gas.record_refund(output.gas_refunded);
-                if !result.gas.record_cost(output.gas_used) {
+        match dispatch_result {
+            Ok(dr) => {
+                result.gas.record_refund(dr.precompile.gas_refunded);
+                if !result.gas.record_cost(dr.precompile.gas_used) {
                     result.result = InstructionResult::PrecompileOOG;
-                    return Ok(Some(result));
+                    return Ok((Some(result), vec![]));
                 }
-                result.result = if output.reverted {
+                result.result = if dr.precompile.reverted {
                     InstructionResult::Revert
                 } else {
                     InstructionResult::Return
                 };
-                result.output = output.bytes;
+                result.output = dr.precompile.bytes;
+                let logs = if dr.precompile.reverted {
+                    vec![]
+                } else {
+                    dr.logs
+                };
+                Ok((Some(result), logs))
             }
-            Err(revm::precompile::PrecompileError::Fatal(e)) => return Err(e),
+            Err(revm::precompile::PrecompileError::Fatal(e)) => Err(e),
             Err(e) => {
                 result.result = if e.is_oog() {
                     InstructionResult::PrecompileOOG
                 } else {
                     InstructionResult::PrecompileError
                 };
+                Ok((Some(result), vec![]))
             }
         }
-        Ok(Some(result))
     }
 }
 

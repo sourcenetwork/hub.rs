@@ -3472,6 +3472,7 @@ dependencies = [
  "hub-genesis",
  "hub-modules",
  "hub-runner",
+ "jsonrpsee",
  "libc",
  "parking_lot",
  "rand 0.8.5",

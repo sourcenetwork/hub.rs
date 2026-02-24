@@ -272,6 +272,8 @@ impl NodeRunner for HubRunner {
         info!("Gulfstream targeted tx forwarding enabled");
 
         let block_index = Arc::new(BlockIndex::new());
+        let (heads_tx, _) = ::tokio::sync::broadcast::channel::<hub_jsonrpc::RpcBlock>(64);
+        let (logs_tx, _) = ::tokio::sync::broadcast::channel::<Vec<hub_jsonrpc::RpcLog>>(256);
 
         let validator_key = config
             .validator_key()
@@ -325,6 +327,7 @@ impl NodeRunner for HubRunner {
                 context_provider,
             )
             .with_block_index(block_index.clone())
+            .with_subscriptions(heads_tx.clone(), logs_tx.clone())
             .with_last_committed_height(last_committed_height);
             if let Some((state, _)) = &self.rpc_config {
                 reporter.with_node_state(state.clone())
@@ -493,6 +496,7 @@ impl NodeRunner for HubRunner {
                 provider,
             )
             .with_tx_submit(tx_submit)
+            .with_subscriptions(heads_tx, logs_tx)
             .with_hub_index_and_modules(hub_index, hub_modules);
             let rpc_handle = rpc.start();
             context.clone().shared(true).spawn(move |_| async move {

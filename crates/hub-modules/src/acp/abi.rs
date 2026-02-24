@@ -3,6 +3,15 @@ use alloy_sol_types::sol;
 sol! {
     /// Solidity interface for the ACP precompile at `0x0810`.
     interface IAcp {
+        // ── Events ──────────────────────────────────────────────────────
+
+        event PolicyCreated(string indexed policyId, string creator);
+        event PolicyEdited(string indexed policyId, string creator, uint256 relationshipsRemoved);
+        event RelationshipSet(string indexed policyId, string resource, string objectId, string relation, string actor);
+        event RelationshipDeleted(string indexed policyId, string resource, string objectId, string relation, string actor);
+        event ObjectRegistered(string indexed policyId, string resource, string objectId, string owner);
+        event ObjectUnregistered(string indexed policyId, string resource, string objectId);
+
         // ── Write methods (map to Cosmos Msgs) ──────────────────────────
 
         function createPolicy(bytes calldata policy, uint8 marshalType) external returns (bytes);
