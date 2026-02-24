@@ -513,8 +513,7 @@ async fn validator_registry_adversarial() {
         marshalType: 1,
     }
     .abi_encode();
-    let receipt =
-        broadcast_evm_tx(&cluster, &client, &admin_signer, ACP_ADDRESS, calldata).await;
+    let receipt = broadcast_evm_tx(&cluster, &client, &admin_signer, ACP_ADDRESS, calldata).await;
     assert_eq!(receipt.status, 1, "createPolicy should succeed");
 
     let policy_ids = client
@@ -529,8 +528,7 @@ async fn validator_registry_adversarial() {
         resource: "registry".to_string(),
     }
     .abi_encode();
-    let receipt =
-        broadcast_evm_tx(&cluster, &client, &admin_signer, ACP_ADDRESS, calldata).await;
+    let receipt = broadcast_evm_tx(&cluster, &client, &admin_signer, ACP_ADDRESS, calldata).await;
     assert_eq!(receipt.status, 1, "registerObject should succeed");
 
     let calldata = IAcp::setRelationshipCall {
@@ -541,8 +539,7 @@ async fn validator_registry_adversarial() {
         actor: admin_signer.did(),
     }
     .abi_encode();
-    let receipt =
-        broadcast_evm_tx(&cluster, &client, &admin_signer, ACP_ADDRESS, calldata).await;
+    let receipt = broadcast_evm_tx(&cluster, &client, &admin_signer, ACP_ADDRESS, calldata).await;
     assert_eq!(receipt.status, 1, "setRelationship should succeed");
 
     let calldata = IValidatorRegistry::setPolicyCall {
@@ -573,10 +570,7 @@ async fn validator_registry_adversarial() {
         calldata,
     )
     .await;
-    assert_eq!(
-        receipt.status, 0,
-        "N3: setPolicy twice should revert"
-    );
+    assert_eq!(receipt.status, 0, "N3: setPolicy twice should revert");
 
     // ── N4: Unauthorized caller → revert ────────────────────────
 

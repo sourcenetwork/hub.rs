@@ -21,7 +21,9 @@ use commonware_runtime::{Metrics as _, Spawner, buffer::paged::CacheRef, tokio};
 use commonware_utils::{NZU64, NZUsize, acknowledgement::Exact};
 use futures::StreamExt;
 use hub_backend as _;
-use hub_domain::{Block, BlockCfg, BootstrapConfig, ConsensusDigest, LedgerEvent, Tx, TxCfg};
+use hub_domain::{
+    Block, BlockCfg, BootstrapConfig, ConsensusDigest, LedgerEvent, PublicKey, Tx, TxCfg,
+};
 use hub_executor::{BlockContext, HubExecutor, ModuleState, ModuleTrees, SharedModuleState};
 use hub_indexer::BlockIndex;
 use hub_jsonrpc::IndexedStateProvider;
@@ -86,6 +88,17 @@ impl From<ThresholdScheme> for ConstantSchemeProvider {
 #[derive(Clone, Debug)]
 struct HubContextProvider {
     gas_limit: u64,
+    participant_addresses: Vec<(PublicKey, Address)>,
+}
+
+impl HubContextProvider {
+    fn beneficiary_for(&self, leader: &PublicKey) -> Address {
+        self.participant_addresses
+            .iter()
+            .find(|(pk, _)| pk == leader)
+            .map(|(_, addr)| *addr)
+            .unwrap_or(Address::ZERO)
+    }
 }
 
 impl BlockContextProvider for HubContextProvider {
@@ -94,7 +107,7 @@ impl BlockContextProvider for HubContextProvider {
             number: block.height,
             timestamp: block.timestamp,
             gas_limit: self.gas_limit,
-            beneficiary: Address::ZERO,
+            beneficiary: self.beneficiary_for(&block.context.leader),
             base_fee_per_gas: Some(0),
             ..Default::default()
         };
@@ -310,6 +323,14 @@ impl NodeRunner for HubRunner {
         );
         let persisted_modules = ModuleState::from_stores(module_stores);
 
+        let participant_addrs: Vec<(PublicKey, Address)> = self
+            .scheme
+            .participants()
+            .iter()
+            .zip(self.bootstrap.participant_addresses.iter())
+            .map(|(pk, addr)| (pk.clone(), *addr))
+            .collect();
+
         let executor = HubExecutor::new(self.chain_id).with_module_trees(module_trees);
         let modules: SharedModuleState = executor.modules().clone();
         executor.set_base_modules(persisted_modules);
@@ -320,6 +341,7 @@ impl NodeRunner for HubRunner {
 
         let context_provider = HubContextProvider {
             gas_limit: self.gas_limit,
+            participant_addresses: participant_addrs.clone(),
         };
         let finalized_reporter = {
             let reporter = FinalizedReporter::new(
@@ -390,7 +412,8 @@ impl NodeRunner for HubRunner {
             executor,
             block_cfg.max_txs,
             self.gas_limit,
-        );
+        )
+        .with_participant_addresses(participant_addrs);
         if let Some((state, _)) = &self.rpc_config {
             app = app.with_node_state(state.clone());
         }

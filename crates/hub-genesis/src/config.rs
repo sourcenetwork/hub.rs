@@ -143,11 +143,21 @@ impl HubGenesis {
             (storage, code)
         };
 
+        let participant_addresses: Vec<Address> = self
+            .validators
+            .iter()
+            .map(|v| {
+                Address::from_str(&v.evm_address)
+                    .expect("validator address already validated above")
+            })
+            .collect();
+
         Ok(BootstrapConfig {
             genesis_alloc,
             genesis_storage,
             genesis_code,
             bootstrap_txs: Vec::new(),
+            participant_addresses,
         })
     }
 

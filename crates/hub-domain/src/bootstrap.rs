@@ -18,6 +18,8 @@ pub struct BootstrapConfig {
     pub genesis_code: Vec<(Address, Vec<u8>)>,
     /// Transactions to execute during bootstrap.
     pub bootstrap_txs: Vec<Tx>,
+    /// EVM addresses of validators, aligned with `scheme.participants()` order.
+    pub participant_addresses: Vec<Address>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -42,6 +44,7 @@ impl BootstrapConfig {
             genesis_storage: Vec::new(),
             genesis_code: Vec::new(),
             bootstrap_txs,
+            participant_addresses: Vec::new(),
         }
     }
 
@@ -57,6 +60,7 @@ impl BootstrapConfig {
             genesis_storage,
             genesis_code: Vec::new(),
             bootstrap_txs,
+            participant_addresses: Vec::new(),
         }
     }
 
@@ -79,6 +83,7 @@ impl BootstrapConfig {
             genesis_storage: Vec::new(),
             genesis_code: Vec::new(),
             bootstrap_txs: Vec::new(),
+            participant_addresses: Vec::new(),
         })
     }
 }

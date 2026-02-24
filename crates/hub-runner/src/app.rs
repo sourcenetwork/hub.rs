@@ -14,7 +14,7 @@ use commonware_cryptography::{Committable as _, certificate::Scheme as CertSchem
 use commonware_runtime::{Clock, Metrics, Spawner};
 use futures::StreamExt;
 use hub_consensus::{BlockExecution, SnapshotStore, components::InMemorySnapshotStore};
-use hub_domain::{Block, ConsensusContext, ConsensusDigest};
+use hub_domain::{Block, ConsensusContext, ConsensusDigest, PublicKey};
 use hub_executor::{BlockContext, BlockExecutor};
 use hub_jsonrpc::NodeState;
 use hub_ledger::LedgerService;
@@ -31,6 +31,7 @@ pub struct RevmApplication<S, E> {
     max_txs: usize,
     gas_limit: u64,
     node_state: Option<NodeState>,
+    participant_addresses: Vec<(PublicKey, Address)>,
     _scheme: std::marker::PhantomData<S>,
 }
 
@@ -55,6 +56,7 @@ where
             max_txs,
             gas_limit,
             node_state: None,
+            participant_addresses: Vec::new(),
             _scheme: std::marker::PhantomData,
         }
     }
@@ -66,12 +68,33 @@ where
         self
     }
 
-    fn block_context(&self, height: u64, timestamp: u64, prevrandao: B256) -> BlockContext {
+    /// Set participant-to-address mapping for block proposer beneficiary.
+    #[must_use]
+    pub fn with_participant_addresses(mut self, addrs: Vec<(PublicKey, Address)>) -> Self {
+        self.participant_addresses = addrs;
+        self
+    }
+
+    fn beneficiary_for(&self, leader: &PublicKey) -> Address {
+        self.participant_addresses
+            .iter()
+            .find(|(pk, _)| pk == leader)
+            .map(|(_, addr)| *addr)
+            .unwrap_or(Address::ZERO)
+    }
+
+    fn block_context(
+        &self,
+        height: u64,
+        timestamp: u64,
+        prevrandao: B256,
+        leader: &PublicKey,
+    ) -> BlockContext {
         let header = Header {
             number: height,
             timestamp,
             gas_limit: self.gas_limit,
-            beneficiary: Address::ZERO,
+            beneficiary: self.beneficiary_for(leader),
             base_fee_per_gas: Some(0),
             ..Default::default()
         };
@@ -112,7 +135,7 @@ where
             .duration_since(UNIX_EPOCH)
             .expect("system clock before unix epoch")
             .as_secs();
-        let context = self.block_context(height, timestamp, prevrandao);
+        let context = self.block_context(height, timestamp, prevrandao, &consensus_context.leader);
         let txs_bytes: Vec<Bytes> = txs.iter().map(|tx| tx.bytes.clone()).collect();
 
         let exec_start = Instant::now();
@@ -248,7 +271,12 @@ where
         }
 
         let context = self
-            .block_context(block.height, block.timestamp, block.prevrandao)
+            .block_context(
+                block.height,
+                block.timestamp,
+                block.prevrandao,
+                &block.context.leader,
+            )
             .with_verification()
             .with_expected_module_state_root(block.module_state_root);
         let exec_start = Instant::now();

@@ -16,7 +16,9 @@ use commonware_parallel::Sequential;
 use commonware_runtime::{Metrics as _, Spawner, buffer::paged::CacheRef, tokio};
 use commonware_utils::{NZU64, NZUsize, acknowledgement::Exact};
 use futures::StreamExt;
-use hub_domain::{Block, BlockCfg, BootstrapConfig, ConsensusDigest, LedgerEvent, TxCfg};
+use hub_domain::{
+    Block, BlockCfg, BootstrapConfig, ConsensusDigest, LedgerEvent, PublicKey, TxCfg,
+};
 use hub_executor::{BlockContext, ModuleState, RevmExecutor, SharedModuleState};
 use hub_indexer::BlockIndex;
 use hub_jsonrpc::IndexedStateProvider;
@@ -78,6 +80,17 @@ impl From<ThresholdScheme> for ConstantSchemeProvider {
 #[derive(Clone, Debug)]
 struct RevmContextProvider {
     gas_limit: u64,
+    participant_addresses: Vec<(PublicKey, Address)>,
+}
+
+impl RevmContextProvider {
+    fn beneficiary_for(&self, leader: &PublicKey) -> Address {
+        self.participant_addresses
+            .iter()
+            .find(|(pk, _)| pk == leader)
+            .map(|(_, addr)| *addr)
+            .unwrap_or(Address::ZERO)
+    }
 }
 
 impl BlockContextProvider for RevmContextProvider {
@@ -86,7 +99,7 @@ impl BlockContextProvider for RevmContextProvider {
             number: block.height,
             timestamp: block.timestamp,
             gas_limit: self.gas_limit,
-            beneficiary: Address::ZERO,
+            beneficiary: self.beneficiary_for(&block.context.leader),
             base_fee_per_gas: Some(0),
             ..Default::default()
         };
@@ -233,10 +246,19 @@ impl NodeRunner for ProductionRunner {
         let (heads_tx, _) = ::tokio::sync::broadcast::channel::<hub_jsonrpc::RpcBlock>(64);
         let (logs_tx, _) = ::tokio::sync::broadcast::channel::<Vec<hub_jsonrpc::RpcLog>>(256);
 
+        let participant_addrs: Vec<(PublicKey, Address)> = self
+            .scheme
+            .participants()
+            .iter()
+            .zip(self.bootstrap.participant_addresses.iter())
+            .map(|(pk, addr)| (pk.clone(), *addr))
+            .collect();
+
         let modules: SharedModuleState = Arc::new(RwLock::new(ModuleState::default()));
         let executor = RevmExecutor::new(self.chain_id);
         let context_provider = RevmContextProvider {
             gas_limit: self.gas_limit,
+            participant_addresses: participant_addrs.clone(),
         };
         let finalized_reporter = {
             let reporter =
@@ -304,7 +326,8 @@ impl NodeRunner for ProductionRunner {
             executor,
             block_cfg.max_txs,
             self.gas_limit,
-        );
+        )
+        .with_participant_addresses(participant_addrs);
         if let Some((state, _)) = &self.rpc_config {
             app = app.with_node_state(state.clone());
         }
