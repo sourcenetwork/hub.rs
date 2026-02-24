@@ -283,12 +283,15 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
                 }
             };
 
-            let eth_api = tx_submit.as_ref().map_or_else(
-                || EthApiImpl::new(chain_id, state_provider.clone()),
-                |submit| {
-                    EthApiImpl::with_tx_submit(chain_id, state_provider.clone(), submit.clone())
-                },
-            );
+            let eth_api = {
+                let api = tx_submit.as_ref().map_or_else(
+                    || EthApiImpl::new(chain_id, state_provider.clone()),
+                    |submit| {
+                        EthApiImpl::with_tx_submit(chain_id, state_provider.clone(), submit.clone())
+                    },
+                );
+                api.with_node_state((*node_state_for_jsonrpc).clone())
+            };
             let net_api = NetApiImpl::new(chain_id);
             let web3_api = Web3ApiImpl::new();
             let hub_api = {
@@ -553,16 +556,23 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
             .local_addr()
             .map_err(|e| ServerError::Build(e.to_string()))?;
 
-        let eth_api = self.tx_submit.as_ref().map_or_else(
-            || EthApiImpl::new(self.chain_id, self.state_provider.clone()),
-            |submit| {
-                EthApiImpl::with_tx_submit(
-                    self.chain_id,
-                    self.state_provider.clone(),
-                    submit.clone(),
-                )
-            },
-        );
+        let eth_api = {
+            let api = self.tx_submit.as_ref().map_or_else(
+                || EthApiImpl::new(self.chain_id, self.state_provider.clone()),
+                |submit| {
+                    EthApiImpl::with_tx_submit(
+                        self.chain_id,
+                        self.state_provider.clone(),
+                        submit.clone(),
+                    )
+                },
+            );
+            if let Some(ref ns) = self.node_state {
+                api.with_node_state((**ns).clone())
+            } else {
+                api
+            }
+        };
         let net_api = NetApiImpl::new(self.chain_id);
         let web3_api = Web3ApiImpl::new();
 

@@ -37,6 +37,11 @@ impl ClusterState {
         &self.log_trackers[index]
     }
 
+    /// Restart the log tracker for a specific node after a process respawn.
+    pub fn restart_node_logs(&mut self, index: usize) {
+        self.log_trackers[index].restart();
+    }
+
     /// Get all error events across all nodes.
     pub fn all_errors(&self) -> Vec<(usize, LogEvent)> {
         let mut all = Vec::new();
@@ -108,6 +113,49 @@ impl ClusterState {
                     "timeout waiting for {} healthy nodes (got {})",
                     min_nodes,
                     healthy_count
+                ));
+            }
+
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// Wait until at least `min_nodes` are healthy and not backfilling.
+    pub async fn wait_for_synced(
+        &self,
+        min_nodes: usize,
+        timeout: Duration,
+    ) -> eyre::Result<()> {
+        let deadline = tokio::time::Instant::now() + timeout;
+
+        loop {
+            let snaps = self.rpc_poller.all_snapshots();
+            let synced_count = snaps
+                .iter()
+                .filter(|s| s.is_healthy && !s.backfilling)
+                .count();
+
+            if synced_count >= min_nodes {
+                return Ok(());
+            }
+
+            if tokio::time::Instant::now() >= deadline {
+                let states: Vec<_> = snaps
+                    .iter()
+                    .map(|s| {
+                        (
+                            s.node_index,
+                            s.is_healthy,
+                            s.backfilling,
+                            s.effective_height(),
+                        )
+                    })
+                    .collect();
+                return Err(eyre::eyre!(
+                    "timeout waiting for {} synced nodes (got {}, states: {:?})",
+                    min_nodes,
+                    synced_count,
+                    states
                 ));
             }
 

@@ -85,6 +85,11 @@ impl ModuleStateTree {
         self.canonical_version
     }
 
+    /// Returns the last persisted block height (0 for fresh stores).
+    pub const fn canonical_height(&self) -> u64 {
+        self.canonical_height
+    }
+
     /// Prepares the tree for a new block execution at the given height.
     pub fn begin_execution(&mut self, height: u64) {
         self.overlay.clear();

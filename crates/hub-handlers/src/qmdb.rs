@@ -102,13 +102,20 @@ where
     }
 
     /// Initialize with genesis allocations.
+    ///
+    /// Idempotent: skips accounts that already exist (e.g. after a restart
+    /// where QMDB files persist on disk).
     pub async fn init_genesis(&self, allocs: Vec<(Address, U256)>) -> Result<(), HandleError> {
         use std::collections::BTreeMap;
 
         use alloy_primitives::KECCAK256_EMPTY;
 
+        let store = self.read().await;
         let mut changes = ChangeSet::new();
         for (address, balance) in allocs {
+            if store.get_account(&address).await?.is_some() {
+                continue;
+            }
             changes.accounts.insert(
                 address,
                 AccountUpdate {
@@ -122,7 +129,11 @@ where
                 },
             );
         }
-        self.commit(changes).await
+        drop(store);
+        if !changes.accounts.is_empty() {
+            self.commit(changes).await?;
+        }
+        Ok(())
     }
 }
 

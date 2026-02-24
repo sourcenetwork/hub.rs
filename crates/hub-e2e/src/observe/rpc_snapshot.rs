@@ -15,6 +15,8 @@ pub struct NodeSnapshot {
     pub chain_id: u64,
     /// Validator index reported by the node.
     pub validator_index: u32,
+    /// Total number of validators.
+    pub validator_count: u32,
     /// Seconds since the node started.
     pub uptime_secs: u64,
     /// Current consensus view.
@@ -29,6 +31,8 @@ pub struct NodeSnapshot {
     pub peer_count: u64,
     /// Whether this node is the current leader.
     pub is_leader: bool,
+    /// Whether this node is backfilling historical blocks.
+    pub backfilling: bool,
     /// Latest block height from eth_getBlockByNumber.
     pub latest_block_height: u64,
     /// Whether the node is reachable.

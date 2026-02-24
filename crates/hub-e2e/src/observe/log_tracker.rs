@@ -84,6 +84,28 @@ impl LogTracker {
         }
     }
 
+    /// Restart the log parser (e.g. after a node respawn).
+    ///
+    /// Aborts the old parser task, clears collected errors, and spawns
+    /// a fresh parser on the same log file. Existing broadcast subscribers
+    /// seamlessly receive events from the new process output.
+    pub fn restart(&mut self) {
+        if let Some(handle) = self._handle.take() {
+            handle.abort();
+        }
+        self.errors.lock().clear();
+
+        let tracker_tx = self.tx.clone();
+        let tracker_path = self.log_path.clone();
+        let tracker_height = self.latest_height.clone();
+        let tracker_errors = self.errors.clone();
+
+        let handle = tokio::spawn(async move {
+            Self::run_parser(tracker_path, tracker_tx, tracker_height, tracker_errors).await;
+        });
+        self._handle = Some(handle);
+    }
+
     /// Get the log file path.
     pub fn log_path(&self) -> &std::path::Path {
         &self.log_path

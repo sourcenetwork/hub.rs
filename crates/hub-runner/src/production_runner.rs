@@ -162,7 +162,9 @@ impl ProductionRunner {
         use commonware_runtime::Runner;
         use hub_transport::NetworkConfigExt;
 
-        let executor = tokio::Runner::default();
+        let runtime_cfg =
+            tokio::Config::default().with_storage_directory(config.data_dir.join("commonware"));
+        let executor = tokio::Runner::new(runtime_cfg);
         executor.start(|context| async move {
             let validator_key = config
                 .validator_key()
@@ -234,10 +236,17 @@ impl NodeRunner for ProductionRunner {
         let context_provider = RevmContextProvider {
             gas_limit: self.gas_limit,
         };
-        let finalized_reporter =
-            FinalizedReporter::new(ledger.clone(), context.clone(), executor, context_provider)
-                .with_block_index(block_index.clone())
-                .with_subscriptions(heads_tx.clone(), logs_tx.clone());
+        let finalized_reporter = {
+            let reporter =
+                FinalizedReporter::new(ledger.clone(), context.clone(), executor, context_provider)
+                    .with_block_index(block_index.clone())
+                    .with_subscriptions(heads_tx.clone(), logs_tx.clone());
+            if let Some((state, _)) = &self.rpc_config {
+                reporter.with_node_state(state.clone())
+            } else {
+                reporter
+            }
+        };
 
         let scheme_provider = ConstantSchemeProvider::from(self.scheme.clone());
 

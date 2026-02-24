@@ -3,7 +3,6 @@
 use std::{
     fmt,
     path::{Path, PathBuf},
-    process::Command,
     time::Duration,
 };
 
@@ -89,6 +88,16 @@ impl TestCluster {
             timeout,
         };
         health::wait_all_healthy(&self.rpc_urls(), &config).await
+    }
+
+    /// Kill a node's process. The node can be restarted later with `restart_node`.
+    pub fn kill_node(&mut self, index: usize) {
+        self.nodes[index].process.kill();
+    }
+
+    /// Restart a previously killed node by respawning its process.
+    pub fn restart_node(&mut self, index: usize) -> eyre::Result<()> {
+        self.nodes[index].process.respawn()
     }
 
     /// Create an observability handle for this cluster.
@@ -257,67 +266,68 @@ impl TestClusterBuilder {
 
         // Spawn nodes.
         let binary = find_hub_binary()?;
+        let rust_log = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
+        let seed_str = keys.seed().to_string();
+        let chain_id_str = chain_id.to_string();
+        let peers_str = peers_path.to_str().unwrap().to_string();
+
         let mut nodes = Vec::with_capacity(n);
 
         for i in 0..n {
             let node_dir = &node_dirs[i];
             let log_dir = node_dir.join("logs");
 
-            let mut cmd = Command::new(&binary);
+            let rpc_port_str = rpc_ports[i].to_string();
+            let node_dir_str = node_dir.to_str().unwrap().to_string();
+            let genesis_str = node_dir.join("genesis.json").to_str().unwrap().to_string();
+            let config_str = node_dir.join("config.toml").to_str().unwrap().to_string();
 
-            if n == 1 {
-                // Single-node devnet mode.
-                cmd.args([
+            let args: Vec<&str> = if n == 1 {
+                vec![
                     "devnet",
                     "--rpc-port",
-                    &rpc_ports[i].to_string(),
+                    &rpc_port_str,
                     "--genesis",
-                    node_dir.join("genesis.json").to_str().unwrap(),
+                    &genesis_str,
                     "--data-dir",
-                    node_dir.to_str().unwrap(),
+                    &node_dir_str,
                     "--chain-id",
-                    &chain_id.to_string(),
+                    &chain_id_str,
                     "--leader-timeout-ms",
                     &leader_ms,
                     "--notarization-timeout-ms",
                     &notarization_ms,
                     "--nullify-retry-ms",
                     &nullify_ms,
-                ]);
+                ]
             } else {
-                // Multi-node validator mode.
-                let config_path = node_dir.join("config.toml");
-                cmd.args([
+                vec![
                     "--config",
-                    config_path.to_str().unwrap(),
+                    &config_str,
                     "--data-dir",
-                    node_dir.to_str().unwrap(),
+                    &node_dir_str,
                     "--chain-id",
-                    &chain_id.to_string(),
+                    &chain_id_str,
                     "validator",
                     "--seed",
-                    &keys.seed().to_string(),
+                    &seed_str,
                     "--peers",
-                    peers_path.to_str().unwrap(),
+                    &peers_str,
                     "--rpc-port",
-                    &rpc_ports[i].to_string(),
+                    &rpc_port_str,
                     "--leader-timeout-ms",
                     &leader_ms,
                     "--notarization-timeout-ms",
                     &notarization_ms,
                     "--nullify-retry-ms",
                     &nullify_ms,
-                ]);
-            }
+                ]
+            };
 
-            cmd.env(
-                "RUST_LOG",
-                std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string()),
-            );
-            // Disable ANSI color codes so LogTracker can parse output cleanly.
-            cmd.env("NO_COLOR", "1");
+            let envs: Vec<(&str, &str)> = vec![("RUST_LOG", &rust_log), ("NO_COLOR", "1")];
 
-            let process = ManagedProcess::spawn(&format!("node{}", i), &mut cmd, &log_dir)?;
+            let process =
+                ManagedProcess::spawn(&format!("node{}", i), &binary, &args, &envs, &log_dir)?;
 
             nodes.push(TestNode {
                 rpc_port: rpc_ports[i],

@@ -8,10 +8,11 @@ use tokio::sync::RwLock;
 
 use crate::{
     error::RpcError,
+    state::NodeState,
     state_provider::StateProvider,
     types::{
         BlockNumberOrTag, CallRequest, RpcBlock, RpcLog, RpcLogFilter, RpcTransaction,
-        RpcTransactionReceipt,
+        RpcTransactionReceipt, SyncInfo, SyncStatus,
     },
 };
 
@@ -127,7 +128,7 @@ pub trait EthApi {
 
     /// Returns syncing status.
     #[method(name = "syncing")]
-    async fn syncing(&self) -> RpcResult<bool>;
+    async fn syncing(&self) -> RpcResult<SyncStatus>;
 
     /// Returns logs matching the given filter.
     #[method(name = "getLogs")]
@@ -190,6 +191,7 @@ pub struct EthApiImpl<S: StateProvider> {
     block_height: Arc<std::sync::atomic::AtomicU64>,
     tx_submit: Option<TxSubmitCallback>,
     state_provider: Arc<RwLock<S>>,
+    node_state: Option<NodeState>,
 }
 
 impl<S: StateProvider> std::fmt::Debug for EthApiImpl<S> {
@@ -210,6 +212,7 @@ impl<S: StateProvider + 'static> EthApiImpl<S> {
             block_height: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             tx_submit: None,
             state_provider: Arc::new(RwLock::new(state_provider)),
+            node_state: None,
         }
     }
 
@@ -220,7 +223,15 @@ impl<S: StateProvider + 'static> EthApiImpl<S> {
             block_height: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             tx_submit: Some(tx_submit),
             state_provider: Arc::new(RwLock::new(state_provider)),
+            node_state: None,
         }
+    }
+
+    /// Set node state for sync status reporting.
+    #[must_use]
+    pub fn with_node_state(mut self, state: NodeState) -> Self {
+        self.node_state = Some(state);
+        self
     }
 
     /// Get a handle to update the block height.
@@ -403,8 +414,18 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
         Ok("0x44".to_string())
     }
 
-    async fn syncing(&self) -> RpcResult<bool> {
-        Ok(false)
+    async fn syncing(&self) -> RpcResult<SyncStatus> {
+        if let Some(ref ns) = self.node_state
+            && ns.is_backfilling()
+        {
+            Ok(SyncStatus::Syncing(SyncInfo {
+                starting_block: U64::ZERO,
+                current_block: U64::from(ns.finalized_count()),
+                highest_block: U64::from(ns.current_view()),
+            }))
+        } else {
+            Ok(SyncStatus::NotSyncing(false))
+        }
     }
 
     async fn get_logs(&self, filter: RpcLogFilter) -> RpcResult<Vec<RpcLog>> {

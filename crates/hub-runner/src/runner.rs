@@ -200,7 +200,9 @@ impl HubRunner {
         use commonware_runtime::Runner;
         use hub_transport::NetworkConfigExt;
 
-        let executor = tokio::Runner::default();
+        let runtime_cfg =
+            tokio::Config::default().with_storage_directory(config.data_dir.join("commonware"));
+        let executor = tokio::Runner::new(runtime_cfg);
         executor.start(|context| async move {
             let validator_key = config
                 .validator_key()
@@ -297,6 +299,11 @@ impl NodeRunner for HubRunner {
             trees[2].clone(),
             trees[3].clone(),
         ];
+        let last_committed_height = trees[3].lock().expect("lock").canonical_height();
+        tracing::info!(
+            last_committed_height,
+            "FinalizedReporter skip height from module state trees"
+        );
         let persisted_modules = ModuleState::from_stores(module_stores);
 
         let executor = HubExecutor::new(self.chain_id).with_module_trees(module_trees);
@@ -310,13 +317,21 @@ impl NodeRunner for HubRunner {
         let context_provider = HubContextProvider {
             gas_limit: self.gas_limit,
         };
-        let finalized_reporter = FinalizedReporter::new(
-            ledger.clone(),
-            context.clone(),
-            executor.clone(),
-            context_provider,
-        )
-        .with_block_index(block_index.clone());
+        let finalized_reporter = {
+            let reporter = FinalizedReporter::new(
+                ledger.clone(),
+                context.clone(),
+                executor.clone(),
+                context_provider,
+            )
+            .with_block_index(block_index.clone())
+            .with_last_committed_height(last_committed_height);
+            if let Some((state, _)) = &self.rpc_config {
+                reporter.with_node_state(state.clone())
+            } else {
+                reporter
+            }
+        };
 
         let scheme_provider = ConstantSchemeProvider::from(self.scheme.clone());
 

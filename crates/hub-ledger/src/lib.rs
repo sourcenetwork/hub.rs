@@ -288,6 +288,15 @@ impl LedgerView {
         inner.snapshots.insert(digest, snapshot);
     }
 
+    /// Mark a snapshot as persisted without committing changes to QMDB.
+    ///
+    /// Used for synthetic snapshots created during restart recovery where
+    /// QMDB already contains the state from a previous run.
+    pub async fn mark_snapshot_persisted(&self, digest: ConsensusDigest) {
+        let inner = self.inner.lock().await;
+        inner.snapshots.mark_persisted(&[digest]);
+    }
+
     /// Fetch the components needed to build a proposal.
     pub async fn proposal_components(
         &self,
@@ -482,6 +491,11 @@ impl LedgerService {
     /// Cache a fully constructed snapshot.
     pub async fn cache_snapshot(&self, digest: ConsensusDigest, snapshot: LedgerSnapshot) {
         self.view.cache_snapshot(digest, snapshot).await;
+    }
+
+    /// Mark a snapshot as persisted without committing changes to QMDB.
+    pub async fn mark_snapshot_persisted(&self, digest: ConsensusDigest) {
+        self.view.mark_snapshot_persisted(digest).await;
     }
 
     /// Fetch proposal components.

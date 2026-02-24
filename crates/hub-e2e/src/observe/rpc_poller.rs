@@ -94,6 +94,7 @@ impl RpcPoller {
             if let Some(ref s) = status {
                 snap.chain_id = s.chain_id;
                 snap.validator_index = s.validator_index;
+                snap.validator_count = s.validator_count;
                 snap.uptime_secs = s.uptime_secs;
                 snap.current_view = s.current_view;
                 snap.finalized_count = s.finalized_count;
@@ -101,6 +102,7 @@ impl RpcPoller {
                 snap.nullified_count = s.nullified_count;
                 snap.peer_count = s.peer_count;
                 snap.is_leader = s.is_leader;
+                snap.backfilling = s.backfilling;
                 snap.is_healthy = true;
             }
 
@@ -194,6 +196,8 @@ impl Drop for RpcPoller {
 struct NodeStatusResponse {
     chain_id: u64,
     validator_index: u32,
+    #[serde(default)]
+    validator_count: u32,
     uptime_secs: u64,
     current_view: u64,
     finalized_count: u64,
@@ -201,4 +205,6 @@ struct NodeStatusResponse {
     nullified_count: u64,
     peer_count: u64,
     is_leader: bool,
+    #[serde(default)]
+    backfilling: bool,
 }

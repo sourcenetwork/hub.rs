@@ -4,7 +4,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
-use std::{collections::HashMap, fmt, marker::PhantomData, sync::Arc};
+use std::{collections::{BTreeSet, HashMap}, fmt, marker::PhantomData, sync::Arc};
 
 // Re-import tokio broadcast from the crate (not commonware_runtime::tokio).
 use ::tokio::sync::broadcast;
@@ -22,7 +22,8 @@ use commonware_consensus::{
 use commonware_cryptography::{Committable as _, bls12381::primitives::variant::Variant};
 use commonware_runtime::{Spawner as _, tokio};
 use commonware_utils::acknowledgement::Acknowledgement as _;
-use hub_consensus::BlockExecution;
+use hub_consensus::{BlockExecution, Snapshot};
+use hub_qmdb_ledger::QmdbChangeSet;
 use hub_domain::{Block, ConsensusDigest, NativeTx, PublicKey};
 use hub_executor::{BlockContext, BlockExecutor, ExecutionReceipt};
 use hub_indexer::{BlockIndex, IndexedBlock, IndexedLog, IndexedReceipt, IndexedTransaction};
@@ -122,6 +123,8 @@ async fn handle_finalized_update<E, P>(
     update: Update<Block>,
     block_index: Option<Arc<BlockIndex>>,
     subscriptions: Option<SubscriptionSenders>,
+    node_state: Option<NodeState>,
+    last_committed_height: u64,
 ) where
     E: BlockExecutor<OverlayState<QmdbState>, Tx = Bytes>,
     P: BlockContextProvider,
@@ -133,10 +136,44 @@ async fn handle_finalized_update<E, P>(
             let mut cached_receipts: Option<(Vec<ExecutionReceipt>, u64)> = None;
 
             if state.query_state_root(digest).await.is_none() {
+                // Skip blocks already committed in a previous run.
+                if last_committed_height > 0 && block.height <= last_committed_height {
+                    if let Some(ref ns) = node_state {
+                        ns.set_backfilling(true);
+                    }
+                    // For the last committed block, insert a synthetic snapshot
+                    // so the next block has a valid parent state to execute against.
+                    if block.height == last_committed_height {
+                        let qmdb = state.qmdb_state().await;
+                        let synthetic_state =
+                            OverlayState::new(qmdb, Default::default());
+                        let snapshot = Snapshot::new(
+                            Some(block.parent()),
+                            synthetic_state,
+                            block.state_root,
+                            QmdbChangeSet::default(),
+                            BTreeSet::new(),
+                        );
+                        state.cache_snapshot(digest, snapshot).await;
+                        state.mark_snapshot_persisted(digest).await;
+                        trace!(
+                            height = block.height,
+                            ?digest,
+                            "cached synthetic snapshot for last committed block"
+                        );
+                    }
+                    ack.acknowledge();
+                    return;
+                }
+
+                if let Some(ref ns) = node_state {
+                    ns.set_backfilling(true);
+                }
                 trace!(
                     ?digest,
                     "missing snapshot for finalized block; re-executing"
                 );
+
                 let parent_digest = block.parent();
                 let Some(parent_snapshot) = state.parent_snapshot(parent_digest).await else {
                     error!(
@@ -204,6 +241,9 @@ async fn handle_finalized_update<E, P>(
                     )
                     .await;
             } else {
+                if let Some(ref ns) = node_state {
+                    ns.set_backfilling(false);
+                }
                 trace!(?digest, "using cached snapshot for finalized block");
             }
 
@@ -665,6 +705,11 @@ pub struct FinalizedReporter<E, P> {
     subscription_heads: Option<broadcast::Sender<RpcBlock>>,
     /// Optional broadcast sender for new logs (WebSocket subscriptions).
     subscription_logs: Option<broadcast::Sender<Vec<RpcLog>>>,
+    /// Optional RPC node state for tracking backfilling status.
+    node_state: Option<NodeState>,
+    /// Last block height already committed to QMDB (from a previous run).
+    /// Blocks at or below this height are skipped during catchup.
+    last_committed_height: u64,
 }
 
 impl<E, P> fmt::Debug for FinalizedReporter<E, P> {
@@ -693,6 +738,8 @@ where
             block_index: None,
             subscription_heads: None,
             subscription_logs: None,
+            node_state: None,
+            last_committed_height: 0,
         }
     }
 
@@ -714,6 +761,23 @@ where
         self.subscription_logs = Some(logs_tx);
         self
     }
+
+    /// Set node state for tracking backfilling status.
+    #[must_use]
+    pub fn with_node_state(mut self, state: NodeState) -> Self {
+        self.node_state = Some(state);
+        self
+    }
+
+    /// Set the last committed block height from a previous run.
+    ///
+    /// Blocks at or below this height are skipped during catchup after a
+    /// restart, avoiding full replay from genesis.
+    #[must_use]
+    pub const fn with_last_committed_height(mut self, height: u64) -> Self {
+        self.last_committed_height = height;
+        self
+    }
 }
 
 impl<E, P> Reporter for FinalizedReporter<E, P>
@@ -729,6 +793,8 @@ where
         let executor = self.executor.clone();
         let provider = self.provider.clone();
         let block_index = self.block_index.clone();
+        let node_state = self.node_state.clone();
+        let last_committed_height = self.last_committed_height;
         let subscriptions = self
             .subscription_heads
             .as_ref()
@@ -746,6 +812,8 @@ where
                 update,
                 block_index,
                 subscriptions,
+                node_state,
+                last_committed_height,
             )
             .await;
         }

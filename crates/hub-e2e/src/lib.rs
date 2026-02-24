@@ -17,7 +17,9 @@ pub mod contracts;
 pub mod observe;
 
 use std::{
+    collections::HashMap,
     fmt,
+    fs::OpenOptions,
     net::TcpListener,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -70,10 +72,16 @@ pub fn e2e_base_dir() -> PathBuf {
 }
 
 /// A managed child process that sends SIGTERM on drop.
+///
+/// Stores the command components (program, args, envs) so the process
+/// can be respawned after being killed (e.g. for restart tests).
 pub struct ManagedProcess {
     name: String,
     child: Option<Child>,
     log_dir: PathBuf,
+    program: PathBuf,
+    args: Vec<String>,
+    envs: HashMap<String, String>,
 }
 
 impl fmt::Debug for ManagedProcess {
@@ -88,11 +96,25 @@ impl fmt::Debug for ManagedProcess {
 
 impl ManagedProcess {
     /// Spawn a new managed process.
-    pub fn spawn(name: &str, cmd: &mut Command, log_dir: &Path) -> eyre::Result<Self> {
+    ///
+    /// Stores the command components so the process can be respawned later.
+    pub fn spawn(
+        name: &str,
+        program: &Path,
+        args: &[&str],
+        envs: &[(&str, &str)],
+        log_dir: &Path,
+    ) -> eyre::Result<Self> {
         std::fs::create_dir_all(log_dir)?;
 
         let stdout_file = std::fs::File::create(log_dir.join("stdout.log"))?;
         let stderr_file = std::fs::File::create(log_dir.join("stderr.log"))?;
+
+        let mut cmd = Command::new(program);
+        cmd.args(args);
+        for (k, v) in envs {
+            cmd.env(k, v);
+        }
 
         let child = cmd
             .stdout(Stdio::from(stdout_file))
@@ -105,7 +127,45 @@ impl ManagedProcess {
             name: name.to_string(),
             child: Some(child),
             log_dir: log_dir.to_path_buf(),
+            program: program.to_path_buf(),
+            args: args.iter().map(|s| s.to_string()).collect(),
+            envs: envs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
         })
+    }
+
+    /// Kill the current process and spawn a new one with the same arguments.
+    ///
+    /// Log files are opened in append mode so existing `LogTracker` instances
+    /// seamlessly pick up output from the new process.
+    pub fn respawn(&mut self) -> eyre::Result<()> {
+        self.kill();
+
+        let stdout_file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.log_dir.join("stdout.log"))?;
+        let stderr_file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.log_dir.join("stderr.log"))?;
+
+        let mut cmd = Command::new(&self.program);
+        cmd.args(&self.args);
+        for (k, v) in &self.envs {
+            cmd.env(k, v);
+        }
+
+        let child = cmd
+            .stdout(Stdio::from(stdout_file))
+            .stderr(Stdio::from(stderr_file))
+            .spawn()?;
+
+        tracing::info!(name = self.name, pid = child.id(), "respawned process");
+        self.child = Some(child);
+        Ok(())
     }
 
     /// Check if the process is still running.

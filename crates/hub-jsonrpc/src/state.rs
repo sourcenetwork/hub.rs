@@ -3,7 +3,7 @@
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Instant,
 };
@@ -29,6 +29,7 @@ struct NodeStateInner {
     nullified_count: AtomicU64,
     peer_count: AtomicU64,
     is_leader: RwLock<bool>,
+    backfilling: AtomicBool,
 }
 
 impl NodeState {
@@ -47,6 +48,7 @@ impl NodeState {
                 nullified_count: AtomicU64::new(0),
                 peer_count: AtomicU64::new(0),
                 is_leader: RwLock::new(false),
+                backfilling: AtomicBool::new(false),
             }),
         }
     }
@@ -103,11 +105,27 @@ impl NodeState {
         self.inner.peer_count.store(count, Ordering::Relaxed);
     }
 
+    /// Set whether this node is backfilling historical blocks.
+    pub fn set_backfilling(&self, backfilling: bool) {
+        self.inner.backfilling.store(backfilling, Ordering::Relaxed);
+    }
+
+    /// Whether this node is currently backfilling.
+    pub fn is_backfilling(&self) -> bool {
+        self.inner.backfilling.load(Ordering::Relaxed)
+    }
+
+    /// Get the finalized block count.
+    pub fn finalized_count(&self) -> u64 {
+        self.inner.finalized_count.load(Ordering::Relaxed)
+    }
+
     /// Get current node status.
     pub fn status(&self) -> NodeStatus {
         NodeStatus {
             chain_id: self.inner.chain_id,
             validator_index: self.inner.validator_index,
+            validator_count: self.inner.validator_count,
             uptime_secs: self.inner.started_at.elapsed().as_secs(),
             current_view: self.inner.current_view.load(Ordering::Relaxed),
             finalized_count: self.inner.finalized_count.load(Ordering::Relaxed),
@@ -115,6 +133,7 @@ impl NodeState {
             nullified_count: self.inner.nullified_count.load(Ordering::Relaxed),
             peer_count: self.inner.peer_count.load(Ordering::Relaxed),
             is_leader: *self.inner.is_leader.read(),
+            backfilling: self.inner.backfilling.load(Ordering::Relaxed),
         }
     }
 }
@@ -127,6 +146,8 @@ pub struct NodeStatus {
     pub chain_id: u64,
     /// This validator's index (0-3).
     pub validator_index: u32,
+    /// Total number of validators.
+    pub validator_count: u32,
     /// Seconds since node started.
     pub uptime_secs: u64,
     /// Current consensus view number.
@@ -141,6 +162,8 @@ pub struct NodeStatus {
     pub peer_count: u64,
     /// Whether this node is the current leader.
     pub is_leader: bool,
+    /// Whether this node is backfilling historical blocks.
+    pub backfilling: bool,
 }
 
 #[cfg(test)]
@@ -152,6 +175,7 @@ mod tests {
         let status = NodeStatus {
             chain_id: 1337,
             validator_index: 2,
+            validator_count: 4,
             uptime_secs: 3600,
             current_view: 100,
             finalized_count: 50,
@@ -159,6 +183,7 @@ mod tests {
             nullified_count: 5,
             peer_count: 3,
             is_leader: true,
+            backfilling: false,
         };
 
         let json = serde_json::to_string(&status).unwrap();
@@ -166,6 +191,7 @@ mod tests {
 
         assert_eq!(status.chain_id, parsed.chain_id);
         assert_eq!(status.validator_index, parsed.validator_index);
+        assert_eq!(status.validator_count, parsed.validator_count);
         assert_eq!(status.uptime_secs, parsed.uptime_secs);
         assert_eq!(status.current_view, parsed.current_view);
         assert_eq!(status.finalized_count, parsed.finalized_count);
@@ -173,6 +199,7 @@ mod tests {
         assert_eq!(status.nullified_count, parsed.nullified_count);
         assert_eq!(status.peer_count, parsed.peer_count);
         assert_eq!(status.is_leader, parsed.is_leader);
+        assert_eq!(status.backfilling, parsed.backfilling);
     }
 
     #[test]
@@ -180,6 +207,7 @@ mod tests {
         let status = NodeStatus {
             chain_id: 1,
             validator_index: 0,
+            validator_count: 4,
             uptime_secs: 0,
             current_view: 0,
             finalized_count: 0,
@@ -187,11 +215,13 @@ mod tests {
             nullified_count: 0,
             peer_count: 0,
             is_leader: false,
+            backfilling: false,
         };
 
         let json = serde_json::to_string(&status).unwrap();
         assert!(json.contains("chainId"));
         assert!(json.contains("validatorIndex"));
+        assert!(json.contains("validatorCount"));
         assert!(json.contains("uptimeSecs"));
         assert!(json.contains("currentView"));
         assert!(json.contains("finalizedCount"));
@@ -199,6 +229,7 @@ mod tests {
         assert!(json.contains("nullifiedCount"));
         assert!(json.contains("peerCount"));
         assert!(json.contains("isLeader"));
+        assert!(json.contains("backfilling"));
     }
 
     #[test]

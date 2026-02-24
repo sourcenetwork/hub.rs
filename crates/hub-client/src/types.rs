@@ -155,6 +155,9 @@ pub struct NodeStatus {
     pub chain_id: u64,
     /// This validator's index.
     pub validator_index: u32,
+    /// Total number of validators.
+    #[serde(default)]
+    pub validator_count: u32,
     /// Seconds since node started.
     pub uptime_secs: u64,
     /// Current consensus view number.
@@ -169,6 +172,9 @@ pub struct NodeStatus {
     pub peer_count: u64,
     /// Whether this node is the current leader.
     pub is_leader: bool,
+    /// Whether this node is backfilling historical blocks.
+    #[serde(default)]
+    pub backfilling: bool,
 }
 
 /// Serde helper for hex-encoded u64 fields in RPC responses.
@@ -217,6 +223,8 @@ mod tests {
         let status = NodeStatus::default();
         assert_eq!(status.chain_id, 0);
         assert!(!status.is_leader);
+        assert!(!status.backfilling);
+        assert_eq!(status.validator_count, 0);
     }
 
     #[test]
@@ -224,6 +232,7 @@ mod tests {
         let status = NodeStatus {
             chain_id: 1337,
             validator_index: 2,
+            validator_count: 4,
             uptime_secs: 3600,
             current_view: 100,
             finalized_count: 50,
@@ -231,12 +240,33 @@ mod tests {
             nullified_count: 5,
             peer_count: 3,
             is_leader: true,
+            backfilling: false,
         };
         let json = serde_json::to_string(&status).unwrap();
         let parsed: NodeStatus = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.chain_id, 1337);
         assert!(parsed.is_leader);
         assert_eq!(parsed.finalized_count, 50);
+        assert_eq!(parsed.validator_count, 4);
+        assert!(!parsed.backfilling);
+    }
+
+    #[test]
+    fn node_status_backward_compat() {
+        let json = serde_json::json!({
+            "chainId": 1337,
+            "validatorIndex": 2,
+            "uptimeSecs": 3600,
+            "currentView": 100,
+            "finalizedCount": 50,
+            "proposedCount": 10,
+            "nullifiedCount": 5,
+            "peerCount": 3,
+            "isLeader": true
+        });
+        let parsed: NodeStatus = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed.validator_count, 0);
+        assert!(!parsed.backfilling);
     }
 
     #[test]
