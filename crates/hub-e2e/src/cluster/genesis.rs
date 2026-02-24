@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use hub_genesis::{GenesisAllocation, HubGenesis, NativeMintConfig};
+use hub_genesis::{GenesisAllocation, HubGenesis, NativeMintConfig, ValidatorConfig};
 
 /// Builder for test genesis configurations.
 #[derive(Debug)]
@@ -11,6 +11,7 @@ pub struct GenesisBuilder {
     chain_name: String,
     allocations: Vec<GenesisAllocation>,
     native_mint: NativeMintConfig,
+    validators: Vec<ValidatorConfig>,
 }
 
 impl Default for GenesisBuilder {
@@ -20,6 +21,7 @@ impl Default for GenesisBuilder {
             chain_name: "hub-test".to_string(),
             allocations: Vec::new(),
             native_mint: NativeMintConfig::default(),
+            validators: Vec::new(),
         }
     }
 }
@@ -38,6 +40,7 @@ impl GenesisBuilder {
             chain_name: devnet.chain_name,
             allocations: devnet.allocations,
             native_mint: devnet.native_mint,
+            validators: devnet.validators,
         }
     }
 
@@ -100,6 +103,13 @@ impl GenesisBuilder {
         self
     }
 
+    /// Set genesis validators for the ValidatorRegistry precompile.
+    #[must_use]
+    pub fn validators(mut self, configs: Vec<ValidatorConfig>) -> Self {
+        self.validators = configs;
+        self
+    }
+
     /// Build the genesis configuration.
     pub fn build(self) -> HubGenesis {
         HubGenesis {
@@ -108,6 +118,7 @@ impl GenesisBuilder {
             timestamp: 0,
             allocations: self.allocations,
             native_mint: self.native_mint,
+            validators: self.validators,
         }
     }
 
@@ -119,6 +130,7 @@ impl GenesisBuilder {
             timestamp: 0,
             allocations: self.allocations.clone(),
             native_mint: self.native_mint.clone(),
+            validators: self.validators.clone(),
         };
 
         let json = serde_json::to_string_pretty(&genesis)?;

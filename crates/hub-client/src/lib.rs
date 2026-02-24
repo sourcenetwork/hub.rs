@@ -17,7 +17,9 @@ mod tx;
 mod types;
 
 pub use bls_signer::BlsSigner;
-pub use client::{ACP_ADDRESS, BULLETIN_ADDRESS, HUB_ADDRESS, HubClient};
+pub use client::{
+    ACP_ADDRESS, BULLETIN_ADDRESS, HUB_ADDRESS, HubClient, VALIDATOR_REGISTRY_ADDRESS,
+};
 pub use document_acp::HubDocumentACP;
 pub use error::ClientError;
 pub use signer::EvmSigner;

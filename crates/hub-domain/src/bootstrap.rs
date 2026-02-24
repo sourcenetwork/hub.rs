@@ -12,6 +12,8 @@ use crate::Tx;
 pub struct BootstrapConfig {
     /// Initial account allocations (address, balance) for genesis.
     pub genesis_alloc: Vec<(Address, U256)>,
+    /// Initial storage entries per address (address, [(slot, value)]).
+    pub genesis_storage: Vec<(Address, Vec<(U256, U256)>)>,
     /// Transactions to execute during bootstrap.
     pub bootstrap_txs: Vec<Tx>,
 }
@@ -35,6 +37,21 @@ impl BootstrapConfig {
     pub const fn new(genesis_alloc: Vec<(Address, U256)>, bootstrap_txs: Vec<Tx>) -> Self {
         Self {
             genesis_alloc,
+            genesis_storage: Vec::new(),
+            bootstrap_txs,
+        }
+    }
+
+    /// Create a bootstrap configuration with storage entries.
+    #[must_use]
+    pub const fn with_storage(
+        genesis_alloc: Vec<(Address, U256)>,
+        genesis_storage: Vec<(Address, Vec<(U256, U256)>)>,
+        bootstrap_txs: Vec<Tx>,
+    ) -> Self {
+        Self {
+            genesis_alloc,
+            genesis_storage,
             bootstrap_txs,
         }
     }
@@ -55,6 +72,7 @@ impl BootstrapConfig {
 
         Ok(Self {
             genesis_alloc,
+            genesis_storage: Vec::new(),
             bootstrap_txs: Vec::new(),
         })
     }

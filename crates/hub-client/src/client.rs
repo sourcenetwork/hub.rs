@@ -19,6 +19,9 @@ pub const BULLETIN_ADDRESS: Address = address_from_last_two_bytes(0x08, 0x11);
 /// Hub precompile address (`0x0812`).
 pub const HUB_ADDRESS: Address = address_from_last_two_bytes(0x08, 0x12);
 
+/// ValidatorRegistry precompile address (`0x0813`).
+pub const VALIDATOR_REGISTRY_ADDRESS: Address = address_from_last_two_bytes(0x08, 0x13);
+
 const fn address_from_last_two_bytes(hi: u8, lo: u8) -> Address {
     let mut bytes = [0u8; 20];
     bytes[18] = hi;

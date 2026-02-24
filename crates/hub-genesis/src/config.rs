@@ -2,7 +2,7 @@
 
 use std::{path::Path, str::FromStr};
 
-use alloy_evm::revm::primitives::{Address, U256};
+use alloy_evm::revm::primitives::{Address, U256, keccak256};
 use hub_domain::BootstrapConfig;
 use serde::{Deserialize, Serialize};
 
@@ -26,6 +26,9 @@ pub struct HubGenesis {
     /// NativeMint precompile configuration.
     #[serde(default)]
     pub native_mint: NativeMintConfig,
+    /// Genesis validators for the ValidatorRegistry precompile.
+    #[serde(default)]
+    pub validators: Vec<ValidatorConfig>,
 }
 
 fn default_chain_name() -> String {
@@ -43,6 +46,17 @@ pub struct GenesisAllocation {
     pub address: String,
     /// Account balance (decimal string).
     pub balance: String,
+}
+
+/// A genesis validator entry for the ValidatorRegistry precompile.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ValidatorConfig {
+    /// EVM address (hex with 0x prefix).
+    pub evm_address: String,
+    /// Ed25519 consensus public key (hex string, 64 chars).
+    pub consensus_pubkey: String,
+    /// P2P network address (e.g., "127.0.0.1:30300").
+    pub p2p_address: String,
 }
 
 /// Configuration for the NativeMint precompile.
@@ -117,7 +131,18 @@ impl HubGenesis {
             genesis_alloc.push((address, balance));
         }
 
-        Ok(BootstrapConfig::new(genesis_alloc, Vec::new()))
+        let genesis_storage = if self.validators.is_empty() {
+            Vec::new()
+        } else {
+            let entries = validator_storage_entries(&self.validators)?;
+            vec![(VALIDATOR_REGISTRY_ADDRESS, entries)]
+        };
+
+        Ok(BootstrapConfig::with_storage(
+            genesis_alloc,
+            genesis_storage,
+            Vec::new(),
+        ))
     }
 
     /// Create a default devnet genesis (chain_id=9001, test allocations).
@@ -142,8 +167,99 @@ impl HubGenesis {
                 minters: vec!["0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266".to_string()],
                 denom: "abrl".to_string(),
             },
+            validators: Vec::new(),
         }
     }
+}
+
+// ── ValidatorRegistry storage layout ──────────────────────────────────
+//
+// Must match the layout in hub-executor/src/precompiles/validator_registry.rs.
+
+const VALIDATOR_REGISTRY_ADDRESS: Address = {
+    let mut bytes = [0u8; 20];
+    bytes[18] = 0x08;
+    bytes[19] = 0x13;
+    Address::new(bytes)
+};
+
+const SLOT_POLICY_ID: U256 = U256::ZERO;
+const SLOT_VALIDATOR_COUNT: U256 = U256::from_limbs([1, 0, 0, 0]);
+const SLOT_VALIDATORS_ARRAY_BASE: U256 = U256::from_limbs([2, 0, 0, 0]);
+const SLOT_VALIDATORS_MAPPING_BASE: U256 = U256::from_limbs([3, 0, 0, 0]);
+
+fn vr_mapping_slot(key: Address, base: U256) -> U256 {
+    let mut buf = [0u8; 64];
+    buf[12..32].copy_from_slice(key.as_slice());
+    buf[32..64].copy_from_slice(&base.to_be_bytes::<32>());
+    U256::from_be_bytes(keccak256(buf).0)
+}
+
+fn vr_array_element_slot(base: U256, index: u64) -> U256 {
+    let hash = keccak256(base.to_be_bytes::<32>());
+    U256::from_be_bytes(hash.0).wrapping_add(U256::from(index))
+}
+
+fn vr_pack_address_active(addr: Address, active: bool) -> U256 {
+    let mut bytes = [0u8; 32];
+    bytes[..20].copy_from_slice(addr.as_slice());
+    bytes[20] = u8::from(active);
+    U256::from_be_bytes(bytes)
+}
+
+fn vr_address_to_padded_u256(addr: Address) -> U256 {
+    let mut buf = [0u8; 32];
+    buf[12..32].copy_from_slice(addr.as_slice());
+    U256::from_be_bytes(buf)
+}
+
+fn validator_storage_entries(
+    validators: &[ValidatorConfig],
+) -> Result<Vec<(U256, U256)>, HubGenesisError> {
+    let mut entries = Vec::new();
+
+    entries.push((SLOT_POLICY_ID, U256::ZERO));
+    entries.push((SLOT_VALIDATOR_COUNT, U256::from(validators.len())));
+
+    for (i, v) in validators.iter().enumerate() {
+        let addr = Address::from_str(&v.evm_address)
+            .map_err(|e| HubGenesisError::Parse(format!("invalid validator address: {e}")))?;
+        let consensus_bytes = hex::decode(&v.consensus_pubkey)
+            .map_err(|e| HubGenesisError::Parse(format!("invalid consensus pubkey: {e}")))?;
+        if consensus_bytes.len() != 32 {
+            return Err(HubGenesisError::Parse(format!(
+                "consensus pubkey must be 32 bytes, got {}",
+                consensus_bytes.len()
+            )));
+        }
+        let mut consensus: [u8; 32] = [0u8; 32];
+        consensus.copy_from_slice(&consensus_bytes);
+
+        let addr_slot = vr_array_element_slot(SLOT_VALIDATORS_ARRAY_BASE, i as u64);
+        entries.push((addr_slot, vr_address_to_padded_u256(addr)));
+
+        let entry_base = vr_mapping_slot(addr, SLOT_VALIDATORS_MAPPING_BASE);
+        entries.push((entry_base, vr_pack_address_active(addr, true)));
+        entries.push((
+            entry_base.wrapping_add(U256::from(1)),
+            U256::from_be_bytes(consensus),
+        ));
+        entries.push((entry_base.wrapping_add(U256::from(2)), U256::from(i)));
+        let p2p_bytes = v.p2p_address.as_bytes();
+        entries.push((
+            entry_base.wrapping_add(U256::from(3)),
+            U256::from(p2p_bytes.len()),
+        ));
+        let mut padded = [0u8; 32];
+        let copy_len = p2p_bytes.len().min(32);
+        padded[..copy_len].copy_from_slice(&p2p_bytes[..copy_len]);
+        entries.push((
+            entry_base.wrapping_add(U256::from(4)),
+            U256::from_be_bytes(padded),
+        ));
+    }
+
+    Ok(entries)
 }
 
 #[cfg(test)]
@@ -193,6 +309,7 @@ mod tests {
                 balance: "100".to_string(),
             }],
             native_mint: NativeMintConfig::default(),
+            validators: Vec::new(),
         };
         let err = genesis.to_bootstrap_config().unwrap_err();
         assert!(err.to_string().contains("invalid address"));

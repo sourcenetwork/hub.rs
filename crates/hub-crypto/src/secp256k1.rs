@@ -68,6 +68,37 @@ pub fn recover_did(signature: &AlloySig, sighash: &B256) -> Result<String, Secp2
     did_from_secp256k1_pubkey(&pubkey)
 }
 
+/// Derive an Ethereum address from a secp256k1 `did:key:` string.
+///
+/// Decodes the compressed public key, decompresses it, and computes
+/// `keccak256(uncompressed_pubkey[1..])` → last 20 bytes.
+pub fn evm_address_from_did(did: &str) -> Result<alloy_primitives::Address, Secp256k1Error> {
+    let multibase_part = did
+        .strip_prefix("did:key:")
+        .ok_or_else(|| Secp256k1Error::Recovery("not a did:key: string".into()))?;
+
+    let (_base, decoded) = multibase::decode(multibase_part)
+        .map_err(|e| Secp256k1Error::Recovery(format!("multibase decode: {e}")))?;
+
+    let mut varint_buf = [0u8; 10];
+    let prefix = unsigned_varint::encode::u64(SECP256K1_PUB_MULTICODEC, &mut varint_buf);
+    if !decoded.starts_with(prefix) {
+        return Err(Secp256k1Error::Recovery("not a secp256k1 did:key".into()));
+    }
+    let compressed = &decoded[prefix.len()..];
+    if compressed.len() != 33 {
+        return Err(Secp256k1Error::InvalidPubkeyLength(compressed.len()));
+    }
+
+    let vk = VerifyingKey::from_sec1_bytes(compressed)
+        .map_err(|e| Secp256k1Error::Recovery(format!("invalid pubkey: {e}")))?;
+    let uncompressed = vk.to_encoded_point(false);
+    let raw = &uncompressed.as_bytes()[1..]; // strip 0x04 prefix
+
+    let hash = alloy_primitives::keccak256(raw);
+    Ok(alloy_primitives::Address::from_slice(&hash[12..]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,5 +169,26 @@ mod tests {
 
         let recovered_did = recover_did(&alloy_sig, &msg_hash).unwrap();
         assert_eq!(recovered_did, expected_did);
+    }
+
+    #[test]
+    fn evm_address_from_did_roundtrip() {
+        let (_sk, pubkey) = test_keypair();
+        let did = did_from_secp256k1_pubkey(&pubkey).unwrap();
+        let addr = evm_address_from_did(&did).unwrap();
+        assert_ne!(addr, alloy_primitives::Address::ZERO);
+
+        // Verify against manual computation
+        let vk = VerifyingKey::from_sec1_bytes(&pubkey).unwrap();
+        let uncompressed = vk.to_encoded_point(false);
+        let hash = alloy_primitives::keccak256(&uncompressed.as_bytes()[1..]);
+        let expected = alloy_primitives::Address::from_slice(&hash[12..]);
+        assert_eq!(addr, expected);
+    }
+
+    #[test]
+    fn evm_address_from_did_rejects_non_did() {
+        assert!(evm_address_from_did("not-a-did").is_err());
+        assert!(evm_address_from_did("did:key:z6MkTest").is_err());
     }
 }

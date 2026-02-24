@@ -27,7 +27,8 @@ use revm::{
 use tracing::warn;
 
 use crate::precompiles::{
-    ACP_ADDRESS, BULLETIN_ADDRESS, HUB_ADDRESS, HubPrecompiles, dispatch_to_module,
+    ACP_ADDRESS, BULLETIN_ADDRESS, HUB_ADDRESS, HubPrecompiles, VALIDATOR_REGISTRY_ADDRESS,
+    dispatch_to_module,
 };
 
 /// Gas budget for native BLS transactions dispatched to modules.
@@ -168,6 +169,11 @@ impl HubExecutor {
                 }
             })?;
 
+        if native_tx.target == VALIDATOR_REGISTRY_ADDRESS {
+            return Err(ExecutionError::InvalidTx(
+                "ValidatorRegistry does not support native transactions".to_string(),
+            ));
+        }
         if native_tx.target != ACP_ADDRESS
             && native_tx.target != BULLETIN_ADDRESS
             && native_tx.target != HUB_ADDRESS

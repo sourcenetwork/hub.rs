@@ -1,13 +1,15 @@
-//! Hub precompiles — ABI dispatch for ACP, Bulletin, and Hub modules.
+//! Hub precompiles — ABI dispatch for ACP, Bulletin, Hub, and ValidatorRegistry modules.
 //!
 //! L2-convention addresses:
 //! - `0x0810` — ACP (access control policies)
 //! - `0x0811` — Bulletin (coordination / DKG messages)
 //! - `0x0812` — Hub (identity / JWS token lifecycle)
+//! - `0x0813` — ValidatorRegistry (validator identity management)
 
 mod acp;
 mod bulletin;
 mod hub;
+pub(crate) mod validator_registry;
 
 use alloy_primitives::{Address, B256, Bytes, Log};
 use hub_modules::acp::AcpModule;
@@ -34,6 +36,9 @@ pub const BULLETIN_ADDRESS: Address = address_from_last_two_bytes(0x08, 0x11);
 
 /// Hub precompile address.
 pub const HUB_ADDRESS: Address = address_from_last_two_bytes(0x08, 0x12);
+
+/// ValidatorRegistry precompile address.
+pub const VALIDATOR_REGISTRY_ADDRESS: Address = address_from_last_two_bytes(0x08, 0x13);
 
 const fn address_from_last_two_bytes(hi: u8, lo: u8) -> Address {
     let mut bytes = [0u8; 20];
@@ -165,6 +170,11 @@ fn new_custom_precompiles() -> Precompiles {
             stub_precompile,
         ),
         Precompile::new(PrecompileId::custom("hub"), HUB_ADDRESS, stub_precompile),
+        Precompile::new(
+            PrecompileId::custom("validator_registry"),
+            VALIDATOR_REGISTRY_ADDRESS,
+            stub_precompile,
+        ),
     ]);
     custom
 }
@@ -242,6 +252,23 @@ impl<CTX: ContextTr> PrecompileProvider<CTX> for HubPrecompiles {
                 signer: self.current_signer_did.clone(),
             };
             let calldata = inputs.input.bytes(context);
+
+            if inputs.bytecode_address == VALIDATOR_REGISTRY_ADDRESS {
+                let dispatch_result = validator_registry::dispatch_with_journal(
+                    context,
+                    &self.acp_module,
+                    &block_ctx,
+                    &tx_ctx,
+                    &calldata,
+                    inputs.gas_limit,
+                );
+                let (result, logs) = Self::dispatch_result_to_interpreter(inputs, dispatch_result)?;
+                for log in logs {
+                    context.journal_mut().log(log);
+                }
+                return Ok(result);
+            }
+
             let (result, logs) = self.run_custom(inputs, &calldata, &block_ctx, &tx_ctx)?;
             for log in logs {
                 context.journal_mut().log(log);
@@ -263,28 +290,11 @@ impl<CTX: ContextTr> PrecompileProvider<CTX> for HubPrecompiles {
 }
 
 impl HubPrecompiles {
-    fn run_custom(
-        &mut self,
+    fn dispatch_result_to_interpreter(
         inputs: &CallInputs,
-        calldata: &[u8],
-        block_ctx: &BlockExecCtx,
-        tx_ctx: &TxExecCtx,
+        dispatch_result: DispatchReturn,
     ) -> Result<(Option<InterpreterResult>, Vec<Log>), String> {
         use revm::interpreter::{Gas, InstructionResult};
-
-        let dispatch_result = match dispatch_to_module(
-            &mut self.acp_module,
-            &mut self.bulletin_module,
-            &mut self.hub_module,
-            inputs.bytecode_address,
-            calldata,
-            block_ctx,
-            tx_ctx,
-            inputs.gas_limit,
-        ) {
-            Some(r) => r,
-            None => return Ok((None, vec![])),
-        };
 
         let mut result = InterpreterResult {
             result: InstructionResult::Return,
@@ -322,6 +332,30 @@ impl HubPrecompiles {
             }
         }
     }
+
+    fn run_custom(
+        &mut self,
+        inputs: &CallInputs,
+        calldata: &[u8],
+        block_ctx: &BlockExecCtx,
+        tx_ctx: &TxExecCtx,
+    ) -> Result<(Option<InterpreterResult>, Vec<Log>), String> {
+        let dispatch_result = match dispatch_to_module(
+            &mut self.acp_module,
+            &mut self.bulletin_module,
+            &mut self.hub_module,
+            inputs.bytecode_address,
+            calldata,
+            block_ctx,
+            tx_ctx,
+            inputs.gas_limit,
+        ) {
+            Some(r) => r,
+            None => return Ok((None, vec![])),
+        };
+
+        Self::dispatch_result_to_interpreter(inputs, dispatch_result)
+    }
 }
 
 #[cfg(test)]
@@ -340,13 +374,22 @@ mod tests {
         assert_ne!(ACP_ADDRESS, Address::ZERO);
         assert_ne!(BULLETIN_ADDRESS, Address::ZERO);
         assert_ne!(HUB_ADDRESS, Address::ZERO);
+        assert_ne!(VALIDATOR_REGISTRY_ADDRESS, Address::ZERO);
     }
 
     #[test]
     fn precompile_addresses_are_distinct() {
-        assert_ne!(ACP_ADDRESS, BULLETIN_ADDRESS);
-        assert_ne!(ACP_ADDRESS, HUB_ADDRESS);
-        assert_ne!(BULLETIN_ADDRESS, HUB_ADDRESS);
+        let addrs = [
+            ACP_ADDRESS,
+            BULLETIN_ADDRESS,
+            HUB_ADDRESS,
+            VALIDATOR_REGISTRY_ADDRESS,
+        ];
+        for i in 0..addrs.len() {
+            for j in (i + 1)..addrs.len() {
+                assert_ne!(addrs[i], addrs[j]);
+            }
+        }
     }
 
     #[test]
@@ -369,6 +412,12 @@ mod tests {
                 .parse::<Address>()
                 .unwrap()
         );
+        assert_eq!(
+            VALIDATOR_REGISTRY_ADDRESS,
+            "0x0000000000000000000000000000000000000813"
+                .parse::<Address>()
+                .unwrap()
+        );
     }
 
     #[test]
@@ -385,6 +434,10 @@ mod tests {
         assert!(<HubPrecompiles as PrecompileProvider<TestCtx>>::contains(
             &precompiles,
             &HUB_ADDRESS
+        ));
+        assert!(<HubPrecompiles as PrecompileProvider<TestCtx>>::contains(
+            &precompiles,
+            &VALIDATOR_REGISTRY_ADDRESS
         ));
     }
 
@@ -408,5 +461,6 @@ mod tests {
         assert!(warm.contains(&ACP_ADDRESS));
         assert!(warm.contains(&BULLETIN_ADDRESS));
         assert!(warm.contains(&HUB_ADDRESS));
+        assert!(warm.contains(&VALIDATOR_REGISTRY_ADDRESS));
     }
 }

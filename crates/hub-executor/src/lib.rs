@@ -43,3 +43,4 @@ mod simulate;
 pub use simulate::{SimulateRequest, SimulateResult, estimate_gas, simulate_call};
 
 pub mod precompiles;
+pub use precompiles::VALIDATOR_REGISTRY_ADDRESS;

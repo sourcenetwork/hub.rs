@@ -3528,6 +3528,7 @@ name = "hub-genesis"
 version = "0.1.0"
 dependencies = [
  "alloy-evm",
+ "hex",
  "hub-domain",
  "serde",
  "serde_json",

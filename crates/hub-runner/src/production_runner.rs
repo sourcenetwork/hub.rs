@@ -211,6 +211,7 @@ impl NodeRunner for ProductionRunner {
             page_cache.clone(),
             format!("{}-qmdb", self.partition_prefix),
             self.bootstrap.genesis_alloc.clone(),
+            self.bootstrap.genesis_storage.clone(),
             self.chain_id,
         )
         .await

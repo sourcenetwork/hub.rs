@@ -22,5 +22,7 @@ pub mod bulletin;
 pub mod hub;
 /// Native account state (DID-keyed nonce tracking).
 pub mod native_account;
+/// ValidatorRegistry module (precompile `0x0813`).
+pub mod validator_registry;
 
 pub use module_state::{ModuleState, SharedModuleState};
