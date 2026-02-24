@@ -21,6 +21,7 @@ use hub_modules::validator_registry::abi::IValidatorRegistry;
 use hub_modules::validator_registry::types::ValidatorInfo;
 
 const HARDHAT_KEY_0: &str = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+const HARDHAT_KEY_2: &str = "5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a";
 
 const RECEIPT_INTERVAL: Duration = Duration::from_millis(150);
 const RECEIPT_ATTEMPTS: u32 = 200;
@@ -428,5 +429,430 @@ async fn validator_bootstrap() {
         node1_validators.len(),
         all_validators.len(),
         "validator count should match across nodes"
+    );
+}
+
+#[tokio::test]
+async fn validator_registry_adversarial() {
+    // ── SETUP ─────────────────────────────────────────────────────
+
+    let chain_id = 9002;
+    let validators = test_validators();
+    let genesis = GenesisBuilder::devnet()
+        .funded_accounts(4, "1000000000000000000000000")
+        .validators(validators.clone());
+
+    let cluster = TestCluster::builder()
+        .nodes(4)
+        .chain_id(chain_id)
+        .genesis(genesis)
+        .preset(ConsensusPreset::Fast)
+        .build()
+        .await
+        .expect("cluster should start");
+
+    cluster
+        .wait_ready(Duration::from_secs(30))
+        .await
+        .expect("cluster should become healthy");
+
+    let state = cluster.observe(Duration::from_millis(200));
+    state
+        .wait_for_height(3, Duration::from_secs(30))
+        .await
+        .expect("should reach height 3");
+
+    let client = HubClient::new(cluster.node(0).rpc_url());
+    let admin_signer = EvmSigner::from_hex(HARDHAT_KEY_0, chain_id).expect("valid signer");
+    let rogue_signer = EvmSigner::from_hex(HARDHAT_KEY_2, chain_id).expect("valid signer");
+
+    // ── N1: Write before policy is set → revert ─────────────────
+
+    let calldata = IValidatorRegistry::addValidatorCall {
+        evmAddr: rogue_signer.address(),
+        consensusPubkey: B256::repeat_byte(0xDD),
+        p2pAddr: "127.0.0.1:40000".to_string(),
+    }
+    .abi_encode();
+    let receipt = broadcast_evm_tx(
+        &cluster,
+        &client,
+        &admin_signer,
+        VALIDATOR_REGISTRY_ADDRESS,
+        calldata,
+    )
+    .await;
+    assert_eq!(
+        receipt.status, 0,
+        "N1: addValidator without policy should revert"
+    );
+
+    // ── N2: setPolicy with zero policy ID → revert ──────────────
+
+    let calldata = IValidatorRegistry::setPolicyCall {
+        policyId: B256::ZERO,
+    }
+    .abi_encode();
+    let receipt = broadcast_evm_tx(
+        &cluster,
+        &client,
+        &admin_signer,
+        VALIDATOR_REGISTRY_ADDRESS,
+        calldata,
+    )
+    .await;
+    assert_eq!(
+        receipt.status, 0,
+        "N2: setPolicy with zero ID should revert"
+    );
+
+    // ── Set up ACP policy (required for remaining tests) ────────
+
+    let calldata = IAcp::createPolicyCall {
+        policy: REGISTRY_POLICY_YAML.as_bytes().to_vec().into(),
+        marshalType: 1,
+    }
+    .abi_encode();
+    let receipt =
+        broadcast_evm_tx(&cluster, &client, &admin_signer, ACP_ADDRESS, calldata).await;
+    assert_eq!(receipt.status, 1, "createPolicy should succeed");
+
+    let policy_ids = client
+        .get_policy_ids()
+        .await
+        .expect("get_policy_ids should succeed");
+    let policy_id = parse_policy_id(&policy_ids[0]);
+
+    let calldata = IAcp::registerObjectCall {
+        policyId: policy_id,
+        objectId: "registry".to_string(),
+        resource: "registry".to_string(),
+    }
+    .abi_encode();
+    let receipt =
+        broadcast_evm_tx(&cluster, &client, &admin_signer, ACP_ADDRESS, calldata).await;
+    assert_eq!(receipt.status, 1, "registerObject should succeed");
+
+    let calldata = IAcp::setRelationshipCall {
+        policyId: policy_id,
+        resource: "registry".to_string(),
+        objectId: "registry".to_string(),
+        relation: "admin".to_string(),
+        actor: admin_signer.did(),
+    }
+    .abi_encode();
+    let receipt =
+        broadcast_evm_tx(&cluster, &client, &admin_signer, ACP_ADDRESS, calldata).await;
+    assert_eq!(receipt.status, 1, "setRelationship should succeed");
+
+    let calldata = IValidatorRegistry::setPolicyCall {
+        policyId: B256::from(policy_id.0),
+    }
+    .abi_encode();
+    let receipt = broadcast_evm_tx(
+        &cluster,
+        &client,
+        &admin_signer,
+        VALIDATOR_REGISTRY_ADDRESS,
+        calldata,
+    )
+    .await;
+    assert_eq!(receipt.status, 1, "setPolicy should succeed");
+
+    // ── N3: setPolicy again → revert (immutable) ────────────────
+
+    let calldata = IValidatorRegistry::setPolicyCall {
+        policyId: B256::repeat_byte(0xFF),
+    }
+    .abi_encode();
+    let receipt = broadcast_evm_tx(
+        &cluster,
+        &client,
+        &admin_signer,
+        VALIDATOR_REGISTRY_ADDRESS,
+        calldata,
+    )
+    .await;
+    assert_eq!(
+        receipt.status, 0,
+        "N3: setPolicy twice should revert"
+    );
+
+    // ── N4: Unauthorized caller → revert ────────────────────────
+
+    let calldata = IValidatorRegistry::addValidatorCall {
+        evmAddr: rogue_signer.address(),
+        consensusPubkey: B256::repeat_byte(0xDD),
+        p2pAddr: "127.0.0.1:40000".to_string(),
+    }
+    .abi_encode();
+    let receipt = broadcast_evm_tx(
+        &cluster,
+        &client,
+        &rogue_signer,
+        VALIDATOR_REGISTRY_ADDRESS,
+        calldata,
+    )
+    .await;
+    assert_eq!(
+        receipt.status, 0,
+        "N4: addValidator from unauthorized caller should revert"
+    );
+
+    // ── N5: addValidator with Address::ZERO → revert ────────────
+
+    let calldata = IValidatorRegistry::addValidatorCall {
+        evmAddr: Address::ZERO,
+        consensusPubkey: B256::repeat_byte(0xDD),
+        p2pAddr: "127.0.0.1:40000".to_string(),
+    }
+    .abi_encode();
+    let receipt = broadcast_evm_tx(
+        &cluster,
+        &client,
+        &admin_signer,
+        VALIDATOR_REGISTRY_ADDRESS,
+        calldata,
+    )
+    .await;
+    assert_eq!(
+        receipt.status, 0,
+        "N5: addValidator with zero address should revert"
+    );
+
+    // ── N6: addValidator with zero consensus key → revert ───────
+
+    let calldata = IValidatorRegistry::addValidatorCall {
+        evmAddr: "0x90F79bf6EB2c4f870365E785982E1f101E93b906"
+            .parse()
+            .unwrap(),
+        consensusPubkey: B256::ZERO,
+        p2pAddr: "127.0.0.1:40001".to_string(),
+    }
+    .abi_encode();
+    let receipt = broadcast_evm_tx(
+        &cluster,
+        &client,
+        &admin_signer,
+        VALIDATOR_REGISTRY_ADDRESS,
+        calldata,
+    )
+    .await;
+    assert_eq!(
+        receipt.status, 0,
+        "N6: addValidator with zero consensus key should revert"
+    );
+
+    // ── N7: addValidator with invalid p2p address → revert ──────
+
+    let calldata = IValidatorRegistry::addValidatorCall {
+        evmAddr: "0x90F79bf6EB2c4f870365E785982E1f101E93b906"
+            .parse()
+            .unwrap(),
+        consensusPubkey: B256::repeat_byte(0xEE),
+        p2pAddr: "not-a-socket-addr".to_string(),
+    }
+    .abi_encode();
+    let receipt = broadcast_evm_tx(
+        &cluster,
+        &client,
+        &admin_signer,
+        VALIDATOR_REGISTRY_ADDRESS,
+        calldata,
+    )
+    .await;
+    assert_eq!(
+        receipt.status, 0,
+        "N7: addValidator with invalid p2p should revert"
+    );
+
+    // ── N8: addValidator with p2p > 32 bytes → revert ───────────
+
+    let calldata = IValidatorRegistry::addValidatorCall {
+        evmAddr: "0x90F79bf6EB2c4f870365E785982E1f101E93b906"
+            .parse()
+            .unwrap(),
+        consensusPubkey: B256::repeat_byte(0xEE),
+        p2pAddr: "111.222.333.444:55555-padding-xx".to_string(),
+    }
+    .abi_encode();
+    let receipt = broadcast_evm_tx(
+        &cluster,
+        &client,
+        &admin_signer,
+        VALIDATOR_REGISTRY_ADDRESS,
+        calldata,
+    )
+    .await;
+    assert_eq!(
+        receipt.status, 0,
+        "N8: addValidator with oversized p2p should revert"
+    );
+
+    // ── Add a valid validator for subsequent negative tests ──────
+
+    let calldata = IValidatorRegistry::addValidatorCall {
+        evmAddr: rogue_signer.address(),
+        consensusPubkey: B256::repeat_byte(0xDD),
+        p2pAddr: "127.0.0.1:40000".to_string(),
+    }
+    .abi_encode();
+    let receipt = broadcast_evm_tx(
+        &cluster,
+        &client,
+        &admin_signer,
+        VALIDATOR_REGISTRY_ADDRESS,
+        calldata,
+    )
+    .await;
+    assert_eq!(receipt.status, 1, "addValidator should succeed");
+
+    // ── N9: Duplicate addValidator → revert ─────────────────────
+
+    let calldata = IValidatorRegistry::addValidatorCall {
+        evmAddr: rogue_signer.address(),
+        consensusPubkey: B256::repeat_byte(0xFF),
+        p2pAddr: "127.0.0.1:40001".to_string(),
+    }
+    .abi_encode();
+    let receipt = broadcast_evm_tx(
+        &cluster,
+        &client,
+        &admin_signer,
+        VALIDATOR_REGISTRY_ADDRESS,
+        calldata,
+    )
+    .await;
+    assert_eq!(
+        receipt.status, 0,
+        "N9: duplicate addValidator should revert"
+    );
+
+    // ── N10: removeValidator for non-existent address → revert ──
+
+    let fake_addr: Address = "0x000000000000000000000000000000000000dEaD"
+        .parse()
+        .unwrap();
+    let calldata = IValidatorRegistry::removeValidatorCall { evmAddr: fake_addr }.abi_encode();
+    let receipt = broadcast_evm_tx(
+        &cluster,
+        &client,
+        &admin_signer,
+        VALIDATOR_REGISTRY_ADDRESS,
+        calldata,
+    )
+    .await;
+    assert_eq!(
+        receipt.status, 0,
+        "N10: removeValidator for non-existent should revert"
+    );
+
+    // ── N11: setValidatorStatusByIndex out of bounds → revert ───
+
+    let calldata = IValidatorRegistry::setValidatorStatusByIndexCall {
+        index: U256::from(999),
+        active: false,
+    }
+    .abi_encode();
+    let receipt = broadcast_evm_tx(
+        &cluster,
+        &client,
+        &admin_signer,
+        VALIDATOR_REGISTRY_ADDRESS,
+        calldata,
+    )
+    .await;
+    assert_eq!(
+        receipt.status, 0,
+        "N11: setValidatorStatusByIndex out of bounds should revert"
+    );
+
+    // ── N12: Non-validator calls updateP2PAddress → revert ──────
+
+    // Use a signer whose address is NOT in the registry. Hardhat account 2
+    // was added above, so we need a signer that isn't registered. Create a
+    // throwaway signer from account 3.
+    let non_validator_key = "7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6";
+    let non_validator_signer =
+        EvmSigner::from_hex(non_validator_key, chain_id).expect("valid signer");
+    let calldata = IValidatorRegistry::updateP2PAddressCall {
+        p2pAddr: "10.0.0.1:1234".to_string(),
+    }
+    .abi_encode();
+    let receipt = broadcast_evm_tx(
+        &cluster,
+        &client,
+        &non_validator_signer,
+        VALIDATOR_REGISTRY_ADDRESS,
+        calldata,
+    )
+    .await;
+    assert_eq!(
+        receipt.status, 0,
+        "N12: updateP2PAddress from non-validator should revert"
+    );
+
+    // ── N13: updateP2PAddress with invalid p2p → revert ─────────
+
+    // Use admin_signer (hardhat 0) which IS a genesis validator
+    let calldata = IValidatorRegistry::updateP2PAddressCall {
+        p2pAddr: "garbage".to_string(),
+    }
+    .abi_encode();
+    let receipt = broadcast_evm_tx(
+        &cluster,
+        &client,
+        &admin_signer,
+        VALIDATOR_REGISTRY_ADDRESS,
+        calldata,
+    )
+    .await;
+    assert_eq!(
+        receipt.status, 0,
+        "N13: updateP2PAddress with invalid p2p should revert"
+    );
+
+    // ── N14: setValidatorStatus for non-existent → revert ───────
+
+    let calldata = IValidatorRegistry::setValidatorStatusCall {
+        evmAddr: fake_addr,
+        active: false,
+    }
+    .abi_encode();
+    let receipt = broadcast_evm_tx(
+        &cluster,
+        &client,
+        &admin_signer,
+        VALIDATOR_REGISTRY_ADDRESS,
+        calldata,
+    )
+    .await;
+    assert_eq!(
+        receipt.status, 0,
+        "N14: setValidatorStatus for non-existent should revert"
+    );
+
+    // ── Verify state is unchanged after all rejections ──────────
+
+    let calldata = IValidatorRegistry::getValidatorsCall {}.abi_encode();
+    let result = eth_call_raw(&client, VALIDATOR_REGISTRY_ADDRESS, calldata).await;
+    let decoded = IValidatorRegistry::getValidatorsCall::abi_decode_returns(&result)
+        .expect("abi decode getValidators");
+    let final_validators: Vec<ValidatorInfo> =
+        serde_json::from_slice(&decoded).expect("parse validators JSON");
+    assert_eq!(
+        final_validators.len(),
+        3,
+        "should still have exactly 3 validators (2 genesis + 1 added)"
+    );
+
+    let calldata = IValidatorRegistry::getActiveValidatorCountCall {}.abi_encode();
+    let result = eth_call_raw(&client, VALIDATOR_REGISTRY_ADDRESS, calldata).await;
+    let decoded = IValidatorRegistry::getActiveValidatorCountCall::abi_decode_returns(&result)
+        .expect("abi decode");
+    assert_eq!(
+        decoded,
+        U256::from(3),
+        "active count should still be 3 after all rejected operations"
     );
 }
