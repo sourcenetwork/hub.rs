@@ -4,6 +4,10 @@
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
+pub mod validator_set;
+
+pub use validator_set::ValidatorSetUpdate;
+
 use std::{
     collections::{BTreeSet, HashMap},
     fmt,
@@ -36,7 +40,7 @@ use hub_ledger::LedgerService;
 use hub_overlay::OverlayState;
 use hub_qmdb_ledger::QmdbChangeSet;
 use hub_qmdb_ledger::QmdbState;
-use tracing::{error, trace, warn};
+use tracing::{error, info, trace, warn};
 
 /// Provides block execution context for finalized block verification.
 pub trait BlockContextProvider: Clone + Send + Sync + 'static {
@@ -130,6 +134,9 @@ async fn handle_finalized_update<E, P>(
     subscriptions: Option<SubscriptionSenders>,
     node_state: Option<NodeState>,
     last_committed_height: u64,
+    validator_set_tx: Option<::tokio::sync::mpsc::UnboundedSender<ValidatorSetUpdate>>,
+    chain_id: u64,
+    gas_limit: u64,
 ) where
     E: BlockExecutor<OverlayState<QmdbState>, Tx = Bytes>,
     P: BlockContextProvider,
@@ -312,7 +319,8 @@ async fn handle_finalized_update<E, P>(
             state.recheck_mempool().await;
 
             // Index the finalized block and broadcast subscription events.
-            let needs_receipts = block_index.is_some() || subscriptions.is_some();
+            let needs_receipts =
+                block_index.is_some() || subscriptions.is_some() || validator_set_tx.is_some();
             if needs_receipts {
                 let receipts_result = match cached_receipts {
                     Some(cached) => Some(cached),
@@ -364,6 +372,34 @@ async fn handle_finalized_update<E, P>(
                                     Err(_) => {
                                         trace!(height = block.height, "no active logs subscribers")
                                     }
+                                }
+                            }
+                        }
+                        // Detect validator set mutations and notify the channel.
+                        if let Some(ref vs_tx) = validator_set_tx
+                            && validator_set::has_validator_events(
+                                &receipts,
+                                hub_executor::VALIDATOR_REGISTRY_ADDRESS,
+                            )
+                        {
+                            let qmdb = state.qmdb_state().await;
+                            if let Some(validators) = validator_set::read_validator_set(
+                                &qmdb,
+                                chain_id,
+                                gas_limit,
+                                finalized_modules.as_ref(),
+                            ) {
+                                let count = validators.len();
+                                let update = ValidatorSetUpdate {
+                                    height: block.height,
+                                    validators,
+                                };
+                                if vs_tx.send(update).is_ok() {
+                                    info!(
+                                        height = block.height,
+                                        validator_count = count,
+                                        "validator set change detected"
+                                    );
                                 }
                             }
                         }
@@ -714,6 +750,12 @@ pub struct FinalizedReporter<E, P> {
     /// Last block height already committed to QMDB (from a previous run).
     /// Blocks at or below this height are skipped during catchup.
     last_committed_height: u64,
+    /// Channel for validator set change notifications.
+    validator_set_tx: Option<::tokio::sync::mpsc::UnboundedSender<ValidatorSetUpdate>>,
+    /// Chain ID for simulate_call during validator set queries.
+    chain_id: u64,
+    /// Block gas limit for simulate_call during validator set queries.
+    gas_limit: u64,
 }
 
 impl<E, P> fmt::Debug for FinalizedReporter<E, P> {
@@ -744,6 +786,9 @@ where
             subscription_logs: None,
             node_state: None,
             last_committed_height: 0,
+            validator_set_tx: None,
+            chain_id: 0,
+            gas_limit: 0,
         }
     }
 
@@ -782,6 +827,24 @@ where
         self.last_committed_height = height;
         self
     }
+
+    /// Enable validator set change detection after finalization.
+    ///
+    /// When a finalized block contains `ValidatorAdded`, `ValidatorRemoved`,
+    /// or `ValidatorStatusChanged` events from the ValidatorRegistry precompile,
+    /// the reporter queries the updated validator set and sends it on `tx`.
+    #[must_use]
+    pub fn with_validator_set_updates(
+        mut self,
+        tx: ::tokio::sync::mpsc::UnboundedSender<ValidatorSetUpdate>,
+        chain_id: u64,
+        gas_limit: u64,
+    ) -> Self {
+        self.validator_set_tx = Some(tx);
+        self.chain_id = chain_id;
+        self.gas_limit = gas_limit;
+        self
+    }
 }
 
 impl<E, P> Reporter for FinalizedReporter<E, P>
@@ -799,6 +862,9 @@ where
         let block_index = self.block_index.clone();
         let node_state = self.node_state.clone();
         let last_committed_height = self.last_committed_height;
+        let validator_set_tx = self.validator_set_tx.clone();
+        let chain_id = self.chain_id;
+        let gas_limit = self.gas_limit;
         let subscriptions = self
             .subscription_heads
             .as_ref()
@@ -818,6 +884,9 @@ where
                 subscriptions,
                 node_state,
                 last_committed_height,
+                validator_set_tx,
+                chain_id,
+                gas_limit,
             )
             .await;
         }

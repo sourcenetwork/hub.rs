@@ -31,7 +31,8 @@ use hub_ledger::{LedgerService, LedgerView};
 use hub_marshal::{ArchiveInitializer, BroadcastInitializer, PeerInitializer};
 use hub_modules::kv_store::InMemoryKvStore;
 use hub_reporters::{
-    BlockContextProvider, FinalizedReporter, NodeStateReporter, SeedReporter, ViewTracker,
+    BlockContextProvider, FinalizedReporter, NodeStateReporter, SeedReporter, ValidatorSetUpdate,
+    ViewTracker,
 };
 use hub_service::{NodeRunContext, NodeRunner};
 use hub_simplex::{DEFAULT_MAILBOX_SIZE as MAILBOX_SIZE, DefaultPool};
@@ -343,6 +344,18 @@ impl NodeRunner for HubRunner {
             gas_limit: self.gas_limit,
             participant_addresses: participant_addrs.clone(),
         };
+        let (validator_set_tx, mut validator_set_rx) =
+            ::tokio::sync::mpsc::unbounded_channel::<ValidatorSetUpdate>();
+        context.clone().shared(true).spawn(move |_| async move {
+            while let Some(update) = validator_set_rx.recv().await {
+                info!(
+                    height = update.height,
+                    count = update.validators.len(),
+                    "received validator set update (epoch transition pending)"
+                );
+            }
+        });
+
         let finalized_reporter = {
             let reporter = FinalizedReporter::new(
                 ledger.clone(),
@@ -352,7 +365,12 @@ impl NodeRunner for HubRunner {
             )
             .with_block_index(block_index.clone())
             .with_subscriptions(heads_tx.clone(), logs_tx.clone())
-            .with_last_committed_height(last_committed_height);
+            .with_last_committed_height(last_committed_height)
+            .with_validator_set_updates(
+                validator_set_tx,
+                self.chain_id,
+                self.gas_limit,
+            );
             if let Some((state, _)) = &self.rpc_config {
                 reporter.with_node_state(state.clone())
             } else {

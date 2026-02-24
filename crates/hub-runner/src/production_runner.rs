@@ -24,7 +24,9 @@ use hub_indexer::BlockIndex;
 use hub_jsonrpc::IndexedStateProvider;
 use hub_ledger::{LedgerService, LedgerView};
 use hub_marshal::{ArchiveInitializer, BroadcastInitializer, PeerInitializer};
-use hub_reporters::{BlockContextProvider, FinalizedReporter, NodeStateReporter, SeedReporter};
+use hub_reporters::{
+    BlockContextProvider, FinalizedReporter, NodeStateReporter, SeedReporter, ValidatorSetUpdate,
+};
 use hub_service::{NodeRunContext, NodeRunner};
 use hub_simplex::{DEFAULT_MAILBOX_SIZE as MAILBOX_SIZE, DefaultPool};
 use hub_transport::NetworkTransport;
@@ -260,11 +262,24 @@ impl NodeRunner for ProductionRunner {
             gas_limit: self.gas_limit,
             participant_addresses: participant_addrs.clone(),
         };
+        let (validator_set_tx, mut validator_set_rx) =
+            ::tokio::sync::mpsc::unbounded_channel::<ValidatorSetUpdate>();
+        context.clone().shared(true).spawn(move |_| async move {
+            while let Some(update) = validator_set_rx.recv().await {
+                info!(
+                    height = update.height,
+                    count = update.validators.len(),
+                    "received validator set update (epoch transition pending)"
+                );
+            }
+        });
+
         let finalized_reporter = {
             let reporter =
                 FinalizedReporter::new(ledger.clone(), context.clone(), executor, context_provider)
                     .with_block_index(block_index.clone())
-                    .with_subscriptions(heads_tx.clone(), logs_tx.clone());
+                    .with_subscriptions(heads_tx.clone(), logs_tx.clone())
+                    .with_validator_set_updates(validator_set_tx, self.chain_id, self.gas_limit);
             if let Some((state, _)) = &self.rpc_config {
                 reporter.with_node_state(state.clone())
             } else {

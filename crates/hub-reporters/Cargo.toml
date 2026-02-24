@@ -17,9 +17,11 @@ hub-crypto.workspace = true
 hub-domain.workspace = true
 hub-executor.workspace = true
 hub-ledger.workspace = true
+hub-modules.workspace = true
 hub-overlay.workspace = true
 hub-qmdb-ledger.workspace = true
 hub-jsonrpc.workspace = true
+hub-traits.workspace = true
 
 # Commonware
 commonware-codec.workspace = true
@@ -32,12 +34,16 @@ commonware-utils.workspace = true
 alloy-consensus = { workspace = true }
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
+alloy-sol-types.workspace = true
 
 # Local crates (indexer)
 hub-indexer.workspace = true
 
 # Async
 tokio = { workspace = true, features = ["sync"] }
+
+# Serialization
+serde_json.workspace = true
 
 # Tracing
 tracing.workspace = true
