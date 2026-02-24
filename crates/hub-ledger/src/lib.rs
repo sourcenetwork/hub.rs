@@ -90,10 +90,19 @@ impl LedgerView {
         partition_prefix: String,
         genesis_alloc: Vec<(Address, U256)>,
         genesis_storage: Vec<(Address, Vec<(U256, U256)>)>,
+        genesis_code: Vec<(Address, Vec<u8>)>,
         chain_id: u64,
     ) -> LedgerResult<Self> {
         let config = QmdbConfig::new(partition_prefix, page_cache);
-        Self::init_with_config(context, config, genesis_alloc, genesis_storage, chain_id).await
+        Self::init_with_config(
+            context,
+            config,
+            genesis_alloc,
+            genesis_storage,
+            genesis_code,
+            chain_id,
+        )
+        .await
     }
 
     /// Initialize a ledger view with an explicit QMDB configuration.
@@ -102,6 +111,7 @@ impl LedgerView {
         config: QmdbConfig,
         genesis_alloc: Vec<(Address, U256)>,
         genesis_storage: Vec<(Address, Vec<(U256, U256)>)>,
+        genesis_code: Vec<(Address, Vec<u8>)>,
         chain_id: u64,
     ) -> LedgerResult<Self> {
         let qmdb = QmdbLedger::init(
@@ -109,6 +119,7 @@ impl LedgerView {
             config,
             genesis_alloc,
             genesis_storage,
+            genesis_code,
         )
         .await?;
         let genesis_root = qmdb.root().await?;
@@ -652,6 +663,7 @@ mod tests {
             test_page_cache(),
             next_partition(partition_prefix),
             allocations,
+            Vec::new(),
             Vec::new(),
             CHAIN_ID,
         )

@@ -21,8 +21,20 @@ use super::{
     event_log, json_bytes, ok_dispatch,
 };
 
-const WRITE_GAS: u64 = 50_000;
-const READ_GAS: u64 = 10_000;
+const ADD_VALIDATOR_GAS: u64 = 150_000;
+const REMOVE_VALIDATOR_GAS: u64 = 150_000;
+const SET_STATUS_GAS: u64 = 50_000;
+const UPDATE_P2P_GAS: u64 = 60_000;
+const GET_VALIDATOR_GAS: u64 = 15_000;
+const GET_VALIDATORS_GAS: u64 = 20_000;
+const GET_ACTIVE_COUNT_GAS: u64 = 10_000;
+const INPUT_COST_PER_WORD: u64 = 6;
+
+const fn input_cost(calldata_len: usize) -> u64 {
+    calldata_len.div_ceil(32) as u64 * INPUT_COST_PER_WORD
+}
+
+const MAX_P2P_ADDRESS_LEN: usize = 32;
 
 // ── Storage layout constants ───────────────────────────────────────────
 
@@ -91,9 +103,10 @@ fn check_manage_access(
     policy_id: &str,
     caller_did: Did,
 ) -> Result<(), ValidatorRegistryError> {
-    // Zero policy ID means unrestricted access (no ACP policy configured).
     if policy_id.chars().all(|c| c == '0') {
-        return Ok(());
+        return Err(ValidatorRegistryError::Unauthorized(
+            "no ACP policy configured".to_string(),
+        ));
     }
 
     let access_request = AccessRequest {
@@ -121,6 +134,20 @@ fn check_manage_access(
 fn load_policy_id<CTX: ContextTr>(context: &mut CTX) -> String {
     let val = journal_sload(context, SLOT_POLICY_ID);
     hex::encode(val.to_be_bytes::<32>())
+}
+
+fn validate_p2p_address(addr: &str) -> Result<(), ValidatorRegistryError> {
+    if addr.is_empty() {
+        return Err(ValidatorRegistryError::InvalidP2PAddress("empty".into()));
+    }
+    if addr.len() > MAX_P2P_ADDRESS_LEN {
+        return Err(ValidatorRegistryError::InvalidP2PAddress(
+            "exceeds 32 bytes".into(),
+        ));
+    }
+    addr.parse::<std::net::SocketAddr>()
+        .map_err(|e| ValidatorRegistryError::InvalidP2PAddress(e.to_string()))?;
+    Ok(())
 }
 
 // ── Read helpers ───────────────────────────────────────────────────────
@@ -238,7 +265,8 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
 
     match selector {
         IValidatorRegistry::addValidatorCall::SELECTOR => {
-            if gas_limit < WRITE_GAS {
+            let gas_required = ADD_VALIDATOR_GAS + input_cost(input.len());
+            if gas_limit < gas_required {
                 return Err(PrecompileError::OutOfGas);
             }
             let call =
@@ -256,8 +284,16 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
             if let Err(e) = check_manage_access(acp, &policy_id, caller_did) {
                 return Ok(err_dispatch(e));
             }
+            if call.evmAddr == Address::ZERO {
+                return Ok(err_dispatch(ValidatorRegistryError::InvalidAddress(
+                    "zero address".to_string(),
+                )));
+            }
             if call.consensusPubkey == B256::ZERO {
                 return Ok(err_dispatch(ValidatorRegistryError::InvalidPublicKey));
+            }
+            if let Err(e) = validate_p2p_address(&call.p2pAddr) {
+                return Ok(err_dispatch(e));
             }
             if load_validator_raw(context, call.evmAddr).is_some() {
                 return Ok(err_dispatch(
@@ -284,14 +320,15 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
                 consensusPubkey: call.consensusPubkey,
             };
             Ok(ok_dispatch(
-                WRITE_GAS,
+                gas_required,
                 Vec::new(),
                 vec![event_log(VALIDATOR_REGISTRY_ADDRESS, &event)],
             ))
         }
 
         IValidatorRegistry::removeValidatorCall::SELECTOR => {
-            if gas_limit < WRITE_GAS {
+            let gas_required = REMOVE_VALIDATOR_GAS + input_cost(input.len());
+            if gas_limit < gas_required {
                 return Err(PrecompileError::OutOfGas);
             }
             let call =
@@ -330,8 +367,15 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
                 let removed_slot = array_element_slot(SLOT_VALIDATORS_ARRAY_BASE, val_index);
                 journal_sstore(context, removed_slot, last_addr_val);
 
-                if let Some((la, lc, lp, ls, _)) = load_validator_raw(context, last_addr) {
-                    store_validator_raw(context, la, lc, &lp, ls, val_index);
+                match load_validator_raw(context, last_addr) {
+                    Some((la, lc, lp, ls, _)) => {
+                        store_validator_raw(context, la, lc, &lp, ls, val_index);
+                    }
+                    None => {
+                        return Ok(err_dispatch(ValidatorRegistryError::State(
+                            "swap-and-pop: last validator mapping corrupted".into(),
+                        )));
+                    }
                 }
                 journal_sstore(context, last_addr_slot, U256::ZERO);
             } else {
@@ -346,14 +390,44 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
                 evmAddr: call.evmAddr,
             };
             Ok(ok_dispatch(
-                WRITE_GAS,
+                gas_required,
                 Vec::new(),
                 vec![event_log(VALIDATOR_REGISTRY_ADDRESS, &event)],
             ))
         }
 
+        IValidatorRegistry::setPolicyCall::SELECTOR => {
+            let gas_required = SET_STATUS_GAS + input_cost(input.len());
+            if gas_limit < gas_required {
+                return Err(PrecompileError::OutOfGas);
+            }
+            let call =
+                IValidatorRegistry::setPolicyCall::abi_decode(input).map_err(decode_error)?;
+
+            let current = load_policy_id(context);
+            if !current.chars().all(|c| c == '0') {
+                return Ok(err_dispatch(ValidatorRegistryError::Unauthorized(
+                    "policy already configured".to_string(),
+                )));
+            }
+            if call.policyId == B256::ZERO {
+                return Ok(err_dispatch(ValidatorRegistryError::Unauthorized(
+                    "cannot set zero policy".to_string(),
+                )));
+            }
+
+            journal_sstore(
+                context,
+                SLOT_POLICY_ID,
+                U256::from_be_bytes(call.policyId.0),
+            );
+
+            Ok(ok_dispatch(gas_required, Vec::new(), vec![]))
+        }
+
         IValidatorRegistry::setValidatorStatusCall::SELECTOR => {
-            if gas_limit < WRITE_GAS {
+            let gas_required = SET_STATUS_GAS + input_cost(input.len());
+            if gas_limit < gas_required {
                 return Err(PrecompileError::OutOfGas);
             }
             let call = IValidatorRegistry::setValidatorStatusCall::abi_decode(input)
@@ -387,20 +461,80 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
                 active: call.active,
             };
             Ok(ok_dispatch(
-                WRITE_GAS,
+                gas_required,
+                Vec::new(),
+                vec![event_log(VALIDATOR_REGISTRY_ADDRESS, &event)],
+            ))
+        }
+
+        IValidatorRegistry::setValidatorStatusByIndexCall::SELECTOR => {
+            let gas_required = SET_STATUS_GAS + input_cost(input.len());
+            if gas_limit < gas_required {
+                return Err(PrecompileError::OutOfGas);
+            }
+            let call = IValidatorRegistry::setValidatorStatusByIndexCall::abi_decode(input)
+                .map_err(decode_error)?;
+
+            let policy_id = load_policy_id(context);
+            let caller_did = match did_from_signer(&tx_ctx.signer) {
+                Ok(d) => d,
+                Err(_) => {
+                    return Ok(err_dispatch(ValidatorRegistryError::Unauthorized(
+                        "invalid signer DID".to_string(),
+                    )));
+                }
+            };
+            if let Err(e) = check_manage_access(acp, &policy_id, caller_did) {
+                return Ok(err_dispatch(e));
+            }
+
+            let count = journal_sload(context, SLOT_VALIDATOR_COUNT).as_limbs()[0];
+            let idx = call.index.as_limbs()[0];
+            if idx >= count {
+                return Ok(err_dispatch(ValidatorRegistryError::ValidatorNotFound(
+                    format!("index {idx} out of range (count={count})"),
+                )));
+            }
+            let addr_slot = array_element_slot(SLOT_VALIDATORS_ARRAY_BASE, idx);
+            let target_addr = u256_to_address(journal_sload(context, addr_slot));
+            let (addr, consensus, p2p, _, index) = match load_validator_raw(context, target_addr) {
+                Some(v) => v,
+                None => {
+                    return Ok(err_dispatch(ValidatorRegistryError::State(format!(
+                        "validator at index {idx} has corrupted mapping"
+                    ))));
+                }
+            };
+            store_validator_raw(context, addr, consensus, &p2p, call.active, index);
+
+            let event = IValidatorRegistry::ValidatorStatusChanged {
+                evmAddr: target_addr,
+                active: call.active,
+            };
+            Ok(ok_dispatch(
+                gas_required,
                 Vec::new(),
                 vec![event_log(VALIDATOR_REGISTRY_ADDRESS, &event)],
             ))
         }
 
         IValidatorRegistry::updateP2PAddressCall::SELECTOR => {
-            if gas_limit < WRITE_GAS {
+            let gas_required = UPDATE_P2P_GAS + input_cost(input.len());
+            if gas_limit < gas_required {
                 return Err(PrecompileError::OutOfGas);
             }
             let call = IValidatorRegistry::updateP2PAddressCall::abi_decode(input)
                 .map_err(decode_error)?;
 
             let caller_addr = evm_address_from_signer(&tx_ctx.signer);
+            if caller_addr == Address::ZERO {
+                return Ok(err_dispatch(ValidatorRegistryError::Unauthorized(
+                    "could not derive caller address from signer".to_string(),
+                )));
+            }
+            if let Err(e) = validate_p2p_address(&call.p2pAddr) {
+                return Ok(err_dispatch(e));
+            }
             let (addr, consensus, _, active, index) = match load_validator_raw(context, caller_addr)
             {
                 Some(v) => v,
@@ -416,24 +550,26 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
                 evmAddr: caller_addr,
             };
             Ok(ok_dispatch(
-                WRITE_GAS,
+                gas_required,
                 Vec::new(),
                 vec![event_log(VALIDATOR_REGISTRY_ADDRESS, &event)],
             ))
         }
 
         IValidatorRegistry::getValidatorsCall::SELECTOR => {
-            if gas_limit < READ_GAS {
+            let gas_required = GET_VALIDATORS_GAS + input_cost(input.len());
+            if gas_limit < gas_required {
                 return Err(PrecompileError::OutOfGas);
             }
             let validators = load_all_validators(context);
             let ret =
                 IValidatorRegistry::getValidatorsCall::abi_encode_returns(&json_bytes(&validators));
-            Ok(ok_dispatch(READ_GAS, ret, vec![]))
+            Ok(ok_dispatch(gas_required, ret, vec![]))
         }
 
         IValidatorRegistry::getValidatorCall::SELECTOR => {
-            if gas_limit < READ_GAS {
+            let gas_required = GET_VALIDATOR_GAS + input_cost(input.len());
+            if gas_limit < gas_required {
                 return Err(PrecompileError::OutOfGas);
             }
             let call =
@@ -441,11 +577,12 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
             let validator = load_validator_raw(context, call.evmAddr).map(to_validator_info);
             let ret =
                 IValidatorRegistry::getValidatorCall::abi_encode_returns(&json_bytes(&validator));
-            Ok(ok_dispatch(READ_GAS, ret, vec![]))
+            Ok(ok_dispatch(gas_required, ret, vec![]))
         }
 
         IValidatorRegistry::getActiveValidatorCountCall::SELECTOR => {
-            if gas_limit < READ_GAS {
+            let gas_required = GET_ACTIVE_COUNT_GAS + input_cost(input.len());
+            if gas_limit < gas_required {
                 return Err(PrecompileError::OutOfGas);
             }
             let validators = load_all_validators(context);
@@ -453,7 +590,7 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
             let ret = IValidatorRegistry::getActiveValidatorCountCall::abi_encode_returns(
                 &U256::from(active_count),
             );
-            Ok(ok_dispatch(READ_GAS, ret, vec![]))
+            Ok(ok_dispatch(gas_required, ret, vec![]))
         }
 
         _ => Err(PrecompileError::Other(
@@ -588,5 +725,30 @@ mod tests {
     fn evm_address_from_signer_did() {
         let addr = evm_address_from_signer("did:key:z6MkTest");
         assert_eq!(addr, Address::ZERO);
+    }
+
+    #[test]
+    fn validate_p2p_address_valid() {
+        assert!(validate_p2p_address("127.0.0.1:30300").is_ok());
+        assert!(validate_p2p_address("0.0.0.0:9999").is_ok());
+        assert!(validate_p2p_address("[::1]:8080").is_ok());
+    }
+
+    #[test]
+    fn validate_p2p_address_rejects_invalid() {
+        assert!(validate_p2p_address("").is_err());
+        assert!(validate_p2p_address("not-a-socket-addr").is_err());
+        assert!(validate_p2p_address("127.0.0.1").is_err());
+        let long = format!("a{}", "b".repeat(32));
+        assert!(validate_p2p_address(&long).is_err());
+    }
+
+    #[test]
+    fn input_cost_rounds_up_words() {
+        assert_eq!(input_cost(0), 0);
+        assert_eq!(input_cost(1), INPUT_COST_PER_WORD);
+        assert_eq!(input_cost(32), INPUT_COST_PER_WORD);
+        assert_eq!(input_cost(33), INPUT_COST_PER_WORD * 2);
+        assert_eq!(input_cost(64), INPUT_COST_PER_WORD * 2);
     }
 }

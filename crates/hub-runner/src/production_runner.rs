@@ -212,6 +212,7 @@ impl NodeRunner for ProductionRunner {
             format!("{}-qmdb", self.partition_prefix),
             self.bootstrap.genesis_alloc.clone(),
             self.bootstrap.genesis_storage.clone(),
+            self.bootstrap.genesis_code.clone(),
             self.chain_id,
         )
         .await

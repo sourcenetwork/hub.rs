@@ -14,6 +14,8 @@ pub struct BootstrapConfig {
     pub genesis_alloc: Vec<(Address, U256)>,
     /// Initial storage entries per address (address, [(slot, value)]).
     pub genesis_storage: Vec<(Address, Vec<(U256, U256)>)>,
+    /// Bytecode to deploy at specific addresses during genesis.
+    pub genesis_code: Vec<(Address, Vec<u8>)>,
     /// Transactions to execute during bootstrap.
     pub bootstrap_txs: Vec<Tx>,
 }
@@ -38,6 +40,7 @@ impl BootstrapConfig {
         Self {
             genesis_alloc,
             genesis_storage: Vec::new(),
+            genesis_code: Vec::new(),
             bootstrap_txs,
         }
     }
@@ -52,6 +55,7 @@ impl BootstrapConfig {
         Self {
             genesis_alloc,
             genesis_storage,
+            genesis_code: Vec::new(),
             bootstrap_txs,
         }
     }
@@ -73,6 +77,7 @@ impl BootstrapConfig {
         Ok(Self {
             genesis_alloc,
             genesis_storage: Vec::new(),
+            genesis_code: Vec::new(),
             bootstrap_txs: Vec::new(),
         })
     }

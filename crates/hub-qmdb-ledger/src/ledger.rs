@@ -53,13 +53,16 @@ impl QmdbLedger {
         config: QmdbConfig,
         genesis_alloc: Vec<(Address, U256)>,
         genesis_storage: Vec<(Address, Vec<(U256, U256)>)>,
+        genesis_code: Vec<(Address, Vec<u8>)>,
     ) -> Result<Self, Error> {
         let backend = CommonwareBackend::open(context.clone(), config.clone()).await?;
         let root_provider = CommonwareRootProvider::new(context, config);
         let (accounts, storage, code) = backend.into_stores();
         let handle = Handle::new(accounts, storage, code)
             .with_root_provider(Arc::new(RwLock::new(root_provider)));
-        handle.init_genesis(genesis_alloc, genesis_storage).await?;
+        handle
+            .init_genesis(genesis_alloc, genesis_storage, genesis_code)
+            .await?;
         Ok(Self { handle })
     }
 

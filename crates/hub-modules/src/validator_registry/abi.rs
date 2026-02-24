@@ -24,6 +24,12 @@ sol! {
 
         function setValidatorStatus(address evmAddr, bool active) external;
 
+        function setValidatorStatusByIndex(uint256 index, bool active) external;
+
+        // ── Bootstrap (one-time, only when no policy is set) ─────────────
+
+        function setPolicy(bytes32 policyId) external;
+
         // ── Self-update (caller must be the validator) ──────────────────
 
         function updateP2PAddress(string calldata p2pAddr) external;

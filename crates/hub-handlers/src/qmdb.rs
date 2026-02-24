@@ -101,7 +101,7 @@ where
         Ok(())
     }
 
-    /// Initialize with genesis allocations and optional storage entries.
+    /// Initialize with genesis allocations and optional storage/code entries.
     ///
     /// Idempotent: skips accounts that already exist (e.g. after a restart
     /// where QMDB files persist on disk).
@@ -109,10 +109,11 @@ where
         &self,
         allocs: Vec<(Address, U256)>,
         storage: Vec<(Address, Vec<(U256, U256)>)>,
+        code: Vec<(Address, Vec<u8>)>,
     ) -> Result<(), HandleError> {
         use std::collections::BTreeMap;
 
-        use alloy_primitives::KECCAK256_EMPTY;
+        use alloy_primitives::{KECCAK256_EMPTY, keccak256};
 
         let store = self.read().await;
         let mut changes = ChangeSet::new();
@@ -150,6 +151,23 @@ where
             for (key, value) in slots {
                 entry.storage.insert(key, value);
             }
+        }
+
+        for (address, bytecode) in code {
+            let entry = changes
+                .accounts
+                .entry(address)
+                .or_insert_with(|| AccountUpdate {
+                    created: true,
+                    selfdestructed: false,
+                    nonce: 0,
+                    balance: U256::ZERO,
+                    code_hash: KECCAK256_EMPTY,
+                    code: None,
+                    storage: BTreeMap::new(),
+                });
+            entry.code_hash = keccak256(&bytecode);
+            entry.code = Some(bytecode);
         }
 
         drop(store);
@@ -257,7 +275,10 @@ mod tests {
             (Address::repeat_byte(0x01), U256::from(1000)),
             (Address::repeat_byte(0x02), U256::from(2000)),
         ];
-        handle.init_genesis(allocs, Vec::new()).await.unwrap();
+        handle
+            .init_genesis(allocs, Vec::new(), Vec::new())
+            .await
+            .unwrap();
 
         let store = handle.read().await;
         let acc1 = store

@@ -8,12 +8,15 @@
 
 use std::time::Duration;
 
-use alloy_primitives::{Address, B256, Bytes, U256};
+use alloy_primitives::{Address, B256, Bytes, FixedBytes, U256};
 use alloy_sol_types::{SolCall, SolEvent};
 
-use hub_client::{EvmSigner, HubClient, TransactionReceipt, VALIDATOR_REGISTRY_ADDRESS};
+use hub_client::{
+    ACP_ADDRESS, EvmSigner, HubClient, TransactionReceipt, VALIDATOR_REGISTRY_ADDRESS,
+};
 use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, TestCluster};
 use hub_genesis::ValidatorConfig;
+use hub_modules::acp::abi::IAcp;
 use hub_modules::validator_registry::abi::IValidatorRegistry;
 use hub_modules::validator_registry::types::ValidatorInfo;
 
@@ -21,6 +24,17 @@ const HARDHAT_KEY_0: &str = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae7
 
 const RECEIPT_INTERVAL: Duration = Duration::from_millis(150);
 const RECEIPT_ATTEMPTS: u32 = 200;
+
+const REGISTRY_POLICY_YAML: &str = "\
+name: validator-registry-policy
+resources:
+  - name: registry
+    relations:
+      - name: admin
+    permissions:
+      - name: manage
+        expr: admin
+";
 
 fn test_validators() -> Vec<ValidatorConfig> {
     vec![
@@ -35,6 +49,13 @@ fn test_validators() -> Vec<ValidatorConfig> {
             p2p_address: "127.0.0.1:30301".to_string(),
         },
     ]
+}
+
+fn parse_policy_id(hex_str: &str) -> FixedBytes<32> {
+    let mut bytes = [0u8; 32];
+    let hex = hex_str.strip_prefix("0x").unwrap_or(hex_str);
+    hex::decode_to_slice(hex, &mut bytes).expect("policy ID should be valid hex");
+    FixedBytes::from(bytes)
 }
 
 async fn broadcast_evm_tx(
@@ -155,6 +176,68 @@ async fn validator_bootstrap() {
     let decoded = IValidatorRegistry::getActiveValidatorCountCall::abi_decode_returns(&result)
         .expect("abi decode getActiveValidatorCount");
     assert_eq!(decoded, U256::from(2), "active count should be 2");
+
+    // ── ACP: Set up policy so write operations are authorized ─────
+
+    // ACP1: Create a registry policy
+    let calldata = IAcp::createPolicyCall {
+        policy: REGISTRY_POLICY_YAML.as_bytes().to_vec().into(),
+        marshalType: 1,
+    }
+    .abi_encode();
+    let receipt = broadcast_evm_tx(&cluster, &client, &admin_signer, ACP_ADDRESS, calldata).await;
+    assert_eq!(receipt.status, 1, "createPolicy should succeed");
+    assert_eq!(
+        receipt.logs[0].topics[0],
+        IAcp::PolicyCreated::SIGNATURE_HASH,
+        "event should be PolicyCreated"
+    );
+
+    // Retrieve the actual policy ID via query (indexed string topics are keccak hashes)
+    let policy_ids = client
+        .get_policy_ids()
+        .await
+        .expect("get_policy_ids should succeed");
+    assert_eq!(policy_ids.len(), 1, "should have exactly 1 policy");
+    let policy_id = parse_policy_id(&policy_ids[0]);
+
+    // ACP2: Register the registry/registry object
+    let calldata = IAcp::registerObjectCall {
+        policyId: policy_id,
+        objectId: "registry".to_string(),
+        resource: "registry".to_string(),
+    }
+    .abi_encode();
+    let receipt = broadcast_evm_tx(&cluster, &client, &admin_signer, ACP_ADDRESS, calldata).await;
+    assert_eq!(receipt.status, 1, "registerObject should succeed");
+
+    // ACP3: Set admin relationship for the signer
+    let admin_did = admin_signer.did();
+    let calldata = IAcp::setRelationshipCall {
+        policyId: policy_id,
+        resource: "registry".to_string(),
+        objectId: "registry".to_string(),
+        relation: "admin".to_string(),
+        actor: admin_did,
+    }
+    .abi_encode();
+    let receipt = broadcast_evm_tx(&cluster, &client, &admin_signer, ACP_ADDRESS, calldata).await;
+    assert_eq!(receipt.status, 1, "setRelationship should succeed");
+
+    // ACP4: Set the policy on the ValidatorRegistry
+    let calldata = IValidatorRegistry::setPolicyCall {
+        policyId: B256::from(policy_id.0),
+    }
+    .abi_encode();
+    let receipt = broadcast_evm_tx(
+        &cluster,
+        &client,
+        &admin_signer,
+        VALIDATOR_REGISTRY_ADDRESS,
+        calldata,
+    )
+    .await;
+    assert_eq!(receipt.status, 1, "setPolicy should succeed");
 
     // ── B: Add a new validator via EVM tx ─────────────────────────
 

@@ -1,6 +1,6 @@
 //! Hub genesis configuration.
 
-use std::{path::Path, str::FromStr};
+use std::{collections::HashSet, path::Path, str::FromStr};
 
 use alloy_evm::revm::primitives::{Address, U256, keccak256};
 use hub_domain::BootstrapConfig;
@@ -131,18 +131,24 @@ impl HubGenesis {
             genesis_alloc.push((address, balance));
         }
 
-        let genesis_storage = if self.validators.is_empty() {
-            Vec::new()
+        let (genesis_storage, genesis_code) = if self.validators.is_empty() {
+            (Vec::new(), Vec::new())
         } else {
             let entries = validator_storage_entries(&self.validators)?;
-            vec![(VALIDATOR_REGISTRY_ADDRESS, entries)]
+            let storage = vec![(VALIDATOR_REGISTRY_ADDRESS, entries)];
+            let code = vec![(
+                VALIDATOR_REGISTRY_ADDRESS,
+                PRECOMPILE_SENTINEL_BYTECODE.to_vec(),
+            )];
+            (storage, code)
         };
 
-        Ok(BootstrapConfig::with_storage(
+        Ok(BootstrapConfig {
             genesis_alloc,
             genesis_storage,
-            Vec::new(),
-        ))
+            genesis_code,
+            bootstrap_txs: Vec::new(),
+        })
     }
 
     /// Create a default devnet genesis (chain_id=9001, test allocations).
@@ -183,6 +189,11 @@ const VALIDATOR_REGISTRY_ADDRESS: Address = {
     Address::new(bytes)
 };
 
+/// EVM `INVALID` opcode — causes revert on direct calls. Same as Tempo.
+const PRECOMPILE_SENTINEL_BYTECODE: &[u8] = &[0xfe];
+
+const MAX_P2P_ADDRESS_LEN: usize = 32;
+
 const SLOT_POLICY_ID: U256 = U256::ZERO;
 const SLOT_VALIDATOR_COUNT: U256 = U256::from_limbs([1, 0, 0, 0]);
 const SLOT_VALIDATORS_ARRAY_BASE: U256 = U256::from_limbs([2, 0, 0, 0]);
@@ -213,9 +224,37 @@ fn vr_address_to_padded_u256(addr: Address) -> U256 {
     U256::from_be_bytes(buf)
 }
 
+fn validate_genesis_p2p_address(addr: &str) -> Result<(), HubGenesisError> {
+    if addr.is_empty() {
+        return Err(HubGenesisError::Parse(
+            "validator p2p address is empty".into(),
+        ));
+    }
+    if addr.len() > MAX_P2P_ADDRESS_LEN {
+        return Err(HubGenesisError::Parse(format!(
+            "validator p2p address exceeds {MAX_P2P_ADDRESS_LEN} bytes: {addr}"
+        )));
+    }
+    addr.parse::<std::net::SocketAddr>().map_err(|e| {
+        HubGenesisError::Parse(format!("invalid validator p2p address '{addr}': {e}"))
+    })?;
+    Ok(())
+}
+
 fn validator_storage_entries(
     validators: &[ValidatorConfig],
 ) -> Result<Vec<(U256, U256)>, HubGenesisError> {
+    let mut seen = HashSet::new();
+    for v in validators {
+        let addr = Address::from_str(&v.evm_address)
+            .map_err(|e| HubGenesisError::Parse(format!("invalid validator address: {e}")))?;
+        if !seen.insert(addr) {
+            return Err(HubGenesisError::Parse(format!(
+                "duplicate validator address: {addr}"
+            )));
+        }
+    }
+
     let mut entries = Vec::new();
 
     entries.push((SLOT_POLICY_ID, U256::ZERO));
@@ -224,6 +263,11 @@ fn validator_storage_entries(
     for (i, v) in validators.iter().enumerate() {
         let addr = Address::from_str(&v.evm_address)
             .map_err(|e| HubGenesisError::Parse(format!("invalid validator address: {e}")))?;
+        if addr == Address::ZERO {
+            return Err(HubGenesisError::Parse(
+                "validator address cannot be zero".into(),
+            ));
+        }
         let consensus_bytes = hex::decode(&v.consensus_pubkey)
             .map_err(|e| HubGenesisError::Parse(format!("invalid consensus pubkey: {e}")))?;
         if consensus_bytes.len() != 32 {
@@ -234,6 +278,12 @@ fn validator_storage_entries(
         }
         let mut consensus: [u8; 32] = [0u8; 32];
         consensus.copy_from_slice(&consensus_bytes);
+        if consensus == [0u8; 32] {
+            return Err(HubGenesisError::Parse(
+                "consensus pubkey cannot be all zeros".into(),
+            ));
+        }
+        validate_genesis_p2p_address(&v.p2p_address)?;
 
         let addr_slot = vr_array_element_slot(SLOT_VALIDATORS_ARRAY_BASE, i as u64);
         entries.push((addr_slot, vr_address_to_padded_u256(addr)));
@@ -251,8 +301,7 @@ fn validator_storage_entries(
             U256::from(p2p_bytes.len()),
         ));
         let mut padded = [0u8; 32];
-        let copy_len = p2p_bytes.len().min(32);
-        padded[..copy_len].copy_from_slice(&p2p_bytes[..copy_len]);
+        padded[..p2p_bytes.len()].copy_from_slice(p2p_bytes);
         entries.push((
             entry_base.wrapping_add(U256::from(4)),
             U256::from_be_bytes(padded),
@@ -313,5 +362,72 @@ mod tests {
         };
         let err = genesis.to_bootstrap_config().unwrap_err();
         assert!(err.to_string().contains("invalid address"));
+    }
+
+    fn genesis_with_validators(validators: Vec<ValidatorConfig>) -> HubGenesis {
+        HubGenesis {
+            chain_id: 1,
+            chain_name: "test".to_string(),
+            timestamp: 0,
+            allocations: Vec::new(),
+            native_mint: NativeMintConfig::default(),
+            validators,
+        }
+    }
+
+    #[test]
+    fn genesis_rejects_duplicate_validators() {
+        let genesis = genesis_with_validators(vec![
+            ValidatorConfig {
+                evm_address: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266".to_string(),
+                consensus_pubkey: "aa".repeat(32),
+                p2p_address: "127.0.0.1:30300".to_string(),
+            },
+            ValidatorConfig {
+                evm_address: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266".to_string(),
+                consensus_pubkey: "bb".repeat(32),
+                p2p_address: "127.0.0.1:30301".to_string(),
+            },
+        ]);
+        let err = genesis.to_bootstrap_config().unwrap_err();
+        assert!(err.to_string().contains("duplicate validator address"));
+    }
+
+    #[test]
+    fn genesis_rejects_invalid_p2p_address() {
+        let genesis = genesis_with_validators(vec![ValidatorConfig {
+            evm_address: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266".to_string(),
+            consensus_pubkey: "aa".repeat(32),
+            p2p_address: "not-a-socket-addr".to_string(),
+        }]);
+        let err = genesis.to_bootstrap_config().unwrap_err();
+        assert!(err.to_string().contains("invalid validator p2p address"));
+    }
+
+    #[test]
+    fn genesis_rejects_zero_consensus_key() {
+        let genesis = genesis_with_validators(vec![ValidatorConfig {
+            evm_address: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266".to_string(),
+            consensus_pubkey: "00".repeat(32),
+            p2p_address: "127.0.0.1:30300".to_string(),
+        }]);
+        let err = genesis.to_bootstrap_config().unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("consensus pubkey cannot be all zeros")
+        );
+    }
+
+    #[test]
+    fn genesis_sets_precompile_bytecode() {
+        let genesis = genesis_with_validators(vec![ValidatorConfig {
+            evm_address: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266".to_string(),
+            consensus_pubkey: "aa".repeat(32),
+            p2p_address: "127.0.0.1:30300".to_string(),
+        }]);
+        let bootstrap = genesis.to_bootstrap_config().unwrap();
+        assert_eq!(bootstrap.genesis_code.len(), 1);
+        assert_eq!(bootstrap.genesis_code[0].0, VALIDATOR_REGISTRY_ADDRESS);
+        assert_eq!(bootstrap.genesis_code[0].1, PRECOMPILE_SENTINEL_BYTECODE);
     }
 }

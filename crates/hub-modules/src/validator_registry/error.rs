@@ -18,6 +18,12 @@ pub enum ValidatorRegistryError {
     #[error("invalid public key")]
     InvalidPublicKey,
 
+    #[error("invalid address: {0}")]
+    InvalidAddress(String),
+
+    #[error("invalid p2p address: {0}")]
+    InvalidP2PAddress(String),
+
     #[error("native transactions not supported for ValidatorRegistry")]
     NativeNotSupported,
 

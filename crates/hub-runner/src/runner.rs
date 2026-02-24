@@ -252,6 +252,7 @@ impl NodeRunner for HubRunner {
             format!("{}-qmdb", PARTITION_PREFIX),
             self.bootstrap.genesis_alloc.clone(),
             self.bootstrap.genesis_storage.clone(),
+            self.bootstrap.genesis_code.clone(),
             self.chain_id,
         )
         .await
