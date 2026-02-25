@@ -1,7 +1,7 @@
 //! Validator set change detection after block finalization.
 
 use alloy_primitives::{Address, B256, Bytes, U256};
-use alloy_sol_types::SolEvent;
+use alloy_sol_types::{SolCall, SolEvent};
 use hub_executor::{ExecutionReceipt, SimulateRequest, simulate_call};
 use hub_modules::module_state::ModuleState;
 use hub_modules::validator_registry::abi::IValidatorRegistry;
@@ -46,9 +46,7 @@ pub fn read_validator_set<S: StateDbRead>(
     gas_limit: u64,
     modules: Option<&ModuleState>,
 ) -> Option<Vec<ValidatorInfo>> {
-    let calldata = <IValidatorRegistry::getValidatorsCall as alloy_sol_types::SolCall>::abi_encode(
-        &IValidatorRegistry::getValidatorsCall {},
-    );
+    let calldata = IValidatorRegistry::getValidatorsCall {}.abi_encode();
 
     let request = SimulateRequest {
         from: Address::ZERO,
@@ -60,7 +58,9 @@ pub fn read_validator_set<S: StateDbRead>(
 
     match simulate_call(state, chain_id, &request, gas_limit, modules) {
         Ok(result) if result.success => {
-            serde_json::from_slice::<Vec<ValidatorInfo>>(&result.output).ok()
+            let json_bytes =
+                IValidatorRegistry::getValidatorsCall::abi_decode_returns(&result.output).ok()?;
+            serde_json::from_slice::<Vec<ValidatorInfo>>(&json_bytes).ok()
         }
         Ok(result) => {
             warn!(

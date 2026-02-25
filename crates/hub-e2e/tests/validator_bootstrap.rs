@@ -430,6 +430,21 @@ async fn validator_bootstrap() {
         all_validators.len(),
         "validator count should match across nodes"
     );
+
+    // ── G: Validator set change detection ─────────────────────────
+
+    // The FinalizedReporter should have detected validator mutations
+    // (add in B, status changes in C, remove in E) and logged them.
+    // Allow a brief settling period for log flush.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let logs = tokio::fs::read_to_string(state.node_logs(0).log_path())
+        .await
+        .expect("should read node logs");
+    assert!(
+        logs.contains("validator set change detected"),
+        "FinalizedReporter should detect validator set mutations in block receipts"
+    );
 }
 
 #[tokio::test]
