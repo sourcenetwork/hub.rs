@@ -159,6 +159,9 @@ parking_lot = "0.12"
 multibase = "0.9"
 unsigned-varint = "0.8"
 
+# Encoding
+base64 = "0.22"
+
 # Misc
 hex = "0.4"
 rand = "0.8"

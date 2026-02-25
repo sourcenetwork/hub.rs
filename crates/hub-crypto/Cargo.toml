@@ -36,6 +36,11 @@ unsigned-varint.workspace = true
 alloy-primitives.workspace = true
 k256.workspace = true
 
+# JWT / encoding
+base64.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
 # Error handling
 thiserror.workspace = true
 

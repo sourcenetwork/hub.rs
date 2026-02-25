@@ -15,18 +15,23 @@ use alloy_primitives::{Address, B256, Bytes, FixedBytes, U256};
 use alloy_sol_types::{SolCall, SolEvent};
 
 use hub_client::{
-    ACP_ADDRESS, BULLETIN_ADDRESS, BlsSigner, ClientError, EvmSigner, HubClient, TransactionReceipt,
+    ACP_ADDRESS, BULLETIN_ADDRESS, BlsSigner, ClientError, EvmSigner, HUB_ADDRESS, HubClient,
+    TransactionReceipt,
 };
 use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, TestCluster};
 use hub_e2e::observe::ClusterAssertions;
 use hub_modules::acp::abi::IAcp;
 use hub_modules::bulletin::abi::IBulletin;
+use hub_modules::hub::abi::IHub;
 use jsonrpsee::core::client::SubscriptionClientT;
 use jsonrpsee::rpc_params;
 use jsonrpsee::ws_client::WsClientBuilder;
 
 /// Hardhat account 0 private key (pre-funded by `GenesisBuilder::funded_accounts`).
 const HARDHAT_KEY_0: &str = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+
+/// Hardhat account 1 private key (used as bearer token signer — not funded, no EVM txs).
+const HARDHAT_KEY_1: &str = "59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
 
 /// Minimal DPI-compliant ACP policy for testing.
 const TEST_POLICY_YAML: &str = "\
@@ -617,6 +622,126 @@ async fn canonical_module_test() {
         "owner (evm_did) should still have read access"
     );
 
+    // ── D.5: Bearer Token ACP Operations ──────────────────────────
+
+    // Account 1 is the "end user" — signs the JWT but never submits EVM txs.
+    // Account 0 is the "defra node" — submits EVM txs containing the bearer token.
+    let user_key =
+        k256::ecdsa::SigningKey::from_bytes((&hex::decode(HARDHAT_KEY_1).unwrap()[..]).into())
+            .expect("valid signing key");
+    let user_did = hub_crypto::secp256k1::did_from_secp256k1_pubkey(
+        &user_key
+            .verifying_key()
+            .to_encoded_point(true)
+            .as_bytes()
+            .to_vec(),
+    )
+    .expect("valid DID");
+
+    let bearer_token = hub_client::create_bearer_token(&user_key, "acp-bearer-test", 9_999_999_999)
+        .expect("create bearer token");
+
+    // D5.1. Register object via bearer token — account 1 (JWT issuer) becomes owner
+    let d5_cmd =
+        hub_modules::acp::types::PolicyCmd::RegisterObject(hub_modules::acp::types::Object {
+            resource: "document".into(),
+            id: "doc-bearer".into(),
+        });
+    let d5_cmd_bytes = serde_json::to_vec(&d5_cmd).expect("serialize PolicyCmd");
+    let d5_calldata = IAcp::bearerPolicyCmdCall {
+        bearerToken: bearer_token.clone(),
+        policyId: evm_policy_id,
+        cmd: d5_cmd_bytes.into(),
+    }
+    .abi_encode();
+    let d5_receipt =
+        broadcast_evm_tx(&cluster, &client, &evm_signer, ACP_ADDRESS, d5_calldata).await;
+    assert_eq!(
+        d5_receipt.status, 1,
+        "bearer register_object should succeed"
+    );
+    assert!(
+        d5_receipt.block_number >= max_block,
+        "D5.1 block should be >= previous max"
+    );
+    max_block = max_block.max(d5_receipt.block_number);
+
+    // D5.2. Verify object owner is the JWT issuer (account 1), not the tx signer (account 0)
+    let (bearer_registered, bearer_owner_bytes) = client
+        .get_object_owner(evm_policy_id, "document", "doc-bearer")
+        .await
+        .expect("get_object_owner(doc-bearer) should succeed");
+    assert!(bearer_registered, "doc-bearer should be registered");
+    let bearer_owner_json: serde_json::Value =
+        serde_json::from_slice(&bearer_owner_bytes).expect("owner record should be valid JSON");
+    let bearer_owner_did = bearer_owner_json
+        .get("metadata")
+        .and_then(|m| m.get("owner_did"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert_eq!(
+        bearer_owner_did, user_did,
+        "bearer-registered object owner should be the JWT issuer (account 1), not the tx signer"
+    );
+
+    // D5.3. Set relationship via bearer token — grant bls_did "reader" on doc-bearer
+    let d5_rel = acp::Relationship::new(
+        "document",
+        "doc-bearer",
+        "reader",
+        acp::Subject::entity(identity::Did::new(&bls_did).expect("valid DID")),
+    );
+    let d5_set_cmd = hub_modules::acp::types::PolicyCmd::SetRelationship(d5_rel);
+    let d5_set_bytes = serde_json::to_vec(&d5_set_cmd).expect("serialize PolicyCmd");
+    let d5_set_calldata = IAcp::bearerPolicyCmdCall {
+        bearerToken: bearer_token.clone(),
+        policyId: evm_policy_id,
+        cmd: d5_set_bytes.into(),
+    }
+    .abi_encode();
+    let d5_set_receipt =
+        broadcast_evm_tx(&cluster, &client, &evm_signer, ACP_ADDRESS, d5_set_calldata).await;
+    assert_eq!(
+        d5_set_receipt.status, 1,
+        "bearer set_relationship should succeed"
+    );
+    assert!(
+        d5_set_receipt.block_number >= max_block,
+        "D5.3 block should be >= previous max"
+    );
+    max_block = max_block.max(d5_set_receipt.block_number);
+
+    // D5.4. Verify the relationship was set
+    let bearer_has_rel = client
+        .has_relationship(evm_policy_id, "document", "doc-bearer", "reader", &bls_did)
+        .await
+        .expect("has_relationship should succeed");
+    assert!(
+        bearer_has_rel,
+        "bls_did should have reader relationship on doc-bearer (set via bearer token)"
+    );
+
+    // D5.5. Invalid bearer token (tampered) should produce a reverted tx
+    let tampered_token = format!("{}X", &bearer_token);
+    let d5_bad_cmd =
+        hub_modules::acp::types::PolicyCmd::RegisterObject(hub_modules::acp::types::Object {
+            resource: "document".into(),
+            id: "doc-bad".into(),
+        });
+    let d5_bad_bytes = serde_json::to_vec(&d5_bad_cmd).expect("serialize PolicyCmd");
+    let d5_bad_calldata = IAcp::bearerPolicyCmdCall {
+        bearerToken: tampered_token,
+        policyId: evm_policy_id,
+        cmd: d5_bad_bytes.into(),
+    }
+    .abi_encode();
+    let d5_bad_receipt =
+        broadcast_evm_tx(&cluster, &client, &evm_signer, ACP_ADDRESS, d5_bad_calldata).await;
+    assert_eq!(
+        d5_bad_receipt.status, 0,
+        "tampered bearer token should revert"
+    );
+
     // ── E: Bulletin Namespace + Post ─────────────────────────────
 
     // E1+E2. Register namespaces in parallel (different namespaces, different signers)
@@ -901,19 +1026,23 @@ async fn canonical_module_test() {
         other => panic!("EVM invalidate of non-existent token should revert, got: {other:?}"),
     }
 
-    // G7. Invalidate non-existent token via BLS — should revert
-    let bls_invalidate_err = client
-        .native_invalidate_jws(&bls_signer, "nonexistent_token_hash")
-        .await;
-    match &bls_invalidate_err {
-        Err(ClientError::TxReverted { receipt, .. }) => {
-            assert!(
-                receipt.logs.is_empty(),
-                "G7 reverted BLS tx should have empty logs"
-            );
-        }
-        other => panic!("BLS invalidate of non-existent token should revert, got: {other:?}"),
+    // G7. Invalidate non-existent token via BLS — should revert.
+    // Uses broadcast_native_tx (all-node submission) instead of single-node
+    // client method for reliable leader delivery under leader rotation.
+    let g7_calldata = IHub::invalidateJWSCall {
+        tokenHash: "nonexistent_token_hash".into(),
     }
+    .abi_encode();
+    let g7_receipt =
+        broadcast_native_tx(&cluster, &client, &bls_signer, HUB_ADDRESS, g7_calldata).await;
+    assert_eq!(
+        g7_receipt.status, 0,
+        "G7 BLS invalidate of non-existent token should revert"
+    );
+    assert!(
+        g7_receipt.logs.is_empty(),
+        "G7 reverted BLS tx should have empty logs"
+    );
 
     // Final EVM nonce check: 7 EVM txs total (A1, B1, C1, E1, E3, E4, G6)
     let final_evm_nonce = client
@@ -921,8 +1050,8 @@ async fn canonical_module_test() {
         .await
         .expect("get_nonce should work");
     assert_eq!(
-        final_evm_nonce, 7,
-        "final EVM nonce should be 7 (A1+B1+C1+E1+E3+E4+G6)"
+        final_evm_nonce, 10,
+        "final EVM nonce should be 10 (A1+B1+C1+D5.1+D5.3+D5.5+E1+E3+E4+G6)"
     );
 
     // Final BLS native nonce check: 6 BLS txs total (A2, B2, D1, E2, E5, G7)

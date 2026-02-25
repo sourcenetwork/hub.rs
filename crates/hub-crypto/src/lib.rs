@@ -6,6 +6,7 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
 pub mod bls;
+pub mod jwt;
 pub mod secp256k1;
 
 #[cfg(feature = "test-utils")]

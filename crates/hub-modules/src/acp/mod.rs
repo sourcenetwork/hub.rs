@@ -338,18 +338,26 @@ impl AcpModule {
 
     /// Execute a policy command authenticated by a bearer JWT token.
     ///
-    /// JWT verification is not yet implemented — returns an error.
-    #[allow(unused_variables)]
+    /// Verifies the ES256K JWT signature, extracts the issuer's `did:key:`
+    /// as the actor, and delegates to [`Self::direct_policy_cmd`].
+    /// The `_creator` (EVM tx signer) is not used as the actor.
     pub fn bearer_policy_cmd(
         &mut self,
-        creator: &Did,
+        _creator: &Did,
         bearer_token: &str,
         policy_id: &str,
         cmd: PolicyCmd,
     ) -> Result<PolicyCmdResult> {
-        Err(AcpError::InvalidBearerToken {
-            reason: "JWT bearer token verification not yet implemented".into(),
-        })
+        let claims = hub_crypto::jwt::verify_bearer_token(bearer_token).map_err(|e| {
+            AcpError::InvalidBearerToken {
+                reason: e.to_string(),
+            }
+        })?;
+
+        let actor_did = Did::new(&claims.iss).map_err(|e| AcpError::InvalidBearerToken {
+            reason: format!("invalid issuer DID: {e}"),
+        })?;
+        self.direct_policy_cmd(&actor_did, policy_id, cmd)
     }
 
     /// Update governance-controlled module parameters.

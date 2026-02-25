@@ -6,6 +6,7 @@
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
+mod bearer;
 mod bls_signer;
 mod client;
 mod document_acp;
@@ -16,6 +17,7 @@ mod signer;
 mod tx;
 mod types;
 
+pub use bearer::create_bearer_token;
 pub use bls_signer::BlsSigner;
 pub use client::{
     ACP_ADDRESS, BULLETIN_ADDRESS, HUB_ADDRESS, HubClient, VALIDATOR_REGISTRY_ADDRESS,

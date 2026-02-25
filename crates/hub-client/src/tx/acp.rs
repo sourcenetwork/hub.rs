@@ -106,6 +106,109 @@ impl HubClient {
             .await
     }
 
+    /// Set a relationship via bearer JWT token (actor is the JWT issuer).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn bearer_set_relationship(
+        &self,
+        signer: &EvmSigner,
+        bearer_token: &str,
+        policy_id: FixedBytes<32>,
+        resource: &str,
+        object_id: &str,
+        relation: &str,
+        actor: &str,
+    ) -> Result<TransactionReceipt, ClientError> {
+        let actor_did =
+            identity::Did::new(actor).map_err(|e| ClientError::AbiDecode(e.to_string()))?;
+        let cmd = hub_modules::acp::types::PolicyCmd::SetRelationship(acp::Relationship::new(
+            resource,
+            object_id,
+            relation,
+            acp::Subject::entity(actor_did),
+        ));
+        self.send_bearer_cmd(signer, bearer_token, policy_id, &cmd)
+            .await
+    }
+
+    /// Delete a relationship via bearer JWT token (actor is the JWT issuer).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn bearer_delete_relationship(
+        &self,
+        signer: &EvmSigner,
+        bearer_token: &str,
+        policy_id: FixedBytes<32>,
+        resource: &str,
+        object_id: &str,
+        relation: &str,
+        actor: &str,
+    ) -> Result<TransactionReceipt, ClientError> {
+        let actor_did =
+            identity::Did::new(actor).map_err(|e| ClientError::AbiDecode(e.to_string()))?;
+        let cmd = hub_modules::acp::types::PolicyCmd::DeleteRelationship(acp::Relationship::new(
+            resource,
+            object_id,
+            relation,
+            acp::Subject::entity(actor_did),
+        ));
+        self.send_bearer_cmd(signer, bearer_token, policy_id, &cmd)
+            .await
+    }
+
+    /// Register an object via bearer JWT token (JWT issuer becomes owner).
+    pub async fn bearer_register_object(
+        &self,
+        signer: &EvmSigner,
+        bearer_token: &str,
+        policy_id: FixedBytes<32>,
+        object_id: &str,
+        resource: &str,
+    ) -> Result<TransactionReceipt, ClientError> {
+        let cmd =
+            hub_modules::acp::types::PolicyCmd::RegisterObject(hub_modules::acp::types::Object {
+                resource: resource.into(),
+                id: object_id.into(),
+            });
+        self.send_bearer_cmd(signer, bearer_token, policy_id, &cmd)
+            .await
+    }
+
+    /// Archive an object via bearer JWT token (JWT issuer must be owner).
+    pub async fn bearer_archive_object(
+        &self,
+        signer: &EvmSigner,
+        bearer_token: &str,
+        policy_id: FixedBytes<32>,
+        object_id: &str,
+        resource: &str,
+    ) -> Result<TransactionReceipt, ClientError> {
+        let cmd =
+            hub_modules::acp::types::PolicyCmd::ArchiveObject(hub_modules::acp::types::Object {
+                resource: resource.into(),
+                id: object_id.into(),
+            });
+        self.send_bearer_cmd(signer, bearer_token, policy_id, &cmd)
+            .await
+    }
+
+    /// Encode a `bearerPolicyCmd` precompile call and send it.
+    async fn send_bearer_cmd(
+        &self,
+        signer: &EvmSigner,
+        bearer_token: &str,
+        policy_id: FixedBytes<32>,
+        cmd: &hub_modules::acp::types::PolicyCmd,
+    ) -> Result<TransactionReceipt, ClientError> {
+        let cmd_bytes = serde_json::to_vec(cmd)?;
+        let calldata = IAcp::bearerPolicyCmdCall {
+            bearerToken: bearer_token.into(),
+            policyId: policy_id,
+            cmd: cmd_bytes.into(),
+        }
+        .abi_encode();
+        self.send_precompile_tx(signer, ACP_ADDRESS, calldata.into())
+            .await
+    }
+
     /// Check access (persists a decision record on-chain).
     pub async fn check_access(
         &self,
@@ -215,6 +318,34 @@ mod tests {
         );
         let decoded = IAcp::archiveObjectCall::abi_decode(&encoded).unwrap();
         assert_eq!(decoded.objectId, "obj1");
+    }
+
+    #[test]
+    fn bearer_policy_cmd_calldata_roundtrip() {
+        let cmd =
+            hub_modules::acp::types::PolicyCmd::RegisterObject(hub_modules::acp::types::Object {
+                resource: "namespace".into(),
+                id: "obj1".into(),
+            });
+        let cmd_bytes = serde_json::to_vec(&cmd).unwrap();
+        let call = IAcp::bearerPolicyCmdCall {
+            bearerToken: "eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NksifQ.test.sig".into(),
+            policyId: FixedBytes::ZERO,
+            cmd: cmd_bytes.into(),
+        };
+        let encoded = call.abi_encode();
+        assert_eq!(
+            &encoded[..4],
+            <IAcp::bearerPolicyCmdCall as SolCall>::SELECTOR
+        );
+        let decoded = IAcp::bearerPolicyCmdCall::abi_decode(&encoded).unwrap();
+        assert_eq!(decoded.bearerToken, call.bearerToken);
+        let decoded_cmd: hub_modules::acp::types::PolicyCmd =
+            serde_json::from_slice(&decoded.cmd).unwrap();
+        assert!(matches!(
+            decoded_cmd,
+            hub_modules::acp::types::PolicyCmd::RegisterObject(_)
+        ));
     }
 
     #[test]
