@@ -45,6 +45,9 @@ tokio = { workspace = true, features = ["sync"] }
 # Serialization
 serde_json.workspace = true
 
+# Hex encoding
+hex.workspace = true
+
 # Tracing
 tracing.workspace = true
 

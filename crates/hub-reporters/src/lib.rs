@@ -6,7 +6,7 @@
 
 pub mod validator_set;
 
-pub use validator_set::ValidatorSetUpdate;
+pub use validator_set::{ValidatorSetUpdate, active_participant_set};
 
 use std::{
     collections::{BTreeSet, HashMap},
@@ -20,19 +20,12 @@ use ::tokio::sync::broadcast;
 use alloy_consensus::{Transaction as _, TxEnvelope, transaction::SignerRecoverable as _};
 use alloy_eips::eip2718::Decodable2718 as _;
 use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
-use commonware_consensus::{
-    Block as _, Reporter,
-    marshal::Update,
-    simplex::{
-        scheme::bls12381_threshold::vrf::{Scheme, Seedable as _},
-        types::Activity,
-    },
-};
-use commonware_cryptography::{Committable as _, bls12381::primitives::variant::Variant};
+use commonware_consensus::{Block as _, Reporter, marshal::Update, simplex::types::Activity};
+use commonware_cryptography::{Committable as _, certificate::Scheme as CertScheme};
 use commonware_runtime::{Spawner as _, tokio};
 use commonware_utils::acknowledgement::Acknowledgement as _;
 use hub_consensus::{BlockExecution, Snapshot};
-use hub_domain::{Block, ConsensusDigest, NativeTx, PublicKey};
+use hub_domain::{Block, ConsensusDigest, NativeTx};
 use hub_executor::{BlockContext, BlockExecutor, ExecutionReceipt};
 use hub_indexer::{BlockIndex, IndexedBlock, IndexedLog, IndexedReceipt, IndexedTransaction};
 use hub_jsonrpc::{NodeState, RpcBlock, RpcLog};
@@ -48,71 +41,62 @@ pub trait BlockContextProvider: Clone + Send + Sync + 'static {
     fn context(&self, block: &Block) -> BlockContext;
 }
 
-/// Helper function for SeedReporter::report that owns all its inputs.
-async fn seed_report_inner<V: Variant>(
-    state: LedgerService,
-    activity: Activity<Scheme<PublicKey, V>, ConsensusDigest>,
-) {
+/// Helper function for PrevrandaoReporter::report that owns all its inputs.
+async fn prevrandao_report_inner<S>(state: LedgerService, activity: Activity<S, ConsensusDigest>)
+where
+    S: CertScheme + Clone + Send + 'static,
+    S::Certificate: commonware_codec::Encode,
+{
     match activity {
         Activity::Notarization(notarization) => {
-            state
-                .set_seed(
-                    notarization.proposal.payload,
-                    SeedReporter::<V>::hash_seed(notarization.seed()),
-                )
-                .await;
+            let hash = keccak256(commonware_codec::Encode::encode(&notarization.certificate));
+            state.set_seed(notarization.proposal.payload, hash).await;
         }
         Activity::Finalization(finalization) => {
-            state
-                .set_seed(
-                    finalization.proposal.payload,
-                    SeedReporter::<V>::hash_seed(finalization.seed()),
-                )
-                .await;
+            let hash = keccak256(commonware_codec::Encode::encode(&finalization.certificate));
+            state.set_seed(finalization.proposal.payload, hash).await;
         }
         _ => {}
     }
 }
 
 #[derive(Clone)]
-/// Tracks simplex activity to store seed hashes for future proposals.
-pub struct SeedReporter<V> {
-    /// Ledger service that keeps per-digest seeds and snapshots.
+/// Derives prevrandao from `keccak256(certificate.encode())` for ed25519 multisig consensus.
+///
+/// Replaces the BLS VRF-based SeedReporter. Prevrandao is deterministic but not
+/// cryptographically unpredictable — acceptable for PoA.
+pub struct PrevrandaoReporter<S> {
     state: LedgerService,
-    /// Marker indicating the variant for the threshold scheme in use.
-    _variant: PhantomData<V>,
+    _scheme: PhantomData<S>,
 }
 
-impl<V> fmt::Debug for SeedReporter<V> {
+impl<S> fmt::Debug for PrevrandaoReporter<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SeedReporter").finish_non_exhaustive()
+        f.debug_struct("PrevrandaoReporter").finish_non_exhaustive()
     }
 }
 
-impl<V> SeedReporter<V> {
-    /// Create a new seed reporter for the provided ledger service.
+impl<S> PrevrandaoReporter<S> {
+    /// Create a new prevrandao reporter for the provided ledger service.
     pub const fn new(state: LedgerService) -> Self {
         Self {
             state,
-            _variant: PhantomData,
+            _scheme: PhantomData,
         }
-    }
-
-    fn hash_seed(seed: impl commonware_codec::Encode) -> B256 {
-        keccak256(seed.encode())
     }
 }
 
-impl<V> Reporter for SeedReporter<V>
+impl<S> Reporter for PrevrandaoReporter<S>
 where
-    V: Variant,
+    S: CertScheme + Clone + Send + 'static,
+    S::Certificate: commonware_codec::Encode,
 {
-    type Activity = Activity<Scheme<PublicKey, V>, ConsensusDigest>;
+    type Activity = Activity<S, ConsensusDigest>;
 
     fn report(&mut self, activity: Self::Activity) -> impl std::future::Future<Output = ()> + Send {
         let state = self.state.clone();
         async move {
-            seed_report_inner(state, activity).await;
+            prevrandao_report_inner(state, activity).await;
         }
     }
 }

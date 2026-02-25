@@ -24,7 +24,6 @@ hub-service.workspace = true
 hub-simplex.workspace = true
 hub-transport.workspace = true
 
-commonware-codec.workspace = true
 commonware-consensus.workspace = true
 commonware-cryptography.workspace = true
 commonware-p2p.workspace = true

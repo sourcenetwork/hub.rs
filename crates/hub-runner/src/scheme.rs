@@ -1,65 +1,57 @@
-use anyhow::Context as _;
-use commonware_consensus::simplex::scheme::bls12381_threshold::vrf;
-use commonware_cryptography::{
-    Signer as _,
-    bls12381::{
-        dkg,
-        primitives::{sharing::Mode, variant::MinSig},
-    },
-    ed25519,
-};
-use commonware_utils::{N3f1, TryCollect as _, ordered::Set};
-use rand::{SeedableRng as _, rngs::StdRng};
+use commonware_consensus::simplex::scheme::ed25519::Scheme;
+use commonware_cryptography::{Signer as _, ed25519};
+use commonware_utils::{TryCollect as _, ordered::Set};
 
-/// BLS12-381 threshold signature scheme used for consensus.
-pub type ThresholdScheme = vrf::Scheme<ed25519::PublicKey, MinSig>;
+/// Ed25519 multisig signing scheme used for consensus.
+pub type Ed25519Scheme = Scheme;
 
-const SIMPLEX_NAMESPACE: &[u8] = b"_COMMONWARE_HUB_SIMPLEX";
+pub(crate) const SIMPLEX_NAMESPACE: &[u8] = b"_COMMONWARE_HUB_SIMPLEX";
 
-/// Generate deterministic threshold BLS signing schemes using trusted-dealer mode.
+/// Generate deterministic ed25519 signing schemes from a seed.
 ///
-/// Derives ed25519 participant keys from `seed + i` and calls `dkg::deal()`.
+/// Derives ed25519 participant keys from `seed + i` and builds `Scheme::signer()` for each.
 /// Returns `(participants, schemes)` where both vectors share the same ordering
 /// (the `Set`-sorted participant order).
-pub fn generate_threshold_schemes(
+pub fn generate_ed25519_schemes(
     seed: u64,
     n: usize,
-) -> anyhow::Result<(Vec<ed25519::PublicKey>, Vec<ThresholdScheme>)> {
-    let participants: Set<ed25519::PublicKey> = (0..n)
-        .map(|i| ed25519::PrivateKey::from_seed(seed.wrapping_add(i as u64)).public_key())
+) -> anyhow::Result<(Vec<ed25519::PublicKey>, Vec<Ed25519Scheme>)> {
+    let private_keys: Vec<ed25519::PrivateKey> = (0..n)
+        .map(|i| ed25519::PrivateKey::from_seed(seed.wrapping_add(i as u64)))
+        .collect();
+
+    let participants: Set<ed25519::PublicKey> = private_keys
+        .iter()
+        .map(|k| k.public_key())
         .try_collect()
         .expect("participant public keys are unique");
 
-    let mut rng = StdRng::seed_from_u64(seed);
-    let (output, shares) =
-        dkg::deal::<MinSig, _, N3f1>(&mut rng, Mode::default(), participants.clone())
-            .context("dkg deal failed")?;
+    let ordered_pks: Vec<ed25519::PublicKey> = participants.iter().cloned().collect();
 
     let mut schemes = Vec::with_capacity(n);
     for pk in participants.iter() {
-        let share = shares.get_value(pk).expect("share exists").clone();
-        let scheme = vrf::Scheme::signer(
-            SIMPLEX_NAMESPACE,
-            participants.clone(),
-            output.public().clone(),
-            share,
-        )
-        .context("failed to create signer")?;
+        let private_key = private_keys
+            .iter()
+            .find(|k| k.public_key() == *pk)
+            .expect("private key exists for participant")
+            .clone();
+        let scheme = Scheme::signer(SIMPLEX_NAMESPACE, participants.clone(), private_key)
+            .ok_or_else(|| anyhow::anyhow!("failed to create signer"))?;
         schemes.push(scheme);
     }
 
-    Ok((participants.into(), schemes))
+    Ok((ordered_pks, schemes))
 }
 
-/// Generate a threshold scheme for a specific validator identified by its identity key.
+/// Generate an ed25519 scheme for a specific validator identified by its identity key.
 ///
-/// Returns `(scheme, group_public_key_bytes, validator_index)`.
+/// Returns `(scheme, validator_index)`.
 pub fn generate_for_validator(
     seed: u64,
     n: usize,
     identity_key: &ed25519::PrivateKey,
-) -> anyhow::Result<(ThresholdScheme, Vec<u8>, u32)> {
-    let (participants, schemes) = generate_threshold_schemes(seed, n)?;
+) -> anyhow::Result<(Ed25519Scheme, u32)> {
+    let (participants, schemes) = generate_ed25519_schemes(seed, n)?;
 
     let my_pk = identity_key.public_key();
     let validator_index = participants
@@ -71,8 +63,5 @@ pub fn generate_for_validator(
 
     let scheme = schemes.into_iter().nth(validator_index).unwrap();
 
-    let mut group_pub_key = Vec::new();
-    commonware_codec::Write::write(scheme.identity(), &mut group_pub_key);
-
-    Ok((scheme, group_pub_key, validator_index as u32))
+    Ok((scheme, validator_index as u32))
 }

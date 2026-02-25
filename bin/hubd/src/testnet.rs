@@ -154,19 +154,12 @@ pub(crate) fn run(chain_id: u64, data_dir: PathBuf, args: &TestnetArgs) -> eyre:
     std::fs::write(&peers_path, serde_json::to_string_pretty(&peers_json)?)?;
     info!(path = %peers_path.display(), threshold, "Wrote peers.json");
 
-    // ── Phase 3: Generate threshold schemes (trusted-dealer mode) ────────────
+    // ── Phase 3: Generate ed25519 schemes ────────────────────────────────────
 
-    let (_ordered_participants, schemes) = hub_runner::generate_threshold_schemes(seed, n)
-        .map_err(|e| eyre::eyre!("Failed to generate threshold schemes: {}", e))?;
+    let (_ordered_participants, _schemes) = hub_runner::generate_ed25519_schemes(seed, n)
+        .map_err(|e| eyre::eyre!("Failed to generate ed25519 schemes: {}", e))?;
 
-    let mut group_pub_key = Vec::new();
-    commonware_codec::Write::write(schemes[0].identity(), &mut group_pub_key);
-    info!(
-        group_key = %hex::encode(&group_pub_key),
-        seed,
-        "Generated threshold schemes for {} nodes",
-        n
-    );
+    info!(seed, "Generated ed25519 schemes for {} nodes", n);
 
     // ── Phase 4: Write genesis.json to each node ─────────────────────────────
 

@@ -35,6 +35,10 @@ pub struct HubGenesis {
     /// Pre-set storage slot values at genesis.
     #[serde(default)]
     pub extra_storage: Vec<GenesisStorage>,
+    /// Epoch length for consensus (number of views per epoch).
+    /// `None` means a single infinite epoch (`u64::MAX`).
+    #[serde(default)]
+    pub epoch_length: Option<u64>,
 }
 
 fn default_chain_name() -> String {
@@ -239,6 +243,7 @@ impl HubGenesis {
             validators: Vec::new(),
             contracts: Vec::new(),
             extra_storage: Vec::new(),
+            epoch_length: None,
         }
     }
 }
@@ -426,6 +431,7 @@ mod tests {
             validators: Vec::new(),
             contracts: Vec::new(),
             extra_storage: Vec::new(),
+            epoch_length: None,
         };
         let err = genesis.to_bootstrap_config().unwrap_err();
         assert!(err.to_string().contains("invalid address"));
@@ -441,6 +447,7 @@ mod tests {
             validators,
             contracts: Vec::new(),
             extra_storage: Vec::new(),
+            epoch_length: None,
         }
     }
 

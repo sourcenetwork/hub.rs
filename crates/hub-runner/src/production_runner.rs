@@ -10,11 +10,10 @@ use commonware_consensus::{
     simplex::{self, elector::RoundRobin, types::Finalization},
     types::{Epoch, FixedEpocher, ViewDelta},
 };
-use commonware_cryptography::{Sha256, bls12381::primitives::variant::MinSig, ed25519};
-use commonware_p2p::Manager;
+use commonware_cryptography::{Sha256, certificate::Scheme as _, ed25519};
 use commonware_parallel::Sequential;
 use commonware_runtime::{Metrics as _, Spawner, buffer::paged::CacheRef, tokio};
-use commonware_utils::{NZU64, NZUsize, acknowledgement::Exact};
+use commonware_utils::{NZUsize, acknowledgement::Exact};
 use futures::StreamExt;
 use hub_domain::{
     Block, BlockCfg, BootstrapConfig, ConsensusDigest, LedgerEvent, PublicKey, TxCfg,
@@ -25,24 +24,27 @@ use hub_jsonrpc::IndexedStateProvider;
 use hub_ledger::{LedgerService, LedgerView};
 use hub_marshal::{ArchiveInitializer, BroadcastInitializer, PeerInitializer};
 use hub_reporters::{
-    BlockContextProvider, FinalizedReporter, NodeStateReporter, SeedReporter, ValidatorSetUpdate,
+    BlockContextProvider, FinalizedReporter, NodeStateReporter, PrevrandaoReporter,
+    ValidatorSetUpdate, active_participant_set,
 };
 use hub_service::{NodeRunContext, NodeRunner};
 use hub_simplex::{DEFAULT_MAILBOX_SIZE as MAILBOX_SIZE, DefaultPool};
 use hub_transport::NetworkTransport;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 
-use crate::{RevmApplication, RunnerError, scheme::ThresholdScheme};
+use crate::{
+    RevmApplication, RunnerError, epoch_manager::EpochManager, scheme::Ed25519Scheme,
+    scheme_provider::EpochSchemeProvider,
+};
 
 const BLOCK_CODEC_MAX_TXS: usize = 64;
 const BLOCK_CODEC_MAX_TX_BYTES: usize = 1024;
-const EPOCH_LENGTH: u64 = u64::MAX;
 const PARTITION_PREFIX: &str = "hubd";
 
 type Peer = ed25519::PublicKey;
-type CertArchive = Finalization<ThresholdScheme, ConsensusDigest>;
-type MarshalMailbox = commonware_consensus::marshal::Mailbox<ThresholdScheme, Block>;
-type NodeStateRptr = NodeStateReporter<ThresholdScheme>;
+type CertArchive = Finalization<Ed25519Scheme, ConsensusDigest>;
+type MarshalMailbox = commonware_consensus::marshal::Mailbox<Ed25519Scheme, Block>;
+type NodeStateRptr = NodeStateReporter<Ed25519Scheme>;
 
 fn default_page_cache() -> CacheRef {
     DefaultPool::init()
@@ -54,28 +56,6 @@ const fn block_codec_cfg() -> BlockCfg {
         tx: TxCfg {
             max_tx_bytes: BLOCK_CODEC_MAX_TX_BYTES,
         },
-    }
-}
-
-#[derive(Clone)]
-struct ConstantSchemeProvider(Arc<ThresholdScheme>);
-
-impl commonware_cryptography::certificate::Provider for ConstantSchemeProvider {
-    type Scope = Epoch;
-    type Scheme = ThresholdScheme;
-
-    fn scoped(&self, _epoch: Epoch) -> Option<Arc<Self::Scheme>> {
-        Some(self.0.clone())
-    }
-
-    fn all(&self) -> Option<Arc<Self::Scheme>> {
-        Some(self.0.clone())
-    }
-}
-
-impl From<ThresholdScheme> for ConstantSchemeProvider {
-    fn from(scheme: ThresholdScheme) -> Self {
-        Self(Arc::new(scheme))
     }
 }
 
@@ -131,14 +111,16 @@ fn spawn_ledger_observers<S: Spawner>(service: LedgerService, spawner: S) {
 /// Production validator node runner.
 #[derive(Clone, Debug)]
 pub struct ProductionRunner {
-    /// Threshold signing scheme.
-    pub scheme: ThresholdScheme,
+    /// Ed25519 multisig signing scheme.
+    pub scheme: Ed25519Scheme,
     /// Chain ID.
     pub chain_id: u64,
     /// Gas limit per block.
     pub gas_limit: u64,
     /// Bootstrap configuration.
     pub bootstrap: BootstrapConfig,
+    /// Epoch length (views per epoch). `u64::MAX` = single infinite epoch.
+    pub epoch_length: u64,
     /// Storage partition prefix.
     pub partition_prefix: String,
     /// Optional RPC configuration (state, bind address).
@@ -148,7 +130,7 @@ pub struct ProductionRunner {
 impl ProductionRunner {
     /// Create a new production runner.
     pub fn new(
-        scheme: ThresholdScheme,
+        scheme: Ed25519Scheme,
         chain_id: u64,
         gas_limit: u64,
         bootstrap: BootstrapConfig,
@@ -158,6 +140,7 @@ impl ProductionRunner {
             chain_id,
             gas_limit,
             bootstrap,
+            epoch_length: u64::MAX,
             partition_prefix: PARTITION_PREFIX.to_string(),
             rpc_config: None,
         }
@@ -211,12 +194,18 @@ impl NodeRunner for ProductionRunner {
 
         info!(chain_id = self.chain_id, "Starting production validator");
 
+        let validator_key = config
+            .validator_key()
+            .map_err(|e| anyhow::anyhow!("failed to load validator key: {}", e))?;
+        let my_pk = commonware_cryptography::Signer::public_key(&validator_key);
+
         let validators = self.scheme.participants().clone();
-        transport.oracle.track(0, validators).await;
-        info!(
-            count = self.scheme.participants().len(),
-            "Registered validators with oracle"
-        );
+
+        let scheme_provider = EpochSchemeProvider::new();
+        let mut epoch_manager = EpochManager::new(scheme_provider.clone(), validator_key);
+        let _epoch_scheme = epoch_manager
+            .enter(Epoch::zero(), validators, &mut transport.oracle)
+            .await;
 
         let page_cache = default_page_cache();
         let block_cfg = block_codec_cfg();
@@ -236,13 +225,7 @@ impl NodeRunner for ProductionRunner {
         let ledger = LedgerService::new(state.clone());
         spawn_ledger_observers(ledger.clone(), context.clone());
 
-        // Create a shared block index for RPC queries.
         let block_index = Arc::new(BlockIndex::new());
-
-        let validator_key = config
-            .validator_key()
-            .map_err(|e| anyhow::anyhow!("failed to load validator key: {}", e))?;
-        let my_pk = commonware_cryptography::Signer::public_key(&validator_key);
 
         // Create broadcast channels for WebSocket subscriptions.
         let (heads_tx, _) = ::tokio::sync::broadcast::channel::<hub_jsonrpc::RpcBlock>(64);
@@ -262,17 +245,8 @@ impl NodeRunner for ProductionRunner {
             gas_limit: self.gas_limit,
             participant_addresses: participant_addrs.clone(),
         };
-        let (validator_set_tx, mut validator_set_rx) =
+        let (validator_set_tx, validator_set_rx) =
             ::tokio::sync::mpsc::unbounded_channel::<ValidatorSetUpdate>();
-        context.clone().shared(true).spawn(move |_| async move {
-            while let Some(update) = validator_set_rx.recv().await {
-                info!(
-                    height = update.height,
-                    count = update.validators.len(),
-                    "received validator set update (epoch transition pending)"
-                );
-            }
-        });
 
         let finalized_reporter = {
             let reporter =
@@ -286,8 +260,6 @@ impl NodeRunner for ProductionRunner {
                 reporter
             }
         };
-
-        let scheme_provider = ConstantSchemeProvider::from(self.scheme.clone());
 
         let resolver = PeerInitializer::init::<_, _, _, Block, _, _, _>(
             &context.with_label("resolver"),
@@ -305,11 +277,11 @@ impl NodeRunner for ProductionRunner {
         broadcast_engine.start(transport.marshal.blocks);
 
         let partition_prefix = &self.partition_prefix;
-        <ThresholdScheme as commonware_cryptography::certificate::Scheme>::certificate_codec_config_unbounded();
+        let cert_cfg = <Ed25519Scheme as commonware_cryptography::certificate::Scheme>::certificate_codec_config_unbounded();
         let finalizations_by_height = ArchiveInitializer::init::<_, ConsensusDigest, CertArchive>(
             context.with_label("finalizations_by_height"),
             format!("{partition_prefix}-finalizations-by-height"),
-            (),
+            cert_cfg,
         )
         .await
         .context("init finalizations archive")?;
@@ -334,9 +306,11 @@ impl NodeRunner for ProductionRunner {
             .await;
         actor.start(finalized_reporter, buffer, resolver);
 
-        let epocher = FixedEpocher::new(NZU64!(EPOCH_LENGTH));
+        let epoch_length =
+            std::num::NonZeroU64::new(self.epoch_length).expect("epoch length must be non-zero");
+        let epocher = FixedEpocher::new(epoch_length);
         let executor = RevmExecutor::new(self.chain_id);
-        let mut app = RevmApplication::<ThresholdScheme, _>::new(
+        let mut app = RevmApplication::<Ed25519Scheme, _>::new(
             ledger.clone(),
             executor,
             block_cfg.max_txs,
@@ -353,11 +327,11 @@ impl NodeRunner for ProductionRunner {
             epocher,
         );
 
-        let seed_reporter = SeedReporter::<MinSig>::new(ledger.clone());
+        let seed_reporter = PrevrandaoReporter::<Ed25519Scheme>::new(ledger.clone());
         let node_state_reporter = self
             .rpc_config
             .as_ref()
-            .map(|(state, _)| NodeStateReporter::<ThresholdScheme>::new(state.clone()));
+            .map(|(state, _)| NodeStateReporter::<Ed25519Scheme>::new(state.clone()));
         let inner_reporters: Reporters<_, MarshalMailbox, Option<NodeStateRptr>> =
             Reporters::from((marshal_mailbox.clone(), node_state_reporter));
         let reporter = Reporters::from((seed_reporter, inner_reporters));
@@ -391,11 +365,42 @@ impl NodeRunner for ProductionRunner {
                 page_cache,
             },
         );
-        engine.start(
+        let engine_handle = engine.start(
             transport.simplex.votes,
             transport.simplex.certs,
             transport.simplex.resolver,
         );
+        epoch_manager.track_engine(Epoch::zero(), engine_handle);
+
+        // Spawn validator set update consumer that drives epoch transitions.
+        {
+            let consumer_pk = my_pk.clone();
+            let mut consumer_oracle = transport.oracle.clone();
+            let mut consumer_rx = validator_set_rx;
+            context.clone().shared(true).spawn(move |_| async move {
+                let mut epoch_manager = epoch_manager;
+                while let Some(update) = consumer_rx.recv().await {
+                    let Some(new_participants) = active_participant_set(&update.validators) else {
+                        warn!(
+                            height = update.height,
+                            "validator set update has no active validators with valid keys"
+                        );
+                        continue;
+                    };
+                    if new_participants.position(&consumer_pk).is_none() {
+                        info!(
+                            height = update.height,
+                            "validator set update excludes this node; skipping epoch entry"
+                        );
+                        continue;
+                    }
+                    let next_epoch = epoch_manager.next_epoch();
+                    let _scheme = epoch_manager
+                        .enter(next_epoch, new_participants, &mut consumer_oracle)
+                        .await;
+                }
+            });
+        }
 
         // Start RPC server with IndexedStateProvider if configured.
         // FinalizedReporter writes indexed blocks; IndexedStateProvider reads them for RPC.

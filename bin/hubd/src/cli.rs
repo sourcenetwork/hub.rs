@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
+use commonware_cryptography::certificate::Scheme as _;
 use hub_config::NodeConfig;
 use hub_genesis::HubGenesis;
 use hub_jsonrpc::NodeState;
@@ -135,11 +136,11 @@ impl Cli {
         let identity_key = config.validator_key()?;
         let n = peers.participants.len();
 
-        let (scheme, group_pub_key, validator_index) =
+        let (scheme, validator_index) =
             hub_runner::generate_for_validator(args.seed, n, &identity_key)
-                .map_err(|e| eyre::eyre!("Failed to generate threshold scheme: {}", e))?;
+                .map_err(|e| eyre::eyre!("Failed to generate ed25519 scheme: {}", e))?;
 
-        tracing::info!(validator_index, "Generated threshold scheme from seed");
+        tracing::info!(validator_index, "Generated ed25519 scheme from seed");
 
         let mut config = config;
         config.network.bootstrap_peers = peers
@@ -168,7 +169,6 @@ impl Cli {
             config.chain_id,
             hub_config::DEFAULT_GAS_LIMIT,
             bootstrap,
-            group_pub_key,
         )
         .with_rpc(node_state, rpc_addr);
 
@@ -203,12 +203,9 @@ impl Cli {
 
         const DEVNET_SEED: u64 = 0;
 
-        let (_participants, schemes) = hub_crypto::threshold_schemes(DEVNET_SEED, 1)
-            .map_err(|e| eyre::eyre!("Failed to generate threshold scheme: {}", e))?;
+        let (_participants, schemes) = hub_crypto::ed25519_schemes(DEVNET_SEED, 1)
+            .map_err(|e| eyre::eyre!("Failed to generate ed25519 scheme: {}", e))?;
         let scheme = schemes.into_iter().next().expect("exactly one scheme");
-
-        let mut group_public_key = Vec::new();
-        commonware_codec::Write::write(scheme.identity(), &mut group_public_key);
 
         let validator_key = commonware_cryptography::ed25519::PrivateKey::from_seed(DEVNET_SEED);
         let validator_pk = validator_key.public_key();
@@ -232,14 +229,8 @@ impl Cli {
         let rpc_addr: std::net::SocketAddr = format!("0.0.0.0:{}", args.rpc_port).parse()?;
         let node_state = hub_jsonrpc::NodeState::new(chain_id, 0, 1);
 
-        let mut runner = HubRunner::new(
-            scheme,
-            chain_id,
-            hub_config::DEFAULT_GAS_LIMIT,
-            bootstrap,
-            group_public_key,
-        )
-        .with_rpc(node_state, rpc_addr);
+        let mut runner = HubRunner::new(scheme, chain_id, hub_config::DEFAULT_GAS_LIMIT, bootstrap)
+            .with_rpc(node_state, rpc_addr);
 
         if let Some(consensus) = parse_consensus_params(
             args.leader_timeout_ms,

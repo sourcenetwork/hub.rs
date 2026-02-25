@@ -1,49 +1,41 @@
-use anyhow::Context as _;
-use commonware_consensus::simplex::scheme::bls12381_threshold::vrf;
-use commonware_cryptography::{
-    Signer as _,
-    bls12381::{
-        dkg,
-        primitives::{sharing::Mode, variant::MinSig},
-    },
-    ed25519,
-};
-use commonware_utils::{N3f1, TryCollect as _, ordered::Set};
+use commonware_consensus::simplex::scheme::ed25519::Scheme;
+use commonware_cryptography::{Signer as _, ed25519};
+use commonware_utils::{TryCollect as _, ordered::Set};
 use hub_domain::PublicKey;
-use rand::{SeedableRng as _, rngs::StdRng};
 
-/// Threshold BLS signing scheme using MinSig variant.
-pub type ThresholdScheme = vrf::Scheme<PublicKey, MinSig>;
+/// Ed25519 multisig signing scheme for testing.
+pub type Ed25519Scheme = Scheme;
 
 const SIMPLEX_NAMESPACE: &[u8] = b"_COMMONWARE_REVM_SIMPLEX";
 
-/// Generate deterministic threshold BLS signing schemes for testing.
-pub fn threshold_schemes(
+/// Generate deterministic ed25519 signing schemes for testing.
+pub fn ed25519_schemes(
     seed: u64,
     n: usize,
-) -> anyhow::Result<(Vec<PublicKey>, Vec<ThresholdScheme>)> {
-    let participants: Set<PublicKey> = (0..n)
-        .map(|i| ed25519::PrivateKey::from_seed(seed.wrapping_add(i as u64)).public_key())
+) -> anyhow::Result<(Vec<PublicKey>, Vec<Ed25519Scheme>)> {
+    let private_keys: Vec<ed25519::PrivateKey> = (0..n)
+        .map(|i| ed25519::PrivateKey::from_seed(seed.wrapping_add(i as u64)))
+        .collect();
+
+    let participants: Set<PublicKey> = private_keys
+        .iter()
+        .map(|k| k.public_key())
         .try_collect()
         .expect("participant public keys are unique");
 
-    let mut rng = StdRng::seed_from_u64(seed);
-    let (output, shares) =
-        dkg::deal::<MinSig, _, N3f1>(&mut rng, Mode::default(), participants.clone())
-            .context("dkg deal failed")?;
+    let ordered_pks: Vec<PublicKey> = participants.iter().cloned().collect();
 
     let mut schemes = Vec::with_capacity(n);
     for pk in participants.iter() {
-        let share = shares.get_value(pk).expect("share exists").clone();
-        let scheme = vrf::Scheme::signer(
-            SIMPLEX_NAMESPACE,
-            participants.clone(),
-            output.public().clone(),
-            share,
-        )
-        .context("signer should exist")?;
+        let private_key = private_keys
+            .iter()
+            .find(|k| k.public_key() == *pk)
+            .expect("private key exists for participant")
+            .clone();
+        let scheme = Scheme::signer(SIMPLEX_NAMESPACE, participants.clone(), private_key)
+            .ok_or_else(|| anyhow::anyhow!("failed to create signer"))?;
         schemes.push(scheme);
     }
 
-    Ok((participants.into(), schemes))
+    Ok((ordered_pks, schemes))
 }

@@ -2,6 +2,9 @@
 
 use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_sol_types::{SolCall, SolEvent};
+use commonware_codec::ReadExt as _;
+use commonware_cryptography::ed25519;
+use commonware_utils::ordered::Set;
 use hub_executor::{ExecutionReceipt, SimulateRequest, simulate_call};
 use hub_modules::module_state::ModuleState;
 use hub_modules::validator_registry::abi::IValidatorRegistry;
@@ -74,6 +77,27 @@ pub fn read_validator_set<S: StateDbRead>(
             None
         }
     }
+}
+
+/// Extract active ed25519 consensus keys from a validator set update.
+///
+/// Filters for active validators, decodes their `consensus_pubkey` hex strings
+/// into `ed25519::PublicKey`, and returns an ordered `Set`. Returns `None` if
+/// any active validator has an invalid consensus key.
+pub fn active_participant_set(validators: &[ValidatorInfo]) -> Option<Set<ed25519::PublicKey>> {
+    let mut keys = Vec::new();
+    for v in validators {
+        if !v.active {
+            continue;
+        }
+        let bytes = hex::decode(&v.consensus_pubkey).ok()?;
+        let pk = ed25519::PublicKey::read(&mut bytes.as_slice()).ok()?;
+        keys.push(pk);
+    }
+    if keys.is_empty() {
+        return None;
+    }
+    keys.try_into().ok()
 }
 
 #[cfg(test)]

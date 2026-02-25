@@ -3,8 +3,10 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::epoch_manager::EpochManager;
+use crate::scheme_provider::EpochSchemeProvider;
 use crate::tx_forward::TxForwarder;
-use crate::{RevmApplication, RunnerError, ThresholdScheme};
+use crate::{Ed25519Scheme, RevmApplication, RunnerError};
 use alloy_consensus::Header;
 use alloy_primitives::{Address, B256, Bytes};
 use anyhow::Context as _;
@@ -14,11 +16,10 @@ use commonware_consensus::{
     simplex::{self, elector::RoundRobin, types::Finalization},
     types::{Epoch, FixedEpocher, ViewDelta},
 };
-use commonware_cryptography::{Sha256, bls12381::primitives::variant::MinSig, ed25519};
-use commonware_p2p::Manager;
+use commonware_cryptography::{Sha256, certificate::Scheme as _, ed25519};
 use commonware_parallel::Sequential;
 use commonware_runtime::{Metrics as _, Spawner, buffer::paged::CacheRef, tokio};
-use commonware_utils::{NZU64, NZUsize, acknowledgement::Exact};
+use commonware_utils::{NZUsize, acknowledgement::Exact};
 use futures::StreamExt;
 use hub_backend as _;
 use hub_domain::{
@@ -31,25 +32,24 @@ use hub_ledger::{LedgerService, LedgerView};
 use hub_marshal::{ArchiveInitializer, BroadcastInitializer, PeerInitializer};
 use hub_modules::kv_store::InMemoryKvStore;
 use hub_reporters::{
-    BlockContextProvider, FinalizedReporter, NodeStateReporter, SeedReporter, ValidatorSetUpdate,
-    ViewTracker,
+    BlockContextProvider, FinalizedReporter, NodeStateReporter, PrevrandaoReporter,
+    ValidatorSetUpdate, ViewTracker, active_participant_set,
 };
 use hub_service::{NodeRunContext, NodeRunner};
 use hub_simplex::{DEFAULT_MAILBOX_SIZE as MAILBOX_SIZE, DefaultPool};
 use hub_state::ModuleStateTree;
 use hub_transport::NetworkTransport;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 
 const BLOCK_CODEC_MAX_TXS: usize = 64;
 const BLOCK_CODEC_MAX_TX_BYTES: usize = 65_536;
-const EPOCH_LENGTH: u64 = u64::MAX;
 const PARTITION_PREFIX: &str = "hubd";
 
 type Peer = ed25519::PublicKey;
-type CertArchive = Finalization<ThresholdScheme, ConsensusDigest>;
-type MarshalMailbox = commonware_consensus::marshal::Mailbox<ThresholdScheme, Block>;
-type NodeStateRptr = NodeStateReporter<ThresholdScheme>;
-type ViewTrackerRptr = ViewTracker<ThresholdScheme>;
+type CertArchive = Finalization<Ed25519Scheme, ConsensusDigest>;
+type MarshalMailbox = commonware_consensus::marshal::Mailbox<Ed25519Scheme, Block>;
+type NodeStateRptr = NodeStateReporter<Ed25519Scheme>;
+type ViewTrackerRptr = ViewTracker<Ed25519Scheme>;
 
 fn default_page_cache() -> CacheRef {
     DefaultPool::init()
@@ -61,28 +61,6 @@ const fn block_codec_cfg() -> BlockCfg {
         tx: TxCfg {
             max_tx_bytes: BLOCK_CODEC_MAX_TX_BYTES,
         },
-    }
-}
-
-#[derive(Clone)]
-struct ConstantSchemeProvider(Arc<ThresholdScheme>);
-
-impl commonware_cryptography::certificate::Provider for ConstantSchemeProvider {
-    type Scope = Epoch;
-    type Scheme = ThresholdScheme;
-
-    fn scoped(&self, _epoch: Epoch) -> Option<Arc<Self::Scheme>> {
-        Some(self.0.clone())
-    }
-
-    fn all(&self) -> Option<Arc<Self::Scheme>> {
-        Some(self.0.clone())
-    }
-}
-
-impl From<ThresholdScheme> for ConstantSchemeProvider {
-    fn from(scheme: ThresholdScheme) -> Self {
-        Self(Arc::new(scheme))
     }
 }
 
@@ -159,40 +137,46 @@ impl Default for ConsensusParams {
 /// Production validator node runner for hub.
 #[derive(Clone, Debug)]
 pub struct HubRunner {
-    /// Threshold signing scheme.
-    pub scheme: ThresholdScheme,
+    /// Ed25519 multisig signing scheme.
+    pub scheme: Ed25519Scheme,
     /// Chain ID.
     pub chain_id: u64,
     /// Gas limit per block.
     pub gas_limit: u64,
     /// Bootstrap configuration.
     pub bootstrap: BootstrapConfig,
+    /// Epoch length (views per epoch). `u64::MAX` = single infinite epoch.
+    pub epoch_length: u64,
     /// Optional RPC configuration (state, bind address).
     pub rpc_config: Option<(hub_jsonrpc::NodeState, std::net::SocketAddr)>,
     /// Consensus timing parameters.
     pub consensus: ConsensusParams,
-    /// BLS12-381 group public key from DKG ceremony.
-    pub group_public_key: Vec<u8>,
 }
 
 impl HubRunner {
     /// Create a new hub runner.
     pub fn new(
-        scheme: ThresholdScheme,
+        scheme: Ed25519Scheme,
         chain_id: u64,
         gas_limit: u64,
         bootstrap: BootstrapConfig,
-        group_public_key: Vec<u8>,
     ) -> Self {
         Self {
             scheme,
             chain_id,
             gas_limit,
             bootstrap,
+            epoch_length: u64::MAX,
             rpc_config: None,
             consensus: ConsensusParams::default(),
-            group_public_key,
         }
+    }
+
+    /// Configure epoch length (views per epoch).
+    #[must_use]
+    pub const fn with_epoch_length(mut self, epoch_length: u64) -> Self {
+        self.epoch_length = epoch_length;
+        self
     }
 
     /// Configure consensus timing parameters.
@@ -248,12 +232,18 @@ impl NodeRunner for HubRunner {
 
         info!(chain_id = self.chain_id, "Starting hub validator");
 
+        let validator_key = config
+            .validator_key()
+            .map_err(|e| anyhow::anyhow!("failed to load validator key: {}", e))?;
+        let my_pk = commonware_cryptography::Signer::public_key(&validator_key);
+
         let validators = self.scheme.participants().clone();
-        transport.oracle.track(0, validators.clone()).await;
-        info!(
-            count = validators.len(),
-            "Registered validators with oracle"
-        );
+
+        let scheme_provider = EpochSchemeProvider::new();
+        let mut epoch_manager = EpochManager::new(scheme_provider.clone(), validator_key);
+        let _epoch_scheme = epoch_manager
+            .enter(Epoch::zero(), validators.clone(), &mut transport.oracle)
+            .await;
 
         let (mempool_sender, mempool_receiver) = transport.mempool.txs;
 
@@ -290,11 +280,6 @@ impl NodeRunner for HubRunner {
         let block_index = Arc::new(BlockIndex::new());
         let (heads_tx, _) = ::tokio::sync::broadcast::channel::<hub_jsonrpc::RpcBlock>(64);
         let (logs_tx, _) = ::tokio::sync::broadcast::channel::<Vec<hub_jsonrpc::RpcLog>>(256);
-
-        let validator_key = config
-            .validator_key()
-            .map_err(|e| anyhow::anyhow!("failed to load validator key: {}", e))?;
-        let my_pk = commonware_cryptography::Signer::public_key(&validator_key);
 
         // Open per-module JMT state trees and load persisted state.
         let data_dir = &config.data_dir;
@@ -344,17 +329,8 @@ impl NodeRunner for HubRunner {
             gas_limit: self.gas_limit,
             participant_addresses: participant_addrs.clone(),
         };
-        let (validator_set_tx, mut validator_set_rx) =
+        let (validator_set_tx, validator_set_rx) =
             ::tokio::sync::mpsc::unbounded_channel::<ValidatorSetUpdate>();
-        context.clone().shared(true).spawn(move |_| async move {
-            while let Some(update) = validator_set_rx.recv().await {
-                info!(
-                    height = update.height,
-                    count = update.validators.len(),
-                    "received validator set update (epoch transition pending)"
-                );
-            }
-        });
 
         let finalized_reporter = {
             let reporter = FinalizedReporter::new(
@@ -378,8 +354,6 @@ impl NodeRunner for HubRunner {
             }
         };
 
-        let scheme_provider = ConstantSchemeProvider::from(self.scheme.clone());
-
         let resolver = PeerInitializer::init::<_, _, _, Block, _, _, _>(
             &context.with_label("resolver"),
             my_pk.clone(),
@@ -395,11 +369,11 @@ impl NodeRunner for HubRunner {
         );
         broadcast_engine.start(transport.marshal.blocks);
 
-        <ThresholdScheme as commonware_cryptography::certificate::Scheme>::certificate_codec_config_unbounded();
+        let cert_cfg = <Ed25519Scheme as commonware_cryptography::certificate::Scheme>::certificate_codec_config_unbounded();
         let finalizations_by_height = ArchiveInitializer::init::<_, ConsensusDigest, CertArchive>(
             context.with_label("finalizations_by_height"),
             format!("{}-finalizations-by-height", PARTITION_PREFIX),
-            (),
+            cert_cfg,
         )
         .await
         .context("init finalizations archive")?;
@@ -424,8 +398,10 @@ impl NodeRunner for HubRunner {
             .await;
         actor.start(finalized_reporter, buffer, resolver);
 
-        let epocher = FixedEpocher::new(NZU64!(EPOCH_LENGTH));
-        let mut app = RevmApplication::<ThresholdScheme, _>::new(
+        let epoch_length =
+            std::num::NonZeroU64::new(self.epoch_length).expect("epoch length must be non-zero");
+        let epocher = FixedEpocher::new(epoch_length);
+        let mut app = RevmApplication::<Ed25519Scheme, _>::new(
             ledger.clone(),
             executor,
             block_cfg.max_txs,
@@ -442,12 +418,12 @@ impl NodeRunner for HubRunner {
             epocher,
         );
 
-        let seed_reporter = SeedReporter::<MinSig>::new(ledger.clone());
-        let view_tracker = ViewTracker::<ThresholdScheme>::new(view_counter);
+        let seed_reporter = PrevrandaoReporter::<Ed25519Scheme>::new(ledger.clone());
+        let view_tracker = ViewTracker::<Ed25519Scheme>::new(view_counter);
         let node_state_reporter = self
             .rpc_config
             .as_ref()
-            .map(|(state, _)| NodeStateReporter::<ThresholdScheme>::new(state.clone()));
+            .map(|(state, _)| NodeStateReporter::<Ed25519Scheme>::new(state.clone()));
         let inner_reporters: Reporters<_, MarshalMailbox, Option<NodeStateRptr>> =
             Reporters::from((marshal_mailbox.clone(), node_state_reporter));
         let with_view: Reporters<_, ViewTrackerRptr, _> =
@@ -483,11 +459,42 @@ impl NodeRunner for HubRunner {
                 page_cache,
             },
         );
-        engine.start(
+        let engine_handle = engine.start(
             transport.simplex.votes,
             transport.simplex.certs,
             transport.simplex.resolver,
         );
+        epoch_manager.track_engine(Epoch::zero(), engine_handle);
+
+        // Spawn validator set update consumer that drives epoch transitions.
+        {
+            let consumer_pk = my_pk.clone();
+            let mut consumer_oracle = transport.oracle.clone();
+            let mut consumer_rx = validator_set_rx;
+            context.clone().shared(true).spawn(move |_| async move {
+                let mut epoch_manager = epoch_manager;
+                while let Some(update) = consumer_rx.recv().await {
+                    let Some(new_participants) = active_participant_set(&update.validators) else {
+                        warn!(
+                            height = update.height,
+                            "validator set update has no active validators with valid keys"
+                        );
+                        continue;
+                    };
+                    if new_participants.position(&consumer_pk).is_none() {
+                        info!(
+                            height = update.height,
+                            "validator set update excludes this node; skipping epoch entry"
+                        );
+                        continue;
+                    }
+                    let next_epoch = epoch_manager.next_epoch();
+                    let _scheme = epoch_manager
+                        .enter(next_epoch, new_participants, &mut consumer_oracle)
+                        .await;
+                }
+            });
+        }
 
         if let Some((node_state, addr)) = &self.rpc_config {
             let qmdb_state = ledger.qmdb_state().await;

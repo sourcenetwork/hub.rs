@@ -16,7 +16,13 @@ mod production_runner;
 pub use production_runner::ProductionRunner;
 
 mod scheme;
-pub use scheme::{ThresholdScheme, generate_for_validator, generate_threshold_schemes};
+pub use scheme::{Ed25519Scheme, generate_ed25519_schemes, generate_for_validator};
+
+mod scheme_provider;
+pub use scheme_provider::EpochSchemeProvider;
+
+mod epoch_manager;
+pub use epoch_manager::EpochManager;
 
 mod runner;
 pub use runner::{ConsensusParams, HubRunner};

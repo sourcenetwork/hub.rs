@@ -12,4 +12,4 @@ pub mod secp256k1;
 mod test_utils;
 
 #[cfg(feature = "test-utils")]
-pub use test_utils::{ThresholdScheme, threshold_schemes};
+pub use test_utils::{Ed25519Scheme, ed25519_schemes};
