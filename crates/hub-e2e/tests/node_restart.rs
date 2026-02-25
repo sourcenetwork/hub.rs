@@ -173,6 +173,7 @@ async fn node_restart_preserves_state() {
     let genesis = GenesisBuilder::devnet().funded_accounts(1, "1000000000000000000000000");
 
     let mut cluster = TestCluster::builder()
+        .binary(hub_e2e::hubd_binary())
         .nodes(4)
         .chain_id(chain_id)
         .genesis(genesis)

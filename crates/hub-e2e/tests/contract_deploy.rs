@@ -107,6 +107,7 @@ async fn deploy_and_interact() {
     let genesis = GenesisBuilder::devnet().funded_accounts(3, "1000000000000000000000000");
 
     let cluster = TestCluster::builder()
+        .binary(hub_e2e::hubd_binary())
         .nodes(4)
         .chain_id(chain_id)
         .genesis(genesis)

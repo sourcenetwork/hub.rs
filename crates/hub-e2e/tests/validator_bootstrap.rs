@@ -14,8 +14,7 @@ use alloy_sol_types::{SolCall, SolEvent};
 use hub_client::{
     ACP_ADDRESS, EvmSigner, HubClient, TransactionReceipt, VALIDATOR_REGISTRY_ADDRESS,
 };
-use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, TestCluster};
-use hub_genesis::ValidatorConfig;
+use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, TestCluster, ValidatorConfig};
 use hub_modules::acp::abi::IAcp;
 use hub_modules::validator_registry::abi::IValidatorRegistry;
 use hub_modules::validator_registry::types::ValidatorInfo;
@@ -111,6 +110,7 @@ async fn validator_bootstrap() {
         .validators(validators.clone());
 
     let cluster = TestCluster::builder()
+        .binary(hub_e2e::hubd_binary())
         .nodes(4)
         .chain_id(chain_id)
         .genesis(genesis)
@@ -458,6 +458,7 @@ async fn validator_registry_adversarial() {
         .validators(validators.clone());
 
     let cluster = TestCluster::builder()
+        .binary(hub_e2e::hubd_binary())
         .nodes(4)
         .chain_id(chain_id)
         .genesis(genesis)

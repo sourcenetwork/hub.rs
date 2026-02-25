@@ -187,6 +187,7 @@ async fn canonical_module_test() {
     let genesis = GenesisBuilder::devnet().funded_accounts(1, "1000000000000000000000000");
 
     let cluster = TestCluster::builder()
+        .binary(hub_e2e::hubd_binary())
         .nodes(4)
         .chain_id(chain_id)
         .genesis(genesis)
