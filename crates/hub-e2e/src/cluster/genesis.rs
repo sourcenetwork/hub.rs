@@ -119,6 +119,8 @@ impl GenesisBuilder {
             allocations: self.allocations,
             native_mint: self.native_mint,
             validators: self.validators,
+            contracts: Vec::new(),
+            extra_storage: Vec::new(),
         }
     }
 
@@ -131,6 +133,8 @@ impl GenesisBuilder {
             allocations: self.allocations.clone(),
             native_mint: self.native_mint.clone(),
             validators: self.validators.clone(),
+            contracts: Vec::new(),
+            extra_storage: Vec::new(),
         };
 
         let json = serde_json::to_string_pretty(&genesis)?;

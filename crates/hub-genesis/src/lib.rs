@@ -7,5 +7,6 @@
 
 mod config;
 pub use config::{
-    GenesisAllocation, HubGenesis, HubGenesisError, NativeMintConfig, ValidatorConfig,
+    GenesisAllocation, GenesisContract, GenesisStorage, HubGenesis, HubGenesisError,
+    NativeMintConfig, ValidatorConfig,
 };

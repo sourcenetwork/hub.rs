@@ -29,6 +29,12 @@ pub struct HubGenesis {
     /// Genesis validators for the ValidatorRegistry precompile.
     #[serde(default)]
     pub validators: Vec<ValidatorConfig>,
+    /// Arbitrary contract bytecode to deploy at genesis.
+    #[serde(default)]
+    pub contracts: Vec<GenesisContract>,
+    /// Pre-set storage slot values at genesis.
+    #[serde(default)]
+    pub extra_storage: Vec<GenesisStorage>,
 }
 
 fn default_chain_name() -> String {
@@ -57,6 +63,26 @@ pub struct ValidatorConfig {
     pub consensus_pubkey: String,
     /// P2P network address (e.g., "127.0.0.1:30300").
     pub p2p_address: String,
+}
+
+/// Arbitrary contract bytecode to deploy at genesis.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GenesisContract {
+    /// Contract address (hex with 0x prefix).
+    pub address: String,
+    /// Contract bytecode (hex with 0x prefix).
+    pub bytecode: String,
+}
+
+/// Pre-set storage slot at genesis.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GenesisStorage {
+    /// Account address (hex with 0x prefix).
+    pub address: String,
+    /// Storage slot (hex with 0x prefix).
+    pub slot: String,
+    /// Storage value (hex with 0x prefix).
+    pub value: String,
 }
 
 /// Configuration for the NativeMint precompile.
@@ -131,7 +157,7 @@ impl HubGenesis {
             genesis_alloc.push((address, balance));
         }
 
-        let (genesis_storage, genesis_code) = if self.validators.is_empty() {
+        let (mut genesis_storage, mut genesis_code) = if self.validators.is_empty() {
             (Vec::new(), Vec::new())
         } else {
             let entries = validator_storage_entries(&self.validators)?;
@@ -142,6 +168,33 @@ impl HubGenesis {
             )];
             (storage, code)
         };
+
+        for contract in &self.contracts {
+            let address = Address::from_str(&contract.address)
+                .map_err(|e| HubGenesisError::Parse(format!("invalid contract address: {}", e)))?;
+            let bytecode_hex = contract
+                .bytecode
+                .strip_prefix("0x")
+                .unwrap_or(&contract.bytecode);
+            let bytecode = hex::decode(bytecode_hex)
+                .map_err(|e| HubGenesisError::Parse(format!("invalid contract bytecode: {}", e)))?;
+            genesis_code.push((address, bytecode));
+        }
+
+        for entry in &self.extra_storage {
+            let address = Address::from_str(&entry.address)
+                .map_err(|e| HubGenesisError::Parse(format!("invalid storage address: {}", e)))?;
+            let slot = U256::from_str(&entry.slot)
+                .map_err(|e| HubGenesisError::Parse(format!("invalid storage slot: {}", e)))?;
+            let value = U256::from_str(&entry.value)
+                .map_err(|e| HubGenesisError::Parse(format!("invalid storage value: {}", e)))?;
+
+            if let Some(existing) = genesis_storage.iter_mut().find(|(a, _)| *a == address) {
+                existing.1.push((slot, value));
+            } else {
+                genesis_storage.push((address, vec![(slot, value)]));
+            }
+        }
 
         let participant_addresses: Vec<Address> = self
             .validators
@@ -184,6 +237,8 @@ impl HubGenesis {
                 denom: "abrl".to_string(),
             },
             validators: Vec::new(),
+            contracts: Vec::new(),
+            extra_storage: Vec::new(),
         }
     }
 }
@@ -369,6 +424,8 @@ mod tests {
             }],
             native_mint: NativeMintConfig::default(),
             validators: Vec::new(),
+            contracts: Vec::new(),
+            extra_storage: Vec::new(),
         };
         let err = genesis.to_bootstrap_config().unwrap_err();
         assert!(err.to_string().contains("invalid address"));
@@ -382,6 +439,8 @@ mod tests {
             allocations: Vec::new(),
             native_mint: NativeMintConfig::default(),
             validators,
+            contracts: Vec::new(),
+            extra_storage: Vec::new(),
         }
     }
 
