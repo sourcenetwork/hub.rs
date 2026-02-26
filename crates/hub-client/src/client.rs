@@ -96,7 +96,7 @@ impl HubClient {
     }
 
     /// Send a JSON-RPC request and deserialize the `result` into `T`.
-    async fn rpc_call_typed<T: DeserializeOwned>(
+    pub async fn rpc_call_typed<T: DeserializeOwned>(
         &self,
         method: &str,
         params: serde_json::Value,
