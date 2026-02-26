@@ -31,6 +31,9 @@ pub use light_block::{LightBlock, LightBlockError, verify_light_block};
 mod proof;
 pub use proof::{ModuleId, ModuleStateProof, ProofError, verify_module_state_proof};
 
+mod gossip;
+pub use gossip::{GOSSIP_HEADER_SIZE, GossipHeader};
+
 mod tx;
 pub use tx::{Tx, TxCfg};
 

@@ -197,9 +197,11 @@ impl NodeRunner for ProductionRunner {
         let validator_key = config
             .validator_key()
             .map_err(|e| anyhow::anyhow!("failed to load validator key: {}", e))?;
+        let gossip_signing_key = validator_key.clone();
         let my_pk = commonware_cryptography::Signer::public_key(&validator_key);
 
         let validators = self.scheme.participants().clone();
+        let publisher_index = validators.position(&my_pk).unwrap_or(0) as u32;
 
         let scheme_provider = EpochSchemeProvider::new();
         let mut epoch_manager = EpochManager::new(scheme_provider.clone(), validator_key);
@@ -230,6 +232,7 @@ impl NodeRunner for ProductionRunner {
         // Create broadcast channels for WebSocket subscriptions.
         let (heads_tx, _) = ::tokio::sync::broadcast::channel::<hub_jsonrpc::RpcBlock>(64);
         let (logs_tx, _) = ::tokio::sync::broadcast::channel::<Vec<hub_jsonrpc::RpcLog>>(256);
+        let (headers_tx, _) = ::tokio::sync::broadcast::channel::<hub_domain::GossipHeader>(64);
 
         let participant_addrs: Vec<(PublicKey, Address)> = self
             .scheme
@@ -253,7 +256,13 @@ impl NodeRunner for ProductionRunner {
                 FinalizedReporter::new(ledger.clone(), context.clone(), executor, context_provider)
                     .with_block_index(block_index.clone())
                     .with_subscriptions(heads_tx.clone(), logs_tx.clone())
-                    .with_validator_set_updates(validator_set_tx, self.chain_id, self.gas_limit);
+                    .with_validator_set_updates(validator_set_tx, self.chain_id, self.gas_limit)
+                    .with_gossip(
+                        gossip_signing_key,
+                        self.chain_id,
+                        publisher_index,
+                        headers_tx.clone(),
+                    );
             if let Some((state, _)) = &self.rpc_config {
                 reporter.with_node_state(state.clone())
             } else {
@@ -422,6 +431,7 @@ impl NodeRunner for ProductionRunner {
                 provider,
             )
             .with_subscriptions(heads_tx, logs_tx)
+            .with_headers_subscription(headers_tx.clone())
             .with_hub_index_and_modules(hub_index, hub_modules);
             let rpc_handle = rpc.start();
             context.clone().shared(true).spawn(move |_| async move {

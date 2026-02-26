@@ -23,10 +23,11 @@ use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
 use commonware_codec::Encode as _;
 use commonware_consensus::{Block as _, Reporter, marshal::Update, simplex::types::Activity};
 use commonware_cryptography::{Committable as _, certificate::Scheme as CertScheme};
+use commonware_cryptography::{Signer as _, ed25519};
 use commonware_runtime::{Spawner as _, tokio};
 use commonware_utils::acknowledgement::Acknowledgement as _;
 use hub_consensus::{BlockExecution, Snapshot};
-use hub_domain::{Block, ConsensusDigest, NativeTx};
+use hub_domain::{Block, ConsensusDigest, GossipHeader, NativeTx};
 use hub_executor::{BlockContext, BlockExecutor, ExecutionReceipt};
 use hub_indexer::{
     BlockIndex, IndexedBlock, IndexedLog, IndexedReceipt, IndexedTransaction, LightBlockIndex,
@@ -105,10 +106,22 @@ where
     }
 }
 
+/// Ed25519 namespace for gossip header signatures.
+const GOSSIP_NAMESPACE: &[u8] = b"sourcehub/headers/v1";
+
 /// Optional subscription broadcast senders.
 struct SubscriptionSenders {
     heads: broadcast::Sender<RpcBlock>,
     logs: broadcast::Sender<Vec<RpcLog>>,
+}
+
+/// Gossip header signing and broadcast state.
+#[derive(Clone)]
+struct GossipSender {
+    signing_key: ed25519::PrivateKey,
+    chain_id: u64,
+    publisher_index: u32,
+    tx: broadcast::Sender<GossipHeader>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -123,6 +136,7 @@ async fn handle_finalized_update<E, P>(
     node_state: Option<NodeState>,
     last_committed_height: u64,
     validator_set_tx: Option<::tokio::sync::mpsc::UnboundedSender<ValidatorSetUpdate>>,
+    gossip: Option<GossipSender>,
     chain_id: u64,
     gas_limit: u64,
 ) where
@@ -360,6 +374,25 @@ async fn handle_finalized_update<E, P>(
                                     Err(_) => {
                                         trace!(height = block.height, "no active logs subscribers")
                                     }
+                                }
+                            }
+                        }
+                        // Broadcast signed gossip header.
+                        if let Some(ref gs) = gossip {
+                            let mut header =
+                                GossipHeader::from_block(&block, gs.chain_id, gs.publisher_index);
+                            let sig = gs
+                                .signing_key
+                                .sign(GOSSIP_NAMESPACE, &header.signing_data());
+                            header.set_signature(sig.as_ref());
+                            match gs.tx.send(header) {
+                                Ok(n) => trace!(
+                                    height = block.height,
+                                    receivers = n,
+                                    "broadcast gossip header"
+                                ),
+                                Err(_) => {
+                                    trace!(height = block.height, "no active gossip subscribers")
                                 }
                             }
                         }
@@ -745,6 +778,8 @@ pub struct FinalizedReporter<E, P> {
     chain_id: u64,
     /// Block gas limit for simulate_call during validator set queries.
     gas_limit: u64,
+    /// Optional gossip header publisher (signing key + broadcast channel).
+    gossip: Option<GossipSender>,
 }
 
 impl<E, P> fmt::Debug for FinalizedReporter<E, P> {
@@ -778,6 +813,7 @@ where
             validator_set_tx: None,
             chain_id: 0,
             gas_limit: 0,
+            gossip: None,
         }
     }
 
@@ -834,6 +870,26 @@ where
         self.gas_limit = gas_limit;
         self
     }
+
+    /// Enable gossip header publishing after finalization.
+    ///
+    /// Each finalized block produces a signed `GossipHeader` broadcast on `tx`.
+    #[must_use]
+    pub fn with_gossip(
+        mut self,
+        signing_key: ed25519::PrivateKey,
+        chain_id: u64,
+        publisher_index: u32,
+        tx: broadcast::Sender<GossipHeader>,
+    ) -> Self {
+        self.gossip = Some(GossipSender {
+            signing_key,
+            chain_id,
+            publisher_index,
+            tx,
+        });
+        self
+    }
 }
 
 impl<E, P> Reporter for FinalizedReporter<E, P>
@@ -852,6 +908,7 @@ where
         let node_state = self.node_state.clone();
         let last_committed_height = self.last_committed_height;
         let validator_set_tx = self.validator_set_tx.clone();
+        let gossip = self.gossip.clone();
         let chain_id = self.chain_id;
         let gas_limit = self.gas_limit;
         let subscriptions = self
@@ -874,6 +931,7 @@ where
                 node_state,
                 last_committed_height,
                 validator_set_tx,
+                gossip,
                 chain_id,
                 gas_limit,
             )

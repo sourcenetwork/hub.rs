@@ -5,6 +5,8 @@ use jsonrpsee::{PendingSubscriptionSink, SubscriptionMessage, proc_macros::rpc};
 use tokio::sync::broadcast;
 use tracing::{trace, warn};
 
+use hub_domain::GossipHeader;
+
 use crate::types::{AddressFilter, RpcBlock, RpcLog, TopicFilter};
 
 /// Parsed log filter for subscription-time matching.
@@ -86,6 +88,7 @@ pub trait EthSubscriptionApi {
 pub struct EthSubscriptionApiImpl {
     heads_tx: broadcast::Sender<RpcBlock>,
     logs_tx: broadcast::Sender<Vec<RpcLog>>,
+    headers_tx: Option<broadcast::Sender<GossipHeader>>,
 }
 
 impl std::fmt::Debug for EthSubscriptionApiImpl {
@@ -101,7 +104,18 @@ impl EthSubscriptionApiImpl {
         heads_tx: broadcast::Sender<RpcBlock>,
         logs_tx: broadcast::Sender<Vec<RpcLog>>,
     ) -> Self {
-        Self { heads_tx, logs_tx }
+        Self {
+            heads_tx,
+            logs_tx,
+            headers_tx: None,
+        }
+    }
+
+    /// Enable gossip header subscriptions via `hub_subscribe("headers")`.
+    #[must_use]
+    pub fn with_headers(mut self, tx: broadcast::Sender<GossipHeader>) -> Self {
+        self.headers_tx = Some(tx);
+        self
     }
 }
 
@@ -142,6 +156,51 @@ impl EthSubscriptionApiServer for EthSubscriptionApiImpl {
                             }
                             Err(broadcast::error::RecvError::Lagged(n)) => {
                                 warn!(lagged = n, "newHeads subscriber lagged, dropping");
+                                break;
+                            }
+                            Err(broadcast::error::RecvError::Closed) => break,
+                        }
+                    }
+                });
+            }
+            "headers" => {
+                let Some(ref headers_tx) = self.headers_tx else {
+                    let _ = pending
+                        .reject(jsonrpsee::types::ErrorObjectOwned::owned(
+                            crate::error::codes::INVALID_PARAMS,
+                            "headers subscription not enabled on this node",
+                            None::<()>,
+                        ))
+                        .await;
+                    return Ok(());
+                };
+                let sink = pending.accept().await?;
+                let mut rx = headers_tx.subscribe();
+                tokio::spawn(async move {
+                    loop {
+                        match rx.recv().await {
+                            Ok(header) => {
+                                let value = match serde_json::to_value(&header) {
+                                    Ok(v) => v,
+                                    Err(e) => {
+                                        warn!(error = %e, "failed to serialize gossip header");
+                                        break;
+                                    }
+                                };
+                                let msg = match SubscriptionMessage::from_json(&value) {
+                                    Ok(m) => m,
+                                    Err(e) => {
+                                        warn!(error = %e, "failed to build headers subscription message");
+                                        break;
+                                    }
+                                };
+                                if sink.send(msg).await.is_err() {
+                                    trace!("headers subscriber disconnected");
+                                    break;
+                                }
+                            }
+                            Err(broadcast::error::RecvError::Lagged(n)) => {
+                                warn!(lagged = n, "headers subscriber lagged, dropping");
                                 break;
                             }
                             Err(broadcast::error::RecvError::Closed) => break,

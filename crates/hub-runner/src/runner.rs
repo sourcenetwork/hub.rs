@@ -236,6 +236,7 @@ impl NodeRunner for HubRunner {
         let validator_key = config
             .validator_key()
             .map_err(|e| anyhow::anyhow!("failed to load validator key: {}", e))?;
+        let gossip_signing_key = validator_key.clone();
         let my_pk = commonware_cryptography::Signer::public_key(&validator_key);
 
         let validators = self.scheme.participants().clone();
@@ -299,6 +300,7 @@ impl NodeRunner for HubRunner {
 
         let (heads_tx, _) = ::tokio::sync::broadcast::channel::<hub_jsonrpc::RpcBlock>(64);
         let (logs_tx, _) = ::tokio::sync::broadcast::channel::<Vec<hub_jsonrpc::RpcLog>>(256);
+        let (headers_tx, _) = ::tokio::sync::broadcast::channel::<hub_domain::GossipHeader>(64);
 
         // Open per-module JMT state trees and load persisted state.
         let data_dir = &config.data_dir;
@@ -353,6 +355,7 @@ impl NodeRunner for HubRunner {
             ::tokio::sync::mpsc::unbounded_channel::<ValidatorSetUpdate>();
 
         let finalized_reporter = {
+            let publisher_index = validators.position(&my_pk).unwrap_or(0) as u32;
             let reporter = FinalizedReporter::new(
                 ledger.clone(),
                 context.clone(),
@@ -362,10 +365,12 @@ impl NodeRunner for HubRunner {
             .with_block_index(block_index.clone())
             .with_subscriptions(heads_tx.clone(), logs_tx.clone())
             .with_last_committed_height(last_committed_height)
-            .with_validator_set_updates(
-                validator_set_tx,
+            .with_validator_set_updates(validator_set_tx, self.chain_id, self.gas_limit)
+            .with_gossip(
+                gossip_signing_key,
                 self.chain_id,
-                self.gas_limit,
+                publisher_index,
+                headers_tx.clone(),
             );
             if let Some((state, _)) = &self.rpc_config {
                 reporter.with_node_state(state.clone())
@@ -581,6 +586,7 @@ impl NodeRunner for HubRunner {
             )
             .with_tx_submit(tx_submit)
             .with_subscriptions(heads_tx, logs_tx)
+            .with_headers_subscription(headers_tx.clone())
             .with_hub_index_and_modules(hub_index, hub_modules)
             .with_hub_module_trees(module_trees_for_rpc)
             .with_hub_light_block_index(light_block_index.clone());

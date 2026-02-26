@@ -12,6 +12,8 @@ use tracing::{error, info};
 use hub_executor::{ModuleTrees, SharedModuleState};
 use hub_indexer::{BlockIndex, LightBlockIndex};
 
+use hub_domain::GossipHeader;
+
 use crate::{
     config::{CorsConfig, RpcServerConfig},
     eth::{
@@ -94,6 +96,7 @@ pub struct RpcServer<S: StateProvider = NoopStateProvider> {
     max_connections: u32,
     subscription_heads: Option<broadcast::Sender<RpcBlock>>,
     subscription_logs: Option<broadcast::Sender<Vec<RpcLog>>>,
+    subscription_headers: Option<broadcast::Sender<GossipHeader>>,
     extra_modules: Vec<jsonrpsee::RpcModule<()>>,
     hub_index: Option<Arc<BlockIndex>>,
     hub_modules: Option<SharedModuleState>,
@@ -126,6 +129,7 @@ impl RpcServer<NoopStateProvider> {
             max_connections: 100,
             subscription_heads: None,
             subscription_logs: None,
+            subscription_headers: None,
             extra_modules: Vec::new(),
             hub_index: None,
             hub_modules: None,
@@ -146,6 +150,7 @@ impl RpcServer<NoopStateProvider> {
             max_connections: 100,
             subscription_heads: None,
             subscription_logs: None,
+            subscription_headers: None,
             extra_modules: Vec::new(),
             hub_index: None,
             hub_modules: None,
@@ -173,6 +178,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             max_connections: 100,
             subscription_heads: None,
             subscription_logs: None,
+            subscription_headers: None,
             extra_modules: Vec::new(),
             hub_index: None,
             hub_modules: None,
@@ -211,6 +217,16 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
     ) -> Self {
         self.subscription_heads = Some(heads_tx);
         self.subscription_logs = Some(logs_tx);
+        self
+    }
+
+    /// Enable gossip header subscriptions via `eth_subscribe("headers")`.
+    #[must_use]
+    pub fn with_headers_subscription(
+        mut self,
+        headers_tx: broadcast::Sender<GossipHeader>,
+    ) -> Self {
+        self.subscription_headers = Some(headers_tx);
         self
     }
 
@@ -259,6 +275,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             max_connections: config.max_connections,
             subscription_heads: None,
             subscription_logs: None,
+            subscription_headers: None,
             extra_modules: Vec::new(),
             hub_index: None,
             hub_modules: None,
@@ -281,6 +298,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
         let state_provider = self.state_provider;
         let subscription_heads = self.subscription_heads;
         let subscription_logs = self.subscription_logs;
+        let subscription_headers = self.subscription_headers;
         let hub_index = self.hub_index;
         let hub_modules = self.hub_modules;
         let hub_module_trees = self.hub_module_trees;
@@ -356,7 +374,10 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
                 return None;
             }
             if let (Some(heads_tx), Some(logs_tx)) = (subscription_heads, subscription_logs) {
-                let sub_api = EthSubscriptionApiImpl::new(heads_tx, logs_tx);
+                let mut sub_api = EthSubscriptionApiImpl::new(heads_tx, logs_tx);
+                if let Some(headers_tx) = subscription_headers {
+                    sub_api = sub_api.with_headers(headers_tx);
+                }
                 if let Err(e) = module.merge(sub_api.into_rpc()) {
                     error!(error = %e, "Failed to merge subscription API");
                     let _ = jsonrpc_ready_tx.send(false);
@@ -469,6 +490,7 @@ pub struct JsonRpcServer<S: StateProvider = NoopStateProvider> {
     max_connections: u32,
     subscription_heads: Option<broadcast::Sender<RpcBlock>>,
     subscription_logs: Option<broadcast::Sender<Vec<RpcLog>>>,
+    subscription_headers: Option<broadcast::Sender<GossipHeader>>,
     extra_modules: Vec<jsonrpsee::RpcModule<()>>,
     hub_index: Option<Arc<BlockIndex>>,
     hub_modules: Option<SharedModuleState>,
@@ -498,6 +520,7 @@ impl JsonRpcServer<NoopStateProvider> {
             max_connections: 100,
             subscription_heads: None,
             subscription_logs: None,
+            subscription_headers: None,
             extra_modules: Vec::new(),
             hub_index: None,
             hub_modules: None,
@@ -519,6 +542,7 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
             max_connections: 100,
             subscription_heads: None,
             subscription_logs: None,
+            subscription_headers: None,
             extra_modules: Vec::new(),
             hub_index: None,
             hub_modules: None,
@@ -557,6 +581,16 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
     ) -> Self {
         self.subscription_heads = Some(heads_tx);
         self.subscription_logs = Some(logs_tx);
+        self
+    }
+
+    /// Enable gossip header subscriptions via `eth_subscribe("headers")`.
+    #[must_use]
+    pub fn with_headers_subscription(
+        mut self,
+        headers_tx: broadcast::Sender<GossipHeader>,
+    ) -> Self {
+        self.subscription_headers = Some(headers_tx);
         self
     }
 
@@ -648,7 +682,10 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
             module.merge(hub_api.into_rpc())?;
         }
         if let (Some(heads_tx), Some(logs_tx)) = (self.subscription_heads, self.subscription_logs) {
-            let sub_api = EthSubscriptionApiImpl::new(heads_tx, logs_tx);
+            let mut sub_api = EthSubscriptionApiImpl::new(heads_tx, logs_tx);
+            if let Some(headers_tx) = self.subscription_headers {
+                sub_api = sub_api.with_headers(headers_tx);
+            }
             module.merge(sub_api.into_rpc())?;
         }
         for extra in self.extra_modules {
