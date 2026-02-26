@@ -9,7 +9,7 @@ use tower::limit::ConcurrencyLimitLayer;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tracing::{error, info};
 
-use hub_executor::SharedModuleState;
+use hub_executor::{ModuleTrees, SharedModuleState};
 use hub_indexer::BlockIndex;
 
 use crate::{
@@ -97,6 +97,7 @@ pub struct RpcServer<S: StateProvider = NoopStateProvider> {
     extra_modules: Vec<jsonrpsee::RpcModule<()>>,
     hub_index: Option<Arc<BlockIndex>>,
     hub_modules: Option<SharedModuleState>,
+    hub_module_trees: Option<ModuleTrees>,
 }
 
 impl<S: StateProvider> std::fmt::Debug for RpcServer<S> {
@@ -127,6 +128,7 @@ impl RpcServer<NoopStateProvider> {
             extra_modules: Vec::new(),
             hub_index: None,
             hub_modules: None,
+            hub_module_trees: None,
         }
     }
 
@@ -145,6 +147,7 @@ impl RpcServer<NoopStateProvider> {
             extra_modules: Vec::new(),
             hub_index: None,
             hub_modules: None,
+            hub_module_trees: None,
         }
     }
 }
@@ -170,6 +173,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             extra_modules: Vec::new(),
             hub_index: None,
             hub_modules: None,
+            hub_module_trees: None,
         }
     }
 
@@ -225,6 +229,13 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
         self
     }
 
+    /// Set JMT-backed module state trees for proof generation.
+    #[must_use]
+    pub fn with_hub_module_trees(mut self, trees: ModuleTrees) -> Self {
+        self.hub_module_trees = Some(trees);
+        self
+    }
+
     /// Create from configuration.
     pub fn from_config(state: NodeState, config: RpcServerConfig, state_provider: S) -> Self {
         Self {
@@ -240,6 +251,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             extra_modules: Vec::new(),
             hub_index: None,
             hub_modules: None,
+            hub_module_trees: None,
         }
     }
 
@@ -259,6 +271,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
         let subscription_logs = self.subscription_logs;
         let hub_index = self.hub_index;
         let hub_modules = self.hub_modules;
+        let hub_module_trees = self.hub_module_trees;
 
         // Signal from the JSON-RPC task to the HTTP task indicating whether it
         // successfully bound the port. The HTTP status server waits for this
@@ -295,12 +308,14 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             let net_api = NetApiImpl::new(chain_id);
             let web3_api = Web3ApiImpl::new();
             let hub_api = {
-                let api = HubApiImpl::new(node_state_for_jsonrpc, tx_submit);
+                let mut api = HubApiImpl::new(node_state_for_jsonrpc, tx_submit);
                 if let (Some(idx), Some(mods)) = (hub_index, hub_modules) {
-                    api.with_index_and_modules(idx, mods)
-                } else {
-                    api
+                    api = api.with_index_and_modules(idx, mods);
                 }
+                if let Some(trees) = hub_module_trees {
+                    api = api.with_module_trees(trees);
+                }
+                api
             };
 
             let mut module = jsonrpsee::RpcModule::new(());
@@ -441,6 +456,7 @@ pub struct JsonRpcServer<S: StateProvider = NoopStateProvider> {
     extra_modules: Vec<jsonrpsee::RpcModule<()>>,
     hub_index: Option<Arc<BlockIndex>>,
     hub_modules: Option<SharedModuleState>,
+    hub_module_trees: Option<ModuleTrees>,
 }
 
 impl<S: StateProvider> std::fmt::Debug for JsonRpcServer<S> {
@@ -468,6 +484,7 @@ impl JsonRpcServer<NoopStateProvider> {
             extra_modules: Vec::new(),
             hub_index: None,
             hub_modules: None,
+            hub_module_trees: None,
         }
     }
 }
@@ -487,6 +504,7 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
             extra_modules: Vec::new(),
             hub_index: None,
             hub_modules: None,
+            hub_module_trees: None,
         }
     }
 
@@ -542,6 +560,13 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
         self
     }
 
+    /// Set JMT-backed module state trees for proof generation.
+    #[must_use]
+    pub fn with_hub_module_trees(mut self, trees: ModuleTrees) -> Self {
+        self.hub_module_trees = Some(trees);
+        self
+    }
+
     /// Start the JSON-RPC server.
     ///
     /// Returns the server handle and the actual bound address (useful when binding to port 0).
@@ -582,12 +607,14 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
         module.merge(web3_api.into_rpc())?;
         if let Some(node_state) = self.node_state {
             let hub_api = {
-                let api = HubApiImpl::new(node_state, self.tx_submit);
+                let mut api = HubApiImpl::new(node_state, self.tx_submit);
                 if let (Some(idx), Some(mods)) = (self.hub_index, self.hub_modules) {
-                    api.with_index_and_modules(idx, mods)
-                } else {
-                    api
+                    api = api.with_index_and_modules(idx, mods);
                 }
+                if let Some(trees) = self.hub_module_trees {
+                    api = api.with_module_trees(trees);
+                }
+                api
             };
             module.merge(hub_api.into_rpc())?;
         }

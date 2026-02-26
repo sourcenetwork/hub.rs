@@ -5,7 +5,8 @@ use std::sync::Arc;
 use alloy_primitives::{B256, Bytes, U64};
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 
-use hub_executor::SharedModuleState;
+use hub_domain::{ModuleId, ModuleStateProof};
+use hub_executor::{ModuleTrees, SharedModuleState};
 use hub_indexer::BlockIndex;
 
 use crate::{
@@ -42,6 +43,18 @@ pub trait HubApi {
     /// Returns the on-chain native nonce for a BLS identity.
     #[method(name = "getNativeNonce")]
     async fn get_native_nonce(&self, did: String) -> RpcResult<U64>;
+
+    /// Returns a Merkle inclusion/exclusion proof for a key in a module's state.
+    ///
+    /// The proof is verifiable against the `module_state_root` in the block header
+    /// at the given height. Supports both existence and non-existence proofs.
+    #[method(name = "getStateProof")]
+    async fn get_state_proof(
+        &self,
+        module: String,
+        key: String,
+        height: U64,
+    ) -> RpcResult<ModuleStateProof>;
 }
 
 /// Implementation of the hub RPC API.
@@ -50,6 +63,7 @@ pub struct HubApiImpl {
     tx_submit: Option<TxSubmitCallback>,
     index: Option<Arc<BlockIndex>>,
     modules: Option<SharedModuleState>,
+    module_trees: Option<ModuleTrees>,
 }
 
 impl std::fmt::Debug for HubApiImpl {
@@ -59,6 +73,7 @@ impl std::fmt::Debug for HubApiImpl {
             .field("tx_submit", &self.tx_submit.is_some())
             .field("index", &self.index.is_some())
             .field("modules", &self.modules.is_some())
+            .field("module_trees", &self.module_trees.is_some())
             .finish()
     }
 }
@@ -72,6 +87,7 @@ impl HubApiImpl {
             tx_submit,
             index: None,
             modules: None,
+            module_trees: None,
         }
     }
 
@@ -84,6 +100,13 @@ impl HubApiImpl {
     ) -> Self {
         self.index = Some(index);
         self.modules = Some(modules);
+        self
+    }
+
+    /// Set the JMT-backed module state trees for proof generation.
+    #[must_use]
+    pub fn with_module_trees(mut self, trees: ModuleTrees) -> Self {
+        self.module_trees = Some(trees);
         self
     }
 }
@@ -193,6 +216,61 @@ impl HubApiServer for HubApiImpl {
             .map_err(|_| RpcError::Internal("lock poisoned".into()))?;
         let nonce = guard.nonces.get_nonce(&did);
         Ok(U64::from(nonce))
+    }
+
+    async fn get_state_proof(
+        &self,
+        module: String,
+        key: String,
+        height: U64,
+    ) -> RpcResult<ModuleStateProof> {
+        let Some(ref trees) = self.module_trees else {
+            return Err(RpcError::Internal("module state trees not available".into()).into());
+        };
+
+        let module_id = ModuleId::from_str_name(&module).ok_or_else(|| {
+            RpcError::InvalidTransaction(format!(
+                "unknown module: {module} (expected acp, bulletin, hub, or native_nonce)"
+            ))
+        })?;
+
+        let key_bytes = hex::decode(key.strip_prefix("0x").unwrap_or(&key))
+            .map_err(|e| RpcError::InvalidTransaction(format!("invalid key hex: {e}")))?;
+
+        let height_val: u64 = height.to();
+
+        let mut all_roots = [[0u8; 32]; 4];
+        for (i, tree_mutex) in trees.iter().enumerate() {
+            let tree = tree_mutex
+                .lock()
+                .map_err(|_| RpcError::Internal("tree lock poisoned".into()))?;
+            let root = tree
+                .root_at_height(height_val)
+                .map_err(|e| RpcError::Internal(format!("root at height: {e}")))?;
+            all_roots[i] = root.0;
+        }
+
+        let target_tree = trees[module_id.index()]
+            .lock()
+            .map_err(|_| RpcError::Internal("tree lock poisoned".into()))?;
+
+        let (value, jmt_proof, root_hash) = target_tree
+            .prove_at_height(&key_bytes, height_val)
+            .map_err(|e| RpcError::Internal(format!("proof generation: {e}")))?;
+
+        all_roots[module_id.index()] = root_hash.0;
+
+        let proof = ModuleStateProof::new(
+            module_id,
+            height_val,
+            &key_bytes,
+            value.as_deref(),
+            &jmt_proof,
+            root_hash.0,
+            all_roots,
+        );
+
+        Ok(proof)
     }
 }
 

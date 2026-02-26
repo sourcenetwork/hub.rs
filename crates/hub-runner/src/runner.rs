@@ -317,6 +317,7 @@ impl NodeRunner for HubRunner {
             .map(|(pk, addr)| (pk.clone(), *addr))
             .collect();
 
+        let module_trees_for_rpc = module_trees.clone();
         let executor = HubExecutor::new(self.chain_id).with_module_trees(module_trees);
         let modules: SharedModuleState = executor.modules().clone();
         executor.set_base_modules(persisted_modules);
@@ -547,7 +548,8 @@ impl NodeRunner for HubRunner {
             )
             .with_tx_submit(tx_submit)
             .with_subscriptions(heads_tx, logs_tx)
-            .with_hub_index_and_modules(hub_index, hub_modules);
+            .with_hub_index_and_modules(hub_index, hub_modules)
+            .with_hub_module_trees(module_trees_for_rpc);
             let rpc_handle = rpc.start();
             context.clone().shared(true).spawn(move |_| async move {
                 rpc_handle.stopped().await;
