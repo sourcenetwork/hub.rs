@@ -26,14 +26,14 @@ use hub_domain::{
     Block, BlockCfg, BootstrapConfig, ConsensusDigest, LedgerEvent, PublicKey, Tx, TxCfg,
 };
 use hub_executor::{BlockContext, HubExecutor, ModuleState, ModuleTrees, SharedModuleState};
-use hub_indexer::BlockIndex;
+use hub_indexer::{BlockIndex, LightBlockIndex, StoredValidatorSet};
 use hub_jsonrpc::IndexedStateProvider;
 use hub_ledger::{LedgerService, LedgerView};
 use hub_marshal::{ArchiveInitializer, BroadcastInitializer, PeerInitializer};
 use hub_modules::kv_store::InMemoryKvStore;
 use hub_reporters::{
-    BlockContextProvider, FinalizedReporter, NodeStateReporter, PrevrandaoReporter,
-    ValidatorSetUpdate, ViewTracker, active_participant_set,
+    BlockContextProvider, CertificateReporter, FinalizedReporter, NodeStateReporter,
+    PrevrandaoReporter, ValidatorSetUpdate, ViewTracker, active_participant_set,
 };
 use hub_service::{NodeRunContext, NodeRunner};
 use hub_simplex::{DEFAULT_MAILBOX_SIZE as MAILBOX_SIZE, DefaultPool};
@@ -50,6 +50,7 @@ type CertArchive = Finalization<Ed25519Scheme, ConsensusDigest>;
 type MarshalMailbox = commonware_consensus::marshal::Mailbox<Ed25519Scheme, Block>;
 type NodeStateRptr = NodeStateReporter<Ed25519Scheme>;
 type ViewTrackerRptr = ViewTracker<Ed25519Scheme>;
+type CertRptr = CertificateReporter<Ed25519Scheme>;
 
 fn default_page_cache() -> CacheRef {
     DefaultPool::init()
@@ -235,6 +236,7 @@ impl NodeRunner for HubRunner {
         let validator_key = config
             .validator_key()
             .map_err(|e| anyhow::anyhow!("failed to load validator key: {}", e))?;
+        let gossip_signing_key = validator_key.clone();
         let my_pk = commonware_cryptography::Signer::public_key(&validator_key);
 
         let validators = self.scheme.participants().clone();
@@ -278,8 +280,27 @@ impl NodeRunner for HubRunner {
         info!("Gulfstream targeted tx forwarding enabled");
 
         let block_index = Arc::new(BlockIndex::new());
+        let light_block_index = Arc::new(LightBlockIndex::new());
+
+        let initial_pubkeys: Vec<[u8; 32]> = validators
+            .iter()
+            .map(|pk| {
+                let bytes: &[u8] = pk.as_ref();
+                let mut out = [0u8; 32];
+                out.copy_from_slice(bytes);
+                out
+            })
+            .collect();
+        light_block_index.insert_validators(
+            0,
+            StoredValidatorSet {
+                pubkeys: initial_pubkeys,
+            },
+        );
+
         let (heads_tx, _) = ::tokio::sync::broadcast::channel::<hub_jsonrpc::RpcBlock>(64);
         let (logs_tx, _) = ::tokio::sync::broadcast::channel::<Vec<hub_jsonrpc::RpcLog>>(256);
+        let (headers_tx, _) = ::tokio::sync::broadcast::channel::<hub_domain::GossipHeader>(64);
 
         // Open per-module JMT state trees and load persisted state.
         let data_dir = &config.data_dir;
@@ -317,6 +338,7 @@ impl NodeRunner for HubRunner {
             .map(|(pk, addr)| (pk.clone(), *addr))
             .collect();
 
+        let module_trees_for_rpc = module_trees.clone();
         let executor = HubExecutor::new(self.chain_id).with_module_trees(module_trees);
         let modules: SharedModuleState = executor.modules().clone();
         executor.set_base_modules(persisted_modules);
@@ -333,6 +355,7 @@ impl NodeRunner for HubRunner {
             ::tokio::sync::mpsc::unbounded_channel::<ValidatorSetUpdate>();
 
         let finalized_reporter = {
+            let publisher_index = validators.position(&my_pk).unwrap_or(0) as u32;
             let reporter = FinalizedReporter::new(
                 ledger.clone(),
                 context.clone(),
@@ -342,10 +365,12 @@ impl NodeRunner for HubRunner {
             .with_block_index(block_index.clone())
             .with_subscriptions(heads_tx.clone(), logs_tx.clone())
             .with_last_committed_height(last_committed_height)
-            .with_validator_set_updates(
-                validator_set_tx,
+            .with_validator_set_updates(validator_set_tx, self.chain_id, self.gas_limit)
+            .with_gossip(
+                gossip_signing_key,
                 self.chain_id,
-                self.gas_limit,
+                publisher_index,
+                headers_tx.clone(),
             );
             if let Some((state, _)) = &self.rpc_config {
                 reporter.with_node_state(state.clone())
@@ -420,6 +445,7 @@ impl NodeRunner for HubRunner {
 
         let seed_reporter = PrevrandaoReporter::<Ed25519Scheme>::new(ledger.clone());
         let view_tracker = ViewTracker::<Ed25519Scheme>::new(view_counter);
+        let cert_reporter = CertificateReporter::<Ed25519Scheme>::new(light_block_index.clone());
         let node_state_reporter = self
             .rpc_config
             .as_ref()
@@ -428,7 +454,8 @@ impl NodeRunner for HubRunner {
             Reporters::from((marshal_mailbox.clone(), node_state_reporter));
         let with_view: Reporters<_, ViewTrackerRptr, _> =
             Reporters::from((view_tracker, inner_reporters));
-        let reporter = Reporters::from((seed_reporter, with_view));
+        let with_cert: Reporters<_, CertRptr, _> = Reporters::from((cert_reporter, with_view));
+        let reporter = Reporters::from((seed_reporter, with_cert));
 
         for tx in &self.bootstrap.bootstrap_txs {
             ledger.submit_tx_trusted(tx.clone()).await;
@@ -471,6 +498,7 @@ impl NodeRunner for HubRunner {
             let consumer_pk = my_pk.clone();
             let mut consumer_oracle = transport.oracle.clone();
             let mut consumer_rx = validator_set_rx;
+            let consumer_light_index = light_block_index.clone();
             context.clone().shared(true).spawn(move |_| async move {
                 let mut epoch_manager = epoch_manager;
                 while let Some(update) = consumer_rx.recv().await {
@@ -489,6 +517,17 @@ impl NodeRunner for HubRunner {
                         continue;
                     }
                     let next_epoch = epoch_manager.next_epoch();
+                    let pubkeys: Vec<[u8; 32]> = new_participants
+                        .iter()
+                        .map(|pk| {
+                            let bytes: &[u8] = pk.as_ref();
+                            let mut out = [0u8; 32];
+                            out.copy_from_slice(bytes);
+                            out
+                        })
+                        .collect();
+                    consumer_light_index
+                        .insert_validators(next_epoch.get(), StoredValidatorSet { pubkeys });
                     let _scheme = epoch_manager
                         .enter(next_epoch, new_participants, &mut consumer_oracle)
                         .await;
@@ -547,7 +586,10 @@ impl NodeRunner for HubRunner {
             )
             .with_tx_submit(tx_submit)
             .with_subscriptions(heads_tx, logs_tx)
-            .with_hub_index_and_modules(hub_index, hub_modules);
+            .with_headers_subscription(headers_tx.clone())
+            .with_hub_index_and_modules(hub_index, hub_modules)
+            .with_hub_module_trees(module_trees_for_rpc)
+            .with_hub_light_block_index(light_block_index.clone());
             let rpc_handle = rpc.start();
             context.clone().shared(true).spawn(move |_| async move {
                 rpc_handle.stopped().await;

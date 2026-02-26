@@ -18,7 +18,7 @@ commonware-cryptography.workspace = true
 
 # Execution
 alloy-evm = { workspace = true, features = ["std"] }
-alloy-primitives.workspace = true
+alloy-primitives = { workspace = true, features = ["serde"] }
 alloy-consensus = { workspace = true, optional = true }
 alloy-eips = { workspace = true, optional = true }
 k256 = { workspace = true, optional = true }
@@ -30,14 +30,24 @@ alloy-rlp = { workspace = true }
 # Synchronization
 parking_lot.workspace = true
 
+# JMT proof verification
+jmt = { version = "0.11" }
+sha2 = { workspace = true }
+borsh = { workspace = true }
+
+# Error handling
+thiserror.workspace = true
+
 # General
 bytes.workspace = true
 futures.workspace = true
+hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
 alloy-eips.workspace = true
+jmt = { version = "0.11", features = ["mocks"] }
 
 [features]
 evm = ["dep:alloy-consensus", "dep:alloy-eips", "dep:k256", "dep:sha3"]

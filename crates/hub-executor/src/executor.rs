@@ -109,6 +109,11 @@ impl HubExecutor {
         &self.modules
     }
 
+    /// Get the JMT-backed module state trees, if attached.
+    pub const fn module_trees(&self) -> Option<&ModuleTrees> {
+        self.module_trees.as_ref()
+    }
+
     /// Get the cached module state for a given height (clone without removing).
     pub fn get_cached_modules(&self, height: u64) -> Option<ModuleState> {
         self.module_cache.lock().unwrap().get(&height).cloned()

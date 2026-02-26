@@ -5,8 +5,10 @@ use std::sync::Arc;
 use alloy_primitives::{B256, Bytes, U64};
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 
-use hub_executor::SharedModuleState;
-use hub_indexer::BlockIndex;
+use commonware_cryptography::{Hasher as _, Sha256};
+use hub_domain::{LightBlock, ModuleId, ModuleStateProof};
+use hub_executor::{ModuleTrees, SharedModuleState};
+use hub_indexer::{BlockIndex, LightBlockIndex};
 
 use crate::{
     error::RpcError,
@@ -42,6 +44,26 @@ pub trait HubApi {
     /// Returns the on-chain native nonce for a BLS identity.
     #[method(name = "getNativeNonce")]
     async fn get_native_nonce(&self, did: String) -> RpcResult<U64>;
+
+    /// Returns a Merkle inclusion/exclusion proof for a key in a module's state.
+    ///
+    /// The proof is verifiable against the `module_state_root` in the block header
+    /// at the given height. Supports both existence and non-existence proofs.
+    #[method(name = "getStateProof")]
+    async fn get_state_proof(
+        &self,
+        module: String,
+        key: String,
+        height: U64,
+    ) -> RpcResult<ModuleStateProof>;
+
+    /// Returns a self-contained light block at the given height.
+    ///
+    /// Includes the block header, finalization certificate, and validator set —
+    /// everything needed to verify the block's authenticity via
+    /// `hub_domain::verify_light_block`.
+    #[method(name = "getLightBlock")]
+    async fn get_light_block(&self, height: U64) -> RpcResult<LightBlock>;
 }
 
 /// Implementation of the hub RPC API.
@@ -50,6 +72,8 @@ pub struct HubApiImpl {
     tx_submit: Option<TxSubmitCallback>,
     index: Option<Arc<BlockIndex>>,
     modules: Option<SharedModuleState>,
+    module_trees: Option<ModuleTrees>,
+    light_block_index: Option<Arc<LightBlockIndex>>,
 }
 
 impl std::fmt::Debug for HubApiImpl {
@@ -59,6 +83,8 @@ impl std::fmt::Debug for HubApiImpl {
             .field("tx_submit", &self.tx_submit.is_some())
             .field("index", &self.index.is_some())
             .field("modules", &self.modules.is_some())
+            .field("module_trees", &self.module_trees.is_some())
+            .field("light_block_index", &self.light_block_index.is_some())
             .finish()
     }
 }
@@ -72,6 +98,8 @@ impl HubApiImpl {
             tx_submit,
             index: None,
             modules: None,
+            module_trees: None,
+            light_block_index: None,
         }
     }
 
@@ -84,6 +112,20 @@ impl HubApiImpl {
     ) -> Self {
         self.index = Some(index);
         self.modules = Some(modules);
+        self
+    }
+
+    /// Set the JMT-backed module state trees for proof generation.
+    #[must_use]
+    pub fn with_module_trees(mut self, trees: ModuleTrees) -> Self {
+        self.module_trees = Some(trees);
+        self
+    }
+
+    /// Set the light block index for `getLightBlock` queries.
+    #[must_use]
+    pub fn with_light_block_index(mut self, index: Arc<LightBlockIndex>) -> Self {
+        self.light_block_index = Some(index);
         self
     }
 }
@@ -193,6 +235,107 @@ impl HubApiServer for HubApiImpl {
             .map_err(|_| RpcError::Internal("lock poisoned".into()))?;
         let nonce = guard.nonces.get_nonce(&did);
         Ok(U64::from(nonce))
+    }
+
+    async fn get_state_proof(
+        &self,
+        module: String,
+        key: String,
+        height: U64,
+    ) -> RpcResult<ModuleStateProof> {
+        let Some(ref trees) = self.module_trees else {
+            return Err(RpcError::Internal("module state trees not available".into()).into());
+        };
+
+        let module_id = ModuleId::from_str_name(&module).ok_or_else(|| {
+            RpcError::InvalidTransaction(format!(
+                "unknown module: {module} (expected acp, bulletin, hub, or native_nonce)"
+            ))
+        })?;
+
+        let key_bytes = hex::decode(key.strip_prefix("0x").unwrap_or(&key))
+            .map_err(|e| RpcError::InvalidTransaction(format!("invalid key hex: {e}")))?;
+
+        let height_val: u64 = height.to();
+
+        let mut all_roots = [[0u8; 32]; 4];
+        for (i, tree_mutex) in trees.iter().enumerate() {
+            let tree = tree_mutex
+                .lock()
+                .map_err(|_| RpcError::Internal("tree lock poisoned".into()))?;
+            let root = tree
+                .root_at_height(height_val)
+                .map_err(|e| RpcError::Internal(format!("root at height: {e}")))?;
+            all_roots[i] = root.0;
+        }
+
+        let target_tree = trees[module_id.index()]
+            .lock()
+            .map_err(|_| RpcError::Internal("tree lock poisoned".into()))?;
+
+        let (value, jmt_proof, root_hash) = target_tree
+            .prove_at_height(&key_bytes, height_val)
+            .map_err(|e| RpcError::Internal(format!("proof generation: {e}")))?;
+
+        all_roots[module_id.index()] = root_hash.0;
+
+        let proof = ModuleStateProof::new(
+            module_id,
+            height_val,
+            &key_bytes,
+            value.as_deref(),
+            &jmt_proof,
+            root_hash.0,
+            all_roots,
+        );
+
+        Ok(proof)
+    }
+
+    async fn get_light_block(&self, height: U64) -> RpcResult<LightBlock> {
+        let Some(ref block_index) = self.index else {
+            return Err(RpcError::Internal("block index not available".into()).into());
+        };
+        let Some(ref light_index) = self.light_block_index else {
+            return Err(RpcError::Internal("light block index not available".into()).into());
+        };
+
+        let height_val: u64 = height.to();
+        let block = block_index
+            .get_block_by_number(height_val)
+            .ok_or_else(|| RpcError::Internal(format!("block not found at height {height_val}")))?;
+
+        let mut hasher = Sha256::default();
+        hasher.update(block.hash.as_slice());
+        let consensus_digest = hasher.finalize().0;
+
+        let cert = light_index
+            .get_certificate(&consensus_digest)
+            .ok_or_else(|| {
+                RpcError::Internal(format!(
+                    "finalization certificate not found for height {height_val}"
+                ))
+            })?;
+
+        let validators = light_index.get_validators(cert.epoch).ok_or_else(|| {
+            RpcError::Internal(format!("validator set not found for epoch {}", cert.epoch))
+        })?;
+
+        Ok(LightBlock::from_parts(
+            block.hash,
+            block.parent_hash,
+            block.number,
+            block.timestamp,
+            block.state_root,
+            block.module_state_root,
+            cert.epoch,
+            cert.view,
+            cert.parent_view,
+            cert.payload,
+            cert.signer_indices,
+            cert.signatures,
+            validators.pubkeys,
+        ))
     }
 }
 

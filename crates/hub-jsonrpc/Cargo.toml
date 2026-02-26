@@ -42,6 +42,9 @@ tracing.workspace = true
 # Misc
 parking_lot.workspace = true
 
+# Commonware
+commonware-cryptography.workspace = true
+
 # Kora crates
 hub-domain.workspace = true
 hub-executor.workspace = true

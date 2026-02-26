@@ -9,8 +9,10 @@ use tower::limit::ConcurrencyLimitLayer;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tracing::{error, info};
 
-use hub_executor::SharedModuleState;
-use hub_indexer::BlockIndex;
+use hub_executor::{ModuleTrees, SharedModuleState};
+use hub_indexer::{BlockIndex, LightBlockIndex};
+
+use hub_domain::GossipHeader;
 
 use crate::{
     config::{CorsConfig, RpcServerConfig},
@@ -94,9 +96,12 @@ pub struct RpcServer<S: StateProvider = NoopStateProvider> {
     max_connections: u32,
     subscription_heads: Option<broadcast::Sender<RpcBlock>>,
     subscription_logs: Option<broadcast::Sender<Vec<RpcLog>>>,
+    subscription_headers: Option<broadcast::Sender<GossipHeader>>,
     extra_modules: Vec<jsonrpsee::RpcModule<()>>,
     hub_index: Option<Arc<BlockIndex>>,
     hub_modules: Option<SharedModuleState>,
+    hub_module_trees: Option<ModuleTrees>,
+    hub_light_block_index: Option<Arc<LightBlockIndex>>,
 }
 
 impl<S: StateProvider> std::fmt::Debug for RpcServer<S> {
@@ -124,9 +129,12 @@ impl RpcServer<NoopStateProvider> {
             max_connections: 100,
             subscription_heads: None,
             subscription_logs: None,
+            subscription_headers: None,
             extra_modules: Vec::new(),
             hub_index: None,
             hub_modules: None,
+            hub_module_trees: None,
+            hub_light_block_index: None,
         }
     }
 
@@ -142,9 +150,12 @@ impl RpcServer<NoopStateProvider> {
             max_connections: 100,
             subscription_heads: None,
             subscription_logs: None,
+            subscription_headers: None,
             extra_modules: Vec::new(),
             hub_index: None,
             hub_modules: None,
+            hub_module_trees: None,
+            hub_light_block_index: None,
         }
     }
 }
@@ -167,9 +178,12 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             max_connections: 100,
             subscription_heads: None,
             subscription_logs: None,
+            subscription_headers: None,
             extra_modules: Vec::new(),
             hub_index: None,
             hub_modules: None,
+            hub_module_trees: None,
+            hub_light_block_index: None,
         }
     }
 
@@ -206,6 +220,16 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
         self
     }
 
+    /// Enable gossip header subscriptions via `eth_subscribe("headers")`.
+    #[must_use]
+    pub fn with_headers_subscription(
+        mut self,
+        headers_tx: broadcast::Sender<GossipHeader>,
+    ) -> Self {
+        self.subscription_headers = Some(headers_tx);
+        self
+    }
+
     /// Merge an additional JSON-RPC module into the server.
     #[must_use]
     pub fn with_extra_module(mut self, module: jsonrpsee::RpcModule<()>) -> Self {
@@ -225,6 +249,20 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
         self
     }
 
+    /// Set JMT-backed module state trees for proof generation.
+    #[must_use]
+    pub fn with_hub_module_trees(mut self, trees: ModuleTrees) -> Self {
+        self.hub_module_trees = Some(trees);
+        self
+    }
+
+    /// Set the light block index for `hub_getLightBlock` queries.
+    #[must_use]
+    pub fn with_hub_light_block_index(mut self, index: Arc<LightBlockIndex>) -> Self {
+        self.hub_light_block_index = Some(index);
+        self
+    }
+
     /// Create from configuration.
     pub fn from_config(state: NodeState, config: RpcServerConfig, state_provider: S) -> Self {
         Self {
@@ -237,9 +275,12 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             max_connections: config.max_connections,
             subscription_heads: None,
             subscription_logs: None,
+            subscription_headers: None,
             extra_modules: Vec::new(),
             hub_index: None,
             hub_modules: None,
+            hub_module_trees: None,
+            hub_light_block_index: None,
         }
     }
 
@@ -257,8 +298,11 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
         let state_provider = self.state_provider;
         let subscription_heads = self.subscription_heads;
         let subscription_logs = self.subscription_logs;
+        let subscription_headers = self.subscription_headers;
         let hub_index = self.hub_index;
         let hub_modules = self.hub_modules;
+        let hub_module_trees = self.hub_module_trees;
+        let hub_light_block_index = self.hub_light_block_index;
 
         // Signal from the JSON-RPC task to the HTTP task indicating whether it
         // successfully bound the port. The HTTP status server waits for this
@@ -295,12 +339,17 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             let net_api = NetApiImpl::new(chain_id);
             let web3_api = Web3ApiImpl::new();
             let hub_api = {
-                let api = HubApiImpl::new(node_state_for_jsonrpc, tx_submit);
+                let mut api = HubApiImpl::new(node_state_for_jsonrpc, tx_submit);
                 if let (Some(idx), Some(mods)) = (hub_index, hub_modules) {
-                    api.with_index_and_modules(idx, mods)
-                } else {
-                    api
+                    api = api.with_index_and_modules(idx, mods);
                 }
+                if let Some(trees) = hub_module_trees {
+                    api = api.with_module_trees(trees);
+                }
+                if let Some(lbi) = hub_light_block_index {
+                    api = api.with_light_block_index(lbi);
+                }
+                api
             };
 
             let mut module = jsonrpsee::RpcModule::new(());
@@ -325,7 +374,10 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
                 return None;
             }
             if let (Some(heads_tx), Some(logs_tx)) = (subscription_heads, subscription_logs) {
-                let sub_api = EthSubscriptionApiImpl::new(heads_tx, logs_tx);
+                let mut sub_api = EthSubscriptionApiImpl::new(heads_tx, logs_tx);
+                if let Some(headers_tx) = subscription_headers {
+                    sub_api = sub_api.with_headers(headers_tx);
+                }
                 if let Err(e) = module.merge(sub_api.into_rpc()) {
                     error!(error = %e, "Failed to merge subscription API");
                     let _ = jsonrpc_ready_tx.send(false);
@@ -438,9 +490,12 @@ pub struct JsonRpcServer<S: StateProvider = NoopStateProvider> {
     max_connections: u32,
     subscription_heads: Option<broadcast::Sender<RpcBlock>>,
     subscription_logs: Option<broadcast::Sender<Vec<RpcLog>>>,
+    subscription_headers: Option<broadcast::Sender<GossipHeader>>,
     extra_modules: Vec<jsonrpsee::RpcModule<()>>,
     hub_index: Option<Arc<BlockIndex>>,
     hub_modules: Option<SharedModuleState>,
+    hub_module_trees: Option<ModuleTrees>,
+    hub_light_block_index: Option<Arc<LightBlockIndex>>,
 }
 
 impl<S: StateProvider> std::fmt::Debug for JsonRpcServer<S> {
@@ -465,9 +520,12 @@ impl JsonRpcServer<NoopStateProvider> {
             max_connections: 100,
             subscription_heads: None,
             subscription_logs: None,
+            subscription_headers: None,
             extra_modules: Vec::new(),
             hub_index: None,
             hub_modules: None,
+            hub_module_trees: None,
+            hub_light_block_index: None,
         }
     }
 }
@@ -484,9 +542,12 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
             max_connections: 100,
             subscription_heads: None,
             subscription_logs: None,
+            subscription_headers: None,
             extra_modules: Vec::new(),
             hub_index: None,
             hub_modules: None,
+            hub_module_trees: None,
+            hub_light_block_index: None,
         }
     }
 
@@ -523,6 +584,16 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
         self
     }
 
+    /// Enable gossip header subscriptions via `eth_subscribe("headers")`.
+    #[must_use]
+    pub fn with_headers_subscription(
+        mut self,
+        headers_tx: broadcast::Sender<GossipHeader>,
+    ) -> Self {
+        self.subscription_headers = Some(headers_tx);
+        self
+    }
+
     /// Merge an additional JSON-RPC module into the server.
     #[must_use]
     pub fn with_extra_module(mut self, module: jsonrpsee::RpcModule<()>) -> Self {
@@ -539,6 +610,20 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
     ) -> Self {
         self.hub_index = Some(index);
         self.hub_modules = Some(modules);
+        self
+    }
+
+    /// Set JMT-backed module state trees for proof generation.
+    #[must_use]
+    pub fn with_hub_module_trees(mut self, trees: ModuleTrees) -> Self {
+        self.hub_module_trees = Some(trees);
+        self
+    }
+
+    /// Set the light block index for `hub_getLightBlock` queries.
+    #[must_use]
+    pub fn with_hub_light_block_index(mut self, index: Arc<LightBlockIndex>) -> Self {
+        self.hub_light_block_index = Some(index);
         self
     }
 
@@ -582,17 +667,25 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
         module.merge(web3_api.into_rpc())?;
         if let Some(node_state) = self.node_state {
             let hub_api = {
-                let api = HubApiImpl::new(node_state, self.tx_submit);
+                let mut api = HubApiImpl::new(node_state, self.tx_submit);
                 if let (Some(idx), Some(mods)) = (self.hub_index, self.hub_modules) {
-                    api.with_index_and_modules(idx, mods)
-                } else {
-                    api
+                    api = api.with_index_and_modules(idx, mods);
                 }
+                if let Some(trees) = self.hub_module_trees {
+                    api = api.with_module_trees(trees);
+                }
+                if let Some(lbi) = self.hub_light_block_index {
+                    api = api.with_light_block_index(lbi);
+                }
+                api
             };
             module.merge(hub_api.into_rpc())?;
         }
         if let (Some(heads_tx), Some(logs_tx)) = (self.subscription_heads, self.subscription_logs) {
-            let sub_api = EthSubscriptionApiImpl::new(heads_tx, logs_tx);
+            let mut sub_api = EthSubscriptionApiImpl::new(heads_tx, logs_tx);
+            if let Some(headers_tx) = self.subscription_headers {
+                sub_api = sub_api.with_headers(headers_tx);
+            }
             module.merge(sub_api.into_rpc())?;
         }
         for extra in self.extra_modules {

@@ -11,6 +11,9 @@ pub use error::IndexerError;
 mod filter;
 pub use filter::LogFilter;
 
+mod light_block_store;
+pub use light_block_store::{LightBlockIndex, StoredCertificate, StoredValidatorSet};
+
 mod store;
 pub use store::BlockIndex;
 
