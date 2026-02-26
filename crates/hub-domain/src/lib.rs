@@ -25,6 +25,9 @@ pub use idents::{BlockId, Idents, StateRoot, TxId};
 mod native_tx;
 pub use native_tx::{NATIVE_TX_TYPE, NativeTx, NativeTxPayload};
 
+mod gossip;
+pub use gossip::{GOSSIP_HEADER_SIZE, GossipHeader};
+
 mod tx;
 pub use tx::{Tx, TxCfg};
 
