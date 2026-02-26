@@ -43,6 +43,8 @@ pub(crate) enum Commands {
     Devnet(DevnetArgs),
     /// Run multi-node local testnet (trusted-dealer DKG).
     Testnet(testnet::TestnetArgs),
+    /// Interact with a running hub node.
+    Client(crate::client::ClientArgs),
 }
 
 #[derive(clap::Args, Debug)]
@@ -110,6 +112,10 @@ impl Cli {
     }
 
     pub(crate) fn run(self) -> eyre::Result<()> {
+        // Client takes ownership; extract it before borrowing self for other arms.
+        if let Some(Commands::Client(args)) = self.command {
+            return args.run();
+        }
         match &self.command {
             Some(Commands::Validator(args)) => self.run_validator(args),
             Some(Commands::Devnet(args)) => self.run_devnet(args),
@@ -120,6 +126,7 @@ impl Cli {
                 });
                 testnet::run(chain_id, data_dir, args)
             }
+            Some(Commands::Client(_)) => unreachable!(),
             None => {
                 eprintln!("No subcommand given. Use --help for usage.");
                 std::process::exit(1);

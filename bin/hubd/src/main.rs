@@ -4,6 +4,7 @@ use clap::Parser;
 use tracing_subscriber::prelude::*;
 
 mod cli;
+mod client;
 mod testnet;
 
 fn main() -> eyre::Result<()> {

@@ -15,21 +15,28 @@ hub-genesis.workspace = true
 hub-runner.workspace = true
 
 hub-cli.workspace = true
+hub-client.workspace = true
 hub-config.workspace = true
 hub-crypto.workspace = true
 hub-domain.workspace = true
 hub-jsonrpc.workspace = true
 hub-service.workspace = true
 
+alloy-primitives.workspace = true
+k256.workspace = true
+ark-bls12-381.workspace = true
+ark-ff.workspace = true
+
 commonware-codec.workspace = true
 commonware-cryptography.workspace = true
 commonware-utils.workspace = true
 
-clap.workspace = true
+clap = { workspace = true, features = ["env"] }
 eyre.workspace = true
 hex.workspace = true
 rand.workspace = true
 reqwest.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true

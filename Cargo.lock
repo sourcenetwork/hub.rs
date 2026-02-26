@@ -3929,6 +3929,9 @@ dependencies = [
 name = "hubd"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
+ "ark-bls12-381 0.4.0",
+ "ark-ff 0.4.2",
  "clap",
  "commonware-codec",
  "commonware-cryptography",
@@ -3936,6 +3939,7 @@ dependencies = [
  "eyre",
  "hex",
  "hub-cli",
+ "hub-client 0.1.0",
  "hub-config",
  "hub-crypto 0.1.0",
  "hub-domain 0.1.0",
@@ -3944,8 +3948,10 @@ dependencies = [
  "hub-jsonrpc",
  "hub-runner",
  "hub-service",
+ "k256",
  "rand 0.8.5",
  "reqwest",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",
