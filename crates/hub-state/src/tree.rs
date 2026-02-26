@@ -159,6 +159,43 @@ impl ModuleStateTree {
         tree.get_with_proof(key_hash, self.canonical_version)
     }
 
+    /// Generates a JMT sparse Merkle proof for `key` at a specific block height.
+    ///
+    /// Returns the value (or `None` for non-existence), the proof, and the root
+    /// hash at that height's JMT version. Fails if the height is not retained
+    /// (older than `HEIGHT_RETENTION` blocks) or if no version exists for it.
+    pub fn prove_at_height(
+        &self,
+        key: &[u8],
+        height: u64,
+    ) -> Result<(Option<Vec<u8>>, SparseMerkleProof<Sha256>, RootHash)> {
+        let version = self
+            .height_versions
+            .get(&height)
+            .copied()
+            .or(if height == self.canonical_height {
+                Some(self.canonical_version)
+            } else {
+                None
+            })
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no JMT version for height {height} (canonical={}, retention={HEIGHT_RETENTION})",
+                    self.canonical_height
+                )
+            })?;
+
+        if version == 0 {
+            anyhow::bail!("tree is empty at height {height}");
+        }
+
+        let key_hash = KeyHash::with::<Sha256>(key);
+        let tree = Sha256Jmt::new(&self.store);
+        let (value, proof) = tree.get_with_proof(key_hash, version)?;
+        let root = tree.get_root_hash(version)?;
+        Ok((value, proof, root))
+    }
+
     /// Returns the Merkle root.
     ///
     /// During execution: speculative root from canonical base + overlay.
@@ -305,6 +342,34 @@ impl ModuleStateTree {
     /// Load all key-value pairs from the `raw_kv` column family.
     pub fn load_all(&self) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
         self.store.raw_kv_iter()
+    }
+
+    /// Returns the JMT root hash at a specific block height.
+    ///
+    /// Fails if the height is not retained or if the tree was empty.
+    pub fn root_at_height(&self, height: u64) -> Result<RootHash> {
+        let version = self
+            .height_versions
+            .get(&height)
+            .copied()
+            .or(if height == self.canonical_height {
+                Some(self.canonical_version)
+            } else {
+                None
+            })
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no JMT version for height {height} (canonical={}, retention={HEIGHT_RETENTION})",
+                    self.canonical_height
+                )
+            })?;
+
+        if version == 0 {
+            return Ok(RootHash(empty_root()));
+        }
+
+        let tree = Sha256Jmt::new(&self.store);
+        tree.get_root_hash(version)
     }
 
     fn base_version_for_execution_at(&self, height: u64) -> u64 {
@@ -721,5 +786,92 @@ mod tests {
         assert_eq!(tree.get(b"key-a").unwrap(), Some(b"val-a".to_vec()));
         assert_eq!(tree.get(b"key-b").unwrap(), Some(b"val-b".to_vec()));
         assert_eq!(tree.root().unwrap().0, root_at_close.0);
+    }
+
+    // ── Proof-at-height tests ───────────────────────────────────────
+
+    #[test]
+    fn prove_at_height_existence() {
+        let dir = TempDir::new().unwrap();
+        let mut tree = open_tree(&dir);
+
+        tree.begin_execution(1);
+        tree.put(b"key/a", Some(b"val-h1".to_vec())).unwrap();
+        tree.flush_overlay().unwrap();
+
+        tree.begin_execution(2);
+        tree.put(b"key/a", Some(b"val-h2".to_vec())).unwrap();
+        tree.flush_overlay().unwrap();
+
+        let (val, proof, root) = tree.prove_at_height(b"key/a", 2).unwrap();
+        assert_eq!(val, Some(b"val-h2".to_vec()));
+
+        let key_hash = KeyHash::with::<Sha256>(b"key/a");
+        assert!(proof.verify(root, key_hash, val).is_ok());
+    }
+
+    #[test]
+    fn prove_at_height_nonexistence() {
+        let dir = TempDir::new().unwrap();
+        let mut tree = open_tree(&dir);
+
+        tree.begin_execution(1);
+        tree.put(b"key/a", Some(b"val".to_vec())).unwrap();
+        tree.flush_overlay().unwrap();
+
+        let (val, proof, root) = tree.prove_at_height(b"key/missing", 1).unwrap();
+        assert!(val.is_none());
+
+        let key_hash = KeyHash::with::<Sha256>(b"key/missing");
+        assert!(proof.verify(root, key_hash, None::<Vec<u8>>).is_ok());
+    }
+
+    #[test]
+    fn prove_at_height_historical() {
+        let dir = TempDir::new().unwrap();
+        let mut tree = open_tree(&dir);
+
+        tree.begin_execution(1);
+        tree.put(b"key/a", Some(b"v1".to_vec())).unwrap();
+        tree.flush_overlay().unwrap();
+
+        tree.begin_execution(2);
+        tree.put(b"key/a", Some(b"v2".to_vec())).unwrap();
+        tree.flush_overlay().unwrap();
+
+        let (val_h1, proof_h1, root_h1) = tree.prove_at_height(b"key/a", 1).unwrap();
+        assert_eq!(val_h1, Some(b"v1".to_vec()));
+        let key_hash = KeyHash::with::<Sha256>(b"key/a");
+        assert!(proof_h1.verify(root_h1, key_hash, val_h1).is_ok());
+
+        let (val_h2, _, _) = tree.prove_at_height(b"key/a", 2).unwrap();
+        assert_eq!(val_h2, Some(b"v2".to_vec()));
+    }
+
+    #[test]
+    fn prove_at_height_rejects_unknown_height() {
+        let dir = TempDir::new().unwrap();
+        let mut tree = open_tree(&dir);
+
+        tree.begin_execution(1);
+        tree.put(b"key", Some(b"val".to_vec())).unwrap();
+        tree.flush_overlay().unwrap();
+
+        assert!(tree.prove_at_height(b"key", 999).is_err());
+    }
+
+    #[test]
+    fn root_at_height_matches_prove_at_height() {
+        let dir = TempDir::new().unwrap();
+        let mut tree = open_tree(&dir);
+
+        tree.begin_execution(1);
+        tree.put(b"k1", Some(b"v1".to_vec())).unwrap();
+        tree.flush_overlay().unwrap();
+
+        let root_direct = tree.root_at_height(1).unwrap();
+        let (_, _, root_from_prove) = tree.prove_at_height(b"k1", 1).unwrap();
+
+        assert_eq!(root_direct.0, root_from_prove.0);
     }
 }

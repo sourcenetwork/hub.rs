@@ -25,6 +25,9 @@ pub use idents::{BlockId, Idents, StateRoot, TxId};
 mod native_tx;
 pub use native_tx::{NATIVE_TX_TYPE, NativeTx, NativeTxPayload};
 
+mod proof;
+pub use proof::{ModuleId, ModuleStateProof, ProofError, verify_module_state_proof};
+
 mod tx;
 pub use tx::{Tx, TxCfg};
 
