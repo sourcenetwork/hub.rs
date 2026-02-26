@@ -20,6 +20,7 @@ use ::tokio::sync::broadcast;
 use alloy_consensus::{Transaction as _, TxEnvelope, transaction::SignerRecoverable as _};
 use alloy_eips::eip2718::Decodable2718 as _;
 use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
+use commonware_codec::Encode as _;
 use commonware_consensus::{Block as _, Reporter, marshal::Update, simplex::types::Activity};
 use commonware_cryptography::{Committable as _, certificate::Scheme as CertScheme};
 use commonware_runtime::{Spawner as _, tokio};
@@ -27,7 +28,10 @@ use commonware_utils::acknowledgement::Acknowledgement as _;
 use hub_consensus::{BlockExecution, Snapshot};
 use hub_domain::{Block, ConsensusDigest, NativeTx};
 use hub_executor::{BlockContext, BlockExecutor, ExecutionReceipt};
-use hub_indexer::{BlockIndex, IndexedBlock, IndexedLog, IndexedReceipt, IndexedTransaction};
+use hub_indexer::{
+    BlockIndex, IndexedBlock, IndexedLog, IndexedReceipt, IndexedTransaction, LightBlockIndex,
+    StoredCertificate,
+};
 use hub_jsonrpc::{NodeState, RpcBlock, RpcLog};
 use hub_ledger::LedgerService;
 use hub_overlay::OverlayState;
@@ -609,6 +613,7 @@ fn index_finalized_block<P: BlockContextProvider>(
         number: block.height,
         parent_hash: block.parent.0,
         state_root: block.state_root.0,
+        module_state_root: block.module_state_root,
         timestamp: block_context.header.timestamp,
         gas_limit: block_context.header.gas_limit,
         gas_used,
@@ -973,6 +978,92 @@ where
             self.view.store(v, std::sync::atomic::Ordering::Relaxed);
         }
         async {}
+    }
+}
+
+/// Captures finalization certificates into a `LightBlockIndex`.
+///
+/// On each `Activity::Finalization`, extracts the proposal fields, signer
+/// indices, and raw ed25519 signatures and stores them keyed by the consensus
+/// payload digest.
+#[derive(Clone)]
+pub struct CertificateReporter<S> {
+    index: Arc<LightBlockIndex>,
+    _scheme: PhantomData<S>,
+}
+
+impl<S> fmt::Debug for CertificateReporter<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CertificateReporter")
+            .finish_non_exhaustive()
+    }
+}
+
+impl<S> CertificateReporter<S> {
+    /// Create a new certificate reporter writing to the given light block index.
+    pub const fn new(index: Arc<LightBlockIndex>) -> Self {
+        Self {
+            index,
+            _scheme: PhantomData,
+        }
+    }
+}
+
+impl<S> Reporter for CertificateReporter<S>
+where
+    S: CertScheme<
+            Signature = commonware_cryptography::ed25519::Signature,
+            Certificate = commonware_cryptography::ed25519::certificate::Certificate,
+        > + Clone
+        + Send
+        + 'static,
+{
+    type Activity = Activity<S, ConsensusDigest>;
+
+    fn report(&mut self, activity: Self::Activity) -> impl std::future::Future<Output = ()> + Send {
+        let index = self.index.clone();
+        async move {
+            let Activity::Finalization(fin) = activity else {
+                return;
+            };
+
+            let epoch = fin.proposal.round.epoch().get();
+            let view = fin.proposal.round.view().get();
+            let parent_view = fin.proposal.parent.get();
+            let payload = fin.proposal.payload.0;
+
+            let signer_indices: Vec<u32> =
+                fin.certificate.signers.iter().map(|p| p.get()).collect();
+
+            let signatures: Vec<[u8; 64]> = fin
+                .certificate
+                .signatures
+                .iter()
+                .filter_map(|lazy_sig| {
+                    let sig = lazy_sig.get()?;
+                    let encoded = sig.encode();
+                    let mut out = [0u8; 64];
+                    if encoded.len() == 64 {
+                        out.copy_from_slice(&encoded);
+                        Some(out)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            let cert = StoredCertificate {
+                epoch,
+                view,
+                parent_view,
+                payload,
+                signer_indices,
+                signatures,
+            };
+
+            index.insert_certificate(payload, cert);
+            trace!(epoch, view, "stored finalization certificate");
+        }
     }
 }
 

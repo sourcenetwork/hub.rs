@@ -3664,6 +3664,7 @@ dependencies = [
  "alloy-primitives",
  "async-trait",
  "axum",
+ "commonware-cryptography",
  "hex",
  "hub-domain 0.1.0",
  "hub-executor",

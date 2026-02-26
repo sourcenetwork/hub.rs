@@ -10,7 +10,7 @@ use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tracing::{error, info};
 
 use hub_executor::{ModuleTrees, SharedModuleState};
-use hub_indexer::BlockIndex;
+use hub_indexer::{BlockIndex, LightBlockIndex};
 
 use crate::{
     config::{CorsConfig, RpcServerConfig},
@@ -98,6 +98,7 @@ pub struct RpcServer<S: StateProvider = NoopStateProvider> {
     hub_index: Option<Arc<BlockIndex>>,
     hub_modules: Option<SharedModuleState>,
     hub_module_trees: Option<ModuleTrees>,
+    hub_light_block_index: Option<Arc<LightBlockIndex>>,
 }
 
 impl<S: StateProvider> std::fmt::Debug for RpcServer<S> {
@@ -129,6 +130,7 @@ impl RpcServer<NoopStateProvider> {
             hub_index: None,
             hub_modules: None,
             hub_module_trees: None,
+            hub_light_block_index: None,
         }
     }
 
@@ -148,6 +150,7 @@ impl RpcServer<NoopStateProvider> {
             hub_index: None,
             hub_modules: None,
             hub_module_trees: None,
+            hub_light_block_index: None,
         }
     }
 }
@@ -174,6 +177,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             hub_index: None,
             hub_modules: None,
             hub_module_trees: None,
+            hub_light_block_index: None,
         }
     }
 
@@ -236,6 +240,13 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
         self
     }
 
+    /// Set the light block index for `hub_getLightBlock` queries.
+    #[must_use]
+    pub fn with_hub_light_block_index(mut self, index: Arc<LightBlockIndex>) -> Self {
+        self.hub_light_block_index = Some(index);
+        self
+    }
+
     /// Create from configuration.
     pub fn from_config(state: NodeState, config: RpcServerConfig, state_provider: S) -> Self {
         Self {
@@ -252,6 +263,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             hub_index: None,
             hub_modules: None,
             hub_module_trees: None,
+            hub_light_block_index: None,
         }
     }
 
@@ -272,6 +284,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
         let hub_index = self.hub_index;
         let hub_modules = self.hub_modules;
         let hub_module_trees = self.hub_module_trees;
+        let hub_light_block_index = self.hub_light_block_index;
 
         // Signal from the JSON-RPC task to the HTTP task indicating whether it
         // successfully bound the port. The HTTP status server waits for this
@@ -314,6 +327,9 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
                 }
                 if let Some(trees) = hub_module_trees {
                     api = api.with_module_trees(trees);
+                }
+                if let Some(lbi) = hub_light_block_index {
+                    api = api.with_light_block_index(lbi);
                 }
                 api
             };
@@ -457,6 +473,7 @@ pub struct JsonRpcServer<S: StateProvider = NoopStateProvider> {
     hub_index: Option<Arc<BlockIndex>>,
     hub_modules: Option<SharedModuleState>,
     hub_module_trees: Option<ModuleTrees>,
+    hub_light_block_index: Option<Arc<LightBlockIndex>>,
 }
 
 impl<S: StateProvider> std::fmt::Debug for JsonRpcServer<S> {
@@ -485,6 +502,7 @@ impl JsonRpcServer<NoopStateProvider> {
             hub_index: None,
             hub_modules: None,
             hub_module_trees: None,
+            hub_light_block_index: None,
         }
     }
 }
@@ -505,6 +523,7 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
             hub_index: None,
             hub_modules: None,
             hub_module_trees: None,
+            hub_light_block_index: None,
         }
     }
 
@@ -567,6 +586,13 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
         self
     }
 
+    /// Set the light block index for `hub_getLightBlock` queries.
+    #[must_use]
+    pub fn with_hub_light_block_index(mut self, index: Arc<LightBlockIndex>) -> Self {
+        self.hub_light_block_index = Some(index);
+        self
+    }
+
     /// Start the JSON-RPC server.
     ///
     /// Returns the server handle and the actual bound address (useful when binding to port 0).
@@ -613,6 +639,9 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
                 }
                 if let Some(trees) = self.hub_module_trees {
                     api = api.with_module_trees(trees);
+                }
+                if let Some(lbi) = self.hub_light_block_index {
+                    api = api.with_light_block_index(lbi);
                 }
                 api
             };
