@@ -153,7 +153,7 @@ async fn validator_epoch_transition() {
         .validators(validators.clone());
 
     let cluster = TestCluster::builder()
-        .binary(hub_e2e::hubd_binary())
+        .binary(hub_e2e::resolve_binary().expect("resolve hubd binary"))
         .nodes(4)
         .chain_id(chain_id)
         .genesis(genesis)

@@ -21,7 +21,7 @@ async fn cluster_observability_canonical() {
 
     // 1. Build 4-node BFT cluster with random keys.
     let cluster = TestCluster::builder()
-        .binary(hub_e2e::hubd_binary())
+        .binary(hub_e2e::resolve_binary().expect("resolve hubd binary"))
         .nodes(n)
         .chain_id(chain_id)
         .build()

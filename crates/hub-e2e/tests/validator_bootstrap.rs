@@ -110,7 +110,7 @@ async fn validator_bootstrap() {
         .validators(validators.clone());
 
     let cluster = TestCluster::builder()
-        .binary(hub_e2e::hubd_binary())
+        .binary(hub_e2e::resolve_binary().expect("resolve hubd binary"))
         .nodes(4)
         .chain_id(chain_id)
         .genesis(genesis)
@@ -458,7 +458,7 @@ async fn validator_registry_adversarial() {
         .validators(validators.clone());
 
     let cluster = TestCluster::builder()
-        .binary(hub_e2e::hubd_binary())
+        .binary(hub_e2e::resolve_binary().expect("resolve hubd binary"))
         .nodes(4)
         .chain_id(chain_id)
         .genesis(genesis)
