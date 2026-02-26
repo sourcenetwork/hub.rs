@@ -13,6 +13,8 @@ pub struct IndexedBlock {
     pub parent_hash: B256,
     /// State root after executing this block.
     pub state_root: B256,
+    /// Combined root of per-module state trees (ACP, Bulletin, Hub, NativeNonce).
+    pub module_state_root: B256,
     /// Block timestamp.
     pub timestamp: u64,
     /// Gas limit for this block.

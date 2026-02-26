@@ -5,9 +5,10 @@ use std::sync::Arc;
 use alloy_primitives::{B256, Bytes, U64};
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 
-use hub_domain::{ModuleId, ModuleStateProof};
+use commonware_cryptography::{Hasher as _, Sha256};
+use hub_domain::{LightBlock, ModuleId, ModuleStateProof};
 use hub_executor::{ModuleTrees, SharedModuleState};
-use hub_indexer::BlockIndex;
+use hub_indexer::{BlockIndex, LightBlockIndex};
 
 use crate::{
     error::RpcError,
@@ -55,6 +56,14 @@ pub trait HubApi {
         key: String,
         height: U64,
     ) -> RpcResult<ModuleStateProof>;
+
+    /// Returns a self-contained light block at the given height.
+    ///
+    /// Includes the block header, finalization certificate, and validator set —
+    /// everything needed to verify the block's authenticity via
+    /// `hub_domain::verify_light_block`.
+    #[method(name = "getLightBlock")]
+    async fn get_light_block(&self, height: U64) -> RpcResult<LightBlock>;
 }
 
 /// Implementation of the hub RPC API.
@@ -64,6 +73,7 @@ pub struct HubApiImpl {
     index: Option<Arc<BlockIndex>>,
     modules: Option<SharedModuleState>,
     module_trees: Option<ModuleTrees>,
+    light_block_index: Option<Arc<LightBlockIndex>>,
 }
 
 impl std::fmt::Debug for HubApiImpl {
@@ -74,6 +84,7 @@ impl std::fmt::Debug for HubApiImpl {
             .field("index", &self.index.is_some())
             .field("modules", &self.modules.is_some())
             .field("module_trees", &self.module_trees.is_some())
+            .field("light_block_index", &self.light_block_index.is_some())
             .finish()
     }
 }
@@ -88,6 +99,7 @@ impl HubApiImpl {
             index: None,
             modules: None,
             module_trees: None,
+            light_block_index: None,
         }
     }
 
@@ -107,6 +119,13 @@ impl HubApiImpl {
     #[must_use]
     pub fn with_module_trees(mut self, trees: ModuleTrees) -> Self {
         self.module_trees = Some(trees);
+        self
+    }
+
+    /// Set the light block index for `getLightBlock` queries.
+    #[must_use]
+    pub fn with_light_block_index(mut self, index: Arc<LightBlockIndex>) -> Self {
+        self.light_block_index = Some(index);
         self
     }
 }
@@ -271,6 +290,52 @@ impl HubApiServer for HubApiImpl {
         );
 
         Ok(proof)
+    }
+
+    async fn get_light_block(&self, height: U64) -> RpcResult<LightBlock> {
+        let Some(ref block_index) = self.index else {
+            return Err(RpcError::Internal("block index not available".into()).into());
+        };
+        let Some(ref light_index) = self.light_block_index else {
+            return Err(RpcError::Internal("light block index not available".into()).into());
+        };
+
+        let height_val: u64 = height.to();
+        let block = block_index
+            .get_block_by_number(height_val)
+            .ok_or_else(|| RpcError::Internal(format!("block not found at height {height_val}")))?;
+
+        let mut hasher = Sha256::default();
+        hasher.update(block.hash.as_slice());
+        let consensus_digest = hasher.finalize().0;
+
+        let cert = light_index
+            .get_certificate(&consensus_digest)
+            .ok_or_else(|| {
+                RpcError::Internal(format!(
+                    "finalization certificate not found for height {height_val}"
+                ))
+            })?;
+
+        let validators = light_index.get_validators(cert.epoch).ok_or_else(|| {
+            RpcError::Internal(format!("validator set not found for epoch {}", cert.epoch))
+        })?;
+
+        Ok(LightBlock::from_parts(
+            block.hash,
+            block.parent_hash,
+            block.number,
+            block.timestamp,
+            block.state_root,
+            block.module_state_root,
+            cert.epoch,
+            cert.view,
+            cert.parent_view,
+            cert.payload,
+            cert.signer_indices,
+            cert.signatures,
+            validators.pubkeys,
+        ))
     }
 }
 
