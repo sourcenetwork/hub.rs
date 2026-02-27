@@ -104,14 +104,13 @@ pub(super) fn dispatch(
             }
             let call = IBulletin::addCollaboratorCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
-            let collaborator_str = format!("{}", call.collaborator);
 
             let collaborator_did = match module.add_collaborator(
                 acp,
                 tx_ctx,
                 &creator,
                 &call.namespace,
-                &collaborator_str,
+                &call.collaboratorDid,
             ) {
                 Ok(r) => r,
                 Err(e) => return Ok(err_dispatch(e)),
@@ -136,14 +135,13 @@ pub(super) fn dispatch(
             let call =
                 IBulletin::removeCollaboratorCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
-            let collaborator_str = format!("{}", call.collaborator);
 
             let collaborator_did = match module.remove_collaborator(
                 acp,
                 tx_ctx,
                 &creator,
                 &call.namespace,
-                &collaborator_str,
+                &call.collaboratorDid,
             ) {
                 Ok(r) => r,
                 Err(e) => return Ok(err_dispatch(e)),

@@ -25,13 +25,13 @@ sol! {
 
         function addCollaborator(
             string namespace,
-            address collaborator
-        ) external returns (string collaboratorDid);
+            string collaboratorDid
+        ) external returns (string storedDid);
 
         function removeCollaborator(
             string namespace,
-            address collaborator
-        ) external returns (string collaboratorDid);
+            string collaboratorDid
+        ) external returns (string storedDid);
 
         function updateParams(bytes params) external;
 

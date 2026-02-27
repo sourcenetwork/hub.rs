@@ -30,7 +30,6 @@ pub struct Post {
 /// A collaborator on a namespace.
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct Collaborator {
-    pub address: String,
     pub did: String,
     pub namespace: String,
 }

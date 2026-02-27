@@ -1,6 +1,5 @@
 //! Bulletin native BLS transactions via `hub_sendNativeTx` to precompile `0x0811`.
 
-use alloy_primitives::Address;
 use alloy_sol_types::SolCall;
 use hub_modules::bulletin::abi::IBulletin;
 
@@ -49,11 +48,11 @@ impl HubClient {
         &self,
         signer: &BlsSigner,
         namespace: &str,
-        collaborator: Address,
+        collaborator_did: &str,
     ) -> Result<TransactionReceipt, ClientError> {
         let calldata = IBulletin::addCollaboratorCall {
             namespace: namespace.into(),
-            collaborator,
+            collaboratorDid: collaborator_did.into(),
         }
         .abi_encode();
         self.send_native_precompile_tx(signer, BULLETIN_ADDRESS, calldata.into())
@@ -65,11 +64,11 @@ impl HubClient {
         &self,
         signer: &BlsSigner,
         namespace: &str,
-        collaborator: Address,
+        collaborator_did: &str,
     ) -> Result<TransactionReceipt, ClientError> {
         let calldata = IBulletin::removeCollaboratorCall {
             namespace: namespace.into(),
-            collaborator,
+            collaboratorDid: collaborator_did.into(),
         }
         .abi_encode();
         self.send_native_precompile_tx(signer, BULLETIN_ADDRESS, calldata.into())
@@ -79,7 +78,6 @@ impl HubClient {
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::Address;
     use alloy_sol_types::SolCall;
     use hub_modules::bulletin::abi::IBulletin;
 
@@ -116,10 +114,10 @@ mod tests {
 
     #[test]
     fn native_add_collaborator_calldata_roundtrip() {
-        let collab = Address::repeat_byte(0x42);
+        let did = "did:key:zQ3shunBKsXmCvYMBEaFbqqGMGb4PHQX4yLbPRjNSTbhnQhEd";
         let call = IBulletin::addCollaboratorCall {
             namespace: "ns".into(),
-            collaborator: collab,
+            collaboratorDid: did.into(),
         };
         let encoded = call.abi_encode();
         assert_eq!(
@@ -127,20 +125,22 @@ mod tests {
             <IBulletin::addCollaboratorCall as SolCall>::SELECTOR
         );
         let decoded = IBulletin::addCollaboratorCall::abi_decode(&encoded).unwrap();
-        assert_eq!(decoded.collaborator, collab);
+        assert_eq!(decoded.collaboratorDid, did);
     }
 
     #[test]
     fn native_remove_collaborator_calldata_roundtrip() {
-        let collab = Address::repeat_byte(0x42);
+        let did = "did:key:zQ3shunBKsXmCvYMBEaFbqqGMGb4PHQX4yLbPRjNSTbhnQhEd";
         let call = IBulletin::removeCollaboratorCall {
             namespace: "ns".into(),
-            collaborator: collab,
+            collaboratorDid: did.into(),
         };
         let encoded = call.abi_encode();
         assert_eq!(
             &encoded[..4],
             <IBulletin::removeCollaboratorCall as SolCall>::SELECTOR
         );
+        let decoded = IBulletin::removeCollaboratorCall::abi_decode(&encoded).unwrap();
+        assert_eq!(decoded.collaboratorDid, did);
     }
 }

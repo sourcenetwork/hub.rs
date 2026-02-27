@@ -1,6 +1,5 @@
 //! Bulletin module subcommands.
 
-use alloy_primitives::Address;
 use clap::Subcommand;
 
 use super::context::ClientContext;
@@ -23,15 +22,15 @@ pub(crate) enum BulletinCommand {
     AddCollaborator {
         /// Namespace name.
         namespace: String,
-        /// Collaborator Ethereum address (hex, 0x-prefixed).
-        address: String,
+        /// Collaborator DID (e.g. did:key:zQ3s...).
+        did: String,
     },
     /// Remove a collaborator from a namespace.
     RemoveCollaborator {
         /// Namespace name.
         namespace: String,
-        /// Collaborator Ethereum address (hex, 0x-prefixed).
-        address: String,
+        /// Collaborator DID (e.g. did:key:zQ3s...).
+        did: String,
     },
     /// List collaborators for a namespace.
     ListCollaborators {
@@ -98,34 +97,28 @@ impl BulletinCommand {
                 let json = bytes_to_json(&data);
                 ctx.print_json(&json)?;
             }
-            Self::AddCollaborator { namespace, address } => {
-                let collab: Address = address
-                    .parse()
-                    .map_err(|e| eyre::eyre!("invalid address: {e}"))?;
+            Self::AddCollaborator { namespace, did } => {
                 let receipt = if let Some(bls) = ctx.bls_signer.as_ref() {
                     ctx.client
-                        .native_add_collaborator(bls, &namespace, collab)
+                        .native_add_collaborator(bls, &namespace, &did)
                         .await?
                 } else {
                     let signer = ctx.require_evm_signer()?;
                     ctx.client
-                        .add_collaborator(signer, &namespace, collab)
+                        .add_collaborator(signer, &namespace, &did)
                         .await?
                 };
                 ctx.print_json(&receipt)?;
             }
-            Self::RemoveCollaborator { namespace, address } => {
-                let collab: Address = address
-                    .parse()
-                    .map_err(|e| eyre::eyre!("invalid address: {e}"))?;
+            Self::RemoveCollaborator { namespace, did } => {
                 let receipt = if let Some(bls) = ctx.bls_signer.as_ref() {
                     ctx.client
-                        .native_remove_collaborator(bls, &namespace, collab)
+                        .native_remove_collaborator(bls, &namespace, &did)
                         .await?
                 } else {
                     let signer = ctx.require_evm_signer()?;
                     ctx.client
-                        .remove_collaborator(signer, &namespace, collab)
+                        .remove_collaborator(signer, &namespace, &did)
                         .await?
                 };
                 ctx.print_json(&receipt)?;

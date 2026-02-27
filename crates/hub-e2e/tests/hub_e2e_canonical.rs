@@ -803,7 +803,7 @@ async fn canonical_module_test() {
     // E3. EVM add_collaborator (add EVM signer as collaborator to its own namespace)
     let e3_calldata = IBulletin::addCollaboratorCall {
         namespace: "test-ns-evm".into(),
-        collaborator: evm_signer.address(),
+        collaboratorDid: evm_did.clone(),
     }
     .abi_encode();
     let e3_receipt = broadcast_evm_tx(

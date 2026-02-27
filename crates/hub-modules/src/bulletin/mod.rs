@@ -307,58 +307,17 @@ impl BulletinModule {
 
     /// Add a collaborator to a namespace.
     ///
-    /// # Flow
-    ///
-    /// 1. Read `"policy_id"`. Return `PolicyNotInitialized` if empty.
-    /// 2. Compute `namespace_id = "bulletin/" + namespace`.
-    /// 3. Read `"namespace/" + namespace_id` — return `NamespaceNotFound`
-    ///    if absent.
-    /// 4. Resolve collaborator DID from the `collaborator` address string
-    ///    (always derived from account address, never from bearer token).
-    /// 5. Read `"collaborator/" + sanitize(namespace_id) + "/" + sanitize(collab_did)` —
-    ///    return `CollaboratorAlreadyExists` if present.
-    /// 6. Call `acp.direct_policy_cmd(creator, policy_id, SetRelationship(Relationship { resource: "namespace", object: namespace_id, relation: "collaborator", actor: collab_did }))`.
-    ///    ACP enforces that creator is the object owner (manager of relation).
-    /// 7. Build `Collaborator`:
-    ///    ```text
-    ///    address   = collaborator (original address string)
-    ///    did       = collab_did
-    ///    namespace = namespace_id
-    ///    ```
-    /// 8. Write to `"collaborator/" + sanitize(namespace_id) + "/" + sanitize(collab_did)`.
-    /// 9. Return the collaborator DID string.
-    ///
-    /// # Reads
-    /// - `"policy_id"`
-    /// - `"namespace/" + namespace_id`
-    /// - `"collaborator/" + sanitize(namespace_id) + "/" + sanitize(collab_did)`
-    ///
-    /// # Writes
-    /// - `"collaborator/" + sanitize(namespace_id) + "/" + sanitize(collab_did)`
-    /// - ACP via `acp.direct_policy_cmd(SetRelationship)`
-    ///
-    /// # Ctx
-    /// `creator` DID is pre-resolved by the caller (shim layer).
-    /// Go resolves the owner via `GetActorDID` (bearer-token-aware)
-    /// and the collaborator via `IssueDIDFromAccountAddr` (address-only).
-    ///
-    /// # Errors
-    /// - `PolicyNotInitialized` — module policy not yet created
-    /// - `NamespaceNotFound` — namespace does not exist
-    /// - `CollaboratorAlreadyExists` — already a collaborator
-    /// - `Unauthorized` — ACP: creator is not the object owner
-    ///
-    /// # Return
-    /// Go returns an empty response. Rust returns the collaborator DID
-    /// string (deliberate API enrichment — the proto field exists but
-    /// Go never populates it).
+    /// The `collaborator_did` must be a proper `did:key:zQ3s...` string
+    /// matching the format produced by secp256k1 public key recovery.
+    /// The caller (precompile shim or native tx shim) is responsible for
+    /// passing the DID in the correct format.
     pub fn add_collaborator(
         &mut self,
         acp: &mut super::acp::AcpModule,
         _tx_ctx: &TxExecCtx,
         creator: &Did,
         namespace: &str,
-        collaborator: &str,
+        collaborator_did: &str,
     ) -> Result<String> {
         let policy_id = self
             .get_policy_id()
@@ -371,16 +330,17 @@ impl BulletinModule {
             });
         }
 
-        let collab_did = format!("did:key:{}", collaborator);
-
-        if self.get_collaborator(&namespace_id, &collab_did).is_some() {
+        if self
+            .get_collaborator(&namespace_id, collaborator_did)
+            .is_some()
+        {
             return Err(BulletinError::CollaboratorAlreadyExists {
                 namespace: namespace.to_string(),
-                did: collab_did,
+                did: collaborator_did.to_string(),
             });
         }
 
-        let collab_did_parsed = Did::new(&collab_did)
+        let collab_did_parsed = Did::new(collaborator_did)
             .map_err(|e| BulletinError::State(format!("invalid collaborator DID: {}", e)))?;
 
         acp.direct_policy_cmd(
@@ -398,59 +358,23 @@ impl BulletinModule {
         })?;
 
         let record = Collaborator {
-            address: collaborator.to_string(),
-            did: collab_did.clone(),
+            did: collaborator_did.to_string(),
             namespace: namespace_id,
         };
         self.set_collaborator(&record);
-        Ok(collab_did)
+        Ok(collaborator_did.to_string())
     }
 
     /// Remove a collaborator from a namespace.
     ///
-    /// # Flow
-    ///
-    /// 1. Read `"policy_id"`. Return `PolicyNotInitialized` if empty.
-    /// 2. Compute `namespace_id = "bulletin/" + namespace`.
-    /// 3. Read `"namespace/" + namespace_id` — return `NamespaceNotFound`
-    ///    if absent.
-    /// 4. Resolve collaborator DID from the `collaborator` address string.
-    /// 5. Read `"collaborator/" + sanitize(namespace_id) + "/" + sanitize(collab_did)` —
-    ///    return `CollaboratorNotFound` if absent.
-    /// 6. Call `acp.direct_policy_cmd(creator, policy_id, DeleteRelationship(Relationship { resource: "namespace", object: namespace_id, relation: "collaborator", actor: collab_did }))`.
-    ///    ACP enforces that creator is the object owner.
-    /// 7. Delete `"collaborator/" + sanitize(namespace_id) + "/" + sanitize(collab_did)`.
-    /// 8. Return the collaborator DID string.
-    ///
-    /// # Reads
-    /// - `"policy_id"`
-    /// - `"namespace/" + namespace_id`
-    /// - `"collaborator/" + sanitize(namespace_id) + "/" + sanitize(collab_did)`
-    ///
-    /// # Writes (deletes)
-    /// - `"collaborator/" + sanitize(namespace_id) + "/" + sanitize(collab_did)`
-    /// - ACP via `acp.direct_policy_cmd(DeleteRelationship)`
-    ///
-    /// # Ctx
-    /// `creator` DID is pre-resolved by the caller (shim layer).
-    /// Same resolution asymmetry as `add_collaborator`.
-    ///
-    /// # Errors
-    /// - `PolicyNotInitialized` — module policy not yet created
-    /// - `NamespaceNotFound` — namespace does not exist
-    /// - `CollaboratorNotFound` — not currently a collaborator
-    /// - `Unauthorized` — ACP: creator is not the object owner
-    ///
-    /// # Return
-    /// Go returns an empty response. Rust returns the collaborator DID
-    /// string (same enrichment as `add_collaborator`).
+    /// Same DID format requirements as [`add_collaborator`](Self::add_collaborator).
     pub fn remove_collaborator(
         &mut self,
         acp: &mut super::acp::AcpModule,
         _tx_ctx: &TxExecCtx,
         creator: &Did,
         namespace: &str,
-        collaborator: &str,
+        collaborator_did: &str,
     ) -> Result<String> {
         let policy_id = self
             .get_policy_id()
@@ -463,16 +387,17 @@ impl BulletinModule {
             });
         }
 
-        let collab_did = format!("did:key:{}", collaborator);
-
-        if self.get_collaborator(&namespace_id, &collab_did).is_none() {
+        if self
+            .get_collaborator(&namespace_id, collaborator_did)
+            .is_none()
+        {
             return Err(BulletinError::CollaboratorNotFound {
                 namespace: namespace.to_string(),
-                did: collab_did,
+                did: collaborator_did.to_string(),
             });
         }
 
-        let collab_did_parsed = Did::new(&collab_did)
+        let collab_did_parsed = Did::new(collaborator_did)
             .map_err(|e| BulletinError::State(format!("invalid collaborator DID: {}", e)))?;
 
         acp.direct_policy_cmd(
@@ -489,8 +414,8 @@ impl BulletinModule {
             reason: e.to_string(),
         })?;
 
-        self.delete_collaborator(&namespace_id, &collab_did);
-        Ok(collab_did)
+        self.delete_collaborator(&namespace_id, collaborator_did);
+        Ok(collaborator_did.to_string())
     }
 
     /// Update governance-controlled module parameters.
@@ -949,7 +874,6 @@ mod tests {
         m.set_post(&post);
 
         let collab = Collaborator {
-            address: "0xBBBB".into(),
             did: "did:key:z6Mkcollab".into(),
             namespace: "bulletin/ns1".into(),
         };
@@ -1176,7 +1100,6 @@ mod tests {
     fn storage_roundtrip_collaborator() {
         let mut m = BulletinModule::default();
         let c = Collaborator {
-            address: "0xBBBB".into(),
             did: "did:key:z6Mkabc".into(),
             namespace: "bulletin/ns1".into(),
         };
