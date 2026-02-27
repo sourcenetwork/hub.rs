@@ -3,7 +3,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use alloy_primitives::{Address, B256, Bytes, U256};
+use alloy_primitives::{Address, B256, Bytes, FixedBytes, U256};
 use serde::de::DeserializeOwned;
 use tracing::debug;
 
@@ -317,6 +317,22 @@ impl HubClient {
     }
 }
 
+/// Parse a hex-encoded policy ID string into a 32-byte fixed array.
+///
+/// Accepts optional `0x` prefix. The input must decode to exactly 32 bytes.
+pub fn parse_policy_id(hex: &str) -> Result<FixedBytes<32>, ClientError> {
+    let hex = hex.strip_prefix("0x").unwrap_or(hex);
+    let bytes =
+        hex::decode(hex).map_err(|e| ClientError::AbiDecode(format!("invalid policy ID: {e}")))?;
+    if bytes.len() != 32 {
+        return Err(ClientError::AbiDecode(format!(
+            "policy ID must be 32 bytes, got {}",
+            bytes.len()
+        )));
+    }
+    Ok(FixedBytes::from_slice(&bytes))
+}
+
 fn parse_hex_u64(hex: &str) -> Result<u64, ClientError> {
     let hex = hex.strip_prefix("0x").unwrap_or(hex);
     u64::from_str_radix(hex, 16)
@@ -398,5 +414,31 @@ mod tests {
     fn client_new() {
         let client = HubClient::new("http://localhost:8545");
         assert_eq!(client.rpc_url, "http://localhost:8545");
+    }
+
+    #[test]
+    fn parse_policy_id_with_prefix() {
+        let hex = "0x0000000000000000000000000000000000000000000000000000000000000001";
+        let id = parse_policy_id(hex).unwrap();
+        assert_eq!(id[31], 1);
+    }
+
+    #[test]
+    fn parse_policy_id_without_prefix() {
+        let hex = "0000000000000000000000000000000000000000000000000000000000000002";
+        let id = parse_policy_id(hex).unwrap();
+        assert_eq!(id[31], 2);
+    }
+
+    #[test]
+    fn parse_policy_id_wrong_length() {
+        let err = parse_policy_id("0xaabb").unwrap_err();
+        assert!(err.to_string().contains("32 bytes"));
+    }
+
+    #[test]
+    fn parse_policy_id_invalid_hex() {
+        let err = parse_policy_id("not-valid-hex").unwrap_err();
+        assert!(err.to_string().contains("invalid policy ID"));
     }
 }

@@ -21,6 +21,7 @@ pub use bearer::create_bearer_token;
 pub use bls_signer::BlsSigner;
 pub use client::{
     ACP_ADDRESS, BULLETIN_ADDRESS, HUB_ADDRESS, HubClient, VALIDATOR_REGISTRY_ADDRESS,
+    parse_policy_id,
 };
 pub use document_acp::HubDocumentACP;
 pub use error::ClientError;

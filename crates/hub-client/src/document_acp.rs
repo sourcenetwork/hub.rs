@@ -1,12 +1,11 @@
 //! DocumentACP implementation backed by hub-client.
 
-use alloy_primitives::FixedBytes;
 use async_trait::async_trait;
 use identity::Did;
 
 use acp::{DocumentACP, DocumentPermission, Identity, Result};
 
-use crate::client::HubClient;
+use crate::client::{HubClient, parse_policy_id};
 use crate::error::ClientError;
 use crate::signer::EvmSigner;
 use crate::types::TransactionReceipt;
@@ -39,19 +38,6 @@ impl HubDocumentACP {
     }
 }
 
-fn parse_policy_id(s: &str) -> std::result::Result<FixedBytes<32>, acp::Error> {
-    let s = s.strip_prefix("0x").unwrap_or(s);
-    let bytes =
-        hex::decode(s).map_err(|e| acp::Error::Storage(format!("invalid policy_id hex: {e}")))?;
-    if bytes.len() != 32 {
-        return Err(acp::Error::Storage(format!(
-            "policy_id must be 32 bytes, got {}",
-            bytes.len()
-        )));
-    }
-    Ok(FixedBytes::from_slice(&bytes))
-}
-
 fn client_err(e: ClientError) -> acp::Error {
     acp::Error::Storage(format!("hub: {e}"))
 }
@@ -65,7 +51,7 @@ impl DocumentACP for HubDocumentACP {
         resource_name: &str,
         doc_id: &str,
     ) -> Result<()> {
-        let pid = parse_policy_id(policy_id)?;
+        let pid = parse_policy_id(policy_id).map_err(client_err)?;
         self.client
             .register_object(&self.signer, pid, doc_id, resource_name)
             .await
@@ -79,7 +65,7 @@ impl DocumentACP for HubDocumentACP {
         resource_name: &str,
         doc_id: &str,
     ) -> Result<bool> {
-        let pid = parse_policy_id(policy_id)?;
+        let pid = parse_policy_id(policy_id).map_err(client_err)?;
         let (registered, _owner) = self
             .client
             .get_object_owner(pid, resource_name, doc_id)
@@ -96,7 +82,7 @@ impl DocumentACP for HubDocumentACP {
         resource_name: &str,
         doc_id: &str,
     ) -> Result<bool> {
-        let pid = parse_policy_id(policy_id)?;
+        let pid = parse_policy_id(policy_id).map_err(client_err)?;
 
         let (registered, _owner) = self
             .client
@@ -154,7 +140,7 @@ impl DocumentACP for HubDocumentACP {
         relation: &str,
         _managing_relations: &[String],
     ) -> Result<bool> {
-        let pid = parse_policy_id(policy_id)?;
+        let pid = parse_policy_id(policy_id).map_err(client_err)?;
         self.client
             .set_relationship(
                 &self.signer,
@@ -179,7 +165,7 @@ impl DocumentACP for HubDocumentACP {
         relation: &str,
         _managing_relations: &[String],
     ) -> Result<bool> {
-        let pid = parse_policy_id(policy_id)?;
+        let pid = parse_policy_id(policy_id).map_err(client_err)?;
         self.client
             .delete_relationship(
                 &self.signer,
@@ -200,7 +186,7 @@ impl DocumentACP for HubDocumentACP {
         resource_name: &str,
         doc_id: &str,
     ) -> Result<()> {
-        let pid = parse_policy_id(policy_id)?;
+        let pid = parse_policy_id(policy_id).map_err(client_err)?;
         self.client
             .archive_object(&self.signer, pid, doc_id, resource_name)
             .await
@@ -212,32 +198,6 @@ impl DocumentACP for HubDocumentACP {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parse_policy_id_valid_hex() {
-        let hex = "0x0000000000000000000000000000000000000000000000000000000000000001";
-        let id = parse_policy_id(hex).unwrap();
-        assert_eq!(id[31], 1);
-    }
-
-    #[test]
-    fn parse_policy_id_no_prefix() {
-        let hex = "0000000000000000000000000000000000000000000000000000000000000002";
-        let id = parse_policy_id(hex).unwrap();
-        assert_eq!(id[31], 2);
-    }
-
-    #[test]
-    fn parse_policy_id_wrong_length() {
-        let result = parse_policy_id("0xaabb");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn parse_policy_id_invalid_hex() {
-        let result = parse_policy_id("not-hex");
-        assert!(result.is_err());
-    }
 
     #[test]
     fn hub_document_acp_construction() {

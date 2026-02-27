@@ -4,7 +4,7 @@ use alloy_primitives::FixedBytes;
 use alloy_sol_types::SolCall;
 use hub_modules::acp::abi::IAcp;
 
-use crate::client::{ACP_ADDRESS, HubClient};
+use crate::client::{ACP_ADDRESS, HubClient, parse_policy_id};
 use crate::error::ClientError;
 use crate::signer::EvmSigner;
 use crate::types::TransactionReceipt;
@@ -112,7 +112,7 @@ impl HubClient {
         &self,
         signer: &EvmSigner,
         bearer_token: &str,
-        policy_id: FixedBytes<32>,
+        policy_id: &str,
         resource: &str,
         object_id: &str,
         relation: &str,
@@ -136,7 +136,7 @@ impl HubClient {
         &self,
         signer: &EvmSigner,
         bearer_token: &str,
-        policy_id: FixedBytes<32>,
+        policy_id: &str,
         resource: &str,
         object_id: &str,
         relation: &str,
@@ -159,9 +159,9 @@ impl HubClient {
         &self,
         signer: &EvmSigner,
         bearer_token: &str,
-        policy_id: FixedBytes<32>,
-        object_id: &str,
+        policy_id: &str,
         resource: &str,
+        object_id: &str,
     ) -> Result<TransactionReceipt, ClientError> {
         let cmd =
             hub_modules::acp::types::PolicyCmd::RegisterObject(hub_modules::acp::types::Object {
@@ -177,9 +177,9 @@ impl HubClient {
         &self,
         signer: &EvmSigner,
         bearer_token: &str,
-        policy_id: FixedBytes<32>,
-        object_id: &str,
+        policy_id: &str,
         resource: &str,
+        object_id: &str,
     ) -> Result<TransactionReceipt, ClientError> {
         let cmd =
             hub_modules::acp::types::PolicyCmd::ArchiveObject(hub_modules::acp::types::Object {
@@ -195,13 +195,14 @@ impl HubClient {
         &self,
         signer: &EvmSigner,
         bearer_token: &str,
-        policy_id: FixedBytes<32>,
+        policy_id: &str,
         cmd: &hub_modules::acp::types::PolicyCmd,
     ) -> Result<TransactionReceipt, ClientError> {
+        let pid = parse_policy_id(policy_id)?;
         let cmd_bytes = serde_json::to_vec(cmd)?;
         let calldata = IAcp::bearerPolicyCmdCall {
             bearerToken: bearer_token.into(),
-            policyId: policy_id,
+            policyId: pid,
             cmd: cmd_bytes.into(),
         }
         .abi_encode();
