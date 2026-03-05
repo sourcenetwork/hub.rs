@@ -21,8 +21,10 @@ use hub_modules::types::{BlockExecCtx, Timestamp, TxExecCtx};
 use hub_state::ModuleStateTree;
 use hub_traits::StateDb;
 use revm::{
-    Context, ExecuteEvm, Journal, MainBuilder, context::block::BlockEnv,
-    context_interface::ContextSetters, database::State,
+    Context, ExecuteEvm, Journal, MainBuilder,
+    context::{block::BlockEnv, result::ExecutionResult},
+    context_interface::ContextSetters,
+    database::State,
 };
 use tracing::warn;
 
@@ -366,6 +368,17 @@ impl<S: StateDb> BlockExecutor<S> for HubExecutor {
                     return Err(ExecutionError::TxExecution(format!("{e:?}")));
                 }
             };
+
+            match &result_and_state.result {
+                ExecutionResult::Revert { output, .. } => {
+                    let reason = String::from_utf8_lossy(output);
+                    warn!(%tx_hash, %reason, "EVM tx reverted");
+                }
+                ExecutionResult::Halt { reason, .. } => {
+                    warn!(%tx_hash, ?reason, "EVM tx halted");
+                }
+                ExecutionResult::Success { .. } => {}
+            }
 
             executed_indices.push(i);
 
