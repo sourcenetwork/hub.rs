@@ -128,13 +128,22 @@ fn compressed_pubkey_from_did(did: &str) -> Result<Vec<u8>, JwtError> {
         return Err(JwtError::InvalidIssuer("not a secp256k1 did:key".into()));
     }
 
-    let compressed = decoded[prefix.len()..].to_vec();
-    if compressed.len() != 33 {
-        return Err(JwtError::InvalidIssuer(format!(
-            "expected 33-byte pubkey, got {}",
-            compressed.len()
-        )));
-    }
+    let key_bytes = &decoded[prefix.len()..];
+    let compressed = match key_bytes.len() {
+        33 => key_bytes.to_vec(),
+        65 => {
+            // Uncompressed secp256k1 key — compress it.
+            // DefraDB uses uncompressed keys in did:key (matching Go's SerializeUncompressed).
+            let vk = VerifyingKey::from_sec1_bytes(key_bytes)
+                .map_err(|e| JwtError::InvalidIssuer(format!("invalid uncompressed key: {e}")))?;
+            vk.to_encoded_point(true).as_bytes().to_vec()
+        }
+        n => {
+            return Err(JwtError::InvalidIssuer(format!(
+                "expected 33 or 65 byte pubkey, got {n}",
+            )));
+        }
+    };
 
     Ok(compressed)
 }
