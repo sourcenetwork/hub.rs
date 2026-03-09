@@ -45,6 +45,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Configure private repo access
+        run: git config --global url."https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/".insteadOf "https://github.com/"
+
       - name: Prune build cache if oversized
         run: |
           if [ -d target ]; then
@@ -75,6 +78,7 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
+          git config --global --remove-section "url.https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/" 2>/dev/null || true
           git checkout -- .
           git clean -fd
 
@@ -101,6 +105,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Configure private repo access
+        run: git config --global url."https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/".insteadOf "https://github.com/"
+
       - name: Kill leftover hubd processes
         run: pkill -f 'target.*hubd' 2>/dev/null || true
 
@@ -114,6 +121,7 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
+          git config --global --remove-section "url.https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/" 2>/dev/null || true
           git checkout -- .
           git clean -fd
           pkill -f 'target.*hubd' 2>/dev/null || true
