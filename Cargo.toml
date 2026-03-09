@@ -93,9 +93,9 @@ commonware-resolver = "2026.2.0"
 commonware-macros = "2026.2.0"
 
 # defradb.rs (v0.6.1)
-acp = { git = "https://github.com/jackzampolin/defradb.rs", tag = "v0.6.1", default-features = false }
-identity = { git = "https://github.com/jackzampolin/defradb.rs", tag = "v0.6.1" }
-storage = { git = "https://github.com/jackzampolin/defradb.rs", tag = "v0.6.1", default-features = false }
+acp = { git = "https://github.com/sourcenetwork/defradb.rs", tag = "v0.6.1", default-features = false }
+identity = { git = "https://github.com/sourcenetwork/defradb.rs", tag = "v0.6.1" }
+storage = { git = "https://github.com/sourcenetwork/defradb.rs", tag = "v0.6.1", default-features = false }
 
 # Alloy
 alloy-primitives = "1.0"
