@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  # ── Lightweight: GitHub-hosted ───────────────────────────────────────
+
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  # ── Heavy: self-hosted Mac Studio runners ────────────────────────────
+  #
+  # Two runners (studio-1, studio-2): M3 Ultra, 32-core, 512GB RAM.
+  # Shared with defradb.rs and backbone — don't assume exclusive access.
+  # Persistent machines: prune target/ if oversized, kill lingering
+  # processes, reset working tree after every run.
+  #
+  # No [profile.test] override, no .cargo/config.toml — clippy and test
+  # share the same dev profile so the warm cache serves both without
+  # profile thrashing.
+
+  build:
+    name: Build & Test
+    runs-on: [self-hosted, macOS, ARM64, studio]
+    needs: [fmt]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prune build cache if oversized
+        run: |
+          if [ -d target ]; then
+            TARGET_SIZE=$(du -sm target | cut -f1)
+            if [ "$TARGET_SIZE" -gt 20000 ]; then
+              echo "Build cache is ${TARGET_SIZE}MB, pruning..."
+              cargo clean
+            fi
+          fi
+
+      - name: Clippy
+        run: cargo clippy --all -- -D warnings
+
+      - name: Unit tests
+        run: cargo test --workspace --exclude hub-e2e
+
+      - name: Build hubd
+        run: cargo build -p hubd
+
+      - name: Cache hubd binary for backbone CI
+        run: |
+          HASH=$(git rev-parse HEAD)
+          CACHE_DIR="$HOME/.sourcenetwork/bin/hub.rs/$HASH"
+          mkdir -p "$CACHE_DIR"
+          cp target/debug/hubd "$CACHE_DIR/hubd" || cp target/release/hubd "$CACHE_DIR/hubd" || true
+          [ -f "$CACHE_DIR/hubd" ] && ln -sf "$CACHE_DIR/hubd" "$HOME/.sourcenetwork/bin/hubd"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          git checkout -- .
+          git clean -fd
+
+  e2e:
+    name: "E2E (${{ matrix.suite }})"
+    runs-on: [self-hosted, macOS, ARM64, studio]
+    needs: [build]
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: canonical
+            tests: --test hub_e2e_canonical
+          - suite: extended
+            tests: >-
+              --test core_chain
+              --test contract_deploy
+              --test light_client
+              --test gossip_headers
+              --test node_restart
+              --test validator_bootstrap
+              --test validator_epoch_transition
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Kill leftover hubd processes
+        run: pkill -f 'target.*hubd' 2>/dev/null || true
+
+      - name: Build hubd
+        run: cargo build -p hubd
+
+      - name: Run e2e tests
+        run: cargo test -p hub-e2e ${{ matrix.tests }} -- --nocapture
+        timeout-minutes: 15
+
+      - name: Cleanup
+        if: always()
+        run: |
+          git checkout -- .
+          git clean -fd
+          pkill -f 'target.*hubd' 2>/dev/null || true
+          rm -rf /tmp/hub-e2e-* /tmp/.tmp* 2>/dev/null || true
