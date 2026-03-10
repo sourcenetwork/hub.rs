@@ -285,7 +285,7 @@ impl HubClient {
         let raw = signer.sign_tx(target, calldata, nonce)?;
         let tx_hash = self.send_raw_transaction(&raw).await?;
         let receipt = self
-            .wait_for_receipt(tx_hash, Duration::from_millis(200), 100)
+            .wait_for_receipt(tx_hash, Duration::from_millis(300), 400)
             .await?;
         if receipt.status == 0 {
             return Err(ClientError::TxReverted {
