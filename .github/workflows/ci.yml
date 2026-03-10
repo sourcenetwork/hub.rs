@@ -11,57 +11,61 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  CARGO_INCREMENTAL: "0"
-  RUSTFLAGS: "-D warnings"
+
+# ── Self-hosted Mac Studio runners ──────────────────────────────────
+#
+# Two runners (studio-1, studio-2): M3 Ultra, 32-core, 512GB RAM.
+# Shared with defradb.rs and backbone — don't assume exclusive access.
+# Persistent machines: kill lingering processes, reset working tree
+# after every run.
+#
+# No [profile.test] override, no .cargo/config.toml — clippy and test
+# share the same dev profile so the warm cache serves both without
+# profile thrashing.
 
 jobs:
-  # ── Lightweight: GitHub-hosted ───────────────────────────────────────
-
-  fmt:
-    name: Format
-    runs-on: ubuntu-latest
+  lint:
+    name: Lint
+    runs-on: [self-hosted, macOS, ARM64, studio]
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@nightly
         with:
-          components: rustfmt
-      - run: cargo +nightly fmt --all -- --check
+          clean: false
 
-  # ── Heavy: self-hosted Mac Studio runners ────────────────────────────
-  #
-  # Two runners (studio-1, studio-2): M3 Ultra, 32-core, 512GB RAM.
-  # Shared with defradb.rs and backbone — don't assume exclusive access.
-  # Persistent machines: prune target/ if oversized, kill lingering
-  # processes, reset working tree after every run.
-  #
-  # No [profile.test] override, no .cargo/config.toml — clippy and test
-  # share the same dev profile so the warm cache serves both without
-  # profile thrashing.
+      - name: Clear stale git credential config
+        run: |
+          git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
+          rm -rf ~/.cargo/git/db/defradb.rs-* ~/.cargo/git/checkouts/defradb.rs-* 2>/dev/null || true
+
+      - name: Configure private repo access
+        run: git config --global url."https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/".insteadOf "https://github.com/sourcenetwork/"
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all -- -D warnings
+
+      - name: Cleanup
+        if: always()
+        run: |
+          git config --global --remove-section "url.https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/" 2>/dev/null || true
 
   build:
     name: Build & Test
     runs-on: [self-hosted, macOS, ARM64, studio]
-    needs: [fmt]
     steps:
       - uses: actions/checkout@v4
         with:
-          persist-credentials: false
+          clean: false
+
+      - name: Clear stale git credential config
+        run: |
+          git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
+          rm -rf ~/.cargo/git/db/defradb.rs-* ~/.cargo/git/checkouts/defradb.rs-* 2>/dev/null || true
 
       - name: Configure private repo access
-        run: git config --global url."https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/".insteadOf "https://github.com/"
-
-      - name: Prune build cache if oversized
-        run: |
-          if [ -d target ]; then
-            TARGET_SIZE=$(du -sm target | cut -f1)
-            if [ "$TARGET_SIZE" -gt 20000 ]; then
-              echo "Build cache is ${TARGET_SIZE}MB, pruning..."
-              cargo clean
-            fi
-          fi
-
-      - name: Clippy
-        run: cargo clippy --all -- -D warnings
+        run: git config --global url."https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/".insteadOf "https://github.com/sourcenetwork/"
 
       - name: Unit tests
         run: cargo test --workspace --exclude hub-e2e
@@ -80,7 +84,7 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
-          git config --global --remove-section "url.https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/" 2>/dev/null || true
+          git config --global --remove-section "url.https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/" 2>/dev/null || true
           git checkout -- .
           git clean -fd
 
@@ -107,10 +111,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          persist-credentials: false
+          clean: false
+
+      - name: Clear stale git credential config
+        run: |
+          git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
+          rm -rf ~/.cargo/git/db/defradb.rs-* ~/.cargo/git/checkouts/defradb.rs-* 2>/dev/null || true
 
       - name: Configure private repo access
-        run: git config --global url."https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/".insteadOf "https://github.com/"
+        run: git config --global url."https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/".insteadOf "https://github.com/sourcenetwork/"
 
       - name: Kill leftover hubd processes
         run: pkill -f 'target.*hubd' 2>/dev/null || true
@@ -125,7 +134,7 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
-          git config --global --remove-section "url.https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/" 2>/dev/null || true
+          git config --global --remove-section "url.https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/" 2>/dev/null || true
           git checkout -- .
           git clean -fd
           pkill -f 'target.*hubd' 2>/dev/null || true
