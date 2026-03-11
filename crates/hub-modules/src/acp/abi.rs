@@ -14,6 +14,7 @@ sol! {
 
         // ── Write methods (map to Cosmos Msgs) ──────────────────────────
 
+        function batchCalls(bytes[] calldata calls) external returns (bytes[] results);
         function createPolicy(bytes calldata policy, uint8 marshalType) external returns (bytes);
         function editPolicy(bytes32 policyId, bytes calldata policy, uint8 marshalType) external returns (uint64 relationshipsRemoved, bytes record);
 

@@ -10,6 +10,20 @@ use crate::signer::EvmSigner;
 use crate::types::TransactionReceipt;
 
 impl HubClient {
+    /// Execute multiple ACP calls atomically in one EVM transaction.
+    pub async fn batch_policy_calls(
+        &self,
+        signer: &EvmSigner,
+        calls: Vec<Vec<u8>>,
+    ) -> Result<TransactionReceipt, ClientError> {
+        let calldata = IAcp::batchCallsCall {
+            calls: calls.into_iter().map(Into::into).collect(),
+        }
+        .abi_encode();
+        self.send_precompile_tx(signer, ACP_ADDRESS, calldata.into())
+            .await
+    }
+
     /// Create a new ACP policy.
     pub async fn create_policy(
         &self,
@@ -249,6 +263,23 @@ mod tests {
         assert_eq!(&encoded[..4], <IAcp::createPolicyCall as SolCall>::SELECTOR);
         let decoded = IAcp::createPolicyCall::abi_decode(&encoded).unwrap();
         assert_eq!(decoded.marshalType, 1);
+    }
+
+    #[test]
+    fn batch_calls_calldata_roundtrip() {
+        let inner = IAcp::createPolicyCall {
+            policy: b"name: batched".to_vec().into(),
+            marshalType: 1,
+        }
+        .abi_encode();
+        let call = IAcp::batchCallsCall {
+            calls: vec![inner.into()],
+        };
+        let encoded = call.abi_encode();
+        assert_eq!(&encoded[..4], <IAcp::batchCallsCall as SolCall>::SELECTOR);
+        let decoded = IAcp::batchCallsCall::abi_decode(&encoded).unwrap();
+        assert_eq!(decoded.calls.len(), 1);
+        assert_eq!(decoded.calls[0].to_vec(), call.calls[0].to_vec());
     }
 
     #[test]

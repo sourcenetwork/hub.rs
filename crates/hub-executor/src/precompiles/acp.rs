@@ -10,11 +10,11 @@ use hub_modules::acp::types::{
 };
 use hub_modules::types::{BlockExecCtx, TxExecCtx};
 use identity::Did;
-use revm::precompile::PrecompileError;
+use revm::precompile::{PrecompileError, PrecompileOutput};
 
 use super::{
-    ACP_ADDRESS, DispatchReturn, decode_error, did_from_signer, err_dispatch, event_log,
-    json_bytes, ok_dispatch,
+    ACP_ADDRESS, DispatchResult, DispatchReturn, decode_error, did_from_signer, err_dispatch,
+    event_log, json_bytes, ok_dispatch,
 };
 
 /// Flat gas cost for read operations (real metering is Phase 10).
@@ -67,6 +67,37 @@ fn build_operations(
         .collect())
 }
 
+fn batch_revert(index: usize, gas_used: u64, bytes: &Bytes) -> DispatchResult {
+    let call_number = index + 1;
+    let message = if bytes.is_empty() {
+        format!("batch call {call_number} reverted")
+    } else {
+        format!(
+            "batch call {call_number} reverted: {}",
+            String::from_utf8_lossy(bytes.as_ref())
+        )
+    };
+
+    DispatchResult {
+        precompile: PrecompileOutput {
+            gas_used,
+            gas_refunded: 0,
+            bytes: message.into_bytes().into(),
+            reverted: true,
+        },
+        logs: vec![],
+    }
+}
+
+fn batch_error(index: usize, err: PrecompileError) -> PrecompileError {
+    match err {
+        PrecompileError::Other(message) => {
+            PrecompileError::Other(format!("batch call {}: {message}", index + 1).into())
+        }
+        other => other,
+    }
+}
+
 /// Dispatch an ABI-encoded call to the ACP module by selector.
 #[allow(clippy::too_many_lines)]
 pub(super) fn dispatch(
@@ -85,6 +116,51 @@ pub(super) fn dispatch(
 
     match selector {
         // ── Write methods ────────────────────────────────────────────
+        IAcp::batchCallsCall::SELECTOR => {
+            let call = IAcp::batchCallsCall::abi_decode(input).map_err(decode_error)?;
+            let snapshot = module.clone();
+            let mut results = Vec::with_capacity(call.calls.len());
+            let mut logs = Vec::new();
+            let mut gas_used = 0u64;
+
+            for (index, inner_call) in call.calls.iter().enumerate() {
+                let remaining_gas = gas_limit.saturating_sub(gas_used);
+                let inner = match dispatch(
+                    module,
+                    _block_ctx,
+                    tx_ctx,
+                    inner_call.as_ref(),
+                    remaining_gas,
+                ) {
+                    Ok(inner) => inner,
+                    Err(err) => {
+                        *module = snapshot;
+                        return Err(batch_error(index, err));
+                    }
+                };
+
+                let inner_gas = match gas_used.checked_add(inner.precompile.gas_used) {
+                    Some(total) => total,
+                    None => {
+                        *module = snapshot;
+                        return Err(PrecompileError::OutOfGas);
+                    }
+                };
+
+                if inner.precompile.reverted {
+                    *module = snapshot;
+                    return Ok(batch_revert(index, inner_gas, &inner.precompile.bytes));
+                }
+
+                gas_used = inner_gas;
+                results.push(inner.precompile.bytes);
+                logs.extend(inner.logs);
+            }
+
+            let ret = IAcp::batchCallsCall::abi_encode_returns(&results);
+            Ok(ok_dispatch(gas_used, ret, logs))
+        }
+
         IAcp::createPolicyCall::SELECTOR => {
             if gas_limit < WRITE_GAS {
                 return Err(PrecompileError::OutOfGas);
@@ -819,6 +895,7 @@ fn build_relationship_selector(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_primitives::FixedBytes;
     use hub_modules::types::Timestamp;
 
     const TEST_POLICY_YAML: &str = "\
@@ -868,5 +945,107 @@ resources:
             }
             Err(e) => panic!("dispatch returned PrecompileError: {e:?}"),
         }
+    }
+
+    #[test]
+    fn dispatch_batch_calls_apply_multiple_mutations() {
+        let calldata = IAcp::batchCallsCall {
+            calls: vec![
+                IAcp::createPolicyCall {
+                    policy: TEST_POLICY_YAML.as_bytes().to_vec().into(),
+                    marshalType: 1,
+                }
+                .abi_encode()
+                .into(),
+                IAcp::createPolicyCall {
+                    policy: TEST_POLICY_YAML.as_bytes().to_vec().into(),
+                    marshalType: 1,
+                }
+                .abi_encode()
+                .into(),
+            ],
+        }
+        .abi_encode();
+
+        let mut module = AcpModule::new();
+        let block_ctx = BlockExecCtx {
+            timestamp: Timestamp {
+                seconds: 1000,
+                block_height: 5,
+            },
+        };
+        let tx_ctx = TxExecCtx {
+            tx_hash: vec![1; 32],
+            signer: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK".to_string(),
+        };
+
+        let result = dispatch(&mut module, &block_ctx, &tx_ctx, &calldata, 1_000_000).unwrap();
+        assert!(!result.precompile.reverted);
+        assert_eq!(result.logs.len(), 2);
+        assert_eq!(module.query_policy_ids().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn dispatch_batch_calls_rollback_on_failure() {
+        let block_ctx = BlockExecCtx {
+            timestamp: Timestamp {
+                seconds: 1000,
+                block_height: 5,
+            },
+        };
+        let tx_ctx = TxExecCtx {
+            tx_hash: vec![1; 32],
+            signer: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK".to_string(),
+        };
+        let creator = did_from_signer(&tx_ctx.signer).unwrap();
+        let mut module = AcpModule::new();
+        let record = module
+            .create_policy(&creator, TEST_POLICY_YAML, PolicyMarshalingType::ShortYaml)
+            .unwrap();
+        let policy_id = FixedBytes::from_slice(&hex::decode(&record.policy.id).unwrap());
+
+        let calldata = IAcp::batchCallsCall {
+            calls: vec![
+                IAcp::registerObjectCall {
+                    policyId: policy_id,
+                    objectId: "doc-1".into(),
+                    resource: "document".into(),
+                }
+                .abi_encode()
+                .into(),
+                IAcp::setRelationshipCall {
+                    policyId: policy_id,
+                    resource: "document".into(),
+                    objectId: "doc-1".into(),
+                    relation: "reader".into(),
+                    actor: "not-a-did".into(),
+                }
+                .abi_encode()
+                .into(),
+            ],
+        }
+        .abi_encode();
+
+        let err = dispatch(&mut module, &block_ctx, &tx_ctx, &calldata, 1_000_000).unwrap_err();
+        match err {
+            PrecompileError::Other(message) => {
+                assert!(message.contains("batch call 2"), "{message}");
+            }
+            other => panic!("expected wrapped batch error, got {other:?}"),
+        }
+
+        let (registered, _) = module
+            .query_object_owner(
+                &record.policy.id,
+                &Object {
+                    resource: "document".into(),
+                    id: "doc-1".into(),
+                },
+            )
+            .unwrap();
+        assert!(
+            !registered,
+            "failed batch should not persist earlier writes"
+        );
     }
 }
