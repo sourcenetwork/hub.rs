@@ -6,7 +6,7 @@
 //!
 //! Requires `cargo build -p hubd` before running.
 
-use std::time::Duration;
+use std::{sync::OnceLock, time::Duration};
 
 use alloy_primitives::{Address, B256, Bytes, FixedBytes, U256};
 use alloy_sol_types::{SolCall, SolEvent};
@@ -18,6 +18,7 @@ use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, TestCluster, ValidatorCo
 use hub_modules::acp::abi::IAcp;
 use hub_modules::validator_registry::abi::IValidatorRegistry;
 use hub_modules::validator_registry::types::ValidatorInfo;
+use tokio::sync::Mutex;
 
 const HARDHAT_KEY_0: &str = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 const HARDHAT_KEY_2: &str = "5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a";
@@ -56,6 +57,11 @@ fn parse_policy_id(hex_str: &str) -> FixedBytes<32> {
     let hex = hex_str.strip_prefix("0x").unwrap_or(hex_str);
     hex::decode_to_slice(hex, &mut bytes).expect("policy ID should be valid hex");
     FixedBytes::from(bytes)
+}
+
+fn validator_test_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
 }
 
 async fn broadcast_evm_tx(
@@ -101,6 +107,8 @@ async fn eth_call_raw(client: &HubClient, target: Address, calldata: Vec<u8>) ->
 
 #[tokio::test]
 async fn validator_bootstrap() {
+    let _guard = validator_test_lock().lock().await;
+
     // ── SETUP ─────────────────────────────────────────────────────
 
     let chain_id = 9001;
@@ -449,6 +457,8 @@ async fn validator_bootstrap() {
 
 #[tokio::test]
 async fn validator_registry_adversarial() {
+    let _guard = validator_test_lock().lock().await;
+
     // ── SETUP ─────────────────────────────────────────────────────
 
     let chain_id = 9002;
