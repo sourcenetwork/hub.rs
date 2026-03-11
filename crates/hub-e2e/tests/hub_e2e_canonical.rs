@@ -20,6 +20,7 @@ use hub_client::{
 };
 use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, TestCluster};
 use hub_e2e::observe::ClusterAssertions;
+use hub_e2e::{RECEIPT_POLL_ATTEMPTS, RECEIPT_POLL_INTERVAL};
 use hub_modules::acp::abi::IAcp;
 use hub_modules::bulletin::abi::IBulletin;
 use hub_modules::hub::abi::IHub;
@@ -49,10 +50,6 @@ resources:
       - name: delete
         expr: owner
 ";
-
-/// Receipt polling: 150ms interval, 200 attempts = 30s max.
-const RECEIPT_INTERVAL: Duration = Duration::from_millis(150);
-const RECEIPT_ATTEMPTS: u32 = 200;
 
 fn parse_policy_id(hex_str: &str) -> FixedBytes<32> {
     let mut bytes = [0u8; 32];
@@ -99,7 +96,7 @@ async fn broadcast_evm_tx(
     let tx_hash = tx_hash.expect("at least one node should accept the EVM tx");
 
     client
-        .wait_for_receipt(tx_hash, RECEIPT_INTERVAL, RECEIPT_ATTEMPTS)
+        .wait_for_receipt(tx_hash, RECEIPT_POLL_INTERVAL, RECEIPT_POLL_ATTEMPTS)
         .await
         .expect("EVM receipt should appear")
 }
@@ -138,7 +135,7 @@ async fn broadcast_native_tx(
     let tx_hash = tx_hash.expect("at least one node should accept the BLS tx");
 
     client
-        .wait_for_receipt(tx_hash, RECEIPT_INTERVAL, RECEIPT_ATTEMPTS)
+        .wait_for_receipt(tx_hash, RECEIPT_POLL_INTERVAL, RECEIPT_POLL_ATTEMPTS)
         .await
         .expect("BLS receipt should appear")
 }

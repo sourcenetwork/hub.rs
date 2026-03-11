@@ -15,6 +15,7 @@ use hub_client::{
     ACP_ADDRESS, EvmSigner, HubClient, TransactionReceipt, VALIDATOR_REGISTRY_ADDRESS,
 };
 use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, TestCluster, ValidatorConfig};
+use hub_e2e::{RECEIPT_POLL_ATTEMPTS, RECEIPT_POLL_INTERVAL};
 use hub_modules::acp::abi::IAcp;
 use hub_modules::validator_registry::abi::IValidatorRegistry;
 use hub_modules::validator_registry::types::ValidatorInfo;
@@ -22,9 +23,6 @@ use tokio::sync::Mutex;
 
 const HARDHAT_KEY_0: &str = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 const HARDHAT_KEY_2: &str = "5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a";
-
-const RECEIPT_INTERVAL: Duration = Duration::from_millis(150);
-const RECEIPT_ATTEMPTS: u32 = 200;
 
 const REGISTRY_POLICY_YAML: &str = "\
 name: validator-registry-policy
@@ -92,7 +90,7 @@ async fn broadcast_evm_tx(
     let tx_hash = tx_hash.expect("at least one node should accept the tx");
 
     client
-        .wait_for_receipt(tx_hash, RECEIPT_INTERVAL, RECEIPT_ATTEMPTS)
+        .wait_for_receipt(tx_hash, RECEIPT_POLL_INTERVAL, RECEIPT_POLL_ATTEMPTS)
         .await
         .expect("receipt should appear")
 }

@@ -14,6 +14,7 @@ use alloy_sol_types::SolCall;
 use hub_client::{ACP_ADDRESS, EvmSigner, HubClient, TransactionReceipt};
 use hub_domain::{LightBlock, ModuleStateProof, verify_light_block, verify_module_state_proof};
 use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, TestCluster};
+use hub_e2e::{RECEIPT_POLL_ATTEMPTS, RECEIPT_POLL_INTERVAL};
 use hub_modules::acp::abi::IAcp;
 use jsonrpsee::core::client::SubscriptionClientT;
 use jsonrpsee::rpc_params;
@@ -32,9 +33,6 @@ resources:
       - name: read
         expr: owner + reader
 ";
-
-const RECEIPT_INTERVAL: Duration = Duration::from_millis(150);
-const RECEIPT_ATTEMPTS: u32 = 200;
 
 fn parse_policy_id(hex_str: &str) -> FixedBytes<32> {
     let mut bytes = [0u8; 32];
@@ -77,7 +75,7 @@ async fn broadcast_evm_tx(
     let tx_hash = tx_hash.expect("at least one node should accept the EVM tx");
 
     client
-        .wait_for_receipt(tx_hash, RECEIPT_INTERVAL, RECEIPT_ATTEMPTS)
+        .wait_for_receipt(tx_hash, RECEIPT_POLL_INTERVAL, RECEIPT_POLL_ATTEMPTS)
         .await
         .expect("EVM receipt should appear")
 }

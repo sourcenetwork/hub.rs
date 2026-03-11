@@ -22,6 +22,7 @@ use alloy_sol_types::SolCall;
 
 use hub_client::{ACP_ADDRESS, BlsSigner, EvmSigner, HubClient, TransactionReceipt};
 use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, TestCluster};
+use hub_e2e::{RECEIPT_POLL_ATTEMPTS, RECEIPT_POLL_INTERVAL};
 use hub_modules::acp::abi::IAcp;
 
 const HARDHAT_KEY_0: &str = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
@@ -36,9 +37,6 @@ resources:
       - name: read
         expr: owner
 ";
-
-const RECEIPT_INTERVAL: Duration = Duration::from_millis(150);
-const RECEIPT_ATTEMPTS: u32 = 200;
 
 fn create_policy_calldata() -> Vec<u8> {
     IAcp::createPolicyCall {
@@ -82,7 +80,7 @@ async fn broadcast_evm_tx(
     let tx_hash = tx_hash.expect("at least one node should accept the EVM tx");
 
     client
-        .wait_for_receipt(tx_hash, RECEIPT_INTERVAL, RECEIPT_ATTEMPTS)
+        .wait_for_receipt(tx_hash, RECEIPT_POLL_INTERVAL, RECEIPT_POLL_ATTEMPTS)
         .await
         .expect("EVM receipt should appear")
 }
@@ -117,7 +115,7 @@ async fn broadcast_native_tx(
     let tx_hash = tx_hash.expect("at least one node should accept the BLS tx");
 
     client
-        .wait_for_receipt(tx_hash, RECEIPT_INTERVAL, RECEIPT_ATTEMPTS)
+        .wait_for_receipt(tx_hash, RECEIPT_POLL_INTERVAL, RECEIPT_POLL_ATTEMPTS)
         .await
         .expect("BLS receipt should appear")
 }
@@ -141,7 +139,7 @@ async fn send_evm_tx_to_node(
         .await
         .expect("node should accept tx");
     client
-        .wait_for_receipt(tx_hash, RECEIPT_INTERVAL, RECEIPT_ATTEMPTS)
+        .wait_for_receipt(tx_hash, RECEIPT_POLL_INTERVAL, RECEIPT_POLL_ATTEMPTS)
         .await
         .expect("receipt should appear")
 }
