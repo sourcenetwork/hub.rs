@@ -123,7 +123,7 @@ jobs:
         run: git config --global url."https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/".insteadOf "https://github.com/sourcenetwork/"
 
       - name: Kill leftover hubd processes
-        run: pkill -f 'target.*hubd' 2>/dev/null || true
+        run: pkill -f 'target/debug/deps/hub.*hubd' 2>/dev/null || true
 
       - name: Build hubd
         run: cargo build -p hubd
@@ -138,7 +138,7 @@ jobs:
           git config --global --remove-section "url.https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/" 2>/dev/null || true
           git checkout -- .
           git clean -fd
-          pkill -f 'target.*hubd' 2>/dev/null || true
+          pkill -f 'target/debug/deps/hub.*hubd' 2>/dev/null || true
           rm -rf /tmp/hub-e2e-* /tmp/.tmp* 2>/dev/null || true
 
   artifacts:
