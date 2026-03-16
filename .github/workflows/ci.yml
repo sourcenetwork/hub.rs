@@ -140,3 +140,38 @@ jobs:
           git clean -fd
           pkill -f 'target.*hubd' 2>/dev/null || true
           rm -rf /tmp/hub-e2e-* /tmp/.tmp* 2>/dev/null || true
+
+  artifacts:
+    name: Release Artifacts
+    runs-on: [self-hosted, macOS, ARM64, studio]
+    needs: [build]
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: false
+
+      - name: Clear stale git credential config
+        run: |
+          git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
+          rm -rf ~/.cargo/git/db/defradb.rs-* ~/.cargo/git/checkouts/defradb.rs-* 2>/dev/null || true
+
+      - name: Configure private repo access
+        run: git config --global url."https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/".insteadOf "https://github.com/sourcenetwork/"
+
+      - name: Build release hubd
+        run: cargo build --release -p hubd
+
+      - name: Upload hubd
+        uses: actions/upload-artifact@v4
+        with:
+          name: hubd-aarch64-apple-darwin
+          path: target/release/hubd
+          retention-days: 30
+
+      - name: Cleanup
+        if: always()
+        run: |
+          git config --global --remove-section "url.https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/" 2>/dev/null || true
+          git checkout -- .
+          git clean -fd
