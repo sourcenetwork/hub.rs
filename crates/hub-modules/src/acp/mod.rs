@@ -8,6 +8,8 @@ pub mod error;
 pub mod keys;
 /// ACP domain types.
 pub mod types;
+/// `ZanzibarStore` adapter over hub's module KV store.
+pub mod zanzibar_store;
 
 use std::collections::HashMap;
 

@@ -3742,7 +3742,9 @@ dependencies = [
  "acp",
  "alloy-primitives",
  "alloy-sol-types",
+ "async-trait",
  "borsh",
+ "futures",
  "hex",
  "hub-crypto",
  "identity",
@@ -3750,6 +3752,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.18",
+ "zanzibar",
 ]
 
 [[package]]
