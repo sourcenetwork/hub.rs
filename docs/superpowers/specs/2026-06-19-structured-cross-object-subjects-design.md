@@ -25,8 +25,9 @@ relation's declared subject restriction before it is stored.
   to filter by a cross-object subject. `filterRelationships` with an empty
   actor already returns every subject (incl. EntitySet); querying by a specific
   cross-object subject is a separate future change.
-- `TypedWildcard` is not exposed yet (not in the requested grammar). Reserve a
-  `subjectKind` value for it.
+- `TypedWildcard` is not exposed (not in the near-term gold tuples, which use
+  `*`, usersets, objects, and entities). Reserve `subjectKind = 4` for it;
+  decoding rejects it for now. Adding it later is additive and back-compatible.
 
 ## Wire contract (defradb's hub_rs provider emits exactly these fields)
 
@@ -77,38 +78,73 @@ function deleteRelationshipSubject(
   `Entity`, empty `subjectResource`/`subjectObjectId` for `Object`/`Userset`,
   or non-empty cross-object fields for `Entity`/`Wildcard` → revert.
 
-### Events
+### Events — new types, existing ones untouched
 
-`RelationshipSet` / `RelationshipDeleted` gain the structured subject fields
-(`subjectKind`, `subjectResource`, `subjectObjectId`, `subjectRelation`) so log
-consumers read the subject structurally — no stringification on the event path
-either. The existing entity-only methods continue to emit their `actor` string;
-the new methods emit the structured fields.
+The existing `RelationshipSet` / `RelationshipDeleted` events are **not** widened
+— ABI events are position-decoded, so appending fields breaks existing indexers.
+Instead the new methods emit **new** event types:
 
-## Floor enforcement (#1059, on store)
+```solidity
+event RelationshipSubjectSet(
+    bytes32 indexed policyId, string resource, string objectId, string relation,
+    uint8 subjectKind, string subjectResource, string subjectObjectId, string subjectRelation
+);
+event RelationshipSubjectDeleted( /* identical fields */ );
+```
 
-`AcpModule::cmd_set_relationship` calls `zanzibar::Relationship::validate(&policy)`
-before persisting. That validates:
-1. the relation is declared on the resource,
-2. an `EntitySet` subject's referenced resource/`resource#relation` is declared,
-3. the subject satisfies the relation's `subject_restriction` (the floor).
+The entity-only `setRelationship`/`deleteRelationship` methods keep emitting the
+existing `RelationshipSet`/`RelationshipDeleted` events, so existing indexers are
+untouched and the provider keeps using the entity-only method+event for actor
+grants.
+
+## Floor enforcement (#1059) — gated to declared relations (#1060 Go-compat)
+
+`AcpModule::cmd_set_relationship` currently **hard-rejects** a relationship whose
+relation is not declared in the policy (`mod.rs:935`). defradb (#1060, Go-compat)
+**accepts** undeclared relation names and enforces the floor only on declared
+ones. Keeping hub's hard reject would make hub reject grants defradb accepts and
+diverge single-node vs cross-node. So:
+
+Replace the hard reject with a **gated floor** on set:
+
+```rust
+// Go-compat (defradb #1060): accept relationships on undeclared relation
+// names; enforce the floor (#1059) only on declared relations, so hub and
+// defradb make the same accept/reject decision.
+if policy.get_relation(&rel.resource, &rel.relation).is_some() {
+    rel.validate(&policy)
+        .map_err(|e| AcpError::InvalidAccessRequest { reason: e.to_string() })?;
+}
+```
+
+`Relationship::validate(&policy)` (only reached when the relation is declared, so
+its internal `RelationNotFound` branch never fires) validates:
+1. an `EntitySet` subject's referenced resource / `resource#relation` is declared,
+2. the subject satisfies the relation's `subject_restriction` (the floor).
 
 This runs on **set** for **every** subject, including entities, closing the
 soundness gap on the existing path too. A violation maps to an `AcpError` → the
-tx reverts.
+tx reverts. Undeclared relations are accepted without floor validation, matching
+defradb.
 
 The floor is **not** applied on **delete**: revocation must always succeed so a
 grant can be removed even after the policy's restrictions change. The delete
 path decodes the subject only to compute the relationship's storage key.
 
+**Behavior change:** hub now accepts relationships on undeclared relations (it
+previously rejected them). Existing tests asserting the old rejection are updated
+to the Go-compat behavior.
+
 ## Components
 
 1. **`crates/hub-modules/src/acp/abi.rs`** — add the two `*Subject` methods and
-   widen the two events with the structured fields.
+   the two new `RelationshipSubject{Set,Deleted}` event types. Existing methods
+   and events untouched.
 2. **`crates/hub-executor/src/precompiles/acp.rs`** — `decode_subject(kind,
    resource, object_id, relation) -> Result<acp::Subject, PrecompileError>`
    shared by both new handlers; handlers mirror the existing set/delete
-   (auth via `did_from_signer`, dispatch via `direct_policy_cmd`, emit events).
+   (auth via `did_from_signer`, dispatch via `direct_policy_cmd`) but emit the
+   new `RelationshipSubject{Set,Deleted}` events.
 3. **`crates/hub-modules/src/acp/mod.rs`** — `cmd_set_relationship` calls
    `rel.validate(&policy)` (the floor) and maps the error to `AcpError`. The
    delete counterpart is unchanged beyond accepting the decoded subject.
@@ -145,12 +181,23 @@ defradb provider / wallet
   inherits across the edge) → delete child grant → access revoked, on every
   node of a 4-node cluster.
 
-## Risks / open items
+## Resolved decisions (approved)
 
-- **Entity DID in `subjectObjectId`** — confirmed as the chosen mapping; flagged
-  for review.
-- **Event shape** — widening existing events vs. adding new event types. Plan:
-  widen existing events with the structured fields (display-only; no consumer
-  contract depends on the current shape within hub.rs).
+- **Struct fields + `subjectKind` (0–3)** — locked. This is the emit contract for
+  defradb's provider.
+- **Entity DID in `subjectObjectId`** — approved.
+- **Floor on store, not delete** — approved.
+- **Floor gated to declared relations (Go-compat, #1060)** — required change;
+  hub now accepts undeclared relations like defradb.
+- **New event types** (`RelationshipSubject{Set,Deleted}`), existing events
+  untouched — position-decoded events break on appended fields; provider keeps
+  the entity-only method+event for actor grants.
+- **`TypedWildcard` (kind 4)** — not needed near-term; reserved, decoding rejects.
+
+## Notes
+
 - Determinism unchanged: the new path only constructs a different `Subject`;
   storage, replication, and `check_blocking` resolution are unchanged.
+- The Go-compat gating affects both the existing entity path and the new
+  structured path (both flow through `cmd_set_relationship`), so accept/reject
+  parity with defradb holds uniformly.
