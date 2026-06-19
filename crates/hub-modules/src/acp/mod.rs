@@ -12,12 +12,15 @@ pub mod types;
 pub mod zanzibar_store;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use acp::policy_yaml;
-use acp::{Policy, RelationExpression, Relationship, Subject};
+use acp::{Policy, Relationship};
 use error::AcpError;
 use identity::Did;
 use sha2::{Digest, Sha256};
+use zanzibar::PermissionEngine;
+use zanzibar_store::QmdbZanzibarStore;
 
 use crate::kv_store::{InMemoryKvStore, ModuleKvStore};
 use crate::types::{BlockExecCtx, Duration, Timestamp};
@@ -259,7 +262,6 @@ impl AcpModule {
                 &op.object.id,
                 &op.permission,
                 actor_did,
-                0,
             );
             if !granted {
                 return Err(AcpError::Unauthorized {
@@ -428,7 +430,6 @@ impl AcpModule {
                 &op.object.id,
                 &op.permission,
                 actor_did,
-                0,
             );
             if !granted {
                 return Ok(false);
@@ -1351,9 +1352,17 @@ impl AcpModule {
 
     // ── Permission evaluation ────────────────────────────────────────────
 
-    /// Evaluate whether `subject` has `permission` on `resource:object_id`
-    /// according to the policy's relation expressions.
-    #[allow(clippy::too_many_arguments)]
+    /// Evaluate whether `subject` has `permission` on `resource:object_id` by
+    /// running the policy's relation expressions through the Lean-proven
+    /// zanzibar [`PermissionEngine`] over a [`QmdbZanzibarStore`] view of module
+    /// state. This resolves `TupleToUserset` (cross-object inheritance) and all
+    /// other rewrite rules through one shared evaluator. Errors — e.g. an
+    /// unknown policy or relation — fail closed (deny).
+    ///
+    /// Uses [`PermissionEngine::check_blocking`], whose determinism contract
+    /// (all-Ready, side-effect-free, order-stable store) is satisfied by the
+    /// `BTreeMap`-backed module store: identical inputs yield the identical
+    /// decision on every validator.
     fn check_permission(
         &self,
         policy_id: &str,
@@ -1362,134 +1371,13 @@ impl AcpModule {
         object_id: &str,
         relation: &str,
         subject: &Did,
-        depth: u32,
     ) -> bool {
-        if depth > 20 {
-            return false;
-        }
-
-        let Some(rel_def) = policy.get_relation(resource, relation) else {
-            return false;
-        };
-
-        self.eval_expression(
-            policy_id,
-            policy,
-            resource,
-            object_id,
-            relation,
-            &rel_def.expression.clone(),
-            subject,
-            depth,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn eval_expression(
-        &self,
-        policy_id: &str,
-        policy: &Policy,
-        resource: &str,
-        object_id: &str,
-        current_relation: &str,
-        expr: &RelationExpression,
-        subject: &Did,
-        depth: u32,
-    ) -> bool {
-        match expr {
-            RelationExpression::This => {
-                let direct_rel = Relationship::with_entity(
-                    resource,
-                    object_id,
-                    current_relation,
-                    subject.clone(),
-                );
-                let storage_key = direct_rel.storage_key();
-
-                // Direct relationship check.
-                if let Some(rec) = self.get_relationship(policy_id, &storage_key)
-                    && !rec.archived
-                {
-                    return true;
-                }
-                // Check wildcard.
-                let wildcard =
-                    Relationship::new(resource, object_id, current_relation, Subject::Wildcard);
-                if self.has_relationship(policy_id, &wildcard.storage_key()) {
-                    return true;
-                }
-                // Check typed wildcards.
-                let rel_prefix =
-                    Relationship::relation_prefix(resource, object_id, current_relation);
-                let scan_prefix = keys::relationship_storage_prefix(policy_id, &rel_prefix);
-                for (_, value) in self.store.prefix_scan(&scan_prefix) {
-                    if let Ok(rec) = serde_json::from_slice::<RelationshipRecord>(&value)
-                        && rec.relationship.subject.is_typed_wildcard()
-                    {
-                        return true;
-                    }
-                }
-                false
-            }
-            RelationExpression::ComputedUserset { relation } => self.check_permission(
-                policy_id,
-                policy,
-                resource,
-                object_id,
-                relation,
-                subject,
-                depth + 1,
-            ),
-            RelationExpression::Union(exprs) => exprs.iter().any(|e| {
-                self.eval_expression(
-                    policy_id,
-                    policy,
-                    resource,
-                    object_id,
-                    current_relation,
-                    e,
-                    subject,
-                    depth,
-                )
-            }),
-            RelationExpression::Intersection(exprs) => exprs.iter().all(|e| {
-                self.eval_expression(
-                    policy_id,
-                    policy,
-                    resource,
-                    object_id,
-                    current_relation,
-                    e,
-                    subject,
-                    depth,
-                )
-            }),
-            RelationExpression::Difference { base, subtract } => {
-                self.eval_expression(
-                    policy_id,
-                    policy,
-                    resource,
-                    object_id,
-                    current_relation,
-                    base,
-                    subject,
-                    depth,
-                ) && !self.eval_expression(
-                    policy_id,
-                    policy,
-                    resource,
-                    object_id,
-                    current_relation,
-                    subtract,
-                    subject,
-                    depth,
-                )
-            }
-            // TupleToUserset is complex; return false for now (Phase 9 scope).
-            RelationExpression::TupleToUserset { .. } => false,
-            // RelationExpression is #[non_exhaustive]; fail closed on unknown variants.
-            _ => false,
-        }
+        let store = Arc::new(QmdbZanzibarStore::new(self.store.clone()));
+        let mut engine = PermissionEngine::new(store);
+        engine.add_policy(policy);
+        engine
+            .check_blocking(policy_id, resource, object_id, relation, subject)
+            .unwrap_or(false)
     }
 
     /// Check if creator is authorized to manage the given relation on an object.

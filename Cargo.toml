@@ -92,11 +92,11 @@ commonware-broadcast = "2026.2.0"
 commonware-resolver = "2026.2.0"
 commonware-macros = "2026.2.0"
 
-# defradb.rs (main @ f0b43c4)
-acp = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "f0b43c4434a11cda4b9d934808406296ad0d74b5", default-features = false }
-identity = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "f0b43c4434a11cda4b9d934808406296ad0d74b5" }
-storage = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "f0b43c4434a11cda4b9d934808406296ad0d74b5", default-features = false }
-zanzibar = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "f0b43c4434a11cda4b9d934808406296ad0d74b5", default-features = false }
+# defradb.rs (main @ 2e510e4)
+acp = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "2e510e40f2a4f94bf04135eb9357f6dc97802102", default-features = false }
+identity = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "2e510e40f2a4f94bf04135eb9357f6dc97802102" }
+storage = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "2e510e40f2a4f94bf04135eb9357f6dc97802102", default-features = false }
+zanzibar = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "2e510e40f2a4f94bf04135eb9357f6dc97802102", default-features = false }
 
 # Alloy
 alloy-primitives = "1.0"

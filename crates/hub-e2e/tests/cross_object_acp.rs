@@ -1,15 +1,12 @@
-//! Cross-object ACP storage/replication across a cluster.
+//! Cross-object ACP: storage, replication, and resolution across a cluster.
 //!
 //! Seeds a cross-object "parent edge" (a relationship whose subject is an
 //! `EntitySet`, i.e. another object's userset) plus a child grant on node 0,
-//! then asserts both replicate and are queryable on every other node after the
-//! cluster converges. (Simplex BFT requires ≥4 nodes for quorum, so the
-//! "seed on one, resolve on another" check uses the 4-node minimum.)
-//!
-//! This exercises storage + consensus replication of the cross-object grant
-//! shape. The *resolution* of that grant through `TupleToUserset` (an access
-//! check that inherits across the edge) lands with the evaluator swap, once
-//! the zanzibar engine is wired into the check path.
+//! then on every other node asserts both that they replicate and that an access
+//! check *resolves* across the edge: a subject granted on the parent inherits
+//! access to the child through `TupleToUserset`, evaluated on-chain by the
+//! zanzibar `PermissionEngine`. (Simplex BFT requires ≥4 nodes for quorum, so
+//! the "seed on one, resolve on another" check uses the 4-node minimum.)
 //!
 //! Requires `cargo build -p hubd` (and `HUBD_BINARY`) before running.
 
@@ -228,6 +225,42 @@ async fn cross_object_grant_replicates_across_nodes() {
         assert!(
             has_grant,
             "node{node_idx} should have the col1#reader grant for alice"
+        );
+
+        // Cross-object RESOLUTION: alice has no direct grant on doc1, but
+        // document#read = owner + reader + parent->reader, so the chain inherits
+        // her read of doc1 from her reader grant on doc1's parent collection
+        // col1 — resolved on-chain through the zanzibar PermissionEngine
+        // (TupleToUserset) via eth_call.
+        let can_read = node
+            .verify_access_request(
+                policy_id,
+                vec!["document".into()],
+                vec!["doc1".into()],
+                vec!["read".into()],
+                &alice,
+            )
+            .await
+            .unwrap_or_else(|e| panic!("node{node_idx} verify_access_request(doc1 read): {e}"));
+        assert!(
+            can_read,
+            "node{node_idx}: alice should inherit read on doc1 via reader on parent col1"
+        );
+
+        // Fail closed: doc2 has no parent edge, so nothing is inherited.
+        let no_inherit = node
+            .verify_access_request(
+                policy_id,
+                vec!["document".into()],
+                vec!["doc2".into()],
+                vec!["read".into()],
+                &alice,
+            )
+            .await
+            .unwrap_or_else(|e| panic!("node{node_idx} verify_access_request(doc2 read): {e}"));
+        assert!(
+            !no_inherit,
+            "node{node_idx}: doc2 has no parent edge, so read must be denied"
         );
     }
 
