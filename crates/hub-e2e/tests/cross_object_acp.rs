@@ -15,7 +15,7 @@ use std::time::Duration;
 use alloy_primitives::{Address, Bytes, FixedBytes};
 use alloy_sol_types::SolCall;
 
-use hub_client::{ACP_ADDRESS, EvmSigner, HubClient, TransactionReceipt, create_bearer_token};
+use hub_client::{ACP_ADDRESS, EvmSigner, HubClient, TransactionReceipt};
 use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, TestCluster};
 use hub_e2e::observe::ClusterAssertions;
 use hub_e2e::{RECEIPT_POLL_ATTEMPTS, RECEIPT_POLL_INTERVAL};
@@ -153,31 +153,27 @@ async fn cross_object_grant_replicates_across_nodes() {
     assert_eq!(policy_ids.len(), 1, "exactly one policy expected");
     let policy_id = parse_policy_id(&policy_ids[0]);
 
-    // ── 2. Seed the parent edge: document:doc1#parent @ collection:col1 ──
-    // The subject is an EntitySet (another object's userset) — the cross-object
-    // shape the entity-only setRelationship ABI cannot express, so it goes
-    // through a bearer policy command carrying a full Relationship.
-    let bearer_token =
-        create_bearer_token(&user_key, "cross-object-test", 9_999_999_999).expect("bearer token");
-
-    let parent_edge = hub_modules::acp::types::PolicyCmd::SetRelationship(acp::Relationship::new(
-        "document",
-        "doc1",
-        "parent",
-        acp::Subject::entity_set("collection", "col1", "reader"),
-    ));
-    let parent_cmd = serde_json::to_vec(&parent_edge).expect("serialize PolicyCmd");
-    let parent_calldata = IAcp::bearerPolicyCmdCall {
-        bearerToken: bearer_token,
+    // ── 2. Seed the parent edge via setRelationshipSubject ───────────────
+    // document:doc1#parent @ collection:col1#reader — a userset subject
+    // (subjectKind 3), the cross-object shape the entity-only setRelationship
+    // cannot express. account0 owns the policy, so it is authorized directly:
+    // no bearer token, no re-stringified PolicyCmd — just structured fields.
+    let parent_calldata = IAcp::setRelationshipSubjectCall {
         policyId: policy_id,
-        cmd: parent_cmd.into(),
+        resource: "document".into(),
+        objectId: "doc1".into(),
+        relation: "parent".into(),
+        subjectKind: 3,
+        subjectResource: "collection".into(),
+        subjectObjectId: "col1".into(),
+        subjectRelation: "reader".into(),
     }
     .abi_encode();
     let parent_receipt =
         broadcast_evm_tx(&cluster, &client, &signer, ACP_ADDRESS, parent_calldata).await;
     assert_eq!(
         parent_receipt.status, 1,
-        "setting the EntitySet parent edge should succeed"
+        "setting the userset parent edge should succeed"
     );
 
     // ── 3. Seed the child grant: collection:col1#reader @ alice ──────────
@@ -261,6 +257,63 @@ async fn cross_object_grant_replicates_across_nodes() {
         assert!(
             !no_inherit,
             "node{node_idx}: doc2 has no parent edge, so read must be denied"
+        );
+    }
+
+    // ── 5. Revoke the cross-object edge via deleteRelationshipSubject ─────
+    // Removing the parent edge (the same userset subject) must revoke the
+    // inherited access everywhere.
+    let revoke_calldata = IAcp::deleteRelationshipSubjectCall {
+        policyId: policy_id,
+        resource: "document".into(),
+        objectId: "doc1".into(),
+        relation: "parent".into(),
+        subjectKind: 3,
+        subjectResource: "collection".into(),
+        subjectObjectId: "col1".into(),
+        subjectRelation: "reader".into(),
+    }
+    .abi_encode();
+    let revoke_receipt =
+        broadcast_evm_tx(&cluster, &client, &signer, ACP_ADDRESS, revoke_calldata).await;
+    assert_eq!(
+        revoke_receipt.status, 1,
+        "revoking the parent edge should succeed"
+    );
+
+    state
+        .wait_for_height(revoke_receipt.block_number + 1, Duration::from_secs(20))
+        .await
+        .expect("nodes should advance past the revoke block");
+
+    for node_idx in 0..cluster.node_count() {
+        let node = HubClient::new(cluster.node(node_idx).rpc_url());
+
+        // The parent edge is gone.
+        let parent_rels = node
+            .filter_relationships(policy_id, "document", "doc1", "parent", "")
+            .await
+            .unwrap_or_else(|e| panic!("node{node_idx} filter_relationships(parent): {e}"));
+        let parent_json = String::from_utf8_lossy(&parent_rels);
+        assert!(
+            !parent_json.contains("col1"),
+            "node{node_idx}: parent edge to col1 should be removed, got: {parent_json}"
+        );
+
+        // Resolution now denies: with no parent edge, nothing is inherited.
+        let still_reads = node
+            .verify_access_request(
+                policy_id,
+                vec!["document".into()],
+                vec!["doc1".into()],
+                vec!["read".into()],
+                &alice,
+            )
+            .await
+            .unwrap_or_else(|e| panic!("node{node_idx} verify_access_request(revoked): {e}"));
+        assert!(
+            !still_reads,
+            "node{node_idx}: read on doc1 must be revoked after the parent edge is deleted"
         );
     }
 
