@@ -123,7 +123,11 @@ jobs:
         run: git config --global url."https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/".insteadOf "https://github.com/sourcenetwork/"
 
       - name: Kill leftover hubd processes
-        run: pkill -f 'target/debug/deps/hub.*hubd' 2>/dev/null || true
+        # The e2e harness spawns nodes from $HUBD_BINARY (target/debug/hubd),
+        # so match that path. The previous pattern only matched test-harness
+        # binaries under deps/ and left port-holding hubd nodes alive, stalling
+        # the next run's cluster at height 0.
+        run: pkill -f 'target/debug/hubd' 2>/dev/null || true
 
       - name: Build hubd
         run: cargo build -p hubd
@@ -138,7 +142,7 @@ jobs:
           git config --global --remove-section "url.https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/" 2>/dev/null || true
           git checkout -- .
           git clean -fd
-          pkill -f 'target/debug/deps/hub.*hubd' 2>/dev/null || true
+          pkill -f 'target/debug/hubd' 2>/dev/null || true
           rm -rf /tmp/hub-e2e-* /tmp/.tmp* 2>/dev/null || true
 
   artifacts:
