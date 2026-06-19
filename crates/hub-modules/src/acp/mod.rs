@@ -117,7 +117,7 @@ impl AcpModule {
         let counter = self.next_policy_counter();
 
         let zanzibar_policy =
-            Policy::from_parsed(&parsed, counter).map_err(|e| AcpError::InvalidPolicy {
+            policy_yaml::build_policy(&parsed, counter).map_err(|e| AcpError::InvalidPolicy {
                 reason: e.to_string(),
             })?;
 
@@ -191,7 +191,7 @@ impl AcpModule {
 
         // Build new Policy using counter=0 (ID will be replaced with original).
         let mut new_zanzibar =
-            Policy::from_parsed(&parsed, 0).map_err(|e| AcpError::InvalidPolicy {
+            policy_yaml::build_policy(&parsed, 0).map_err(|e| AcpError::InvalidPolicy {
                 reason: e.to_string(),
             })?;
         new_zanzibar.id = policy_id.to_string();
@@ -448,7 +448,7 @@ impl AcpModule {
             Err(msg) => return Ok((false, msg, Policy::new("", ""))),
         };
 
-        let built = match Policy::from_parsed(&parsed, 0) {
+        let built = match policy_yaml::build_policy(&parsed, 0) {
             Ok(p) => p,
             Err(e) => return Ok((false, e.to_string(), Policy::new("", ""))),
         };
@@ -1485,6 +1485,8 @@ impl AcpModule {
             }
             // TupleToUserset is complex; return false for now (Phase 9 scope).
             RelationExpression::TupleToUserset { .. } => false,
+            // RelationExpression is #[non_exhaustive]; fail closed on unknown variants.
+            _ => false,
         }
     }
 
