@@ -26,6 +26,78 @@ fn did_from_actor(actor: &str) -> Result<Did, PrecompileError> {
     Did::new(actor).map_err(|e| PrecompileError::Other(format!("actor DID: {e}").into()))
 }
 
+/// Decode a structured subject — a `subjectKind` discriminant plus the discrete
+/// `subjectResource` / `subjectObjectId` / `subjectRelation` fields — into a
+/// [`acp::Subject`]. Subjects are never parsed from a single string: object IDs
+/// are path-like and may be quoted, so a string grammar would be fragile on this
+/// security boundary.
+///
+/// | kind | fields | subject |
+/// |------|--------|---------|
+/// | 0 Entity | `object_id` = DID | `Entity` |
+/// | 1 Wildcard | — | `Wildcard` |
+/// | 2 Object (edge) | `resource`, `object_id` | `EntitySet{…, relation: ""}` |
+/// | 3 Userset | `resource`, `object_id`, `relation` | `EntitySet{…, relation}` |
+fn decode_subject(
+    kind: u8,
+    resource: &str,
+    object_id: &str,
+    relation: &str,
+) -> Result<acp::Subject, PrecompileError> {
+    match kind {
+        // Entity — DID in object_id; no cross-object fields.
+        0 => {
+            if object_id.is_empty() {
+                return Err(subject_field_error(
+                    "entity requires a DID in subjectObjectId",
+                ));
+            }
+            if !resource.is_empty() || !relation.is_empty() {
+                return Err(subject_field_error(
+                    "entity takes no subjectResource/subjectRelation",
+                ));
+            }
+            Ok(acp::Subject::entity(did_from_actor(object_id)?))
+        }
+        // Wildcard — all-actors; no fields.
+        1 => {
+            if !resource.is_empty() || !object_id.is_empty() || !relation.is_empty() {
+                return Err(subject_field_error("wildcard takes no subject fields"));
+            }
+            Ok(acp::Subject::wildcard())
+        }
+        // Object edge — resource:object_id, empty relation.
+        2 => {
+            if resource.is_empty() || object_id.is_empty() {
+                return Err(subject_field_error(
+                    "object requires subjectResource and subjectObjectId",
+                ));
+            }
+            if !relation.is_empty() {
+                return Err(subject_field_error("object takes no subjectRelation"));
+            }
+            Ok(acp::Subject::entity_set(resource, object_id, ""))
+        }
+        // Userset — resource:object_id#relation.
+        3 => {
+            if resource.is_empty() || object_id.is_empty() || relation.is_empty() {
+                return Err(subject_field_error(
+                    "userset requires subjectResource, subjectObjectId and subjectRelation",
+                ));
+            }
+            Ok(acp::Subject::entity_set(resource, object_id, relation))
+        }
+        // 4 is reserved for TypedWildcard (not yet supported).
+        other => Err(subject_field_error(&format!(
+            "unsupported subjectKind {other}"
+        ))),
+    }
+}
+
+fn subject_field_error(msg: &str) -> PrecompileError {
+    PrecompileError::Other(format!("subject: {msg}").into())
+}
+
 fn policy_id_to_string(b: &B256) -> String {
     hex::encode(b.as_slice())
 }
@@ -303,6 +375,113 @@ pub(super) fn dispatch(
                 actor: call.actor,
             };
             let ret = IAcp::deleteRelationshipCall::abi_encode_returns(&record_found);
+            Ok(ok_dispatch(
+                WRITE_GAS,
+                ret,
+                vec![event_log(ACP_ADDRESS, &event)],
+            ))
+        }
+
+        IAcp::setRelationshipSubjectCall::SELECTOR => {
+            if gas_limit < WRITE_GAS {
+                return Err(PrecompileError::OutOfGas);
+            }
+            let call = IAcp::setRelationshipSubjectCall::abi_decode(input).map_err(decode_error)?;
+            let creator = did_from_signer(&tx_ctx.signer)?;
+            let policy_id = policy_id_to_string(&call.policyId);
+            let subject = decode_subject(
+                call.subjectKind,
+                &call.subjectResource,
+                &call.subjectObjectId,
+                &call.subjectRelation,
+            )?;
+            let cmd = PolicyCmd::SetRelationship(acp::Relationship::new(
+                &call.resource,
+                &call.objectId,
+                &call.relation,
+                subject,
+            ));
+
+            let result = match module.direct_policy_cmd(&creator, &policy_id, cmd) {
+                Ok(r) => r,
+                Err(e) => return Ok(err_dispatch(e)),
+            };
+
+            let (record_existed, record) = match result {
+                hub_modules::acp::types::PolicyCmdResult::SetRelationship {
+                    record_existed,
+                    record,
+                } => (record_existed, record),
+                _ => return Err(PrecompileError::Other("unexpected result variant".into())),
+            };
+
+            let event = IAcp::RelationshipSubjectSet {
+                policyId: alloy_primitives::keccak256(policy_id.as_bytes()),
+                resource: call.resource,
+                objectId: call.objectId,
+                relation: call.relation,
+                subjectKind: call.subjectKind,
+                subjectResource: call.subjectResource,
+                subjectObjectId: call.subjectObjectId,
+                subjectRelation: call.subjectRelation,
+            };
+            let ret = IAcp::setRelationshipSubjectCall::abi_encode_returns(
+                &IAcp::setRelationshipSubjectReturn {
+                    recordExisted: record_existed,
+                    record: json_bytes(&record),
+                },
+            );
+            Ok(ok_dispatch(
+                WRITE_GAS,
+                ret,
+                vec![event_log(ACP_ADDRESS, &event)],
+            ))
+        }
+
+        IAcp::deleteRelationshipSubjectCall::SELECTOR => {
+            if gas_limit < WRITE_GAS {
+                return Err(PrecompileError::OutOfGas);
+            }
+            let call =
+                IAcp::deleteRelationshipSubjectCall::abi_decode(input).map_err(decode_error)?;
+            let creator = did_from_signer(&tx_ctx.signer)?;
+            let policy_id = policy_id_to_string(&call.policyId);
+            let subject = decode_subject(
+                call.subjectKind,
+                &call.subjectResource,
+                &call.subjectObjectId,
+                &call.subjectRelation,
+            )?;
+            let cmd = PolicyCmd::DeleteRelationship(acp::Relationship::new(
+                &call.resource,
+                &call.objectId,
+                &call.relation,
+                subject,
+            ));
+
+            let result = match module.direct_policy_cmd(&creator, &policy_id, cmd) {
+                Ok(r) => r,
+                Err(e) => return Ok(err_dispatch(e)),
+            };
+
+            let record_found = match result {
+                hub_modules::acp::types::PolicyCmdResult::DeleteRelationship { record_found } => {
+                    record_found
+                }
+                _ => return Err(PrecompileError::Other("unexpected result variant".into())),
+            };
+
+            let event = IAcp::RelationshipSubjectDeleted {
+                policyId: alloy_primitives::keccak256(policy_id.as_bytes()),
+                resource: call.resource,
+                objectId: call.objectId,
+                relation: call.relation,
+                subjectKind: call.subjectKind,
+                subjectResource: call.subjectResource,
+                subjectObjectId: call.subjectObjectId,
+                subjectRelation: call.subjectRelation,
+            };
+            let ret = IAcp::deleteRelationshipSubjectCall::abi_encode_returns(&record_found);
             Ok(ok_dispatch(
                 WRITE_GAS,
                 ret,
@@ -1047,5 +1226,184 @@ resources:
             !registered,
             "failed batch should not persist earlier writes"
         );
+    }
+
+    const ALICE_DID: &str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+
+    #[test]
+    fn decode_subject_entity() {
+        let got = decode_subject(0, "", ALICE_DID, "").unwrap();
+        assert_eq!(got, acp::Subject::entity(Did::new(ALICE_DID).unwrap()));
+    }
+
+    #[test]
+    fn decode_subject_wildcard() {
+        assert_eq!(
+            decode_subject(1, "", "", "").unwrap(),
+            acp::Subject::wildcard()
+        );
+    }
+
+    #[test]
+    fn decode_subject_object_edge_has_empty_relation() {
+        let got = decode_subject(2, "collection", "col1", "").unwrap();
+        assert_eq!(got, acp::Subject::entity_set("collection", "col1", ""));
+    }
+
+    #[test]
+    fn decode_subject_userset() {
+        let got = decode_subject(3, "collection", "col1", "reader").unwrap();
+        assert_eq!(
+            got,
+            acp::Subject::entity_set("collection", "col1", "reader")
+        );
+    }
+
+    #[test]
+    fn decode_subject_rejects_malformed() {
+        assert!(
+            decode_subject(4, "", "", "").is_err(),
+            "kind 4 (TypedWildcard) reserved"
+        );
+        assert!(decode_subject(7, "", "", "").is_err(), "unknown kind");
+        assert!(decode_subject(0, "", "", "").is_err(), "entity needs a DID");
+        assert!(
+            decode_subject(0, "", "not-a-did", "").is_err(),
+            "entity DID must be valid"
+        );
+        assert!(
+            decode_subject(2, "", "col1", "").is_err(),
+            "object needs resource"
+        );
+        assert!(
+            decode_subject(2, "collection", "", "").is_err(),
+            "object needs object_id"
+        );
+        assert!(
+            decode_subject(3, "collection", "col1", "").is_err(),
+            "userset needs relation"
+        );
+        // Cross-object fields on entity/wildcard are a client bug — reject.
+        assert!(
+            decode_subject(1, "collection", "", "").is_err(),
+            "wildcard takes no fields"
+        );
+        assert!(
+            decode_subject(0, "collection", ALICE_DID, "").is_err(),
+            "entity takes no resource"
+        );
+    }
+
+    const CROSS_POLICY_YAML: &str = "\
+name: cross-policy
+resources:
+  - name: collection
+    relations:
+      - name: owner
+      - name: reader
+    permissions:
+      - name: read
+        expr: owner + reader
+      - name: update
+        expr: owner
+      - name: delete
+        expr: owner
+  - name: document
+    relations:
+      - name: owner
+      - name: parent
+    permissions:
+      - name: read
+        expr: owner + parent->reader
+      - name: update
+        expr: owner
+      - name: delete
+        expr: owner
+";
+
+    fn policy_fixed(id: &str) -> FixedBytes<32> {
+        let mut b = [0u8; 32];
+        hex::decode_to_slice(id, &mut b).expect("policy id hex");
+        FixedBytes::from(b)
+    }
+
+    #[test]
+    fn dispatch_set_and_delete_relationship_subject_userset() {
+        use hub_modules::acp::types::{ObjectSelector, RelationSelector};
+
+        let mut module = AcpModule::new();
+        let block_ctx = BlockExecCtx {
+            timestamp: Timestamp {
+                seconds: 1000,
+                block_height: 5,
+            },
+        };
+        let tx_ctx = TxExecCtx {
+            tx_hash: vec![1; 32],
+            signer: ALICE_DID.to_string(),
+        };
+        let creator = Did::new(ALICE_DID).unwrap();
+
+        let record = module
+            .create_policy(&creator, CROSS_POLICY_YAML, PolicyMarshalingType::ShortYaml)
+            .unwrap();
+        let policy_id = record.policy.id.clone();
+        let pid = policy_fixed(&policy_id);
+
+        let fields = || IAcp::setRelationshipSubjectCall {
+            policyId: pid,
+            resource: "document".into(),
+            objectId: "doc1".into(),
+            relation: "parent".into(),
+            subjectKind: 3,
+            subjectResource: "collection".into(),
+            subjectObjectId: "col1".into(),
+            subjectRelation: "reader".into(),
+        };
+
+        let set = fields().abi_encode();
+        let dr = dispatch(&mut module, &block_ctx, &tx_ctx, &set, 1_000_000).unwrap();
+        assert!(
+            !dr.precompile.reverted,
+            "set subject should not revert: {}",
+            String::from_utf8_lossy(&dr.precompile.bytes)
+        );
+
+        let selector = RelationshipSelector {
+            object_selector: Some(ObjectSelector::Exact(Object {
+                resource: "document".into(),
+                id: "doc1".into(),
+            })),
+            relation_selector: Some(RelationSelector::Exact("parent".into())),
+            subject_selector: None,
+        };
+        let rels = module
+            .query_filter_relationships(&policy_id, &selector)
+            .unwrap();
+        assert_eq!(rels.len(), 1, "userset edge stored");
+        assert_eq!(
+            rels[0].relationship.subject,
+            acp::Subject::entity_set("collection", "col1", "reader"),
+            "subject decoded to the userset EntitySet"
+        );
+
+        let c = fields();
+        let del = IAcp::deleteRelationshipSubjectCall {
+            policyId: c.policyId,
+            resource: c.resource,
+            objectId: c.objectId,
+            relation: c.relation,
+            subjectKind: c.subjectKind,
+            subjectResource: c.subjectResource,
+            subjectObjectId: c.subjectObjectId,
+            subjectRelation: c.subjectRelation,
+        }
+        .abi_encode();
+        let dr = dispatch(&mut module, &block_ctx, &tx_ctx, &del, 1_000_000).unwrap();
+        assert!(!dr.precompile.reverted, "delete subject should not revert");
+        let rels = module
+            .query_filter_relationships(&policy_id, &selector)
+            .unwrap();
+        assert!(rels.is_empty(), "userset edge removed after delete");
     }
 }

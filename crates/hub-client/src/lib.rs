@@ -14,6 +14,7 @@ mod error;
 mod native_tx;
 mod query;
 mod signer;
+mod subject;
 mod tx;
 mod types;
 
@@ -26,4 +27,5 @@ pub use client::{
 pub use document_acp::HubDocumentACP;
 pub use error::ClientError;
 pub use signer::EvmSigner;
+pub use subject::RelationshipSubject;
 pub use types::{Log, NativeReceipt, NodeStatus, TransactionReceipt};

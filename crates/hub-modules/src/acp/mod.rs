@@ -932,13 +932,17 @@ impl AcpModule {
                 id: policy_id.to_string(),
             })?;
 
-        if policy.get_relation(&rel.resource, &rel.relation).is_none() {
-            return Err(AcpError::InvalidAccessRequest {
-                reason: format!(
-                    "relation '{}' not defined on resource '{}'",
-                    rel.relation, rel.resource
-                ),
-            });
+        // Go-compat (defradb #1060): accept relationships on undeclared relation
+        // names; enforce the #1059 floor (EntitySet reference + subject
+        // restriction) only on declared relations, so hub and defradb make the
+        // same accept/reject decision and don't diverge single- vs cross-node.
+        // An undeclared-relation grant is inert: any access check on it fails
+        // closed because the engine resolves no expression for it.
+        if policy.get_relation(&rel.resource, &rel.relation).is_some() {
+            rel.validate(&policy)
+                .map_err(|e| AcpError::InvalidAccessRequest {
+                    reason: e.to_string(),
+                })?;
         }
 
         if !self.is_authorized_to_manage(
@@ -2044,5 +2048,146 @@ resources:
             );
             assert!(valid, "proof {i} should be valid");
         }
+    }
+
+    const ACTOR_RESTRICTED_POLICY: &str = r#"
+name: restricted-policy
+resources:
+  - name: group
+    relations:
+      - name: member
+    permissions:
+      - name: view
+        expr: member
+  - name: document
+    relations:
+      - name: reader
+        types:
+          - actor
+    permissions:
+      - name: read
+        expr: reader
+"#;
+
+    fn doc(id: &str) -> Object {
+        Object {
+            resource: "document".into(),
+            id: id.into(),
+        }
+    }
+
+    #[test]
+    fn floor_rejects_entityset_referencing_undeclared_resource() {
+        let mut module = AcpModule::new();
+        let creator = alice();
+        let record = module
+            .create_policy(&creator, SIMPLE_POLICY, PolicyMarshalingType::ShortYaml)
+            .unwrap();
+        let policy_id = &record.policy.id;
+        // `reader` is declared (unrestricted), but the EntitySet references
+        // `group#member`, which SIMPLE_POLICY does not declare.
+        let rel = Relationship::new(
+            "document",
+            "docX",
+            "reader",
+            acp::Subject::entity_set("group", "g1", "member"),
+        );
+        let err = module
+            .direct_policy_cmd(&creator, policy_id, PolicyCmd::SetRelationship(rel))
+            .unwrap_err();
+        assert!(
+            matches!(err, AcpError::InvalidAccessRequest { .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn floor_rejects_subject_restriction_violation() {
+        let mut module = AcpModule::new();
+        let creator = alice();
+        let record = module
+            .create_policy(
+                &creator,
+                ACTOR_RESTRICTED_POLICY,
+                PolicyMarshalingType::ShortYaml,
+            )
+            .unwrap();
+        let policy_id = &record.policy.id;
+        // `document.reader` is restricted to actors; a userset violates it even
+        // though `group#member` is declared.
+        let rel = Relationship::new(
+            "document",
+            "docX",
+            "reader",
+            acp::Subject::entity_set("group", "g1", "member"),
+        );
+        let err = module
+            .direct_policy_cmd(&creator, policy_id, PolicyCmd::SetRelationship(rel))
+            .unwrap_err();
+        assert!(
+            matches!(err, AcpError::InvalidAccessRequest { .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn accepts_undeclared_relation_but_grant_is_inert() {
+        let mut module = AcpModule::new();
+        let creator = alice();
+        let grantee = bob();
+        let record = module
+            .create_policy(&creator, SIMPLE_POLICY, PolicyMarshalingType::ShortYaml)
+            .unwrap();
+        let policy_id = record.policy.id.clone();
+
+        // `bogus` is undeclared. defradb (Go-compat, #1060) accepts it; hub must
+        // too, or single-/cross-node decisions diverge.
+        let rel = Relationship::with_entity("document", "docX", "bogus", grantee.clone());
+        module
+            .direct_policy_cmd(&creator, &policy_id, PolicyCmd::SetRelationship(rel))
+            .expect("undeclared-relation grant is accepted");
+
+        // It is stored.
+        let selector = RelationshipSelector {
+            object_selector: Some(ObjectSelector::Exact(doc("docX"))),
+            relation_selector: Some(RelationSelector::Exact("bogus".into())),
+            subject_selector: None,
+        };
+        assert_eq!(
+            module
+                .query_filter_relationships(&policy_id, &selector)
+                .unwrap()
+                .len(),
+            1,
+            "the undeclared-relation grant is stored"
+        );
+
+        // But it is inert: an access check on the undeclared relation fails
+        // closed (the engine reports RelationNotFound -> deny).
+        let req = AccessRequest {
+            operations: vec![types::Operation {
+                object: doc("docX"),
+                permission: "bogus".into(),
+            }],
+            actor: Actor(grantee),
+        };
+        assert!(
+            module.check_access(&creator, &policy_id, &req).is_err(),
+            "undeclared-relation grant must not authorize"
+        );
+    }
+
+    #[test]
+    fn floor_allows_entity_on_unrestricted_relation() {
+        let mut module = AcpModule::new();
+        let creator = alice();
+        let record = module
+            .create_policy(&creator, SIMPLE_POLICY, PolicyMarshalingType::ShortYaml)
+            .unwrap();
+        let policy_id = &record.policy.id;
+        let rel = Relationship::with_entity("document", "docX", "reader", bob());
+        module
+            .direct_policy_cmd(&creator, policy_id, PolicyCmd::SetRelationship(rel))
+            .expect("entity on an unrestricted relation passes the floor");
     }
 }

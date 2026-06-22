@@ -7,6 +7,7 @@ use hub_modules::acp::abi::IAcp;
 use crate::bls_signer::BlsSigner;
 use crate::client::{ACP_ADDRESS, HubClient};
 use crate::error::ClientError;
+use crate::subject::RelationshipSubject;
 use crate::types::TransactionReceipt;
 
 impl HubClient {
@@ -64,6 +65,60 @@ impl HubClient {
             objectId: object_id.into(),
             relation: relation.into(),
             actor: actor.into(),
+        }
+        .abi_encode();
+        self.send_native_precompile_tx(signer, ACP_ADDRESS, calldata.into())
+            .await
+    }
+
+    /// Set a relationship with a structured (possibly cross-object) subject via
+    /// native BLS transaction.
+    pub async fn native_set_relationship_subject(
+        &self,
+        signer: &BlsSigner,
+        policy_id: FixedBytes<32>,
+        resource: &str,
+        object_id: &str,
+        relation: &str,
+        subject: &RelationshipSubject,
+    ) -> Result<TransactionReceipt, ClientError> {
+        let (kind, subject_resource, subject_object_id, subject_relation) = subject.to_abi_fields();
+        let calldata = IAcp::setRelationshipSubjectCall {
+            policyId: policy_id,
+            resource: resource.into(),
+            objectId: object_id.into(),
+            relation: relation.into(),
+            subjectKind: kind,
+            subjectResource: subject_resource,
+            subjectObjectId: subject_object_id,
+            subjectRelation: subject_relation,
+        }
+        .abi_encode();
+        self.send_native_precompile_tx(signer, ACP_ADDRESS, calldata.into())
+            .await
+    }
+
+    /// Delete a relationship with a structured (possibly cross-object) subject
+    /// via native BLS transaction.
+    pub async fn native_delete_relationship_subject(
+        &self,
+        signer: &BlsSigner,
+        policy_id: FixedBytes<32>,
+        resource: &str,
+        object_id: &str,
+        relation: &str,
+        subject: &RelationshipSubject,
+    ) -> Result<TransactionReceipt, ClientError> {
+        let (kind, subject_resource, subject_object_id, subject_relation) = subject.to_abi_fields();
+        let calldata = IAcp::deleteRelationshipSubjectCall {
+            policyId: policy_id,
+            resource: resource.into(),
+            objectId: object_id.into(),
+            relation: relation.into(),
+            subjectKind: kind,
+            subjectResource: subject_resource,
+            subjectObjectId: subject_object_id,
+            subjectRelation: subject_relation,
         }
         .abi_encode();
         self.send_native_precompile_tx(signer, ACP_ADDRESS, calldata.into())

@@ -9,6 +9,8 @@ sol! {
         event PolicyEdited(string indexed policyId, string creator, uint256 relationshipsRemoved);
         event RelationshipSet(string indexed policyId, string resource, string objectId, string relation, string actor);
         event RelationshipDeleted(string indexed policyId, string resource, string objectId, string relation, string actor);
+        event RelationshipSubjectSet(string indexed policyId, string resource, string objectId, string relation, uint8 subjectKind, string subjectResource, string subjectObjectId, string subjectRelation);
+        event RelationshipSubjectDeleted(string indexed policyId, string resource, string objectId, string relation, uint8 subjectKind, string subjectResource, string subjectObjectId, string subjectRelation);
         event ObjectRegistered(string indexed policyId, string resource, string objectId, string owner);
         event ObjectUnregistered(string indexed policyId, string resource, string objectId);
 
@@ -32,6 +34,28 @@ sol! {
             string objectId,
             string relation,
             string actor
+        ) external returns (bool recordFound);
+
+        function setRelationshipSubject(
+            bytes32 policyId,
+            string resource,
+            string objectId,
+            string relation,
+            uint8 subjectKind,
+            string subjectResource,
+            string subjectObjectId,
+            string subjectRelation
+        ) external returns (bool recordExisted, bytes record);
+
+        function deleteRelationshipSubject(
+            bytes32 policyId,
+            string resource,
+            string objectId,
+            string relation,
+            uint8 subjectKind,
+            string subjectResource,
+            string subjectObjectId,
+            string subjectRelation
         ) external returns (bool recordFound);
 
         function registerObject(
