@@ -306,7 +306,9 @@ impl AcpModule {
     ) -> Result<PolicyCmdResult> {
         match cmd {
             PolicyCmd::SetRelationship(rel) => self.cmd_set_relationship(creator, policy_id, rel),
-            PolicyCmd::DeleteRelationship(rel) => self.cmd_delete_relationship(policy_id, rel),
+            PolicyCmd::DeleteRelationship(rel) => {
+                self.cmd_delete_relationship(creator, policy_id, rel)
+            }
             PolicyCmd::RegisterObject(obj) => self.cmd_register_object(creator, policy_id, obj),
             PolicyCmd::ArchiveObject(obj) => self.cmd_archive_object(creator, policy_id, obj),
             PolicyCmd::UnarchiveObject(obj) => self.cmd_unarchive_object(creator, policy_id, obj),
@@ -932,6 +934,14 @@ impl AcpModule {
                 id: policy_id.to_string(),
             })?;
 
+        // Ownership is established at registration; an existing owner cannot mint
+        // a second owner via set (matches defradb's owner-reservation guard).
+        if rel.relation == "owner" {
+            return Err(AcpError::Unauthorized {
+                reason: "the owner relation cannot be set".into(),
+            });
+        }
+
         // Go-compat (defradb #1060): accept relationships on undeclared relation
         // names; enforce the #1059 floor (EntitySet reference + subject
         // restriction) only on declared relations, so hub and defradb make the
@@ -988,9 +998,44 @@ impl AcpModule {
 
     fn cmd_delete_relationship(
         &mut self,
+        creator: &Did,
         policy_id: &str,
         rel: Relationship,
     ) -> Result<PolicyCmdResult> {
+        let policy = self
+            .zanzibar_policies
+            .get(policy_id)
+            .cloned()
+            .ok_or_else(|| AcpError::PolicyNotFound {
+                id: policy_id.to_string(),
+            })?;
+
+        // Ownership is established at registration and cannot be stripped via a
+        // relationship delete (matches defradb).
+        if rel.relation == "owner" {
+            return Err(AcpError::Unauthorized {
+                reason: "the owner relation cannot be deleted".into(),
+            });
+        }
+
+        // Revocation requires the same management authority as granting, so an
+        // arbitrary signer cannot revoke a grant or strip a cross-object edge.
+        if !self.is_authorized_to_manage(
+            creator,
+            policy_id,
+            &policy,
+            &rel.resource,
+            &rel.object_id,
+            &rel.relation,
+        ) {
+            return Err(AcpError::Unauthorized {
+                reason: format!(
+                    "{} is not authorized to delete relation '{}' on '{}/{}'",
+                    creator, rel.relation, rel.resource, rel.object_id
+                ),
+            });
+        }
+
         let storage_key = rel.storage_key();
         let record_found = self.has_relationship(policy_id, &storage_key);
         self.delete_relationship(policy_id, &storage_key);
@@ -2189,5 +2234,99 @@ resources:
         module
             .direct_policy_cmd(&creator, policy_id, PolicyCmd::SetRelationship(rel))
             .expect("entity on an unrestricted relation passes the floor");
+    }
+
+    /// Set up `SIMPLE_POLICY` with `docX` registered (and owned) by `alice`, and
+    /// a reader grant for `bob`. Returns the policy id.
+    fn policy_with_grant(module: &mut AcpModule) -> String {
+        let owner = alice();
+        let record = module
+            .create_policy(&owner, SIMPLE_POLICY, PolicyMarshalingType::ShortYaml)
+            .unwrap();
+        let policy_id = record.policy.id.clone();
+        module
+            .direct_policy_cmd(&owner, &policy_id, PolicyCmd::RegisterObject(doc("docX")))
+            .unwrap();
+        let grant = Relationship::with_entity("document", "docX", "reader", bob());
+        module
+            .direct_policy_cmd(&owner, &policy_id, PolicyCmd::SetRelationship(grant))
+            .unwrap();
+        policy_id
+    }
+
+    #[test]
+    fn delete_relationship_rejects_unauthorized_signer() {
+        let mut module = AcpModule::new();
+        let policy_id = policy_with_grant(&mut module);
+
+        // bob is the grant's subject but neither the policy owner nor docX's
+        // owner, so he cannot revoke it.
+        let grant = Relationship::with_entity("document", "docX", "reader", bob());
+        let err = module
+            .direct_policy_cmd(
+                &bob(),
+                &policy_id,
+                PolicyCmd::DeleteRelationship(grant.clone()),
+            )
+            .unwrap_err();
+        assert!(matches!(err, AcpError::Unauthorized { .. }), "got {err:?}");
+
+        // The grant must still be present — the rejected delete is a no-op.
+        assert!(
+            module
+                .get_relationship(&policy_id, &grant.storage_key())
+                .is_some(),
+            "unauthorized delete must not remove the grant"
+        );
+    }
+
+    #[test]
+    fn delete_relationship_allows_authorized_owner() {
+        let mut module = AcpModule::new();
+        let policy_id = policy_with_grant(&mut module);
+
+        // alice owns the policy and docX, so she can revoke the grant.
+        let grant = Relationship::with_entity("document", "docX", "reader", bob());
+        let result = module
+            .direct_policy_cmd(&alice(), &policy_id, PolicyCmd::DeleteRelationship(grant))
+            .unwrap();
+        assert!(matches!(
+            result,
+            PolicyCmdResult::DeleteRelationship { record_found: true }
+        ));
+    }
+
+    #[test]
+    fn delete_owner_relation_is_blocked() {
+        let mut module = AcpModule::new();
+        let policy_id = policy_with_grant(&mut module);
+
+        // Even the authorized owner cannot strip the owner relation via delete.
+        let owner_rel = Relationship::with_entity("document", "docX", "owner", alice());
+        let err = module
+            .direct_policy_cmd(
+                &alice(),
+                &policy_id,
+                PolicyCmd::DeleteRelationship(owner_rel),
+            )
+            .unwrap_err();
+        assert!(matches!(err, AcpError::Unauthorized { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn set_owner_relation_is_blocked() {
+        let mut module = AcpModule::new();
+        let policy_id = policy_with_grant(&mut module);
+
+        // An existing owner cannot mint a second owner.
+        let second_owner = Relationship::with_entity("document", "docX", "owner", bob());
+        let err = module
+            .direct_policy_cmd(
+                &alice(),
+                &policy_id,
+                PolicyCmd::SetRelationship(second_owner),
+            )
+            .unwrap_err();
+        assert!(matches!(err, AcpError::Unauthorized { .. }), "got {err:?}");
     }
 }

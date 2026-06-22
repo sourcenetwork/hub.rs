@@ -548,7 +548,8 @@ async fn canonical_module_test() {
 
     // ── D: ACP Delete + Access Revocation ────────────────────────
 
-    // D1. BLS delete_relationship (cross-path: BLS revokes relationship on EVM object)
+    // D1. delete_relationship — revocation requires management authority, so the
+    // EVM signer (policy + doc-evm owner) revokes the grant it created in C1.
     let d1_calldata = IAcp::deleteRelationshipCall {
         policyId: evm_policy_id,
         resource: "document".into(),
@@ -558,17 +559,13 @@ async fn canonical_module_test() {
     }
     .abi_encode();
     let d1_receipt =
-        broadcast_native_tx(&cluster, &client, &bls_signer, ACP_ADDRESS, d1_calldata).await;
-    assert_eq!(
-        d1_receipt.status, 1,
-        "BLS delete_relationship should succeed"
-    );
-    assert_bls_receipt(&d1_receipt, ACP_ADDRESS, "BLS delete_relationship");
+        broadcast_evm_tx(&cluster, &client, &evm_signer, ACP_ADDRESS, d1_calldata).await;
+    assert_eq!(d1_receipt.status, 1, "delete_relationship should succeed");
     assert_event_log(
         &d1_receipt,
         ACP_ADDRESS,
         IAcp::RelationshipDeleted::SIGNATURE_HASH,
-        "D1 BLS deleteRelationship",
+        "D1 deleteRelationship",
     );
     assert!(
         d1_receipt.block_number >= max_block,
@@ -1041,24 +1038,24 @@ async fn canonical_module_test() {
         "G7 reverted BLS tx should have empty logs"
     );
 
-    // Final EVM nonce check: 7 EVM txs total (A1, B1, C1, E1, E3, E4, G6)
+    // Final EVM nonce check: 11 EVM txs (A1, B1, C1, D1, D5.1, D5.3, D5.5, E1, E3, E4, G6)
     let final_evm_nonce = client
         .get_nonce(evm_signer.address())
         .await
         .expect("get_nonce should work");
     assert_eq!(
-        final_evm_nonce, 10,
-        "final EVM nonce should be 10 (A1+B1+C1+D5.1+D5.3+D5.5+E1+E3+E4+G6)"
+        final_evm_nonce, 11,
+        "final EVM nonce should be 11 (A1+B1+C1+D1+D5.1+D5.3+D5.5+E1+E3+E4+G6)"
     );
 
-    // Final BLS native nonce check: 6 BLS txs total (A2, B2, D1, E2, E5, G7)
+    // Final BLS native nonce check: 5 BLS txs total (A2, B2, E2, E5, G7)
     let final_bls_nonce = client
         .get_native_nonce(&bls_did)
         .await
         .expect("hub_getNativeNonce should work");
     assert_eq!(
-        final_bls_nonce, 6,
-        "final BLS native nonce should be 6 (A2+B2+D1+E2+E5+G7)"
+        final_bls_nonce, 5,
+        "final BLS native nonce should be 5 (A2+B2+E2+E5+G7)"
     );
 
     // ── F: Cross-Node Consistency + Health ────────────────────────
@@ -1185,8 +1182,8 @@ async fn canonical_module_test() {
             .await
             .unwrap_or_else(|e| panic!("node{node_idx} get_native_nonce: {e}"));
         assert_eq!(
-            node_bls_nonce, 6,
-            "node{node_idx} BLS native nonce should be 6"
+            node_bls_nonce, 5,
+            "node{node_idx} BLS native nonce should be 5"
         );
     }
 
