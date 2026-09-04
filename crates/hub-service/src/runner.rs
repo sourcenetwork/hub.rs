@@ -1,9 +1,8 @@
 //! Node runner trait for delegating node wiring.
 //!
 //! The [`NodeRunner`] trait defines how a node is wired and started.
-//! [`HubNodeService`] delegates the actual node wiring to implementations
-//! of this trait, allowing different execution environments (REVM, etc.)
-//! to provide their own wiring logic.
+//! Node wiring implementations (REVM, etc.) implement this trait so the
+//! runner can provide its own wiring logic.
 
 use std::sync::Arc;
 
@@ -75,7 +74,6 @@ impl<T> NodeRunContext<T> {
 ///
 /// The service delegates to this trait after building the transport,
 /// allowing different execution environments to provide their own logic.
-///
 /// # Type Parameters
 ///
 /// - `Transport`: The transport type provided by the service
