@@ -2,7 +2,9 @@
 
 use alloy_primitives::Address;
 use commonware_cryptography::sha256::Digest as QmdbDigest;
-use commonware_storage::{kv::Batchable as _, qmdb::any::VariableConfig, translator::EightCap};
+use commonware_parallel::Sequential;
+use commonware_storage::qmdb::any::VariableConfig;
+use commonware_storage::translator::EightCap;
 use hub_qmdb::{AccountEncoding, QmdbBatchable, QmdbGettable};
 
 use crate::{
@@ -23,14 +25,22 @@ pub struct AccountStore {
 }
 
 pub(crate) struct AccountStoreDirty {
-    inner: AccountDbDirty,
+    inner: StoreSlot<AccountDbDirty>,
+}
+
+impl AccountStoreDirty {
+    pub(crate) const fn new(inner: AccountDbDirty) -> Self {
+        Self {
+            inner: StoreSlot::new(inner),
+        }
+    }
 }
 
 impl AccountStore {
     /// Initialize the account store.
     pub async fn init(
         context: Context,
-        config: VariableConfig<EightCap, ()>,
+        config: VariableConfig<EightCap, ((), ()), Sequential>,
     ) -> Result<Self, BackendError> {
         let inner = AccountDb::init(context, config)
             .await
@@ -47,15 +57,13 @@ impl AccountStore {
 
     pub(crate) fn into_dirty(self) -> Result<AccountStoreDirty, BackendError> {
         let inner = self.inner.into_inner()?;
-        Ok(AccountStoreDirty {
-            inner: inner.into_mutable(),
-        })
+        Ok(AccountStoreDirty::new(inner))
     }
 }
 
 impl AccountStoreDirty {
-    pub(crate) fn root(self) -> QmdbDigest {
-        self.inner.into_merkleized().root()
+    pub(crate) fn root(&self) -> Result<QmdbDigest, BackendError> {
+        Ok(self.inner.get()?.root())
     }
 }
 
@@ -95,19 +103,25 @@ impl QmdbBatchable for AccountStore {
         I::IntoIter: Send,
     {
         let inner = self.inner.take()?;
-        let mut dirty = inner.into_mutable();
         let mapped = ops
             .into_iter()
             .map(|(address, value)| (account_key(address), value.map(AccountValue)));
-        dirty
-            .write_batch(mapped)
+        let mut batch = inner.new_batch();
+        for (key, value) in mapped {
+            batch = batch.write(key, value);
+        }
+        let batch = batch
+            .merkleize(&inner, None)
             .await
             .map_err(|e| BackendError::Storage(e.to_string()))?;
-        let (committed, _) = dirty
-            .commit(None)
+        let (inner, _) = inner
+            .apply_batch(batch)
             .await
             .map_err(|e| BackendError::Storage(e.to_string()))?;
-        let inner = committed.into_merkleized();
+        let inner = inner
+            .commit()
+            .await
+            .map_err(|e| BackendError::Storage(e.to_string()))?;
         self.inner.restore(inner);
         Ok(())
     }
@@ -121,6 +135,7 @@ impl QmdbGettable for AccountStoreDirty {
     async fn get(&self, key: &Self::Key) -> Result<Option<Self::Value>, Self::Error> {
         let record = self
             .inner
+            .get()?
             .get(&account_key(*key))
             .await
             .map_err(|e| BackendError::Storage(e.to_string()))?;
@@ -134,12 +149,23 @@ impl QmdbBatchable for AccountStoreDirty {
         I: IntoIterator<Item = (Self::Key, Option<Self::Value>)> + Send,
         I::IntoIter: Send,
     {
+        let inner = self.inner.take()?;
         let mapped = ops
             .into_iter()
             .map(|(address, value)| (account_key(address), value.map(AccountValue)));
-        self.inner
-            .write_batch(mapped)
+        let mut batch = inner.new_batch();
+        for (key, value) in mapped {
+            batch = batch.write(key, value);
+        }
+        let batch = batch
+            .merkleize(&inner, None)
             .await
-            .map_err(|e| BackendError::Storage(e.to_string()))
+            .map_err(|e| BackendError::Storage(e.to_string()))?;
+        let (inner, _) = inner
+            .apply_batch(batch)
+            .await
+            .map_err(|e| BackendError::Storage(e.to_string()))?;
+        self.inner.restore(inner);
+        Ok(())
     }
 }

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use alloy_primitives::{Address, U256};
-use commonware_runtime::tokio::Context;
+use commonware_runtime::{Supervisor, tokio::Context};
 use hub_backend::{
     AccountStore, CodeStore, CommonwareBackend, CommonwareRootProvider, QmdbBackendConfig,
     StorageStore,
@@ -55,8 +55,8 @@ impl QmdbLedger {
         genesis_storage: Vec<(Address, Vec<(U256, U256)>)>,
         genesis_code: Vec<(Address, Vec<u8>)>,
     ) -> Result<Self, Error> {
-        let backend = CommonwareBackend::open(context.clone(), config.clone()).await?;
-        let root_provider = CommonwareRootProvider::new(context, config);
+        let backend = CommonwareBackend::open(context.child("backend"), config.clone()).await?;
+        let root_provider = CommonwareRootProvider::new(context.child("root"), config);
         let (accounts, storage, code) = backend.into_stores();
         let handle = Handle::new(accounts, storage, code)
             .with_root_provider(Arc::new(RwLock::new(root_provider)));

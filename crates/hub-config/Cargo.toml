@@ -21,10 +21,9 @@ thiserror.workspace = true
 
 # Cryptography
 commonware-cryptography.workspace = true
-ed25519-consensus.workspace = true
+commonware-codec.workspace = true
 rand.workspace = true
 
 [dev-dependencies]
-commonware-codec.workspace = true
 rstest.workspace = true
 tempfile.workspace = true

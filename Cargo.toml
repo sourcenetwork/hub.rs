@@ -75,17 +75,18 @@ hub-harness = { path = "crates/hub-harness" }
 test-infra = { path = "crates/test-infra" }
 
 # Commonware (calver 2026.2.0)
-commonware-p2p = "2026.2.0"
-commonware-utils = "2026.2.0"
-commonware-codec = "2026.2.0"
-commonware-runtime = "2026.2.0"
-commonware-consensus = "2026.2.0"
-commonware-cryptography = "2026.2.0"
-commonware-parallel = "2026.2.0"
-commonware-storage = "2026.2.0"
-commonware-broadcast = "2026.2.0"
-commonware-resolver = "2026.2.0"
-commonware-macros = "2026.2.0"
+commonware-p2p = "2026.9.0"
+commonware-utils = "2026.9.0"
+commonware-codec = "2026.9.0"
+commonware-runtime = "2026.9.0"
+commonware-consensus = "2026.9.0"
+commonware-cryptography = "2026.9.0"
+commonware-parallel = "2026.9.0"
+commonware-storage = "2026.9.0"
+commonware-broadcast = "2026.9.0"
+commonware-resolver = "2026.9.0"
+commonware-macros = "2026.9.0"
+commonware-glue = "2026.9.0"
 
 # defradb.rs (main @ 5af2d3d)
 acp = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "5af2d3d50a71d7def8c0e50e1193f531c0063fae", default-features = false }
@@ -132,7 +133,6 @@ anyhow = "1"
 # Cryptography
 k256 = "0.13"
 sha3 = "0.10"
-ed25519-consensus = "2"
 
 # Arkworks BLS (match orbis-rs versions)
 ark-bls12-381 = "0.4"
