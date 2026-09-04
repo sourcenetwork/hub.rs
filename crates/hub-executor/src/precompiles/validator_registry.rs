@@ -18,7 +18,7 @@ use revm::precompile::PrecompileError;
 
 use super::{
     DispatchReturn, VALIDATOR_REGISTRY_ADDRESS, decode_error, did_from_signer, err_dispatch,
-    event_log, json_bytes, ok_dispatch,
+    event_log, json_bytes, ok_dispatch, oog_dispatch,
 };
 
 const ADD_VALIDATOR_GAS: u64 = 150_000;
@@ -257,8 +257,8 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
     gas_limit: u64,
 ) -> DispatchReturn {
     if input.len() < 4 {
-        return Err(PrecompileError::Other(
-            "input too short for selector".into(),
+        return Err(PrecompileError::Fatal(
+            "input too short for selector".to_string(),
         ));
     }
     let selector: [u8; 4] = input[..4].try_into().expect("checked length above");
@@ -267,7 +267,7 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
         IValidatorRegistry::addValidatorCall::SELECTOR => {
             let gas_required = ADD_VALIDATOR_GAS + input_cost(input.len());
             if gas_limit < gas_required {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call =
                 IValidatorRegistry::addValidatorCall::abi_decode(input).map_err(decode_error)?;
@@ -329,7 +329,7 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
         IValidatorRegistry::removeValidatorCall::SELECTOR => {
             let gas_required = REMOVE_VALIDATOR_GAS + input_cost(input.len());
             if gas_limit < gas_required {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call =
                 IValidatorRegistry::removeValidatorCall::abi_decode(input).map_err(decode_error)?;
@@ -399,7 +399,7 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
         IValidatorRegistry::setPolicyCall::SELECTOR => {
             let gas_required = SET_STATUS_GAS + input_cost(input.len());
             if gas_limit < gas_required {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call =
                 IValidatorRegistry::setPolicyCall::abi_decode(input).map_err(decode_error)?;
@@ -428,7 +428,7 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
         IValidatorRegistry::setValidatorStatusCall::SELECTOR => {
             let gas_required = SET_STATUS_GAS + input_cost(input.len());
             if gas_limit < gas_required {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call = IValidatorRegistry::setValidatorStatusCall::abi_decode(input)
                 .map_err(decode_error)?;
@@ -470,7 +470,7 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
         IValidatorRegistry::setValidatorStatusByIndexCall::SELECTOR => {
             let gas_required = SET_STATUS_GAS + input_cost(input.len());
             if gas_limit < gas_required {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call = IValidatorRegistry::setValidatorStatusByIndexCall::abi_decode(input)
                 .map_err(decode_error)?;
@@ -521,7 +521,7 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
         IValidatorRegistry::updateP2PAddressCall::SELECTOR => {
             let gas_required = UPDATE_P2P_GAS + input_cost(input.len());
             if gas_limit < gas_required {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call = IValidatorRegistry::updateP2PAddressCall::abi_decode(input)
                 .map_err(decode_error)?;
@@ -559,7 +559,7 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
         IValidatorRegistry::getValidatorsCall::SELECTOR => {
             let gas_required = GET_VALIDATORS_GAS + input_cost(input.len());
             if gas_limit < gas_required {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let validators = load_all_validators(context);
             let ret =
@@ -570,7 +570,7 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
         IValidatorRegistry::getValidatorCall::SELECTOR => {
             let gas_required = GET_VALIDATOR_GAS + input_cost(input.len());
             if gas_limit < gas_required {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call =
                 IValidatorRegistry::getValidatorCall::abi_decode(input).map_err(decode_error)?;
@@ -583,7 +583,7 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
         IValidatorRegistry::getActiveValidatorCountCall::SELECTOR => {
             let gas_required = GET_ACTIVE_COUNT_GAS + input_cost(input.len());
             if gas_limit < gas_required {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let validators = load_all_validators(context);
             let active_count = validators.iter().filter(|v| v.active).count();
@@ -593,13 +593,10 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
             Ok(ok_dispatch(gas_required, ret, vec![]))
         }
 
-        _ => Err(PrecompileError::Other(
-            format!(
-                "unknown ValidatorRegistry selector: 0x{}",
-                hex::encode(selector)
-            )
-            .into(),
-        )),
+        _ => Err(PrecompileError::Fatal(format!(
+            "unknown ValidatorRegistry selector: 0x{}",
+            hex::encode(selector)
+        ))),
     }
 }
 

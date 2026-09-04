@@ -3,7 +3,7 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use axum::{Router, extract::State, http::StatusCode, response::IntoResponse, routing::get};
-use jsonrpsee::server::{Server, ServerHandle};
+use jsonrpsee::server::{Server, ServerConfig, ServerHandle};
 use tokio::sync::broadcast;
 use tower::limit::ConcurrencyLimitLayer;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
@@ -315,7 +315,11 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
 
         let jsonrpc_handle = tokio::spawn(async move {
             let server = match Server::builder()
-                .max_connections(max_connections)
+                .set_config(
+                    ServerConfig::builder()
+                        .max_connections(max_connections)
+                        .build(),
+                )
                 .build(addr)
                 .await
             {
@@ -632,7 +636,11 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
     /// Returns the server handle and the actual bound address (useful when binding to port 0).
     pub async fn start(self) -> Result<(ServerHandle, SocketAddr), ServerError> {
         let server = Server::builder()
-            .max_connections(self.max_connections)
+            .set_config(
+                ServerConfig::builder()
+                    .max_connections(self.max_connections)
+                    .build(),
+            )
             .build(self.addr)
             .await
             .map_err(|e| ServerError::Build(e.to_string()))?;

@@ -14,7 +14,7 @@ use revm::precompile::{PrecompileError, PrecompileOutput};
 
 use super::{
     ACP_ADDRESS, DispatchResult, DispatchReturn, decode_error, did_from_signer, err_dispatch,
-    event_log, json_bytes, ok_dispatch,
+    event_log, json_bytes, ok_dispatch, oog_dispatch,
 };
 
 /// Flat gas cost for read operations (real metering is Phase 10).
@@ -23,7 +23,7 @@ const READ_GAS: u64 = 1000;
 const WRITE_GAS: u64 = 5000;
 
 fn did_from_actor(actor: &str) -> Result<Did, PrecompileError> {
-    Did::new(actor).map_err(|e| PrecompileError::Other(format!("actor DID: {e}").into()))
+    Did::new(actor).map_err(|e| PrecompileError::Fatal(format!("actor DID: {e}")))
 }
 
 /// Decode a structured subject — a `subjectKind` discriminant plus the discrete
@@ -95,7 +95,7 @@ fn decode_subject(
 }
 
 fn subject_field_error(msg: &str) -> PrecompileError {
-    PrecompileError::Other(format!("subject: {msg}").into())
+    PrecompileError::Fatal(format!("subject: {msg}"))
 }
 
 fn policy_id_to_string(b: &B256) -> String {
@@ -123,7 +123,7 @@ fn build_operations(
     permissions: &[String],
 ) -> Result<Vec<Operation>, PrecompileError> {
     if resources.len() != object_ids.len() || resources.len() != permissions.len() {
-        return Err(PrecompileError::Other("array length mismatch".into()));
+        return Err(PrecompileError::Fatal("array length mismatch".to_string()));
     }
     Ok(resources
         .iter()
@@ -151,20 +151,15 @@ fn batch_revert(index: usize, gas_used: u64, bytes: &Bytes) -> DispatchResult {
     };
 
     DispatchResult {
-        precompile: PrecompileOutput {
-            gas_used,
-            gas_refunded: 0,
-            bytes: message.into_bytes().into(),
-            reverted: true,
-        },
+        precompile: PrecompileOutput::revert(gas_used, message.into_bytes().into(), 0),
         logs: vec![],
     }
 }
 
 fn batch_error(index: usize, err: PrecompileError) -> PrecompileError {
     match err {
-        PrecompileError::Other(message) => {
-            PrecompileError::Other(format!("batch call {}: {message}", index + 1).into())
+        PrecompileError::Fatal(message) => {
+            PrecompileError::Fatal(format!("batch call {}: {message}", index + 1))
         }
         other => other,
     }
@@ -180,8 +175,8 @@ pub(super) fn dispatch(
     gas_limit: u64,
 ) -> DispatchReturn {
     if input.len() < 4 {
-        return Err(PrecompileError::Other(
-            "input too short for selector".into(),
+        return Err(PrecompileError::Fatal(
+            "input too short for selector".to_string(),
         ));
     }
     let selector: [u8; 4] = input[..4].try_into().expect("checked length above");
@@ -215,11 +210,11 @@ pub(super) fn dispatch(
                     Some(total) => total,
                     None => {
                         *module = snapshot;
-                        return Err(PrecompileError::OutOfGas);
+                        return Ok(oog_dispatch());
                     }
                 };
 
-                if inner.precompile.reverted {
+                if inner.precompile.status.is_revert() {
                     *module = snapshot;
                     return Ok(batch_revert(index, inner_gas, &inner.precompile.bytes));
                 }
@@ -235,11 +230,11 @@ pub(super) fn dispatch(
 
         IAcp::createPolicyCall::SELECTOR => {
             if gas_limit < WRITE_GAS {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call = IAcp::createPolicyCall::abi_decode(input).map_err(decode_error)?;
             let policy_str = String::from_utf8(call.policy.to_vec())
-                .map_err(|_| PrecompileError::Other("invalid UTF-8 in policy".into()))?;
+                .map_err(|_| PrecompileError::Fatal("invalid UTF-8 in policy".to_string()))?;
             let creator = did_from_signer(&tx_ctx.signer)?;
             let marshal_type = marshal_type_from_u8(call.marshalType);
 
@@ -263,13 +258,13 @@ pub(super) fn dispatch(
 
         IAcp::editPolicyCall::SELECTOR => {
             if gas_limit < WRITE_GAS {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call = IAcp::editPolicyCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
             let policy_id = policy_id_to_string(&call.policyId);
             let policy_str = String::from_utf8(call.policy.to_vec())
-                .map_err(|_| PrecompileError::Other("invalid UTF-8 in policy".into()))?;
+                .map_err(|_| PrecompileError::Fatal("invalid UTF-8 in policy".to_string()))?;
             let marshal_type = marshal_type_from_u8(call.marshalType);
 
             let (relationships_removed, record) =
@@ -296,7 +291,7 @@ pub(super) fn dispatch(
 
         IAcp::setRelationshipCall::SELECTOR => {
             if gas_limit < WRITE_GAS {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call = IAcp::setRelationshipCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
@@ -319,7 +314,11 @@ pub(super) fn dispatch(
                     record_existed,
                     record,
                 } => (record_existed, record),
-                _ => return Err(PrecompileError::Other("unexpected result variant".into())),
+                _ => {
+                    return Err(PrecompileError::Fatal(
+                        "unexpected result variant".to_string(),
+                    ));
+                }
             };
 
             let event = IAcp::RelationshipSet {
@@ -342,7 +341,7 @@ pub(super) fn dispatch(
 
         IAcp::deleteRelationshipCall::SELECTOR => {
             if gas_limit < WRITE_GAS {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call = IAcp::deleteRelationshipCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
@@ -364,7 +363,11 @@ pub(super) fn dispatch(
                 hub_modules::acp::types::PolicyCmdResult::DeleteRelationship { record_found } => {
                     record_found
                 }
-                _ => return Err(PrecompileError::Other("unexpected result variant".into())),
+                _ => {
+                    return Err(PrecompileError::Fatal(
+                        "unexpected result variant".to_string(),
+                    ));
+                }
             };
 
             let event = IAcp::RelationshipDeleted {
@@ -384,7 +387,7 @@ pub(super) fn dispatch(
 
         IAcp::setRelationshipSubjectCall::SELECTOR => {
             if gas_limit < WRITE_GAS {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call = IAcp::setRelationshipSubjectCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
@@ -412,7 +415,11 @@ pub(super) fn dispatch(
                     record_existed,
                     record,
                 } => (record_existed, record),
-                _ => return Err(PrecompileError::Other("unexpected result variant".into())),
+                _ => {
+                    return Err(PrecompileError::Fatal(
+                        "unexpected result variant".to_string(),
+                    ));
+                }
             };
 
             let event = IAcp::RelationshipSubjectSet {
@@ -440,7 +447,7 @@ pub(super) fn dispatch(
 
         IAcp::deleteRelationshipSubjectCall::SELECTOR => {
             if gas_limit < WRITE_GAS {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call =
                 IAcp::deleteRelationshipSubjectCall::abi_decode(input).map_err(decode_error)?;
@@ -468,7 +475,11 @@ pub(super) fn dispatch(
                 hub_modules::acp::types::PolicyCmdResult::DeleteRelationship { record_found } => {
                     record_found
                 }
-                _ => return Err(PrecompileError::Other("unexpected result variant".into())),
+                _ => {
+                    return Err(PrecompileError::Fatal(
+                        "unexpected result variant".to_string(),
+                    ));
+                }
             };
 
             let event = IAcp::RelationshipSubjectDeleted {
@@ -491,7 +502,7 @@ pub(super) fn dispatch(
 
         IAcp::registerObjectCall::SELECTOR => {
             if gas_limit < WRITE_GAS {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call = IAcp::registerObjectCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
@@ -510,7 +521,11 @@ pub(super) fn dispatch(
 
             let record = match result {
                 hub_modules::acp::types::PolicyCmdResult::RegisterObject { record } => record,
-                _ => return Err(PrecompileError::Other("unexpected result variant".into())),
+                _ => {
+                    return Err(PrecompileError::Fatal(
+                        "unexpected result variant".to_string(),
+                    ));
+                }
             };
 
             let event = IAcp::ObjectRegistered {
@@ -529,7 +544,7 @@ pub(super) fn dispatch(
 
         IAcp::archiveObjectCall::SELECTOR => {
             if gas_limit < WRITE_GAS {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call = IAcp::archiveObjectCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
@@ -551,7 +566,11 @@ pub(super) fn dispatch(
                     found,
                     relationships_removed,
                 } => (found, relationships_removed),
-                _ => return Err(PrecompileError::Other("unexpected result variant".into())),
+                _ => {
+                    return Err(PrecompileError::Fatal(
+                        "unexpected result variant".to_string(),
+                    ));
+                }
             };
 
             let event = IAcp::ObjectUnregistered {
@@ -572,7 +591,7 @@ pub(super) fn dispatch(
 
         IAcp::unarchiveObjectCall::SELECTOR => {
             if gas_limit < WRITE_GAS {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call = IAcp::unarchiveObjectCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
@@ -592,7 +611,11 @@ pub(super) fn dispatch(
                     record,
                     relationship_modified,
                 } => (record, relationship_modified),
-                _ => return Err(PrecompileError::Other("unexpected result variant".into())),
+                _ => {
+                    return Err(PrecompileError::Fatal(
+                        "unexpected result variant".to_string(),
+                    ));
+                }
             };
 
             let ret = IAcp::unarchiveObjectCall::abi_encode_returns(&IAcp::unarchiveObjectReturn {
@@ -604,7 +627,7 @@ pub(super) fn dispatch(
 
         IAcp::commitRegistrationsCall::SELECTOR => {
             if gas_limit < WRITE_GAS {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call = IAcp::commitRegistrationsCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
@@ -622,7 +645,11 @@ pub(super) fn dispatch(
                 hub_modules::acp::types::PolicyCmdResult::CommitRegistrations {
                     registrations_commitment,
                 } => registrations_commitment.id,
-                _ => return Err(PrecompileError::Other("unexpected result variant".into())),
+                _ => {
+                    return Err(PrecompileError::Fatal(
+                        "unexpected result variant".to_string(),
+                    ));
+                }
             };
 
             let ret = IAcp::commitRegistrationsCall::abi_encode_returns(&commitment_id);
@@ -631,14 +658,13 @@ pub(super) fn dispatch(
 
         IAcp::revealRegistrationCall::SELECTOR => {
             if gas_limit < WRITE_GAS {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call = IAcp::revealRegistrationCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
             let proof: hub_modules::acp::types::RegistrationProof =
-                serde_json::from_slice(&call.proof).map_err(|e| {
-                    PrecompileError::Other(format!("proof JSON decode: {e}").into())
-                })?;
+                serde_json::from_slice(&call.proof)
+                    .map_err(|e| PrecompileError::Fatal(format!("proof JSON decode: {e}")))?;
             let cmd = PolicyCmd::RevealRegistration {
                 registrations_commitment_id: call.commitmentId,
                 proof,
@@ -658,7 +684,7 @@ pub(super) fn dispatch(
 
         IAcp::flagHijackAttemptCall::SELECTOR => {
             if gas_limit < WRITE_GAS {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call = IAcp::flagHijackAttemptCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
@@ -676,7 +702,11 @@ pub(super) fn dispatch(
 
             let event = match result {
                 hub_modules::acp::types::PolicyCmdResult::FlagHijackAttempt { event } => event,
-                _ => return Err(PrecompileError::Other("unexpected result variant".into())),
+                _ => {
+                    return Err(PrecompileError::Fatal(
+                        "unexpected result variant".to_string(),
+                    ));
+                }
             };
 
             let ret = IAcp::flagHijackAttemptCall::abi_encode_returns(&json_bytes(&event));
@@ -685,7 +715,7 @@ pub(super) fn dispatch(
 
         IAcp::checkAccessCall::SELECTOR => {
             if gas_limit < WRITE_GAS {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call = IAcp::checkAccessCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
@@ -708,7 +738,7 @@ pub(super) fn dispatch(
 
         IAcp::verifyAccessRequestCall::SELECTOR => {
             if gas_limit < READ_GAS {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call = IAcp::verifyAccessRequestCall::abi_decode(input).map_err(decode_error)?;
             let policy_id = policy_id_to_string(&call.policyId);
@@ -730,12 +760,12 @@ pub(super) fn dispatch(
 
         IAcp::signedPolicyCmdCall::SELECTOR => {
             if gas_limit < WRITE_GAS {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call = IAcp::signedPolicyCmdCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
             let payload_str = String::from_utf8(call.payload.to_vec())
-                .map_err(|_| PrecompileError::Other("invalid UTF-8 in payload".into()))?;
+                .map_err(|_| PrecompileError::Fatal("invalid UTF-8 in payload".to_string()))?;
             let content_type = content_type_from_u8(call.contentType);
 
             let result = match module.signed_policy_cmd(&creator, &payload_str, content_type) {
@@ -749,13 +779,13 @@ pub(super) fn dispatch(
 
         IAcp::bearerPolicyCmdCall::SELECTOR => {
             if gas_limit < WRITE_GAS {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call = IAcp::bearerPolicyCmdCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
             let policy_id = policy_id_to_string(&call.policyId);
             let cmd: PolicyCmd = serde_json::from_slice(&call.cmd)
-                .map_err(|e| PrecompileError::Other(format!("cmd JSON decode: {e}").into()))?;
+                .map_err(|e| PrecompileError::Fatal(format!("cmd JSON decode: {e}")))?;
 
             let result =
                 match module.bearer_policy_cmd(&creator, &call.bearerToken, &policy_id, cmd) {
@@ -769,12 +799,12 @@ pub(super) fn dispatch(
 
         IAcp::updateParamsCall::SELECTOR => {
             if gas_limit < WRITE_GAS {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call = IAcp::updateParamsCall::abi_decode(input).map_err(decode_error)?;
             let authority = did_from_signer(&tx_ctx.signer)?;
             let params: AcpParams = serde_json::from_slice(&call.params)
-                .map_err(|e| PrecompileError::Other(format!("params JSON decode: {e}").into()))?;
+                .map_err(|e| PrecompileError::Fatal(format!("params JSON decode: {e}")))?;
 
             match module.update_params(&authority, params) {
                 Ok(()) => {}
@@ -787,7 +817,7 @@ pub(super) fn dispatch(
         // ── Read methods ─────────────────────────────────────────────
         IAcp::hasRelationshipCall::SELECTOR => {
             if gas_limit < READ_GAS {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call = IAcp::hasRelationshipCall::abi_decode(input).map_err(decode_error)?;
             let policy_id = policy_id_to_string(&call.policyId);
@@ -820,7 +850,7 @@ pub(super) fn dispatch(
 
         IAcp::getPolicyCall::SELECTOR => {
             if gas_limit < READ_GAS {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call = IAcp::getPolicyCall::abi_decode(input).map_err(decode_error)?;
             let policy_id = policy_id_to_string(&call.policyId);
@@ -836,7 +866,7 @@ pub(super) fn dispatch(
 
         IAcp::getObjectOwnerCall::SELECTOR => {
             if gas_limit < READ_GAS {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call = IAcp::getObjectOwnerCall::abi_decode(input).map_err(decode_error)?;
             let policy_id = policy_id_to_string(&call.policyId);
@@ -859,7 +889,7 @@ pub(super) fn dispatch(
 
         IAcp::getPolicyIdsCall::SELECTOR => {
             if gas_limit < READ_GAS {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             // Zero-parameter function — no ABI decoding needed.
             let ids = match module.query_policy_ids() {
@@ -873,7 +903,7 @@ pub(super) fn dispatch(
 
         IAcp::filterRelationshipsCall::SELECTOR => {
             if gas_limit < READ_GAS {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call = IAcp::filterRelationshipsCall::abi_decode(input).map_err(decode_error)?;
             let policy_id = policy_id_to_string(&call.policyId);
@@ -896,11 +926,11 @@ pub(super) fn dispatch(
 
         IAcp::validatePolicyCall::SELECTOR => {
             if gas_limit < READ_GAS {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call = IAcp::validatePolicyCall::abi_decode(input).map_err(decode_error)?;
             let policy_str = String::from_utf8(call.policy.to_vec())
-                .map_err(|_| PrecompileError::Other("invalid UTF-8 in policy".into()))?;
+                .map_err(|_| PrecompileError::Fatal("invalid UTF-8 in policy".to_string()))?;
             let marshal_type = marshal_type_from_u8(call.marshalType);
 
             let (valid, reason, _policy) =
@@ -918,7 +948,7 @@ pub(super) fn dispatch(
 
         IAcp::getAccessDecisionCall::SELECTOR => {
             if gas_limit < READ_GAS {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call = IAcp::getAccessDecisionCall::abi_decode(input).map_err(decode_error)?;
 
@@ -933,7 +963,7 @@ pub(super) fn dispatch(
 
         IAcp::getRegistrationsCommitmentCall::SELECTOR => {
             if gas_limit < READ_GAS {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call =
                 IAcp::getRegistrationsCommitmentCall::abi_decode(input).map_err(decode_error)?;
@@ -950,7 +980,7 @@ pub(super) fn dispatch(
 
         IAcp::getRegistrationsCommitmentByValueCall::SELECTOR => {
             if gas_limit < READ_GAS {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call = IAcp::getRegistrationsCommitmentByValueCall::abi_decode(input)
                 .map_err(decode_error)?;
@@ -969,7 +999,7 @@ pub(super) fn dispatch(
 
         IAcp::getHijackAttemptsCall::SELECTOR => {
             if gas_limit < READ_GAS {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call = IAcp::getHijackAttemptsCall::abi_decode(input).map_err(decode_error)?;
             let policy_id = policy_id_to_string(&call.policyId);
@@ -985,14 +1015,14 @@ pub(super) fn dispatch(
 
         IAcp::generateCommitmentCall::SELECTOR => {
             if gas_limit < READ_GAS {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call = IAcp::generateCommitmentCall::abi_decode(input).map_err(decode_error)?;
             let policy_id = policy_id_to_string(&call.policyId);
             let actor_did = did_from_actor(&call.actor)?;
 
             if call.resources.len() != call.objectIds.len() {
-                return Err(PrecompileError::Other("array length mismatch".into()));
+                return Err(PrecompileError::Fatal("array length mismatch".to_string()));
             }
             let objects: Vec<Object> = call
                 .resources
@@ -1016,7 +1046,7 @@ pub(super) fn dispatch(
 
         IAcp::getParamsCall::SELECTOR => {
             if gas_limit < READ_GAS {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             // Zero-parameter function — no ABI decoding needed.
             let params = match module.query_params() {
@@ -1028,9 +1058,10 @@ pub(super) fn dispatch(
             Ok(ok_dispatch(READ_GAS, ret, vec![]))
         }
 
-        _ => Err(PrecompileError::Other(
-            format!("unknown ACP selector: 0x{}", hex::encode(selector)).into(),
-        )),
+        _ => Err(PrecompileError::Fatal(format!(
+            "unknown ACP selector: 0x{}",
+            hex::encode(selector)
+        ))),
     }
 }
 
@@ -1117,7 +1148,7 @@ resources:
         match &result {
             Ok(dr) => {
                 assert!(
-                    !dr.precompile.reverted,
+                    !dr.precompile.status.is_revert(),
                     "dispatch should not revert, output bytes: {}",
                     String::from_utf8_lossy(&dr.precompile.bytes)
                 );
@@ -1159,7 +1190,7 @@ resources:
         };
 
         let result = dispatch(&mut module, &block_ctx, &tx_ctx, &calldata, 1_000_000).unwrap();
-        assert!(!result.precompile.reverted);
+        assert!(!result.precompile.status.is_revert());
         assert_eq!(result.logs.len(), 2);
         assert_eq!(module.query_policy_ids().unwrap().len(), 2);
     }
@@ -1207,7 +1238,7 @@ resources:
 
         let err = dispatch(&mut module, &block_ctx, &tx_ctx, &calldata, 1_000_000).unwrap_err();
         match err {
-            PrecompileError::Other(message) => {
+            PrecompileError::Fatal(message) => {
                 assert!(message.contains("batch call 2"), "{message}");
             }
             other => panic!("expected wrapped batch error, got {other:?}"),
@@ -1364,7 +1395,7 @@ resources:
         let set = fields().abi_encode();
         let dr = dispatch(&mut module, &block_ctx, &tx_ctx, &set, 1_000_000).unwrap();
         assert!(
-            !dr.precompile.reverted,
+            !dr.precompile.status.is_revert(),
             "set subject should not revert: {}",
             String::from_utf8_lossy(&dr.precompile.bytes)
         );
@@ -1400,7 +1431,10 @@ resources:
         }
         .abi_encode();
         let dr = dispatch(&mut module, &block_ctx, &tx_ctx, &del, 1_000_000).unwrap();
-        assert!(!dr.precompile.reverted, "delete subject should not revert");
+        assert!(
+            !dr.precompile.status.is_revert(),
+            "delete subject should not revert"
+        );
         let rels = module
             .query_filter_relationships(&policy_id, &selector)
             .unwrap();

@@ -14,7 +14,7 @@ use revm::{
         DatabaseCommit, DatabaseRef,
         async_db::{DatabaseAsyncRef, WrapDatabaseAsync},
     },
-    primitives::HashMap,
+    primitives::AddressMap,
     state::Account,
 };
 
@@ -60,19 +60,23 @@ where
     type Error = HandleError;
 
     fn basic_ref(&self, address: Address) -> Result<Option<revm::state::AccountInfo>, Self::Error> {
-        self.inner.basic_ref(address)
+        self.inner.basic_ref(address).map_err(HandleError::from)
     }
 
     fn code_by_hash_ref(&self, code_hash: B256) -> Result<Bytecode, Self::Error> {
-        self.inner.code_by_hash_ref(code_hash)
+        self.inner
+            .code_by_hash_ref(code_hash)
+            .map_err(HandleError::from)
     }
 
     fn storage_ref(&self, address: Address, index: U256) -> Result<U256, Self::Error> {
-        self.inner.storage_ref(address, index)
+        self.inner
+            .storage_ref(address, index)
+            .map_err(HandleError::from)
     }
 
     fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
-        self.inner.block_hash_ref(number)
+        self.inner.block_hash_ref(number).map_err(HandleError::from)
     }
 }
 
@@ -212,7 +216,7 @@ where
     S: QmdbGettable<Key = StorageKey, Value = U256> + QmdbBatchable<Key = StorageKey, Value = U256>,
     C: QmdbGettable<Key = B256, Value = Vec<u8>> + QmdbBatchable<Key = B256, Value = Vec<u8>>,
 {
-    fn commit(&mut self, changes: HashMap<Address, Account>) {
+    fn commit(&mut self, changes: AddressMap<Account>) {
         use std::collections::BTreeMap;
 
         use hub_qmdb::AccountUpdate;

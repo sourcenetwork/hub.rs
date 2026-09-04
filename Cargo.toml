@@ -99,20 +99,20 @@ storage = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "5af2d3d5
 zanzibar = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "5af2d3d50a71d7def8c0e50e1193f531c0063fae", default-features = false }
 
 # Alloy
-alloy-primitives = "1.0"
-alloy-consensus = { version = "1.0", features = ["k256"] }
-alloy-eips = "1.0"
-alloy-rlp = { version = "0.3", features = ["derive"] }
-alloy-evm = { version = "0.27.0", default-features = false }
-alloy-signer = "1"
-alloy-signer-local = { version = "1", default-features = false }
-alloy-sol-types = "1"
+alloy-primitives = "1.7"
+alloy-consensus = { version = "2.4", features = ["k256"] }
+alloy-eips = "2.4"
+alloy-rlp = { version = "0.3.16", features = ["derive"] }
+alloy-evm = { version = "0.39.0", default-features = false }
+alloy-signer = "2.4"
+alloy-signer-local = { version = "2.4", default-features = false }
+alloy-sol-types = "1.7"
 
 # Execution
-revm = { version = "34.0.0", default-features = false, features = ["optional_balance_check"] }
+revm = { version = "43.0.0", default-features = false, features = ["optional_balance_check"] }
 
 # Async
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1.50", features = ["full"] }
 futures = "0.3"
 async-trait = "0.1"
 
@@ -147,11 +147,11 @@ ark-serialize = "0.4"
 ark-std = "0.4"
 
 # HTTP / RPC
-axum = "0.8"
-tower = { version = "0.5", features = ["limit"] }
-tower-http = { version = "0.6", features = ["cors"] }
-jsonrpsee = { version = "0.24", features = ["server", "macros", "ws-client"] }
-reqwest = { version = "0.12", features = ["json", "blocking"] }
+axum = "0.8.9"
+tower = { version = "0.5.3", features = ["limit"] }
+tower-http = { version = "0.7.1", features = ["cors"] }
+jsonrpsee = { version = "0.26", features = ["server", "macros", "ws-client"] }
+reqwest = { version = "0.12.28", features = ["json", "blocking"] }
 
 # Concurrency
 parking_lot = "0.12"

@@ -26,6 +26,19 @@ pub enum HandleError {
     /// Root computation error.
     #[error("root computation error: {0}")]
     RootComputation(String),
+
+    /// Async EVM database execution error from REVM's fiber-based async bridge.
+    #[error("async db error: {0}")]
+    AsyncDb(String),
+}
+
+impl From<revm::database_interface::async_db::AsyncError<Self>> for HandleError {
+    fn from(err: revm::database_interface::async_db::AsyncError<Self>) -> Self {
+        match err {
+            revm::database_interface::async_db::AsyncError::Inner(e) => e,
+            other => Self::AsyncDb(other.to_string()),
+        }
+    }
 }
 
 impl revm::database_interface::DBErrorMarker for HandleError {}
