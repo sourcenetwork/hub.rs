@@ -23,8 +23,10 @@ use revm::{
     handler::{EthPrecompiles, PrecompileProvider},
     interpreter::{CallInputs, InterpreterResult},
     precompile::{
-        Precompile, PrecompileError, PrecompileId, PrecompileOutput, PrecompileResult, Precompiles,
+        Precompile, PrecompileError, PrecompileHalt, PrecompileId, PrecompileOutput,
+        PrecompileResult, Precompiles,
     },
+    primitives::AddressSet,
     primitives::hardfork::SpecId,
 };
 
@@ -48,20 +50,15 @@ const fn address_from_last_two_bytes(hi: u8, lo: u8) -> Address {
 }
 
 pub(super) fn did_from_signer(signer: &str) -> Result<Did, PrecompileError> {
-    Did::new(signer).map_err(|e| PrecompileError::Other(format!("DID: {e}").into()))
+    Did::new(signer).map_err(|e| PrecompileError::Fatal(format!("DID: {e}")))
 }
 
 pub(super) fn decode_error(e: alloy_sol_types::Error) -> PrecompileError {
-    PrecompileError::Other(format!("ABI decode: {e}").into())
+    PrecompileError::Fatal(format!("ABI decode: {e}"))
 }
 
 pub(super) fn module_error(e: impl core::fmt::Display) -> PrecompileOutput {
-    PrecompileOutput {
-        gas_used: 0,
-        gas_refunded: 0,
-        bytes: Bytes::from(e.to_string().into_bytes()),
-        reverted: true,
-    }
+    PrecompileOutput::revert(0, Bytes::from(e.to_string().into_bytes()), 0)
 }
 
 pub(super) fn json_bytes(v: &impl serde::Serialize) -> Bytes {
@@ -69,11 +66,13 @@ pub(super) fn json_bytes(v: &impl serde::Serialize) -> Bytes {
 }
 
 pub(super) fn ok_output(gas: u64, ret: Vec<u8>) -> PrecompileOutput {
-    PrecompileOutput {
-        gas_used: gas,
-        gas_refunded: 0,
-        bytes: ret.into(),
-        reverted: false,
+    PrecompileOutput::new(gas, ret.into(), 0)
+}
+
+pub(super) const fn oog_dispatch() -> DispatchResult {
+    DispatchResult {
+        precompile: PrecompileOutput::halt(PrecompileHalt::OutOfGas, 0),
+        logs: vec![],
     }
 }
 
@@ -110,13 +109,12 @@ pub(super) fn event_log<E: alloy_sol_types::SolEvent>(address: Address, event: &
     }
 }
 
-const fn stub_precompile(_input: &[u8], _gas_limit: u64) -> PrecompileResult {
-    Ok(PrecompileOutput {
-        gas_used: 0,
-        gas_refunded: 0,
-        bytes: revm::primitives::Bytes::new(),
-        reverted: true,
-    })
+const fn stub_precompile(_input: &[u8], _gas_limit: u64, _reservoir: u64) -> PrecompileResult {
+    Ok(PrecompileOutput::revert(
+        0,
+        revm::primitives::Bytes::new(),
+        0,
+    ))
 }
 
 /// Hub precompile provider that extends standard Ethereum precompiles
@@ -125,6 +123,7 @@ const fn stub_precompile(_input: &[u8], _gas_limit: u64) -> PrecompileResult {
 pub struct HubPrecompiles {
     eth: EthPrecompiles,
     custom: Precompiles,
+    warm: AddressSet,
     acp_module: AcpModule,
     bulletin_module: BulletinModule,
     hub_module: HubModule,
@@ -182,15 +181,12 @@ fn new_custom_precompiles() -> Precompiles {
 impl HubPrecompiles {
     /// Create a new hub precompile provider for the given spec.
     pub fn new(spec: SpecId) -> Self {
-        Self {
-            eth: EthPrecompiles::new(spec),
-            custom: new_custom_precompiles(),
-            acp_module: AcpModule::new(),
-            bulletin_module: BulletinModule::new(),
-            hub_module: HubModule::new(),
-            current_tx_hash: B256::ZERO,
-            current_signer_did: String::new(),
-        }
+        Self::with_modules(
+            spec,
+            AcpModule::new(),
+            BulletinModule::new(),
+            HubModule::new(),
+        )
     }
 
     /// Create a hub precompile provider with pre-built module instances.
@@ -200,9 +196,15 @@ impl HubPrecompiles {
         bulletin_module: BulletinModule,
         hub_module: HubModule,
     ) -> Self {
+        let eth = EthPrecompiles::new(spec);
+        let custom = new_custom_precompiles();
+        let mut warm = AddressSet::default();
+        warm.extend(eth.warm_addresses().iter().copied());
+        warm.extend(custom.addresses().copied());
         Self {
-            eth: EthPrecompiles::new(spec),
-            custom: new_custom_precompiles(),
+            eth,
+            custom,
+            warm,
             acp_module,
             bulletin_module,
             hub_module,
@@ -278,14 +280,12 @@ impl<CTX: ContextTr> PrecompileProvider<CTX> for HubPrecompiles {
         self.eth.run(context, inputs)
     }
 
-    fn warm_addresses(&self) -> Box<impl Iterator<Item = Address>> {
-        let eth_addrs: Vec<Address> = self.eth.warm_addresses().collect();
-        let custom_addrs: Vec<Address> = self.custom.addresses().cloned().collect();
-        Box::new(eth_addrs.into_iter().chain(custom_addrs))
+    fn warm_addresses(&self) -> &AddressSet {
+        &self.warm
     }
 
     fn contains(&self, address: &Address) -> bool {
-        self.eth.contains(address) || self.custom.contains(address)
+        self.warm.contains(address)
     }
 }
 
@@ -304,17 +304,17 @@ impl HubPrecompiles {
         match dispatch_result {
             Ok(dr) => {
                 result.gas.record_refund(dr.precompile.gas_refunded);
-                if !result.gas.record_cost(dr.precompile.gas_used) {
+                if !result.gas.record_regular_cost(dr.precompile.gas_used) {
                     result.result = InstructionResult::PrecompileOOG;
                     return Ok((Some(result), vec![]));
                 }
-                result.result = if dr.precompile.reverted {
+                result.result = if dr.precompile.status.is_revert() {
                     InstructionResult::Revert
                 } else {
                     InstructionResult::Return
                 };
                 result.output = dr.precompile.bytes;
-                let logs = if dr.precompile.reverted {
+                let logs = if dr.precompile.status.is_revert() {
                     vec![]
                 } else {
                     dr.logs
@@ -322,14 +322,7 @@ impl HubPrecompiles {
                 Ok((Some(result), logs))
             }
             Err(revm::precompile::PrecompileError::Fatal(e)) => Err(e),
-            Err(e) => {
-                result.result = if e.is_oog() {
-                    InstructionResult::PrecompileOOG
-                } else {
-                    InstructionResult::PrecompileError
-                };
-                Ok((Some(result), vec![]))
-            }
+            Err(revm::precompile::PrecompileError::FatalAny(e)) => Err(e.to_string()),
         }
     }
 
@@ -457,7 +450,10 @@ mod tests {
     fn hub_precompiles_warm_addresses_include_custom() {
         let precompiles = test_precompiles();
         let warm: Vec<Address> =
-            <HubPrecompiles as PrecompileProvider<TestCtx>>::warm_addresses(&precompiles).collect();
+            <HubPrecompiles as PrecompileProvider<TestCtx>>::warm_addresses(&precompiles)
+                .iter()
+                .copied()
+                .collect();
         assert!(warm.contains(&ACP_ADDRESS));
         assert!(warm.contains(&BULLETIN_ADDRESS));
         assert!(warm.contains(&HUB_ADDRESS));

@@ -135,14 +135,11 @@ impl EthSubscriptionApiServer for EthSubscriptionApiImpl {
                     loop {
                         match rx.recv().await {
                             Ok(block) => {
-                                let value = match serde_json::to_value(&block) {
-                                    Ok(v) => v,
-                                    Err(e) => {
-                                        warn!(error = %e, "failed to serialize newHeads block");
-                                        break;
-                                    }
-                                };
-                                let msg = match SubscriptionMessage::from_json(&value) {
+                                let msg = match SubscriptionMessage::new(
+                                    "eth_subscription",
+                                    sink.subscription_id(),
+                                    &block,
+                                ) {
                                     Ok(m) => m,
                                     Err(e) => {
                                         warn!(error = %e, "failed to build newHeads subscription message");
@@ -180,14 +177,11 @@ impl EthSubscriptionApiServer for EthSubscriptionApiImpl {
                     loop {
                         match rx.recv().await {
                             Ok(header) => {
-                                let value = match serde_json::to_value(&header) {
-                                    Ok(v) => v,
-                                    Err(e) => {
-                                        warn!(error = %e, "failed to serialize gossip header");
-                                        break;
-                                    }
-                                };
-                                let msg = match SubscriptionMessage::from_json(&value) {
+                                let msg = match SubscriptionMessage::new(
+                                    "eth_subscription",
+                                    sink.subscription_id(),
+                                    &header,
+                                ) {
                                     Ok(m) => m,
                                     Err(e) => {
                                         warn!(error = %e, "failed to build headers subscription message");
@@ -236,14 +230,11 @@ impl EthSubscriptionApiServer for EthSubscriptionApiImpl {
                                     if !matches_filter(log, &filter) {
                                         continue;
                                     }
-                                    let value = match serde_json::to_value(log) {
-                                        Ok(v) => v,
-                                        Err(e) => {
-                                            warn!(error = %e, "failed to serialize log for subscription");
-                                            return;
-                                        }
-                                    };
-                                    let msg = match SubscriptionMessage::from_json(&value) {
+                                    let msg = match SubscriptionMessage::new(
+                                        "eth_subscription",
+                                        sink.subscription_id(),
+                                        log,
+                                    ) {
                                         Ok(m) => m,
                                         Err(e) => {
                                             warn!(error = %e, "failed to build log subscription message");

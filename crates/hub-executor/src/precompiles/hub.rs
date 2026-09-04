@@ -10,7 +10,7 @@ use revm::precompile::PrecompileError;
 
 use super::{
     DispatchReturn, HUB_ADDRESS, decode_error, did_from_signer, err_dispatch, event_log,
-    json_bytes, ok_dispatch,
+    json_bytes, ok_dispatch, oog_dispatch,
 };
 
 /// Flat gas cost for read operations (real metering is Phase 10).
@@ -27,8 +27,8 @@ pub(super) fn dispatch(
     gas_limit: u64,
 ) -> DispatchReturn {
     if input.len() < 4 {
-        return Err(PrecompileError::Other(
-            "input too short for selector".into(),
+        return Err(PrecompileError::Fatal(
+            "input too short for selector".to_string(),
         ));
     }
     let selector: [u8; 4] = input[..4].try_into().expect("checked length above");
@@ -37,7 +37,7 @@ pub(super) fn dispatch(
         // ── Write methods ────────────────────────────────────────────
         IHub::invalidateJWSCall::SELECTOR => {
             if gas_limit < WRITE_GAS {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call = IHub::invalidateJWSCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
@@ -60,14 +60,13 @@ pub(super) fn dispatch(
 
         IHub::updateParamsCall::SELECTOR => {
             if gas_limit < WRITE_GAS {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call = IHub::updateParamsCall::abi_decode(input).map_err(decode_error)?;
             let authority = did_from_signer(&tx_ctx.signer)?;
-            let params: hub_modules::hub::types::HubParams = serde_json::from_slice(&call.params)
-                .map_err(|e| {
-                PrecompileError::Other(format!("params JSON decode: {e}").into())
-            })?;
+            let params: hub_modules::hub::types::HubParams =
+                serde_json::from_slice(&call.params)
+                    .map_err(|e| PrecompileError::Fatal(format!("params JSON decode: {e}")))?;
 
             match module.update_params(&authority, params) {
                 Ok(()) => {}
@@ -80,7 +79,7 @@ pub(super) fn dispatch(
         // ── Read methods ─────────────────────────────────────────────
         IHub::getJWSTokenCall::SELECTOR => {
             if gas_limit < READ_GAS {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call = IHub::getJWSTokenCall::abi_decode(input).map_err(decode_error)?;
 
@@ -102,11 +101,11 @@ pub(super) fn dispatch(
 
         IHub::getJWSTokensByDidCall::SELECTOR => {
             if gas_limit < READ_GAS {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call = IHub::getJWSTokensByDidCall::abi_decode(input).map_err(decode_error)?;
             let did = Did::new(&call.did)
-                .map_err(|e| PrecompileError::Other(format!("DID parse: {e}").into()))?;
+                .map_err(|e| PrecompileError::Fatal(format!("DID parse: {e}")))?;
 
             let tokens = match module.get_jws_tokens_by_did(&did) {
                 Ok(r) => r,
@@ -119,7 +118,7 @@ pub(super) fn dispatch(
 
         IHub::getJWSTokensByAccountCall::SELECTOR => {
             if gas_limit < READ_GAS {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             let call = IHub::getJWSTokensByAccountCall::abi_decode(input).map_err(decode_error)?;
             let account_str = format!("{}", call.account);
@@ -135,7 +134,7 @@ pub(super) fn dispatch(
 
         IHub::getChainConfigCall::SELECTOR => {
             if gas_limit < READ_GAS {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             // Zero-parameter function — no ABI decoding needed.
             let config = match module.get_chain_config() {
@@ -149,7 +148,7 @@ pub(super) fn dispatch(
 
         IHub::getParamsCall::SELECTOR => {
             if gas_limit < READ_GAS {
-                return Err(PrecompileError::OutOfGas);
+                return Ok(oog_dispatch());
             }
             // Zero-parameter function — no ABI decoding needed.
             let params = match module.query_params() {
@@ -161,8 +160,9 @@ pub(super) fn dispatch(
             Ok(ok_dispatch(READ_GAS, ret, vec![]))
         }
 
-        _ => Err(PrecompileError::Other(
-            format!("unknown Hub selector: 0x{}", hex::encode(selector)).into(),
-        )),
+        _ => Err(PrecompileError::Fatal(format!(
+            "unknown Hub selector: 0x{}",
+            hex::encode(selector)
+        ))),
     }
 }

@@ -221,14 +221,14 @@ impl HubExecutor {
 
         match dispatch_result {
             Ok(Ok(result)) => {
-                let logs = if result.precompile.reverted {
+                let logs = if result.precompile.status.is_revert() {
                     vec![]
                 } else {
                     result.logs
                 };
                 Ok(ExecutionReceipt::new(
                     tx_hash,
-                    !result.precompile.reverted,
+                    !result.precompile.status.is_revert(),
                     result.precompile.gas_used,
                     0, // cumulative gas set by caller
                     logs,
@@ -382,7 +382,7 @@ impl<S: StateDb> BlockExecutor<S> for HubExecutor {
 
             executed_indices.push(i);
 
-            let gas_used = result_and_state.result.gas_used();
+            let gas_used = result_and_state.result.tx_gas_used();
             cumulative_gas = cumulative_gas.saturating_add(gas_used);
 
             let receipt =
