@@ -226,6 +226,7 @@ impl<S: FinalizedSink> Application<Ctx> for StatefulHubApp<S> {
             total_ms = start.elapsed().as_millis(),
             "built block"
         );
+        self.sink.proposed(&block);
         Some(Proposed {
             block,
             merkleized: executed.merkleized,
@@ -320,8 +321,11 @@ impl<S: FinalizedSink> Application<Ctx> for StatefulHubApp<S> {
     ) {
         let ids: Vec<TxId> = block.txs.iter().map(hub_domain::Tx::id).collect();
         self.mempool.prune(&ids);
+        if let Some(modules) = self.executor.get_cached_modules(block.height) {
+            self.executor.set_base_modules(modules);
+        }
         self.executor
             .cleanup_module_cache(block.height.saturating_sub(1));
-        self.sink.finalized(block, captured);
+        self.sink.finalized(block, captured).await;
     }
 }

@@ -1,19 +1,15 @@
 //! Key management for e2e test clusters.
 //!
-//! Generates ed25519 identity keys and deterministic ed25519 multisig signing
-//! schemes using commonware-cryptography directly (no hub-runner dependency).
+//! Generates ed25519 identity keys and a trusted-dealer BLS12-381 threshold
+//! sharing for epoch 0, exactly as `hubd testnet` does.
 
 use std::{collections::BTreeMap, path::Path};
 
 use commonware_codec::Encode;
-use commonware_consensus::simplex::scheme::ed25519::Scheme;
-use commonware_cryptography::{Signer as _, ed25519};
-use commonware_utils::{TryCollect as _, ordered::Set};
-
-/// Ed25519 multisig signing scheme used for consensus.
-pub type Ed25519Scheme = Scheme;
-
-const SIMPLEX_NAMESPACE: &[u8] = b"_COMMONWARE_HUB_SIMPLEX";
+use commonware_consensus::types::Epoch;
+use commonware_cryptography::{Signer as _, bls12381::primitives::group::Share, ed25519};
+use commonware_utils::ordered::Map;
+use hub_node::{FileSecretStore, GenesisEpochInfo, epoch_info_hex, trusted_setup};
 
 /// Complete key material for a test cluster.
 #[derive(Debug)]
@@ -21,7 +17,8 @@ pub struct KeySet {
     identity_keys: Vec<ed25519::PrivateKey>,
     participants: Vec<ed25519::PublicKey>,
     threshold: u32,
-    schemes: Vec<Ed25519Scheme>,
+    epoch_info: GenesisEpochInfo,
+    shares: Map<ed25519::PublicKey, Share>,
     seed: u64,
 }
 
@@ -56,12 +53,23 @@ impl KeySet {
         &self.participants
     }
 
-    /// Consensus signing scheme for the node at `index`.
-    pub fn scheme(&self, index: usize) -> &Ed25519Scheme {
-        &self.schemes[index]
+    /// Epoch-0 DKG artifact shared by every node.
+    pub const fn epoch_info(&self) -> &GenesisEpochInfo {
+        &self.epoch_info
     }
 
-    /// Write `validator.key` (raw 32-byte ed25519 private key) per node.
+    /// Epoch-0 artifact as stored in `genesis.json`.
+    pub fn epoch_info_hex(&self) -> String {
+        epoch_info_hex(&self.epoch_info)
+    }
+
+    /// BLS share for the node at `index`.
+    pub fn share(&self, index: usize) -> Option<&Share> {
+        self.shares.get_value(&self.participants[index])
+    }
+
+    /// Write `validator.key` (raw 32-byte ed25519 private key) and
+    /// `secrets.json` (the epoch-0 BLS share) per node.
     pub fn write_to(&self, node_dirs: &[impl AsRef<Path>]) -> eyre::Result<()> {
         assert_eq!(
             node_dirs.len(),
@@ -76,6 +84,14 @@ impl KeySet {
             std::fs::create_dir_all(dir)?;
             let key_bytes = Encode::encode(&self.identity_keys[i]);
             std::fs::write(dir.join("validator.key"), key_bytes.as_ref())?;
+            let share = self
+                .share(i)
+                .cloned()
+                .ok_or_else(|| eyre::eyre!("no BLS share for node {i}"))?;
+            FileSecretStore::load(dir.join("secrets.json"))
+                .map_err(|e| eyre::eyre!("{e:#}"))?
+                .put_initial_share(Epoch::zero(), share)
+                .map_err(|e| eyre::eyre!("{e:#}"))?;
         }
 
         Ok(())
@@ -113,7 +129,7 @@ impl KeySet {
 
     /// Whether this key set is for a single-node cluster.
     pub const fn is_single_node(&self) -> bool {
-        self.schemes.len() == 1
+        self.identity_keys.len() == 1
     }
 }
 
@@ -179,23 +195,20 @@ impl KeySetBuilder {
             .threshold
             .unwrap_or(if n == 1 { 1 } else { (n - f) as u32 });
 
-        let (participants, schemes) = generate_ed25519_schemes(seed, n)?;
-
-        let seed_keys: Vec<_> = (0..n)
-            .map(|i| {
-                let key = ed25519::PrivateKey::from_seed(seed.wrapping_add(i as u64));
-                (key.public_key(), key)
-            })
+        let seed_keys: Vec<ed25519::PrivateKey> = (0..n)
+            .map(|i| ed25519::PrivateKey::from_seed(seed.wrapping_add(i as u64)))
             .collect();
+        let (epoch_info, shares) = trusted_setup(seed, seed_keys.iter().map(|k| k.public_key()))
+            .map_err(|e| eyre::eyre!("{e:#}"))?;
 
+        let participants: Vec<ed25519::PublicKey> = epoch_info.players.iter().cloned().collect();
         let identity_keys: Vec<ed25519::PrivateKey> = participants
             .iter()
             .map(|pk| {
                 seed_keys
                     .iter()
-                    .find(|(p, _)| p == pk)
+                    .find(|k| k.public_key() == *pk)
                     .expect("all participants derived from seed")
-                    .1
                     .clone()
             })
             .collect();
@@ -204,40 +217,9 @@ impl KeySetBuilder {
             identity_keys,
             participants,
             threshold,
-            schemes,
+            epoch_info,
+            shares,
             seed,
         })
     }
-}
-
-/// Generate deterministic ed25519 signing schemes.
-fn generate_ed25519_schemes(
-    seed: u64,
-    n: usize,
-) -> eyre::Result<(Vec<ed25519::PublicKey>, Vec<Ed25519Scheme>)> {
-    let private_keys: Vec<ed25519::PrivateKey> = (0..n)
-        .map(|i| ed25519::PrivateKey::from_seed(seed.wrapping_add(i as u64)))
-        .collect();
-
-    let participants: Set<ed25519::PublicKey> = private_keys
-        .iter()
-        .map(|k| k.public_key())
-        .try_collect()
-        .expect("participant public keys are unique");
-
-    let ordered_pks: Vec<ed25519::PublicKey> = participants.iter().cloned().collect();
-
-    let mut schemes = Vec::with_capacity(n);
-    for pk in participants.iter() {
-        let private_key = private_keys
-            .iter()
-            .find(|k| k.public_key() == *pk)
-            .expect("private key exists for participant")
-            .clone();
-        let scheme = Scheme::signer(SIMPLEX_NAMESPACE, participants.clone(), private_key)
-            .ok_or_else(|| eyre::eyre!("failed to create signer for participant"))?;
-        schemes.push(scheme);
-    }
-
-    Ok((ordered_pks, schemes))
 }

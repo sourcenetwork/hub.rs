@@ -116,7 +116,6 @@ impl TestClusterBuilder {
         let run_dir = TestRunDir::new(&base_dir, "HUB_E2E_KEEP")?;
 
         let genesis_builder = self.genesis.unwrap_or_else(GenesisBuilder::devnet);
-        let genesis = genesis_builder.chain_id(chain_id).build();
 
         let node_config = NodeConfigBuilder::new()
             .chain_id(chain_id)
@@ -129,6 +128,10 @@ impl TestClusterBuilder {
             key_builder = key_builder.seed(seed);
         }
         let keys = key_builder.build()?;
+        let genesis = genesis_builder
+            .chain_id(chain_id)
+            .epoch_info(keys.epoch_info_hex())
+            .build();
 
         let all_ports = test_infra::allocate_ports(n * 2)?;
         let p2p_ports = &all_ports[0..n];
@@ -173,7 +176,6 @@ impl TestClusterBuilder {
             None => resolve_binary()?,
         };
         let rust_log = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
-        let seed_str = keys.seed().to_string();
         let chain_id_str = chain_id.to_string();
         let peers_str = peers_path.to_str().unwrap().to_string();
 
@@ -215,8 +217,6 @@ impl TestClusterBuilder {
                     "--chain-id",
                     &chain_id_str,
                     "validator",
-                    "--seed",
-                    &seed_str,
                     "--peers",
                     &peers_str,
                     "--rpc-port",

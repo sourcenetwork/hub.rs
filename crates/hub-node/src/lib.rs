@@ -1,0 +1,42 @@
+//! Hub validator node: p2p, marshal, DKG orchestration, stateful execution, and RPC.
+//!
+//! [`run_node`] assembles the commonware actors around the hub application in
+//! `hub-app` and runs them until one stops.
+
+#![recursion_limit = "256"]
+
+mod bootstrap;
+pub use bootstrap::{GenesisEpochInfo, epoch_info_hex, trusted_setup};
+
+mod committed_state;
+pub use committed_state::CommittedState;
+
+mod config;
+pub use config::{NodeSettings, PeerSet, PeerSetError, load_peers};
+
+mod consts;
+pub use consts::*;
+
+mod finalize;
+pub use finalize::{index_finalized_block, subscription_data};
+
+mod node;
+pub use node::run_node;
+
+mod participants;
+pub use participants::StaticParticipants;
+
+mod provider;
+pub use provider::{DynamicProvider, Registrar};
+
+mod resolver;
+pub use resolver::NoSync;
+
+mod secret_store;
+pub use secret_store::FileSecretStore;
+
+mod sink;
+pub use sink::{NodeSink, SinkParts};
+
+mod tx_gossip;
+pub use tx_gossip::{SharedValidator, TxGossip, spawn_tx_receiver};

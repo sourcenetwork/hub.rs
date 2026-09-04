@@ -1,18 +1,27 @@
-//! Delivery of finalized blocks to the rest of the node.
+//! Delivery of block events to the rest of the node.
+
+use std::future::Future;
 
 use hub_domain::Block;
 use hub_executor::ExecutionReceipt;
 
-/// Receives every finalized block with its receipts, once state is readable.
+/// Receives proposals and finalized blocks with their receipts.
 pub trait FinalizedSink: Clone + Send + Sync + 'static {
-    /// Called after the block's batches are applied.
-    fn finalized(&self, block: &Block, receipts: Vec<ExecutionReceipt>);
+    /// Called after this node built a proposal.
+    fn proposed(&self, _block: &Block) {}
+
+    /// Called once a finalized block's batches are applied and readable.
+    fn finalized(
+        &self,
+        block: &Block,
+        receipts: Vec<ExecutionReceipt>,
+    ) -> impl Future<Output = ()> + Send;
 }
 
-/// Sink that drops finalized blocks.
+/// Sink that drops every event.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NoopSink;
 
 impl FinalizedSink for NoopSink {
-    fn finalized(&self, _block: &Block, _receipts: Vec<ExecutionReceipt>) {}
+    async fn finalized(&self, _block: &Block, _receipts: Vec<ExecutionReceipt>) {}
 }

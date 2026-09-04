@@ -9,21 +9,9 @@ pub enum BackendError {
     #[error("storage error: {0}")]
     Storage(String),
 
-    /// Configuration error.
-    #[error("configuration error: {0}")]
-    Config(String),
-
     /// Database not initialized.
     #[error("database not initialized")]
     NotInitialized,
-
-    /// Partition error.
-    #[error("partition error: {0}")]
-    Partition(String),
-
-    /// State root computation failed.
-    #[error("root computation failed: {0}")]
-    RootComputation(String),
 }
 
 #[cfg(test)]
@@ -37,30 +25,9 @@ mod tests {
     }
 
     #[test]
-    fn test_config_error_display() {
-        let err = BackendError::Config("invalid path".to_string());
-        assert_eq!(err.to_string(), "configuration error: invalid path");
-    }
-
-    #[test]
     fn test_not_initialized_display() {
         let err = BackendError::NotInitialized;
         assert_eq!(err.to_string(), "database not initialized");
-    }
-
-    #[test]
-    fn test_partition_error_display() {
-        let err = BackendError::Partition("corrupted".to_string());
-        assert_eq!(err.to_string(), "partition error: corrupted");
-    }
-
-    #[test]
-    fn test_root_computation_error_display() {
-        let err = BackendError::RootComputation("merkle tree failed".to_string());
-        assert_eq!(
-            err.to_string(),
-            "root computation failed: merkle tree failed"
-        );
     }
 
     #[test]

@@ -1,8 +1,12 @@
 //! CLI for hubd.
 
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
 use clap::{Parser, Subcommand};
+use commonware_cryptography::Signer as _;
+use hub_config::NodeConfig;
+use hub_genesis::HubGenesis;
+use hub_node::{NodeSettings, PeerSet, load_peers};
 
 use crate::testnet;
 
@@ -44,10 +48,6 @@ pub(crate) enum Commands {
 
 #[derive(clap::Args, Debug)]
 pub(crate) struct ValidatorArgs {
-    /// Shared seed for deterministic threshold scheme generation.
-    #[arg(long)]
-    pub seed: u64,
-
     /// Path to peers.json file containing participant information.
     #[arg(long)]
     pub peers: PathBuf,
@@ -116,11 +116,143 @@ impl Cli {
         }
     }
 
-    fn run_validator(&self, _args: &ValidatorArgs) -> eyre::Result<()> {
-        eyre::bail!("consensus is not wired in this build");
+    fn load_config(&self) -> eyre::Result<NodeConfig> {
+        let mut config = NodeConfig::load(self.config.as_deref())?;
+        if let Some(chain_id) = self.chain_id {
+            config.chain_id = chain_id;
+        }
+        if let Some(data_dir) = &self.data_dir {
+            config.data_dir = data_dir.clone();
+        }
+        Ok(config)
     }
 
-    fn run_devnet(&self, _args: &DevnetArgs) -> eyre::Result<()> {
-        eyre::bail!("consensus is not wired in this build");
+    fn run_validator(&self, args: &ValidatorArgs) -> eyre::Result<()> {
+        let config = self.load_config()?;
+        let peers = load_peers(&args.peers)?;
+        let genesis = HubGenesis::load(&config.data_dir.join("genesis.json"))?;
+        let local = config.validator_key()?.public_key();
+        let validator_index = peers
+            .participants
+            .iter()
+            .position(|pk| *pk == local)
+            .ok_or_else(|| eyre::eyre!("validator key is not listed in peers.json"))?;
+        let rpc_port = args.rpc_port.unwrap_or(8545 + validator_index as u16);
+        let settings = node_settings(
+            config,
+            genesis,
+            peers,
+            rpc_port,
+            ConsensusTimeouts {
+                leader_timeout_ms: args.leader_timeout_ms,
+                notarization_timeout_ms: args.notarization_timeout_ms,
+                nullify_retry_ms: args.nullify_retry_ms,
+            },
+        )?;
+        tracing::info!(
+            chain_id = settings.config.chain_id,
+            validator_index,
+            "Starting hub validator"
+        );
+        run(settings)
     }
+
+    fn run_devnet(&self, args: &DevnetArgs) -> eyre::Result<()> {
+        let mut config = self.load_config()?;
+        let mut genesis = match &args.genesis {
+            Some(path) => HubGenesis::load(path)?,
+            None => HubGenesis::devnet(),
+        };
+        if self.chain_id.is_none() {
+            config.chain_id = genesis.chain_id;
+        }
+        std::fs::create_dir_all(&config.data_dir)?;
+        let key = config.validator_key()?;
+        let local = key.public_key();
+        let (epoch_info, shares) =
+            hub_node::trusted_setup(0, [local.clone()]).map_err(anyhow_to_eyre)?;
+        genesis.epoch_info = Some(hub_node::epoch_info_hex(&epoch_info));
+        let secrets_path = config.data_dir.join("secrets.json");
+        let store = hub_node::FileSecretStore::load(&secrets_path).map_err(anyhow_to_eyre)?;
+        let share = shares
+            .get_value(&local)
+            .cloned()
+            .ok_or_else(|| eyre::eyre!("dealer produced no share for the devnet key"))?;
+        store
+            .put_initial_share(commonware_consensus::types::Epoch::zero(), share)
+            .map_err(anyhow_to_eyre)?;
+        let listen: std::net::SocketAddr = config.network.listen_addr.parse()?;
+        let peers = PeerSet {
+            participants: vec![local.clone()],
+            bootstrappers: vec![(local, listen)],
+        };
+        let settings = node_settings(
+            config,
+            genesis,
+            peers,
+            args.rpc_port,
+            ConsensusTimeouts {
+                leader_timeout_ms: args.leader_timeout_ms,
+                notarization_timeout_ms: args.notarization_timeout_ms,
+                nullify_retry_ms: args.nullify_retry_ms,
+            },
+        )?;
+        tracing::info!(
+            chain_id = settings.config.chain_id,
+            "Starting hub devnet (single-node)"
+        );
+        run(settings)
+    }
+}
+
+/// Convert node-crate errors into CLI reports.
+pub(crate) fn anyhow_to_eyre(e: anyhow::Error) -> eyre::Report {
+    eyre::eyre!("{e:#}")
+}
+
+/// Consensus timeouts in milliseconds; unset values use the defaults.
+struct ConsensusTimeouts {
+    leader_timeout_ms: Option<u64>,
+    notarization_timeout_ms: Option<u64>,
+    nullify_retry_ms: Option<u64>,
+}
+
+const DEFAULT_LEADER_TIMEOUT: Duration = Duration::from_secs(1);
+const DEFAULT_NOTARIZATION_TIMEOUT: Duration = Duration::from_secs(2);
+const DEFAULT_NULLIFY_RETRY: Duration = Duration::from_millis(500);
+
+fn node_settings(
+    config: NodeConfig,
+    genesis: HubGenesis,
+    peers: PeerSet,
+    rpc_port: u16,
+    timeouts: ConsensusTimeouts,
+) -> eyre::Result<NodeSettings> {
+    let secrets_path = config.data_dir.join("secrets.json");
+    Ok(NodeSettings {
+        config,
+        genesis,
+        peers,
+        secrets_path,
+        rpc_addr: format!("0.0.0.0:{rpc_port}").parse()?,
+        leader_timeout: timeouts
+            .leader_timeout_ms
+            .map_or(DEFAULT_LEADER_TIMEOUT, Duration::from_millis),
+        certification_timeout: timeouts
+            .notarization_timeout_ms
+            .map_or(DEFAULT_NOTARIZATION_TIMEOUT, Duration::from_millis),
+        timeout_retry: timeouts
+            .nullify_retry_ms
+            .map_or(DEFAULT_NULLIFY_RETRY, Duration::from_millis),
+    })
+}
+
+/// Run the node on a commonware tokio runtime until it stops.
+fn run(settings: NodeSettings) -> eyre::Result<()> {
+    use commonware_runtime::{Runner as _, tokio};
+    let runtime = tokio::Config::default()
+        .with_storage_directory(settings.config.data_dir.join("commonware"));
+    tokio::Runner::new(runtime)
+        .start(|context| async move { hub_node::run_node(context, settings).await })
+        .map_err(|e| eyre::eyre!("node stopped: {e:#}"))
 }

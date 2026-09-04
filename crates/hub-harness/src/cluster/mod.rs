@@ -1,7 +1,7 @@
 //! Cluster configuration builders for hub.rs e2e tests.
 
 mod keys;
-pub use keys::{Ed25519Scheme, KeySet, KeySetBuilder};
+pub use keys::{KeySet, KeySetBuilder};
 
 mod node_config;
 pub use node_config::{ConsensusParams, ConsensusPreset, NodeConfigBuilder};

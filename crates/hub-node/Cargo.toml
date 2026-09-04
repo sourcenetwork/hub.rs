@@ -1,0 +1,54 @@
+[package]
+name = "hub-node"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Hub validator node assembly on commonware glue"
+
+[lints]
+workspace = true
+
+[dependencies]
+hub-app.workspace = true
+hub-backend.workspace = true
+hub-config.workspace = true
+hub-consensus.workspace = true
+hub-crypto.workspace = true
+hub-domain.workspace = true
+hub-executor.workspace = true
+hub-genesis.workspace = true
+hub-indexer.workspace = true
+hub-jsonrpc.workspace = true
+hub-modules.workspace = true
+hub-qmdb.workspace = true
+hub-state.workspace = true
+hub-traits.workspace = true
+
+commonware-broadcast.workspace = true
+commonware-codec.workspace = true
+commonware-consensus.workspace = true
+commonware-cryptography.workspace = true
+commonware-glue.workspace = true
+commonware-macros.workspace = true
+commonware-p2p.workspace = true
+commonware-parallel.workspace = true
+commonware-runtime.workspace = true
+commonware-storage.workspace = true
+commonware-utils.workspace = true
+
+alloy-consensus.workspace = true
+alloy-eips.workspace = true
+alloy-primitives.workspace = true
+anyhow.workspace = true
+bytes.workspace = true
+futures.workspace = true
+hex.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

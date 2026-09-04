@@ -1,14 +1,13 @@
 //! Glue-managed QMDB databases for EVM state: accounts, storage, and code.
 //!
 //! The three databases form a [`DatabaseSet`] through commonware-glue's tuple
-//! implementation; [`HubStateSet`] wraps that tuple so the combined EVM state
-//! root has one definition.
+//! implementation; [`combined_root`] gives the EVM state root one definition.
 
 use alloy_primitives::B256;
 use commonware_codec::RangeCfg;
 use commonware_cryptography::Sha256;
 use commonware_glue::stateful::db::ManagedDb;
-use commonware_glue::stateful::db::{Barrier, DatabaseSet, Reader, Shared};
+use commonware_glue::stateful::db::{Reader, Shared};
 use commonware_parallel::Sequential;
 use commonware_runtime::{buffer::paged::CacheRef, tokio};
 use commonware_storage::{
@@ -16,12 +15,10 @@ use commonware_storage::{
     qmdb::any::{VariableConfig, unordered::variable},
     translator::EightCap,
 };
+use commonware_utils::{NZU64, NZUsize};
 use hub_qmdb::StateRoot;
 
-use crate::{
-    backend::store_config,
-    types::{AccountKey, AccountValue, CodeKey, StorageKey, StorageValue},
-};
+use crate::types::{AccountKey, AccountValue, CodeKey, StorageKey, StorageValue};
 
 /// Runtime context the state set runs on.
 pub type Ctx = tokio::Context;
@@ -73,74 +70,40 @@ pub fn state_set_config(prefix: &str, page_cache: CacheRef) -> HubConfig {
     )
 }
 
-/// The EVM state backend as a glue [`DatabaseSet`].
-#[derive(Clone)]
-pub struct HubStateSet(HubDatabases);
-
-impl std::fmt::Debug for HubStateSet {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HubStateSet").finish_non_exhaustive()
+fn store_config<C>(
+    prefix: &str,
+    name: &str,
+    page_cache: CacheRef,
+    log_codec_config: C,
+) -> VariableConfig<EightCap, C, Sequential> {
+    VariableConfig {
+        merkle_config: commonware_storage::merkle::full::Config {
+            journal_partition: format!("{prefix}-{name}-mmr"),
+            metadata_partition: format!("{prefix}-{name}-mmr-meta"),
+            items_per_blob: NZU64!(128),
+            write_buffer: NZUsize!(1024 * 1024),
+            replay_buffer: NZUsize!(1024 * 1024),
+            strategy: Sequential,
+            page_cache: page_cache.clone(),
+        },
+        journal_config: commonware_storage::journal::contiguous::variable::Config {
+            partition: format!("{prefix}-{name}-log"),
+            items_per_section: NZU64!(128),
+            compression: None,
+            codec_config: log_codec_config,
+            page_cache,
+            write_buffer: NZUsize!(1024 * 1024),
+            replay_buffer: NZUsize!(1024 * 1024),
+        },
+        translator: EightCap,
+        init_cache_size: Some(NZUsize!(1024)),
+        init_buffer: NZUsize!(1 << 21),
+        init_concurrency: (),
     }
 }
 
-impl HubStateSet {
-    /// Borrow the underlying database tuple.
-    pub const fn databases(&self) -> &HubDatabases {
-        &self.0
-    }
-}
-
-impl DatabaseSet<Ctx> for HubStateSet {
-    type Unmerkleized = HubUnmerkleized;
-    type Merkleized = HubMerkleized;
-    type Readers = HubReaders;
-    type Config = HubConfig;
-    type SyncTargets = HubSyncTargets;
-
-    async fn init(context: Ctx, config: Self::Config) -> Self {
-        Self(<HubDatabases as DatabaseSet<Ctx>>::init(context, config).await)
-    }
-
-    fn initial_sync_targets() -> Self::SyncTargets {
-        <HubDatabases as DatabaseSet<Ctx>>::initial_sync_targets()
-    }
-
-    async fn new_batches(&self) -> Self::Unmerkleized {
-        self.0.new_batches().await
-    }
-
-    fn fork_batches(parent: &Self::Merkleized) -> Self::Unmerkleized {
-        <HubDatabases as DatabaseSet<Ctx>>::fork_batches(parent)
-    }
-
-    fn matches_sync_targets(batches: &Self::Merkleized, targets: &Self::SyncTargets) -> bool {
-        <HubDatabases as DatabaseSet<Ctx>>::matches_sync_targets(batches, targets)
-    }
-
-    fn readers(&self) -> Self::Readers {
-        self.0.readers()
-    }
-
-    async fn apply(&self, batches: Self::Merkleized) {
-        self.0.apply(batches).await;
-    }
-
-    async fn finalize(&self) -> Barrier {
-        self.0.finalize().await
-    }
-
-    async fn prune(&self, targets: &Self::SyncTargets) {
-        self.0.prune(targets).await;
-    }
-
-    async fn committed_targets(&self) -> Self::SyncTargets {
-        self.0.committed_targets().await
-    }
-
-    async fn rewind_to_targets(&self, targets: Self::SyncTargets) {
-        self.0.rewind_to_targets(targets).await;
-    }
-}
+/// The EVM state backend: glue's tuple [`DatabaseSet`] over the three partitions.
+pub type HubStateSet = HubDatabases;
 
 /// Combined EVM state root over merkleized batches.
 pub fn combined_root(merkleized: &HubMerkleized) -> B256 {

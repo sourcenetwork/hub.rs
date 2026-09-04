@@ -156,18 +156,29 @@ pub(crate) fn run(chain_id: u64, data_dir: PathBuf, args: &TestnetArgs) -> eyre:
 
     // ── Phase 3: Write genesis.json to each node ─────────────────────────────
 
-    let genesis = if let Some(ref path) = args.genesis {
+    let mut genesis = if let Some(ref path) = args.genesis {
         HubGenesis::load(path).map_err(|e| eyre::eyre!("Failed to load genesis: {}", e))?
     } else {
         HubGenesis::devnet()
     };
+    let (epoch_info, shares) = hub_node::trusted_setup(seed, participants.iter().cloned())
+        .map_err(crate::cli::anyhow_to_eyre)?;
+    genesis.epoch_info = Some(hub_node::epoch_info_hex(&epoch_info));
     let genesis_json = serde_json::to_string_pretty(&genesis)?;
 
-    for i in 0..n {
+    for (i, pk) in participants.iter().enumerate() {
         let node_dir = data_dir.join(format!("node{}", i));
         std::fs::write(node_dir.join("genesis.json"), &genesis_json)?;
+        let share = shares
+            .get_value(pk)
+            .cloned()
+            .ok_or_else(|| eyre::eyre!("dealer produced no share for node{i}"))?;
+        hub_node::FileSecretStore::load(node_dir.join("secrets.json"))
+            .map_err(crate::cli::anyhow_to_eyre)?
+            .put_initial_share(commonware_consensus::types::Epoch::zero(), share)
+            .map_err(crate::cli::anyhow_to_eyre)?;
     }
-    info!("Wrote genesis.json to all nodes");
+    info!("Wrote genesis.json and secrets.json to all nodes");
 
     // ── Phase 4: Write config.toml for each node ─────────────────────────────
 
@@ -219,8 +230,6 @@ pub(crate) fn run(chain_id: u64, data_dir: PathBuf, args: &TestnetArgs) -> eyre:
                 "--chain-id",
                 &chain_id.to_string(),
                 "validator",
-                "--seed",
-                &seed.to_string(),
                 "--peers",
                 peers_path.to_str().unwrap(),
                 "--rpc-port",
