@@ -417,6 +417,9 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         marshal.clone(),
         FixedEpocher::new(blocks_per_epoch),
     );
+    let skip_timeout = Duration::from_secs(5)
+        .max(certification_timeout.saturating_add(Duration::from_millis(1)))
+        .max(timeout_retry.saturating_add(Duration::from_millis(1)));
     let (orchestrator_actor, orchestrator_mailbox) = orchestrator::Actor::new(
         context.child("orchestrator"),
         orchestrator::Config {
@@ -439,7 +442,7 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
                 fetch_timeout: Duration::from_secs(2),
                 view_retention: ViewDelta::new(10),
                 skip: SkipPolicy::Enabled {
-                    timeout: Duration::from_secs(5),
+                    timeout: skip_timeout,
                     budget: SkipBudget::Participants,
                 },
                 forward: ForwardPolicy::Disabled,

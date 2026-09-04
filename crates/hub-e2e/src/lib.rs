@@ -7,8 +7,8 @@ use std::time::Duration;
 
 pub use hub_harness::{cluster, contracts, fault, observe, resolve_binary};
 
-/// Receipt polling tuned for CI clusters, where forwarding to the current leader
-/// can take multiple block intervals before the receipt becomes visible.
+/// Receipt polling tuned for CI clusters, where all-validator gossip can take
+/// multiple block intervals before the receipt becomes visible.
 pub const RECEIPT_POLL_INTERVAL: Duration = Duration::from_millis(300);
 /// Maximum number of receipt polls before an e2e test gives up on a transaction.
 pub const RECEIPT_POLL_ATTEMPTS: u32 = 400;

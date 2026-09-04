@@ -358,9 +358,8 @@ fn print_config_summary(
     for (i, rpc_port) in rpc_ports.iter().enumerate() {
         let node_dir = data_dir.join(format!("node{}", i));
         println!(
-            "    hubd --config {}/config.toml validator --seed {} --peers {} --rpc-port {}",
+            "    hubd --config {}/config.toml validator --peers {} --rpc-port {}",
             node_dir.display(),
-            seed,
             peers_path.display(),
             rpc_port,
         );
