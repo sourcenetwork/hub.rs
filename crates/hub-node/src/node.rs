@@ -18,11 +18,10 @@ use commonware_consensus::{
     simplex::{
         SkipBudget,
         config::{ForwardPolicy, SkipPolicy},
-        elector::RoundRobin,
     },
-    types::{Epoch, FixedEpocher, ViewDelta},
+    types::{Epoch, FixedEpocher, Height, ViewDelta},
 };
-use commonware_cryptography::{Signer as _, sha256::Sha256};
+use commonware_cryptography::Signer as _;
 use commonware_glue::{
     dkg::{
         SecretStore as _,
@@ -44,9 +43,9 @@ use commonware_utils::{NZDuration, NZU64, NZUsize, sequence::Unit};
 use hub_app::{ConsensusScheme, StatefulHubApp, apply_genesis, genesis_block};
 use hub_backend::{HubStateSet, state_set_config};
 use hub_consensus::components::InMemoryMempool;
-use hub_domain::Block;
+use hub_domain::{Block, EpochMaterial};
 use hub_executor::{ExecutionConfig, HubExecutor, MempoolValidator, ModuleTrees};
-use hub_indexer::{BlockIndex, LightBlockIndex};
+use hub_indexer::{BlockIndex, LightBlockIndex, StoredEpochMaterial};
 use hub_jsonrpc::{IndexedStateProvider, NodeState, RpcServer, TxSubmitCallback};
 use hub_modules::{ModuleState, kv_store::InMemoryKvStore};
 use hub_state::ModuleStateTree;
@@ -58,8 +57,8 @@ use crate::{
     MAX_BLOCK_TXS, MAX_MESSAGE_SIZE, MAX_PARTICIPANTS, MAX_SUPPORTED_MODE, MAX_TX_BYTES,
     MEMPOOL_CHANNEL, MESSAGE_RATE, NAMESPACE, NoSync, NodeSettings, P2P_SUFFIX, PAGE_CACHE_SIZE,
     PAGE_SIZE, RESOLVER_CHANNEL, REVEAL, Registrar, RegistryParticipants, SHARING_MODE, TxGossip,
-    VOTE_CHANNEL,
-    sink::{NodeSink, SinkParts},
+    VOTE_CHANNEL, VrfElectorConfig,
+    sink::{FinalizationArtifacts, FinalizationLookup, NodeSink, SinkParts},
     spawn_tx_receiver,
     tx_gossip::SharedValidator,
 };
@@ -322,6 +321,16 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     let mempool = InMemoryMempool::default();
     let block_index = Arc::new(BlockIndex::new());
     let light_block_index = Arc::new(LightBlockIndex::new());
+    let initial_material = EpochMaterial::new(
+        epoch_info.output.players().clone(),
+        epoch_info.output.public().clone(),
+    );
+    light_block_index.insert_epoch_material(
+        epoch_info.epoch.get(),
+        StoredEpochMaterial {
+            bytes: initial_material.encode().into(),
+        },
+    );
     let node_state = NodeState::new(
         chain_id,
         validator_index as u32,
@@ -332,13 +341,33 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     let (headers_tx, _) = ::tokio::sync::broadcast::channel(64);
 
     let validator: SharedValidator = Arc::new(OnceLock::new());
+    let finalization_marshal = marshal.clone();
+    let finalization_lookup: FinalizationLookup = Arc::new(move |height| {
+        let marshal = finalization_marshal.clone();
+        Box::pin(async move {
+            // The stateful finalization callback is normally downstream of the
+            // marshal write. A short retry also covers scheduler reordering.
+            for _ in 0..100 {
+                if let Some(finalization) = marshal.get_finalization(Height::new(height)).await {
+                    return Some(FinalizationArtifacts {
+                        epoch: finalization.proposal.round.epoch().get(),
+                        certificate: finalization.certificate.encode().to_vec(),
+                        finalization: finalization.encode().to_vec(),
+                    });
+                }
+                ::tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            None
+        })
+    });
     let sink = NodeSink::new(SinkParts {
         index: block_index.clone(),
+        light_index: light_block_index.clone(),
         heads: heads_tx.clone(),
         logs: logs_tx.clone(),
         headers: headers_tx.clone(),
         node_state: node_state.clone(),
-        signing_key: signing_key.clone(),
+        finalization_lookup,
         chain_id,
         publisher_index: validator_index as u32,
         gas_limit,
@@ -361,6 +390,7 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         gas_limit,
     )
     .with_participant_addresses(participant_addresses);
+    let vrf_elector = VrfElectorConfig::new(application.vrf_seed_cache());
 
     let (stateful_actor, stateful_mailbox) = Stateful::init(
         context.child("stateful"),
@@ -397,7 +427,7 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
             application: deferred,
             strategy: Sequential,
             simplex: orchestrator::SimplexConfig {
-                elector: RoundRobin::<Sha256>::default(),
+                elector: vrf_elector,
                 mailbox_size: NZUsize!(3),
                 replay_buffer: IO_BUFFER_SIZE,
                 write_buffer: IO_BUFFER_SIZE,

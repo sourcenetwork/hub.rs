@@ -5,7 +5,7 @@ use std::sync::Arc;
 use alloy_primitives::{B256, Bytes, U64};
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 
-use commonware_cryptography::{Hasher as _, Sha256};
+use commonware_cryptography::Hasher as _;
 use hub_domain::{LightBlock, ModuleId, ModuleStateProof};
 use hub_executor::{ModuleTrees, SharedModuleState};
 use hub_indexer::{BlockIndex, LightBlockIndex};
@@ -59,7 +59,7 @@ pub trait HubApi {
 
     /// Returns a self-contained light block at the given height.
     ///
-    /// Includes the block header, finalization certificate, and validator set —
+    /// Includes the canonical block, aggregate finalization, and epoch verifier material —
     /// everything needed to verify the block's authenticity via
     /// `hub_domain::verify_light_block`.
     #[method(name = "getLightBlock")]
@@ -305,35 +305,26 @@ impl HubApiServer for HubApiImpl {
             .get_block_by_number(height_val)
             .ok_or_else(|| RpcError::Internal(format!("block not found at height {height_val}")))?;
 
-        let consensus_digest = Sha256::hash(&[block.hash.as_slice()]).0;
+        let digest = commonware_cryptography::Sha256::hash(&[block.hash.as_slice()]).0;
+        let finalization = light_index.get_finalization(&digest).ok_or_else(|| {
+            RpcError::Internal(format!(
+                "finalization certificate not found for height {height_val}"
+            ))
+        })?;
 
-        let cert = light_index
-            .get_certificate(&consensus_digest)
+        let material = light_index
+            .get_epoch_material(finalization.epoch)
             .ok_or_else(|| {
                 RpcError::Internal(format!(
-                    "finalization certificate not found for height {height_val}"
+                    "epoch material not found for epoch {}",
+                    finalization.epoch
                 ))
             })?;
 
-        let validators = light_index.get_validators(cert.epoch).ok_or_else(|| {
-            RpcError::Internal(format!("validator set not found for epoch {}", cert.epoch))
-        })?;
-
-        Ok(LightBlock::from_parts(
-            block.hash,
-            block.parent_hash,
-            block.number,
-            block.timestamp,
-            block.state_root,
-            block.module_state_root,
-            cert.epoch,
-            cert.view,
-            cert.parent_view,
-            cert.payload,
-            cert.signer_indices,
-            cert.signatures,
-            validators.pubkeys,
-        ))
+        LightBlock::from_encoded_block(&finalization.block, &finalization.bytes, &material.bytes)
+            .map_err(|error| {
+                RpcError::Internal(format!("light block assembly failed: {error}")).into()
+            })
     }
 }
 

@@ -5,12 +5,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::Block;
 
-/// Ed25519 signature length (bytes).
-const SIGNATURE_LEN: usize = 64;
+/// BLS threshold finalization certificate length (bytes).
+const SIGNATURE_LEN: usize = 96;
 
 /// Wire format size of a gossip header (bytes).
 ///
-/// Layout: 8 + 8 + 32 + 32 + 8 + 32 + 32 + 4 + 4 + 64 = 224
+/// Layout: 8 + 8 + 32 + 32 + 8 + 32 + 32 + 4 + 4 + 96 = 256
 pub const GOSSIP_HEADER_SIZE: usize = 160 + SIGNATURE_LEN;
 
 /// Signed finalized block header published to gossip subscribers.
@@ -38,12 +38,12 @@ pub struct GossipHeader {
     pub tx_count: u32,
     /// Validator index that published this header.
     pub publisher_index: u32,
-    /// Ed25519 signature over the header fields (64 bytes when signed, empty when unsigned).
+    /// BLS threshold finalization certificate (96 bytes when finalized, empty before then).
     pub signature: Vec<u8>,
 }
 
 impl GossipHeader {
-    /// Construct from a finalized block (unsigned — call `set_signature` after signing).
+    /// Construct from a finalized block (without a certificate — call `set_signature` after).
     pub fn from_block(block: &Block, chain_id: u64, publisher_index: u32) -> Self {
         Self {
             chain_id,
@@ -93,7 +93,7 @@ impl GossipHeader {
         data
     }
 
-    /// Set the signature bytes (must be exactly 64 bytes for ed25519).
+    /// Set the BLS threshold finalization certificate bytes (exactly 96 bytes).
     pub fn set_signature(&mut self, sig: &[u8]) {
         self.signature = sig.to_vec();
     }
@@ -203,7 +203,7 @@ mod tests {
         let block = sample_block();
         let mut header = GossipHeader::from_block(&block, 1337, 0);
         let data1 = header.signing_data();
-        header.set_signature(&[0xFF; 64]);
+        header.set_signature(&[0xFF; 96]);
         let data2 = header.signing_data();
         assert_eq!(data1, data2);
     }
@@ -219,7 +219,7 @@ mod tests {
     fn encode_decode_roundtrip() {
         let block = sample_block();
         let mut header = GossipHeader::from_block(&block, 1337, 2);
-        header.set_signature(&[0xAA; 64]);
+        header.set_signature(&[0xAA; 96]);
 
         let encoded = header.encode_wire();
         assert_eq!(encoded.len(), GOSSIP_HEADER_SIZE);

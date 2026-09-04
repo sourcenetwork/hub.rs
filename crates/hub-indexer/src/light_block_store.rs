@@ -1,77 +1,66 @@
-//! In-memory store for finalization certificates and validator sets.
+//! In-memory index of the public Commonware artifacts needed by light clients.
 
 use std::collections::HashMap;
 
 use parking_lot::RwLock;
 
-/// A stored finalization certificate from Simplex consensus.
-#[derive(Debug, Clone)]
-pub struct StoredCertificate {
+/// An encoded Simplex finalization and the epoch whose key verifies it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredFinalization {
     /// Consensus epoch.
     pub epoch: u64,
-    /// View in which the proposal was finalized.
-    pub view: u64,
-    /// View of the parent proposal.
-    pub parent_view: u64,
-    /// Payload digest (SHA-256 of the block hash).
-    pub payload: [u8; 32],
-    /// Indices of the validators that signed.
-    pub signer_indices: Vec<u32>,
-    /// Raw ed25519 signatures (64 bytes each), ordered by signer index.
-    pub signatures: Vec<[u8; 64]>,
+    /// Canonical `Finalization<ConsensusScheme, ConsensusDigest>` bytes.
+    pub bytes: Vec<u8>,
+    /// Canonical Hub block bytes authenticated by this finalization.
+    pub block: Vec<u8>,
 }
 
-/// An ordered set of ed25519 validator public keys for an epoch.
-#[derive(Debug, Clone)]
-pub struct StoredValidatorSet {
-    /// Ordered ed25519 public keys (32 bytes each).
-    pub pubkeys: Vec<[u8; 32]>,
+/// Canonical public verifier material for one DKG epoch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredEpochMaterial {
+    /// Canonical `EpochMaterial<MinSig>` bytes.
+    pub bytes: Vec<u8>,
 }
 
-/// In-memory index of finalization certificates and validator sets.
+/// In-memory index of finalizations and their epoch verifier material.
 ///
-/// Certificates are keyed by consensus digest (the SHA-256 of the block hash).
-/// Validator sets are keyed by epoch number.
-#[derive(Debug)]
+/// Finalizations are keyed by consensus digest (SHA-256 of the EVM block ID),
+/// while verifier material is keyed by epoch. Both artifacts are public and
+/// can be reconstructed from marshal storage and finalized epoch-boundary
+/// blocks after restart.
+#[derive(Debug, Default)]
 pub struct LightBlockIndex {
-    certificates: RwLock<HashMap<[u8; 32], StoredCertificate>>,
-    validators: RwLock<HashMap<u64, StoredValidatorSet>>,
-}
-
-impl Default for LightBlockIndex {
-    fn default() -> Self {
-        Self::new()
-    }
+    finalizations: RwLock<HashMap<[u8; 32], StoredFinalization>>,
+    epoch_material: RwLock<HashMap<u64, StoredEpochMaterial>>,
 }
 
 impl LightBlockIndex {
-    /// Create a new empty light block index.
+    /// Create an empty light-block artifact index.
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            certificates: RwLock::new(HashMap::new()),
-            validators: RwLock::new(HashMap::new()),
-        }
+        Self::default()
     }
 
-    /// Store a finalization certificate keyed by consensus digest.
-    pub fn insert_certificate(&self, digest: [u8; 32], cert: StoredCertificate) {
-        self.certificates.write().insert(digest, cert);
+    /// Store an encoded finalization keyed by its proposal payload digest.
+    pub fn insert_finalization(&self, digest: [u8; 32], finalization: StoredFinalization) {
+        self.finalizations.write().insert(digest, finalization);
     }
 
-    /// Retrieve a finalization certificate by consensus digest.
-    pub fn get_certificate(&self, digest: &[u8; 32]) -> Option<StoredCertificate> {
-        self.certificates.read().get(digest).cloned()
+    /// Retrieve an encoded finalization by proposal payload digest.
+    #[must_use]
+    pub fn get_finalization(&self, digest: &[u8; 32]) -> Option<StoredFinalization> {
+        self.finalizations.read().get(digest).cloned()
     }
 
-    /// Store a validator set for the given epoch.
-    pub fn insert_validators(&self, epoch: u64, validators: StoredValidatorSet) {
-        self.validators.write().insert(epoch, validators);
+    /// Store public verifier material for an epoch.
+    pub fn insert_epoch_material(&self, epoch: u64, material: StoredEpochMaterial) {
+        self.epoch_material.write().insert(epoch, material);
     }
 
-    /// Retrieve the validator set for the given epoch.
-    pub fn get_validators(&self, epoch: u64) -> Option<StoredValidatorSet> {
-        self.validators.read().get(&epoch).cloned()
+    /// Retrieve public verifier material for an epoch.
+    #[must_use]
+    pub fn get_epoch_material(&self, epoch: u64) -> Option<StoredEpochMaterial> {
+        self.epoch_material.read().get(&epoch).cloned()
     }
 }
 
@@ -80,47 +69,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn insert_and_get_certificate() {
+    fn insert_and_get_finalization() {
         let index = LightBlockIndex::new();
         let digest = [0xAA; 32];
-        let cert = StoredCertificate {
-            epoch: 0,
-            view: 1,
-            parent_view: 0,
-            payload: digest,
-            signer_indices: vec![0, 1, 2],
-            signatures: vec![[0x11; 64], [0x22; 64], [0x33; 64]],
+        let finalization = StoredFinalization {
+            epoch: 7,
+            bytes: vec![0x11; 131],
+            block: vec![0x33; 256],
         };
 
-        index.insert_certificate(digest, cert.clone());
-        let retrieved = index.get_certificate(&digest).unwrap();
-        assert_eq!(retrieved.epoch, 0);
-        assert_eq!(retrieved.view, 1);
-        assert_eq!(retrieved.signer_indices, vec![0, 1, 2]);
+        index.insert_finalization(digest, finalization.clone());
+        assert_eq!(index.get_finalization(&digest), Some(finalization));
     }
 
     #[test]
-    fn missing_certificate_returns_none() {
-        let index = LightBlockIndex::new();
-        assert!(index.get_certificate(&[0xFF; 32]).is_none());
+    fn missing_finalization_returns_none() {
+        assert!(
+            LightBlockIndex::new()
+                .get_finalization(&[0xFF; 32])
+                .is_none()
+        );
     }
 
     #[test]
-    fn insert_and_get_validators() {
+    fn insert_and_get_epoch_material() {
         let index = LightBlockIndex::new();
-        let vs = StoredValidatorSet {
-            pubkeys: vec![[0x01; 32], [0x02; 32], [0x03; 32], [0x04; 32]],
+        let material = StoredEpochMaterial {
+            bytes: vec![0x22; 423],
         };
 
-        index.insert_validators(0, vs.clone());
-        let retrieved = index.get_validators(0).unwrap();
-        assert_eq!(retrieved.pubkeys.len(), 4);
-        assert_eq!(retrieved.pubkeys[0], [0x01; 32]);
+        index.insert_epoch_material(3, material.clone());
+        assert_eq!(index.get_epoch_material(3), Some(material));
     }
 
     #[test]
-    fn missing_validators_returns_none() {
-        let index = LightBlockIndex::new();
-        assert!(index.get_validators(99).is_none());
+    fn missing_epoch_material_returns_none() {
+        assert!(LightBlockIndex::new().get_epoch_material(99).is_none());
     }
 }

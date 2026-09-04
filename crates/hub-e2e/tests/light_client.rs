@@ -108,6 +108,18 @@ async fn light_client_proof_verification() {
         .expect("should reach height 3");
 
     let client = HubClient::new(cluster.node(0).rpc_url());
+    let latest: serde_json::Value = client
+        .rpc_call_typed("eth_getBlockByNumber", serde_json::json!(["latest", false]))
+        .await
+        .expect("latest block should be readable");
+    let mix_hash = latest["mixHash"]
+        .as_str()
+        .expect("latest block should expose prevrandao");
+    assert_ne!(
+        mix_hash,
+        format!("0x{}", "00".repeat(32)),
+        "post-genesis prevrandao must come from the threshold VRF seed"
+    );
     let evm_signer = EvmSigner::from_hex(HARDHAT_KEY_0, chain_id).expect("valid signer");
     let evm_did = evm_signer.did();
 

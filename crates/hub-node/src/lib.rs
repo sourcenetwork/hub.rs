@@ -36,7 +36,10 @@ mod secret_store;
 pub use secret_store::FileSecretStore;
 
 mod sink;
-pub use sink::{NodeSink, SinkParts};
+pub use sink::{FinalizationArtifacts, FinalizationLookup, NodeSink, SinkParts};
 
 mod tx_gossip;
 pub use tx_gossip::{SharedValidator, TxGossip, spawn_tx_receiver};
+
+mod vrf_elector;
+use vrf_elector::VrfElectorConfig;

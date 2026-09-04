@@ -1,14 +1,20 @@
 //! Node-side handling of proposals and finalized blocks: indexing,
 //! subscriptions, gossip headers, node status, and mempool recheck.
 
-use std::sync::{Arc, OnceLock};
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::{Arc, OnceLock},
+};
 
-use commonware_cryptography::{Signer as _, ed25519};
+use commonware_codec::Encode as _;
+use commonware_cryptography::Digestible as _;
+use commonware_glue::dkg::types::Payload;
 use hub_app::FinalizedSink;
 use hub_consensus::components::InMemoryMempool;
-use hub_domain::{Block, GossipHeader};
+use hub_domain::{Block, EpochMaterial, GossipHeader};
 use hub_executor::{ExecutionReceipt, HubExecutor};
-use hub_indexer::BlockIndex;
+use hub_indexer::{BlockIndex, LightBlockIndex, StoredEpochMaterial, StoredFinalization};
 use hub_jsonrpc::{NodeState, RpcBlock, RpcLog};
 use tokio::sync::broadcast;
 use tracing::trace;
@@ -21,18 +27,34 @@ use crate::{
     tx_gossip::{SharedValidator, recheck},
 };
 
-/// Ed25519 namespace for gossip header signatures.
-const GOSSIP_NAMESPACE: &[u8] = b"sourcehub/headers/v1";
+/// Encoded finalization artifacts fetched from marshal after a block commits.
+#[derive(Clone, Debug)]
+pub struct FinalizationArtifacts {
+    /// Epoch whose public material verifies the certificate.
+    pub epoch: u64,
+    /// Canonical full finalization bytes served to light clients.
+    pub finalization: Vec<u8>,
+    /// Canonical recovered certificate bytes gossiped with the header.
+    pub certificate: Vec<u8>,
+}
+
+/// Async lookup for the finalization marshal persisted at a block height.
+pub type FinalizationLookup = Arc<
+    dyn Fn(u64) -> Pin<Box<dyn Future<Output = Option<FinalizationArtifacts>> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// Everything the node does with a finalized block once its state is readable.
 #[derive(Clone)]
 pub struct NodeSink {
     index: Arc<BlockIndex>,
+    light_index: Arc<LightBlockIndex>,
     heads: broadcast::Sender<RpcBlock>,
     logs: broadcast::Sender<Vec<RpcLog>>,
     headers: broadcast::Sender<GossipHeader>,
     node_state: NodeState,
-    signing_key: ed25519::PrivateKey,
+    finalization_lookup: FinalizationLookup,
     chain_id: u64,
     publisher_index: u32,
     gas_limit: u64,
@@ -52,6 +74,8 @@ impl std::fmt::Debug for NodeSink {
 pub struct SinkParts {
     /// Block, transaction, and receipt index served over RPC.
     pub index: Arc<BlockIndex>,
+    /// Public consensus artifacts served to light clients.
+    pub light_index: Arc<LightBlockIndex>,
     /// `newHeads` subscribers.
     pub heads: broadcast::Sender<RpcBlock>,
     /// `logs` subscribers.
@@ -60,8 +84,8 @@ pub struct SinkParts {
     pub headers: broadcast::Sender<GossipHeader>,
     /// Node status counters.
     pub node_state: NodeState,
-    /// Key that signs gossip headers.
-    pub signing_key: ed25519::PrivateKey,
+    /// Retrieves marshal's canonical finalization for a committed height.
+    pub finalization_lookup: FinalizationLookup,
     /// Chain id stamped on gossip headers.
     pub chain_id: u64,
     /// This node's index in the validator set.
@@ -87,11 +111,12 @@ impl NodeSink {
     pub fn new(parts: SinkParts) -> Self {
         Self {
             index: parts.index,
+            light_index: parts.light_index,
             heads: parts.heads,
             logs: parts.logs,
             headers: parts.headers,
             node_state: parts.node_state,
-            signing_key: parts.signing_key,
+            finalization_lookup: parts.finalization_lookup,
             chain_id: parts.chain_id,
             publisher_index: parts.publisher_index,
             gas_limit: parts.gas_limit,
@@ -127,14 +152,44 @@ impl FinalizedSink for NodeSink {
         if !rpc_logs.is_empty() && self.logs.send(rpc_logs).is_err() {
             trace!(height = block.height, "no logs subscribers");
         }
-        let mut header = GossipHeader::from_block(block, self.chain_id, self.publisher_index);
-        let signature = self
-            .signing_key
-            .sign(GOSSIP_NAMESPACE, &header.signing_data());
-        header.set_signature(signature.as_ref());
-        if self.headers.send(header).is_err() {
-            trace!(height = block.height, "no headers subscribers");
+        if let Some(Payload::EpochInfo(info)) = &block.payload {
+            let material =
+                EpochMaterial::new(info.output.players().clone(), info.output.public().clone());
+            self.light_index.insert_epoch_material(
+                info.epoch.get(),
+                StoredEpochMaterial {
+                    bytes: material.encode().into(),
+                },
+            );
         }
+        // Marshal invokes reporters while processing this finalization, so it
+        // cannot answer its own mailbox until the callback returns. Finish the
+        // lookup, indexing, and header publication in a detached task.
+        let mut header = GossipHeader::from_block(block, self.chain_id, self.publisher_index);
+        let height = block.height;
+        let digest = block.digest().0;
+        let block_bytes = block.encode().to_vec();
+        let lookup = self.finalization_lookup.clone();
+        let light_index = self.light_index.clone();
+        let headers = self.headers.clone();
+        ::tokio::spawn(async move {
+            if let Some(artifacts) = lookup(height).await {
+                header.set_signature(&artifacts.certificate);
+                light_index.insert_finalization(
+                    digest,
+                    StoredFinalization {
+                        epoch: artifacts.epoch,
+                        bytes: artifacts.finalization,
+                        block: block_bytes,
+                    },
+                );
+                if headers.send(header).is_err() {
+                    trace!(height, "no headers subscribers");
+                }
+            } else {
+                tracing::warn!(height, "finalization unavailable from marshal");
+            }
+        });
 
         let Some(set) = self.state.get() else {
             return;

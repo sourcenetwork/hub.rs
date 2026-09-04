@@ -78,7 +78,7 @@ async fn gossip_headers_subscription() {
     let sig = header["signature"]
         .as_array()
         .expect("signature should be an array");
-    assert_eq!(sig.len(), 64, "signature should be 64 bytes");
+    assert_eq!(sig.len(), 96, "BLS certificate should be 96 bytes");
     assert!(
         sig.iter().any(|b| b.as_u64() != Some(0)),
         "signature should not be all zeros"

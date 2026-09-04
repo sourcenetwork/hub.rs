@@ -1,14 +1,15 @@
 //! The glue stateful application.
 
 use std::{
-    collections::BTreeSet,
-    sync::Arc,
+    collections::{BTreeSet, HashMap},
+    sync::{Arc, RwLock},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use alloy_consensus::Header;
 use alloy_primitives::{Address, B256};
 use commonware_consensus::marshal::ancestry::Ancestry;
+use commonware_consensus::types::Round;
 use commonware_cryptography::Digestible as _;
 use commonware_glue::stateful::{Application, Input, Proposed, db::DatabaseSet};
 use futures::StreamExt as _;
@@ -25,6 +26,34 @@ use crate::{
 const MAX_CLOCK_DRIFT_SECS: u64 = 15;
 const MAX_PENDING_ANCESTORS: usize = 64;
 
+/// VRF randomness recovered by consensus while it unlocks each proposal round.
+///
+/// Simplex keeps the unlocking certificate outside the application context, so
+/// the node's elector records its canonical threshold seed here before asking
+/// the application to build or verify the round's block.
+#[derive(Clone, Debug, Default)]
+pub struct VrfSeedCache(Arc<RwLock<HashMap<Round, B256>>>);
+
+impl VrfSeedCache {
+    /// Record the 32-byte EVM randomness derived from a round's unlocking VRF seed.
+    pub fn insert(&self, round: Round, prevrandao: B256) {
+        self.0
+            .write()
+            .expect("VRF seed cache lock poisoned")
+            .insert(round, prevrandao);
+    }
+
+    /// Return the randomness that must be committed by a block in `round`.
+    #[must_use]
+    pub fn get(&self, round: Round) -> Option<B256> {
+        self.0
+            .read()
+            .expect("VRF seed cache lock poisoned")
+            .get(&round)
+            .copied()
+    }
+}
+
 /// Hub block production and verification on top of glue-managed state.
 #[derive(Clone)]
 pub struct StatefulHubApp<S: FinalizedSink> {
@@ -35,6 +64,7 @@ pub struct StatefulHubApp<S: FinalizedSink> {
     max_txs: usize,
     gas_limit: u64,
     participant_addresses: Arc<Vec<(PublicKey, Address)>>,
+    vrf_seeds: VrfSeedCache,
 }
 
 impl<S: FinalizedSink> std::fmt::Debug for StatefulHubApp<S> {
@@ -65,6 +95,7 @@ impl<S: FinalizedSink> StatefulHubApp<S> {
             max_txs,
             gas_limit,
             participant_addresses: Arc::new(Vec::new()),
+            vrf_seeds: VrfSeedCache::default(),
         }
     }
 
@@ -73,6 +104,20 @@ impl<S: FinalizedSink> StatefulHubApp<S> {
     pub fn with_participant_addresses(mut self, addrs: Vec<(PublicKey, Address)>) -> Self {
         self.participant_addresses = Arc::new(addrs);
         self
+    }
+
+    /// Shared cache populated by the node's VRF-aware consensus elector.
+    #[must_use]
+    pub fn vrf_seed_cache(&self) -> VrfSeedCache {
+        self.vrf_seeds.clone()
+    }
+
+    fn round_prevrandao(&self, round: Round) -> Option<B256> {
+        if round.view().get() <= 1 {
+            Some(B256::ZERO)
+        } else {
+            self.vrf_seeds.get(round)
+        }
     }
 
     fn beneficiary_for(&self, leader: &PublicKey) -> Address {
@@ -190,7 +235,13 @@ impl<S: FinalizedSink> Application<Ctx> for StatefulHubApp<S> {
         self.chain_modules_from(parent.id());
         let height = parent.height + 1;
         let timestamp = now_secs().max(parent.timestamp);
-        let prevrandao = B256::ZERO;
+        let prevrandao = match self.round_prevrandao(consensus_context.round) {
+            Some(seed) => seed,
+            None => {
+                warn!(round = ?consensus_context.round, "missing parent VRF seed");
+                return None;
+            }
+        };
         let block_context =
             self.block_context(height, timestamp, prevrandao, &consensus_context.leader);
         let exec_start = Instant::now();
@@ -238,7 +289,7 @@ impl<S: FinalizedSink> Application<Ctx> for StatefulHubApp<S> {
 
     async fn verify(
         &mut self,
-        _context: (Ctx, Self::Context),
+        context: (Ctx, Self::Context),
         mut ancestry: impl Ancestry<Self::Block>,
         batches: HubUnmerkleized,
     ) -> Option<HubMerkleized> {
@@ -246,6 +297,26 @@ impl<S: FinalizedSink> Application<Ctx> for StatefulHubApp<S> {
         let block = ancestry.next().await?;
         let parent = ancestry.next().await?;
         let digest = block.digest();
+        if block.context != context.1 {
+            warn!(?digest, "block consensus context mismatch");
+            return None;
+        }
+        let expected_prevrandao = match self.round_prevrandao(context.1.round) {
+            Some(seed) => seed,
+            None => {
+                warn!(round = ?context.1.round, "missing parent VRF seed");
+                return None;
+            }
+        };
+        if block.prevrandao != expected_prevrandao {
+            warn!(
+                ?digest,
+                expected = ?expected_prevrandao,
+                actual = ?block.prevrandao,
+                "block prevrandao does not match parent VRF seed"
+            );
+            return None;
+        }
         if block.timestamp < parent.timestamp {
             warn!(
                 ?digest,

@@ -9,7 +9,7 @@
 #![recursion_limit = "256"]
 
 mod app;
-pub use app::StatefulHubApp;
+pub use app::{StatefulHubApp, VrfSeedCache};
 
 mod error;
 pub use error::AppError;
