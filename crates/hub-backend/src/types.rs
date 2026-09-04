@@ -3,16 +3,9 @@
 use alloy_primitives::U256;
 use bytes::{Buf, BufMut};
 use commonware_codec::{EncodeSize, Error as CodecError, Read, Write};
-use commonware_cryptography::sha256::Sha256 as QmdbHasher;
-use commonware_parallel::Sequential;
-use commonware_runtime::tokio;
-use commonware_storage::{merkle::mmr::Family as MmrFamily, qmdb::any, translator::EightCap};
 use commonware_utils::sequence::FixedBytes;
 use hub_qmdb::AccountEncoding;
 
-use crate::BackendError;
-
-pub(crate) type Context = tokio::Context;
 /// 20-byte account key (the EVM address).
 pub type AccountKey = FixedBytes<20>;
 /// 60-byte storage key (address, generation, slot).
@@ -78,85 +71,6 @@ impl Read for StorageValue {
     }
 }
 
-pub(crate) type AccountDb = any::unordered::variable::Db<
-    MmrFamily,
-    Context,
-    AccountKey,
-    AccountValue,
-    QmdbHasher,
-    EightCap,
-    Sequential,
->;
-pub(crate) type StorageDb = any::unordered::variable::Db<
-    MmrFamily,
-    Context,
-    StorageKey,
-    StorageValue,
-    QmdbHasher,
-    EightCap,
-    Sequential,
->;
-pub(crate) type CodeDb = any::unordered::variable::Db<
-    MmrFamily,
-    Context,
-    CodeKey,
-    Vec<u8>,
-    QmdbHasher,
-    EightCap,
-    Sequential,
->;
-pub(crate) type AccountDbDirty = any::unordered::variable::Db<
-    MmrFamily,
-    Context,
-    AccountKey,
-    AccountValue,
-    QmdbHasher,
-    EightCap,
-    Sequential,
->;
-pub(crate) type StorageDbDirty = any::unordered::variable::Db<
-    MmrFamily,
-    Context,
-    StorageKey,
-    StorageValue,
-    QmdbHasher,
-    EightCap,
-    Sequential,
->;
-pub(crate) type CodeDbDirty = any::unordered::variable::Db<
-    MmrFamily,
-    Context,
-    CodeKey,
-    Vec<u8>,
-    QmdbHasher,
-    EightCap,
-    Sequential,
->;
-
-pub(crate) struct StoreSlot<T>(Option<T>);
-
-impl<T> StoreSlot<T> {
-    pub(crate) const fn new(inner: T) -> Self {
-        Self(Some(inner))
-    }
-
-    pub(crate) fn get(&self) -> Result<&T, BackendError> {
-        self.0.as_ref().ok_or(BackendError::NotInitialized)
-    }
-
-    pub(crate) fn take(&mut self) -> Result<T, BackendError> {
-        self.0.take().ok_or(BackendError::NotInitialized)
-    }
-
-    pub(crate) fn restore(&mut self, inner: T) {
-        self.0 = Some(inner);
-    }
-
-    pub(crate) fn into_inner(self) -> Result<T, BackendError> {
-        self.0.ok_or(BackendError::NotInitialized)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use commonware_codec::{DecodeExt, Encode};
@@ -201,46 +115,5 @@ mod tests {
     fn test_storage_value_encode_size() {
         let value = StorageValue(U256::ZERO);
         assert_eq!(value.encode_size(), 32);
-    }
-
-    #[test]
-    fn test_store_slot_get_succeeds() {
-        let slot = StoreSlot::new(42);
-        assert_eq!(*slot.get().unwrap(), 42);
-    }
-
-    #[test]
-    fn test_store_slot_take_removes_value() {
-        let mut slot = StoreSlot::new(42);
-        assert_eq!(slot.take().unwrap(), 42);
-        assert!(slot.get().is_err());
-    }
-
-    #[test]
-    fn test_store_slot_take_twice_fails() {
-        let mut slot = StoreSlot::new(42);
-        slot.take().unwrap();
-        assert!(slot.take().is_err());
-    }
-
-    #[test]
-    fn test_store_slot_restore_after_take() {
-        let mut slot = StoreSlot::new(42);
-        slot.take().unwrap();
-        slot.restore(100);
-        assert_eq!(*slot.get().unwrap(), 100);
-    }
-
-    #[test]
-    fn test_store_slot_into_inner_succeeds() {
-        let slot = StoreSlot::new(42);
-        assert_eq!(slot.into_inner().unwrap(), 42);
-    }
-
-    #[test]
-    fn test_store_slot_into_inner_after_take_fails() {
-        let mut slot = StoreSlot::new(42);
-        slot.take().unwrap();
-        assert!(slot.into_inner().is_err());
     }
 }

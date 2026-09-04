@@ -3741,17 +3741,14 @@ name = "hub-backend"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
- "async-trait",
  "bytes",
  "commonware-codec",
  "commonware-cryptography",
  "commonware-glue",
- "commonware-macros",
  "commonware-parallel",
  "commonware-runtime",
  "commonware-storage",
  "commonware-utils",
- "hub-handlers",
  "hub-qmdb",
  "hub-traits",
  "tempfile",
@@ -3959,20 +3956,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hub-handlers"
-version = "0.1.0"
-dependencies = [
- "alloy-primitives",
- "async-trait",
- "futures",
- "hub-qmdb",
- "hub-traits",
- "revm",
- "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
 name = "hub-harness"
 version = "0.1.0"
 dependencies = [
@@ -3987,6 +3970,7 @@ dependencies = [
  "commonware-utils",
  "eyre",
  "hex",
+ "hub-node",
  "parking_lot",
  "rand 0.8.5",
  "regex",
@@ -4034,29 +4018,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hub-ledger"
-version = "0.1.0"
-dependencies = [
- "alloy-consensus",
- "alloy-evm",
- "alloy-primitives",
- "commonware-cryptography",
- "commonware-runtime",
- "commonware-utils",
- "futures",
- "hub-consensus",
- "hub-domain",
- "hub-executor",
- "hub-modules",
- "hub-overlay",
- "hub-qmdb-ledger",
- "hub-traits",
- "k256",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
 name = "hub-modules"
 version = "0.1.0"
 dependencies = [
@@ -4077,6 +4038,51 @@ dependencies = [
 ]
 
 [[package]]
+name = "hub-node"
+version = "0.1.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-primitives",
+ "anyhow",
+ "bytes",
+ "commonware-broadcast",
+ "commonware-codec",
+ "commonware-consensus",
+ "commonware-cryptography",
+ "commonware-glue",
+ "commonware-macros",
+ "commonware-p2p",
+ "commonware-parallel",
+ "commonware-runtime",
+ "commonware-storage",
+ "commonware-utils",
+ "futures",
+ "hex",
+ "hub-app",
+ "hub-backend",
+ "hub-config",
+ "hub-consensus",
+ "hub-crypto",
+ "hub-domain",
+ "hub-executor",
+ "hub-genesis",
+ "hub-indexer",
+ "hub-jsonrpc",
+ "hub-modules",
+ "hub-qmdb",
+ "hub-state",
+ "hub-traits",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "hub-overlay"
 version = "0.1.0"
 dependencies = [
@@ -4092,21 +4098,6 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "rstest",
- "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
-name = "hub-qmdb-ledger"
-version = "0.1.0"
-dependencies = [
- "alloy-primitives",
- "commonware-runtime",
- "hub-backend",
- "hub-domain",
- "hub-handlers",
- "hub-qmdb",
- "hub-traits",
  "thiserror 2.0.18",
  "tokio",
 ]
@@ -4137,11 +4128,14 @@ name = "hubd"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "anyhow",
  "ark-bls12-381 0.4.0",
  "ark-ff 0.4.2",
  "clap",
  "commonware-codec",
+ "commonware-consensus",
  "commonware-cryptography",
+ "commonware-runtime",
  "eyre",
  "hex",
  "hub-cli",
@@ -4149,6 +4143,7 @@ dependencies = [
  "hub-config",
  "hub-genesis",
  "hub-jsonrpc",
+ "hub-node",
  "k256",
  "rand 0.8.5",
  "reqwest 0.12.28",
@@ -6417,7 +6412,6 @@ dependencies = [
  "revm-state",
  "serde",
  "thiserror 2.0.18",
- "tokio",
 ]
 
 [[package]]

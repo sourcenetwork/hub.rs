@@ -58,16 +58,14 @@ hub-config = { path = "crates/hub-config" }
 hub-consensus = { path = "crates/hub-consensus" }
 hub-crypto = { path = "crates/hub-crypto" }
 hub-domain = { path = "crates/hub-domain" }
-hub-handlers = { path = "crates/hub-handlers" }
 hub-indexer = { path = "crates/hub-indexer" }
 hub-overlay = { path = "crates/hub-overlay" }
-hub-qmdb-ledger = { path = "crates/hub-qmdb-ledger" }
-hub-ledger = { path = "crates/hub-ledger" }
 hub-qmdb = { path = "crates/hub-qmdb" }
 hub-jsonrpc = { path = "crates/hub-jsonrpc" }
 hub-traits = { path = "crates/hub-traits" }
 
 hub-app = { path = "crates/hub-app" }
+hub-node = { path = "crates/hub-node" }
 hub-client = { path = "crates/hub-client" }
 hub-executor = { path = "crates/hub-executor" }
 hub-genesis = { path = "crates/hub-genesis" }

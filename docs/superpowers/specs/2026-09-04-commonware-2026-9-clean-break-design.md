@@ -95,7 +95,7 @@ e2e tests are green at PR 10.
 | 3 | `stack/03-commonware-2026-9` | Bump pins to 2026.9.0, add commonware-glue. Fix hub-domain, hub-backend, hub-config, hub-crypto, hub-jsonrpc, hub-indexer, hub-harness. | check, clippy, unit tests |
 | 4 | `stack/04-reshare-block` | `Block` implements `ReshareBlock`, canonical encoding tests, genesis `EpochInfo`. | unit tests |
 | 5 | `stack/05-stateful` | Additive: `HubStateSet` over the QMDB partitions, `BatchState` as the executor's `StateDb` over pending batches, per-partition `DbTargets` in the block, and the `hub-app` crate with the glue `Application` around `HubExecutor`. The old snapshot path stays until PR 6 switches the node over. | tokio-runtime tests |
-| 6 | `stack/06-hub-node` | New hub-node crate: full actor assembly, BLS threshold scheme, static participants from genesis, file secret store. `hubd validator` and `devnet` wired. `hubd genesis` runs bootstrap DKG. hub-harness updated. Deletes hub-overlay, hub-qmdb-ledger, the ledger snapshot store, and the old per-partition stores. | canonical e2e green |
+| 6 | `stack/06-hub-node` | New hub-node crate: full actor assembly, BLS threshold scheme, static participants from genesis, file secret store, tx forwarding to all validators. `hubd validator`, `devnet`, and `testnet` wired; the trusted-dealer bootstrap lives in hub-node and hub-harness reuses it. Deletes hub-ledger, hub-qmdb-ledger, hub-handlers, and the old per-partition stores. Peer state sync is stubbed (#99). | canonical e2e green |
 | 7 | `stack/07-registry-participants` | `RegistryParticipants`. Delete validator-change detection. `validator_epoch_transition` e2e rewritten to assert the engine actually enters the next epoch. Closes #75. | epoch e2e green |
 | 8 | `stack/08-vrf-light-blocks` | Prevrandao from VRF. `LightBlock`, `GossipHeader`, hub_api certificate endpoints on BLS. `light_client` and `gossip_headers` e2e updated. | those e2e green |
 | 9 | `stack/09-tx-forwarding` | Forward to all validators, delete leader prediction and view tracker. `node_restart` e2e green. | all e2e green |
@@ -138,7 +138,7 @@ the ERROR whitelist) is unchanged.
 
 ## Follow-up issues
 
-- State sync and fresh-node probe through glue.
+- State sync and fresh-node probe through glue (#99): glue's p2p resolver only serves fixed-value QMDB operations.
 - Stable-leader term length as a genesis parameter.
 - Minimum validator count enforced in the registry.
 - Light client cross-epoch verification on `EpochInfo` chains (#80).

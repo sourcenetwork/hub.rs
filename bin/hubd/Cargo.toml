@@ -16,6 +16,7 @@ hub-cli.workspace = true
 hub-client.workspace = true
 hub-config.workspace = true
 hub-jsonrpc.workspace = true
+hub-node.workspace = true
 
 alloy-primitives.workspace = true
 k256.workspace = true
@@ -23,8 +24,11 @@ ark-bls12-381.workspace = true
 ark-ff.workspace = true
 
 commonware-codec.workspace = true
+commonware-consensus.workspace = true
 commonware-cryptography.workspace = true
+commonware-runtime.workspace = true
 
+anyhow.workspace = true
 clap = { workspace = true, features = ["env"] }
 eyre.workspace = true
 hex.workspace = true

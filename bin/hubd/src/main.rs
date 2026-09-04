@@ -1,5 +1,7 @@
 //! hubd — SourceHub validator node.
 
+#![recursion_limit = "256"]
+
 use clap::Parser;
 use tracing_subscriber::prelude::*;
 
