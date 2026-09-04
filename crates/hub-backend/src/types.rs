@@ -13,12 +13,16 @@ use hub_qmdb::AccountEncoding;
 use crate::BackendError;
 
 pub(crate) type Context = tokio::Context;
-pub(crate) type AccountKey = FixedBytes<20>;
-pub(crate) type StorageKey = FixedBytes<60>;
-pub(crate) type CodeKey = FixedBytes<32>;
+/// 20-byte account key (the EVM address).
+pub type AccountKey = FixedBytes<20>;
+/// 60-byte storage key (address, generation, slot).
+pub type StorageKey = FixedBytes<60>;
+/// 32-byte code key (the code hash).
+pub type CodeKey = FixedBytes<32>;
 
 #[derive(Clone, Debug)]
-pub(crate) struct AccountValue(pub [u8; AccountEncoding::SIZE]);
+/// Fixed-size encoded account record.
+pub struct AccountValue(pub [u8; AccountEncoding::SIZE]);
 
 impl Write for AccountValue {
     fn write(&self, buf: &mut impl BufMut) {
@@ -46,7 +50,8 @@ impl Read for AccountValue {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct StorageValue(pub U256);
+/// Storage slot value.
+pub struct StorageValue(pub U256);
 
 impl Write for StorageValue {
     fn write(&self, buf: &mut impl BufMut) {

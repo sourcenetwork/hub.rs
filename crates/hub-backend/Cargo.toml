@@ -13,17 +13,21 @@ workspace = true
 [dependencies]
 hub-qmdb.workspace = true
 hub-handlers.workspace = true
+hub-traits.workspace = true
 
 alloy-primitives.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
 commonware-codec.workspace = true
 commonware-cryptography.workspace = true
+commonware-glue.workspace = true
 commonware-parallel.workspace = true
 commonware-runtime.workspace = true
 commonware-storage.workspace = true
 commonware-utils.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
+commonware-macros.workspace = true
 tempfile.workspace = true

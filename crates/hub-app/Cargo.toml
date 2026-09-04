@@ -1,0 +1,39 @@
+[package]
+name = "hub-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Glue stateful application around the hub block executor"
+
+[lints]
+workspace = true
+
+[dependencies]
+hub-backend.workspace = true
+hub-consensus.workspace = true
+hub-domain.workspace = true
+hub-executor.workspace = true
+hub-genesis.workspace = true
+hub-modules.workspace = true
+hub-qmdb.workspace = true
+
+commonware-consensus.workspace = true
+commonware-cryptography.workspace = true
+commonware-glue.workspace = true
+commonware-runtime.workspace = true
+commonware-storage.workspace = true
+commonware-utils.workspace = true
+
+alloy-consensus.workspace = true
+alloy-primitives.workspace = true
+futures.workspace = true
+parking_lot.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+hub-domain = { workspace = true, features = ["evm"] }
+alloy-primitives.workspace = true
+k256.workspace = true
+tempfile.workspace = true
+tokio.workspace = true

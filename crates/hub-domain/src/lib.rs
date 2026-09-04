@@ -13,6 +13,9 @@ pub use commitment::{AccountChange, StateChanges, StateChangesCfg};
 mod events;
 pub use events::{LedgerEvent, LedgerEvents};
 
+mod db_targets;
+pub use db_targets::{DbTarget, DbTargets};
+
 mod block;
 pub use block::{
     Block, BlockCfg, DKG_PAYLOAD_CFG, DkgDirectory, DkgPayload, DkgPayloadCfg, DkgSigner,

@@ -67,6 +67,7 @@ hub-qmdb = { path = "crates/hub-qmdb" }
 hub-jsonrpc = { path = "crates/hub-jsonrpc" }
 hub-traits = { path = "crates/hub-traits" }
 
+hub-app = { path = "crates/hub-app" }
 hub-client = { path = "crates/hub-client" }
 hub-executor = { path = "crates/hub-executor" }
 hub-genesis = { path = "crates/hub-genesis" }

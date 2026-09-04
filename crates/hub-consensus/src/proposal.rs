@@ -138,6 +138,7 @@ where
             module_state_root,
             txs,
             payload: None,
+            db_targets: hub_domain::DbTargets::default(),
         };
         let tx_ids = self.tx_ids_from_block(&block);
         let snapshot = Snapshot::new(
@@ -197,6 +198,7 @@ where
             module_state_root,
             txs,
             payload: None,
+            db_targets: hub_domain::DbTargets::default(),
         };
         let tx_ids = self.tx_ids_from_block(&block);
         let snapshot = Snapshot::new(
@@ -457,6 +459,7 @@ mod tests {
             module_state_root: B256::ZERO,
             txs: Vec::new(),
             payload: None,
+            db_targets: hub_domain::DbTargets::default(),
         }
     }
 
@@ -684,6 +687,7 @@ mod tests {
             module_state_root: B256::ZERO,
             txs: vec![tx.clone()],
             payload: None,
+            db_targets: hub_domain::DbTargets::default(),
         };
         let parent_digest = parent.commitment();
         let parent_snapshot = Snapshot::new(
