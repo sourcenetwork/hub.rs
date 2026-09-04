@@ -154,14 +154,7 @@ pub(crate) fn run(chain_id: u64, data_dir: PathBuf, args: &TestnetArgs) -> eyre:
     std::fs::write(&peers_path, serde_json::to_string_pretty(&peers_json)?)?;
     info!(path = %peers_path.display(), threshold, "Wrote peers.json");
 
-    // ── Phase 3: Generate ed25519 schemes ────────────────────────────────────
-
-    let (_ordered_participants, _schemes) = hub_runner::generate_ed25519_schemes(seed, n)
-        .map_err(|e| eyre::eyre!("Failed to generate ed25519 schemes: {}", e))?;
-
-    info!(seed, "Generated ed25519 schemes for {} nodes", n);
-
-    // ── Phase 4: Write genesis.json to each node ─────────────────────────────
+    // ── Phase 3: Write genesis.json to each node ─────────────────────────────
 
     let genesis = if let Some(ref path) = args.genesis {
         HubGenesis::load(path).map_err(|e| eyre::eyre!("Failed to load genesis: {}", e))?
@@ -176,7 +169,7 @@ pub(crate) fn run(chain_id: u64, data_dir: PathBuf, args: &TestnetArgs) -> eyre:
     }
     info!("Wrote genesis.json to all nodes");
 
-    // ── Phase 5: Write config.toml for each node ─────────────────────────────
+    // ── Phase 4: Write config.toml for each node ─────────────────────────────
 
     for i in 0..n {
         let node_dir = data_dir.join(format!("node{}", i));
@@ -208,7 +201,7 @@ pub(crate) fn run(chain_id: u64, data_dir: PathBuf, args: &TestnetArgs) -> eyre:
         return Ok(());
     }
 
-    // ── Phase 6: Spawn validator processes ───────────────────────────────────
+    // ── Phase 5: Spawn validator processes ───────────────────────────────────
 
     let binary = std::env::current_exe()?;
     let mut children: Vec<(usize, Child)> = Vec::with_capacity(n);

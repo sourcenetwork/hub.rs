@@ -153,7 +153,6 @@ impl Read for Block {
 mod tests {
     use alloy_primitives::Bytes;
     use commonware_codec::Decode;
-    use commonware_cryptography::Committable as _;
 
     use super::*;
 

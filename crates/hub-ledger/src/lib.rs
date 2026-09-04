@@ -12,8 +12,8 @@ use commonware_cryptography::Committable as _;
 use commonware_runtime::{Metrics as _, buffer::paged::CacheRef, tokio};
 use futures::{channel::mpsc::UnboundedReceiver, lock::Mutex};
 use hub_consensus::{
-    ConsensusError, Mempool as _, SeedTracker as _, Snapshot, SnapshotStore as _,
-    components::{InMemoryMempool, InMemorySeedTracker, InMemorySnapshotStore},
+    ConsensusError, Mempool as _, Snapshot, SnapshotStore as _,
+    components::{InMemoryMempool, InMemorySnapshotStore},
 };
 use hub_domain::{
     Block, BlockId, ConsensusDigest, LedgerEvent, LedgerEvents, NativeTx, StateRoot, Tx, TxId,
@@ -72,8 +72,6 @@ struct LedgerState {
     mempool: InMemoryMempool,
     /// Execution snapshots indexed by digest so we can replay ancestors.
     snapshots: InMemorySnapshotStore<OverlayState<QmdbState>>,
-    /// Cached seeds for each digest used to compute prevrandao.
-    seeds: InMemorySeedTracker,
     /// Underlying QMDB ledger service for persistence.
     qmdb: QmdbLedger,
     /// Mempool admission gate — validates txs before insertion.
@@ -154,7 +152,6 @@ impl LedgerView {
             inner: Arc::new(Mutex::new(LedgerState {
                 mempool: InMemoryMempool::new(),
                 snapshots,
-                seeds: InMemorySeedTracker::new(genesis_digest),
                 qmdb,
                 validator,
                 modules: None,
@@ -257,24 +254,6 @@ impl LedgerView {
             .snapshots
             .get(&digest)
             .map(|snapshot| snapshot.state_root)
-    }
-
-    /// Query the cached seed at the given digest.
-    pub async fn query_seed(&self, digest: ConsensusDigest) -> Option<B256> {
-        let inner = self.inner.lock().await;
-        inner.seeds.get(&digest)
-    }
-
-    /// Return the seed associated with a parent digest.
-    pub async fn seed_for_parent(&self, parent: ConsensusDigest) -> Option<B256> {
-        let inner = self.inner.lock().await;
-        inner.seeds.get(&parent)
-    }
-
-    /// Store the seed hash for a digest.
-    pub async fn set_seed(&self, digest: ConsensusDigest, seed_hash: B256) {
-        let inner = self.inner.lock().await;
-        inner.seeds.insert(digest, seed_hash);
     }
 
     /// Fetch the parent snapshot for a given digest.
@@ -469,22 +448,6 @@ impl LedgerService {
     /// Query the stored state root at the given digest.
     pub async fn query_state_root(&self, digest: ConsensusDigest) -> Option<StateRoot> {
         self.view.query_state_root(digest).await
-    }
-
-    /// Query the cached seed at the given digest.
-    pub async fn query_seed(&self, digest: ConsensusDigest) -> Option<B256> {
-        self.view.query_seed(digest).await
-    }
-
-    /// Query the seed for a parent digest.
-    pub async fn seed_for_parent(&self, parent: ConsensusDigest) -> Option<B256> {
-        self.view.seed_for_parent(parent).await
-    }
-
-    /// Store the seed for a digest and publish an event.
-    pub async fn set_seed(&self, digest: ConsensusDigest, seed_hash: B256) {
-        self.view.set_seed(digest, seed_hash).await;
-        self.publish(LedgerEvent::SeedUpdated(digest, seed_hash));
     }
 
     /// Fetch the snapshot of a parent digest.

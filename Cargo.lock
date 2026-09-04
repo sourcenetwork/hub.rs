@@ -3460,7 +3460,6 @@ dependencies = [
 name = "hub-config"
 version = "0.1.0"
 dependencies = [
- "alloy-primitives",
  "commonware-codec",
  "commonware-cryptography",
  "ed25519-consensus",
@@ -3497,21 +3496,15 @@ name = "hub-crypto"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
- "anyhow",
  "ark-bls12-381 0.4.0",
  "ark-ec 0.4.2",
  "ark-ff 0.4.2",
  "ark-serialize 0.4.2",
  "ark-std 0.4.0",
  "base64 0.22.1",
- "commonware-consensus",
- "commonware-cryptography",
- "commonware-utils",
  "hex",
- "hub-domain",
  "k256",
  "multibase",
- "rand 0.8.5",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -3609,7 +3602,6 @@ version = "0.1.0"
 dependencies = [
  "alloy-evm",
  "hex",
- "hub-domain",
  "serde",
  "serde_json",
  "tempfile",
@@ -3714,28 +3706,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hub-marshal"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "commonware-broadcast",
- "commonware-codec",
- "commonware-consensus",
- "commonware-cryptography",
- "commonware-macros",
- "commonware-p2p",
- "commonware-parallel",
- "commonware-resolver",
- "commonware-runtime",
- "commonware-storage",
- "commonware-utils",
- "rand 0.8.5",
- "rand_core 0.6.4",
- "tracing",
- "tracing-subscriber 0.3.22",
-]
-
-[[package]]
 name = "hub-modules"
 version = "0.1.0"
 dependencies = [
@@ -3791,102 +3761,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hub-reporters"
-version = "0.1.0"
-dependencies = [
- "alloy-consensus",
- "alloy-eips",
- "alloy-primitives",
- "alloy-sol-types",
- "commonware-codec",
- "commonware-consensus",
- "commonware-cryptography",
- "commonware-runtime",
- "commonware-utils",
- "hex",
- "hub-consensus",
- "hub-crypto",
- "hub-domain",
- "hub-executor",
- "hub-indexer",
- "hub-jsonrpc",
- "hub-ledger",
- "hub-modules",
- "hub-overlay",
- "hub-qmdb-ledger",
- "hub-traits",
- "k256",
- "serde_json",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "hub-runner"
-version = "0.1.0"
-dependencies = [
- "alloy-consensus",
- "alloy-primitives",
- "anyhow",
- "bytes",
- "commonware-consensus",
- "commonware-cryptography",
- "commonware-p2p",
- "commonware-parallel",
- "commonware-runtime",
- "commonware-utils",
- "futures",
- "hex",
- "hub-backend",
- "hub-config",
- "hub-consensus",
- "hub-domain",
- "hub-executor",
- "hub-indexer",
- "hub-jsonrpc",
- "hub-ledger",
- "hub-marshal",
- "hub-modules",
- "hub-overlay",
- "hub-qmdb-ledger",
- "hub-reporters",
- "hub-service",
- "hub-simplex",
- "hub-state",
- "hub-transport",
- "rand 0.8.5",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "hub-service"
-version = "0.1.0"
-dependencies = [
- "commonware-consensus",
- "commonware-cryptography",
- "commonware-p2p",
- "commonware-runtime",
- "commonware-utils",
- "hub-config",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "hub-simplex"
-version = "0.1.0"
-dependencies = [
- "commonware-consensus",
- "commonware-cryptography",
- "commonware-p2p",
- "commonware-parallel",
- "commonware-runtime",
- "commonware-utils",
- "rand_core 0.6.4",
-]
-
-[[package]]
 name = "hub-state"
 version = "0.1.0"
 dependencies = [
@@ -3908,22 +3782,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hub-transport"
-version = "0.1.0"
-dependencies = [
- "commonware-codec",
- "commonware-cryptography",
- "commonware-p2p",
- "commonware-runtime",
- "commonware-utils",
- "hex",
- "hub-config",
- "rand_core 0.6.4",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
 name = "hubd"
 version = "0.1.0"
 dependencies = [
@@ -3933,18 +3791,13 @@ dependencies = [
  "clap",
  "commonware-codec",
  "commonware-cryptography",
- "commonware-utils",
  "eyre",
  "hex",
  "hub-cli",
  "hub-client",
  "hub-config",
- "hub-crypto",
- "hub-domain",
- "hub-executor",
  "hub-genesis",
  "hub-jsonrpc",
- "hub-runner",
  "k256",
  "rand 0.8.5",
  "reqwest",

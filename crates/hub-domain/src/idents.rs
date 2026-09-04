@@ -94,7 +94,7 @@ impl Read for StateRoot {
 #[cfg(test)]
 mod tests {
     use alloy_evm::revm::primitives::{B256, Bytes, keccak256};
-    use commonware_codec::{Decode as _, DecodeExt as _, Encode as _, FixedSize as _};
+    use commonware_codec::{Decode as _, DecodeExt as _, Encode as _};
 
     use super::*;
     use crate::{Block, BlockCfg, Tx, TxCfg};

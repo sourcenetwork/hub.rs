@@ -24,9 +24,6 @@ commonware-cryptography.workspace = true
 ed25519-consensus.workspace = true
 rand.workspace = true
 
-# Misc
-alloy-primitives.workspace = true
-
 [dev-dependencies]
 commonware-codec.workspace = true
 rstest.workspace = true

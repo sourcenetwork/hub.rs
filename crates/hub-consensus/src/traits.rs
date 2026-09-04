@@ -2,7 +2,6 @@
 
 use std::collections::BTreeSet;
 
-use alloy_primitives::B256;
 use hub_domain::{ConsensusDigest, StateRoot, Tx, TxId as DomainTxId};
 use hub_qmdb::ChangeSet;
 use hub_traits::StateDb;
@@ -106,18 +105,6 @@ pub trait SnapshotStore<S: StateDb>: Clone + Send + Sync + 'static {
         &self,
         digest: Digest,
     ) -> Result<(Vec<Digest>, ChangeSet), ConsensusError>;
-}
-
-/// Tracks VRF seeds for prevrandao computation.
-///
-/// Seeds are derived from threshold VRF signatures during consensus and
-/// used to populate the `prevrandao` field in subsequent blocks.
-pub trait SeedTracker: Clone + Send + Sync + 'static {
-    /// Get the seed for a given digest.
-    fn get(&self, digest: &Digest) -> Option<B256>;
-
-    /// Insert a seed for a digest.
-    fn insert(&self, digest: Digest, seed: B256);
 }
 
 #[cfg(test)]

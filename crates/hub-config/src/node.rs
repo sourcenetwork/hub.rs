@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ConfigError, ConsensusConfig, ExecutionConfig, NetworkConfig, RpcConfig};
+use crate::{ConfigError, ExecutionConfig, NetworkConfig, RpcConfig};
 
 /// Default chain ID for local development.
 pub const DEFAULT_CHAIN_ID: u64 = 1;
@@ -22,10 +22,6 @@ pub struct NodeConfig {
     /// Data directory for persistent storage.
     #[serde(default = "default_data_dir")]
     pub data_dir: PathBuf,
-
-    /// Consensus configuration.
-    #[serde(default)]
-    pub consensus: ConsensusConfig,
 
     /// Network configuration.
     #[serde(default)]
@@ -45,7 +41,6 @@ impl Default for NodeConfig {
         Self {
             chain_id: DEFAULT_CHAIN_ID,
             data_dir: PathBuf::from(DEFAULT_DATA_DIR),
-            consensus: ConsensusConfig::default(),
             network: NetworkConfig::default(),
             execution: ExecutionConfig::default(),
             rpc: RpcConfig::default(),
@@ -109,15 +104,11 @@ impl NodeConfig {
         Ok(serde_json::to_string_pretty(self)?)
     }
 
-    /// Get or create the validator private key from `{data_dir}/validator.key`.
+    /// Get the validator private key from `{data_dir}/validator.key`.
     pub fn validator_key(
         &self,
     ) -> Result<commonware_cryptography::ed25519::PrivateKey, ConfigError> {
-        let key_path = self
-            .consensus
-            .validator_key
-            .clone()
-            .unwrap_or_else(|| self.data_dir.join("validator.key"));
+        let key_path = self.data_dir.join("validator.key");
 
         // Try to load existing key
         match std::fs::read(&key_path) {

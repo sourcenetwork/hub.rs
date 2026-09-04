@@ -2,44 +2,39 @@
 
 use std::collections::BTreeSet;
 
-use alloy_primitives::B256;
 use hub_domain::{StateRoot, Tx};
 use hub_qmdb::ChangeSet;
 use hub_traits::StateDb;
 
-use crate::{ConsensusError, Digest, Mempool, SeedTracker, Snapshot, SnapshotStore, TxId};
+use crate::{ConsensusError, Digest, Mempool, Snapshot, SnapshotStore, TxId};
 
 /// Aggregate that owns all state management components.
 ///
-/// LedgerView coordinates access to the mempool, snapshots, seeds, and
+/// LedgerView coordinates access to the mempool, snapshots, and
 /// persistent state database. It provides high-level operations for
 /// block proposal and verification.
 #[derive(Debug)]
-pub struct LedgerView<S, M, SS, ST> {
+pub struct LedgerView<S, M, SS> {
     /// Persistent state database.
     state: S,
     /// Pending transaction pool.
     mempool: M,
     /// Execution snapshots keyed by digest.
     snapshots: SS,
-    /// VRF seeds for prevrandao computation.
-    seeds: ST,
 }
 
-impl<S, M, SS, ST> LedgerView<S, M, SS, ST>
+impl<S, M, SS> LedgerView<S, M, SS>
 where
     S: StateDb,
     M: Mempool,
     SS: SnapshotStore<S>,
-    ST: SeedTracker,
 {
     /// Create a new ledger view.
-    pub const fn new(state: S, mempool: M, snapshots: SS, seeds: ST) -> Self {
+    pub const fn new(state: S, mempool: M, snapshots: SS) -> Self {
         Self {
             state,
             mempool,
             snapshots,
-            seeds,
         }
     }
 
@@ -71,16 +66,6 @@ where
     /// Get a mutable reference to the snapshot store.
     pub const fn snapshots_mut(&mut self) -> &mut SS {
         &mut self.snapshots
-    }
-
-    /// Get a reference to the seed tracker.
-    pub const fn seeds(&self) -> &ST {
-        &self.seeds
-    }
-
-    /// Get a mutable reference to the seed tracker.
-    pub const fn seeds_mut(&mut self) -> &mut ST {
-        &mut self.seeds
     }
 
     /// Build a batch of transactions for a new proposal.
@@ -153,22 +138,6 @@ where
         self.snapshots.insert(digest, snapshot);
     }
 
-    /// Get the prevrandao seed for a given digest.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the seed is not found.
-    pub fn get_seed(&self, digest: &Digest) -> Result<B256, ConsensusError> {
-        self.seeds
-            .get(digest)
-            .ok_or(ConsensusError::SnapshotNotFound(*digest))
-    }
-
-    /// Insert a seed for a digest.
-    pub fn insert_seed(&self, digest: Digest, seed: B256) {
-        self.seeds.insert(digest, seed);
-    }
-
     /// Persist a finalized snapshot and all its unpersisted ancestors.
     ///
     /// This commits the merged changes from all unpersisted ancestors up to
@@ -226,7 +195,9 @@ mod tests {
     use hub_qmdb::ChangeSet;
 
     use super::*;
-    use crate::components::{InMemoryMempool, InMemorySeedTracker, InMemorySnapshotStore};
+    use crate::components::{InMemoryMempool, InMemorySnapshotStore};
+
+    use alloy_primitives::B256;
 
     // Mock StateDb for testing
     #[derive(Clone, Debug)]
@@ -302,19 +273,14 @@ mod tests {
         }
     }
 
-    type TestLedgerView = LedgerView<
-        MockStateDb,
-        InMemoryMempool,
-        InMemorySnapshotStore<MockStateDb>,
-        InMemorySeedTracker,
-    >;
+    type TestLedgerView =
+        LedgerView<MockStateDb, InMemoryMempool, InMemorySnapshotStore<MockStateDb>>;
 
     fn create_test_ledger() -> TestLedgerView {
         let state = MockStateDb::new();
         let mempool = InMemoryMempool::new();
         let snapshots = InMemorySnapshotStore::new();
-        let seeds = InMemorySeedTracker::empty();
-        LedgerView::new(state, mempool, snapshots, seeds)
+        LedgerView::new(state, mempool, snapshots)
     }
 
     fn digest(byte: u8) -> Digest {
@@ -342,10 +308,6 @@ mod tests {
         // Test snapshot accessors
         let _ = ledger.snapshots();
         let _ = ledger.snapshots_mut();
-
-        // Test seed accessors
-        let _ = ledger.seeds();
-        let _ = ledger.seeds_mut();
     }
 
     #[test]
@@ -422,21 +384,6 @@ mod tests {
         ledger.insert_snapshot(digest, snapshot);
 
         assert!(ledger.snapshots().get(&digest).is_some());
-    }
-
-    #[test]
-    fn ledger_view_seed_operations() {
-        let ledger = create_test_ledger();
-
-        let digest = digest(0x01);
-        let seed = B256::repeat_byte(0x02);
-
-        // Initially missing
-        assert!(ledger.get_seed(&digest).is_err());
-
-        // Insert and retrieve
-        ledger.insert_seed(digest, seed);
-        assert_eq!(ledger.get_seed(&digest).unwrap(), seed);
     }
 
     #[tokio::test]

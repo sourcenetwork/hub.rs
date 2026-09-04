@@ -56,26 +56,20 @@ hub-modules = { path = "crates/hub-modules" }
 hub-cli = { path = "crates/hub-cli" }
 hub-config = { path = "crates/hub-config" }
 hub-consensus = { path = "crates/hub-consensus" }
-hub-crypto = { path = "crates/hub-crypto", features = ["test-utils"] }
+hub-crypto = { path = "crates/hub-crypto" }
 hub-domain = { path = "crates/hub-domain" }
 hub-handlers = { path = "crates/hub-handlers" }
 hub-indexer = { path = "crates/hub-indexer" }
-hub-ledger = { path = "crates/hub-ledger" }
-hub-marshal = { path = "crates/hub-marshal" }
 hub-overlay = { path = "crates/hub-overlay" }
-hub-qmdb = { path = "crates/hub-qmdb" }
 hub-qmdb-ledger = { path = "crates/hub-qmdb-ledger" }
-hub-reporters = { path = "crates/hub-reporters" }
+hub-ledger = { path = "crates/hub-ledger" }
+hub-qmdb = { path = "crates/hub-qmdb" }
 hub-jsonrpc = { path = "crates/hub-jsonrpc" }
-hub-service = { path = "crates/hub-service" }
-hub-simplex = { path = "crates/hub-simplex" }
 hub-traits = { path = "crates/hub-traits" }
-hub-transport = { path = "crates/hub-transport" }
 
 hub-client = { path = "crates/hub-client" }
 hub-executor = { path = "crates/hub-executor" }
 hub-genesis = { path = "crates/hub-genesis" }
-hub-runner = { path = "crates/hub-runner" }
 hub-state = { path = "crates/hub-state" }
 hub-harness = { path = "crates/hub-harness" }
 test-infra = { path = "crates/test-infra" }
