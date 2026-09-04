@@ -8,7 +8,7 @@ use std::{
 use test_infra::{BinaryResolver, ManagedProcess, TestRunDir};
 
 use super::{
-    genesis::GenesisBuilder,
+    genesis::{GenesisBuilder, ValidatorConfig},
     keys::KeySet,
     node_config::{ConsensusPreset, NodeConfigBuilder},
     runtime::{TestCluster, TestNode},
@@ -128,14 +128,24 @@ impl TestClusterBuilder {
             key_builder = key_builder.seed(seed);
         }
         let keys = key_builder.build()?;
-        let genesis = genesis_builder
-            .chain_id(chain_id)
-            .epoch_info(keys.epoch_info_hex())
-            .build();
-
         let all_ports = test_infra::allocate_ports(n * 2)?;
         let p2p_ports = &all_ports[0..n];
         let rpc_ports = &all_ports[n..n * 2];
+        let validators = keys
+            .participants()
+            .iter()
+            .zip(p2p_ports)
+            .map(|(public_key, port)| ValidatorConfig {
+                evm_address: format!("{:?}", hub_node::validator_address(public_key)),
+                consensus_pubkey: hex::encode(commonware_codec::Encode::encode(public_key)),
+                p2p_address: format!("127.0.0.1:{port}"),
+            })
+            .collect();
+        let genesis = genesis_builder
+            .chain_id(chain_id)
+            .validators_if_empty(validators)
+            .epoch_info(keys.epoch_info_hex())
+            .build();
 
         let node_dirs: Vec<PathBuf> = (0..n)
             .map(|i| run_dir.node_dir(&format!("node{}", i)))

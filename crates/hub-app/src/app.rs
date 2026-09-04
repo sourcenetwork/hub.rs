@@ -56,6 +56,7 @@ impl<S: FinalizedSink> StatefulHubApp<S> {
         max_txs: usize,
         gas_limit: u64,
     ) -> Self {
+        executor.seed_block_modules(genesis.id(), genesis.height);
         Self {
             executor,
             genesis,
@@ -99,8 +100,8 @@ impl<S: FinalizedSink> StatefulHubApp<S> {
         BlockContext::new(header, B256::ZERO, prevrandao)
     }
 
-    fn chain_modules_from(&self, parent_height: u64) {
-        if let Some(parent_modules) = self.executor.get_cached_modules(parent_height) {
+    fn chain_modules_from(&self, parent: hub_domain::BlockId) {
+        if let Some(parent_modules) = self.executor.get_cached_modules(parent) {
             self.executor.set_base_modules(parent_modules);
         }
     }
@@ -110,7 +111,7 @@ impl<S: FinalizedSink> StatefulHubApp<S> {
         block: &Block,
         batches: HubUnmerkleized,
     ) -> Result<Executed, AppError> {
-        self.chain_modules_from(block.height.saturating_sub(1));
+        self.chain_modules_from(block.parent);
         let context = self
             .block_context(
                 block.height,
@@ -130,6 +131,7 @@ impl<S: FinalizedSink> StatefulHubApp<S> {
         if executed.db_targets != block.db_targets {
             return Err(AppError::RootMismatch("db targets"));
         }
+        self.executor.cache_block_modules(block.id(), block.height);
         Ok(executed)
     }
 
@@ -185,7 +187,7 @@ impl<S: FinalizedSink> Application<Ctx> for StatefulHubApp<S> {
         let excluded = Self::pending_tx_ids(&pending);
         let txs = input.provider.build(self.max_txs, &excluded);
 
-        self.chain_modules_from(parent.height);
+        self.chain_modules_from(parent.id());
         let height = parent.height + 1;
         let timestamp = now_secs().max(parent.timestamp);
         let prevrandao = B256::ZERO;
@@ -216,6 +218,7 @@ impl<S: FinalizedSink> Application<Ctx> for StatefulHubApp<S> {
             payload: input.upstream.payload,
             db_targets: executed.db_targets,
         };
+        self.executor.cache_block_modules(block.id(), block.height);
         info!(
             block_digest = ?block.digest(),
             height,
@@ -321,7 +324,7 @@ impl<S: FinalizedSink> Application<Ctx> for StatefulHubApp<S> {
     ) {
         let ids: Vec<TxId> = block.txs.iter().map(hub_domain::Tx::id).collect();
         self.mempool.prune(&ids);
-        if let Some(modules) = self.executor.get_cached_modules(block.height) {
+        if let Some(modules) = self.executor.get_cached_modules(block.id()) {
             self.executor.set_base_modules(modules);
         }
         self.executor

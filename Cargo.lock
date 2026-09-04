@@ -3887,6 +3887,8 @@ dependencies = [
  "acp",
  "alloy-primitives",
  "alloy-sol-types",
+ "commonware-codec",
+ "commonware-cryptography",
  "hex",
  "hub-client",
  "hub-crypto",

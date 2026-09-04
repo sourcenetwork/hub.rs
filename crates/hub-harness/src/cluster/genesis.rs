@@ -221,6 +221,13 @@ impl GenesisBuilder {
         self
     }
 
+    pub(crate) fn validators_if_empty(mut self, configs: Vec<ValidatorConfig>) -> Self {
+        if self.validators.is_empty() {
+            self.validators = configs;
+        }
+        self
+    }
+
     /// Add arbitrary contract bytecode at genesis.
     #[must_use]
     pub fn contract(mut self, address: &str, bytecode: &str) -> Self {

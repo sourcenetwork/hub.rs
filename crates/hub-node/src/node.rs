@@ -36,18 +36,15 @@ use commonware_glue::{
         db::{DatabaseSet as _, SyncEngineConfig},
     },
 };
-use commonware_p2p::{
-    Ingress,
-    authenticated::{self, discovery},
-};
+use commonware_p2p::{Ingress, authenticated::discovery};
 use commonware_parallel::Sequential;
 use commonware_runtime::{Handle, Spawner as _, Supervisor as _, buffer::paged::CacheRef, tokio};
 use commonware_storage::{archive::prunable, translator::TwoCap};
-use commonware_utils::{NZDuration, NZU64, NZUsize, ordered::Set, sequence::Unit};
+use commonware_utils::{NZDuration, NZU64, NZUsize, sequence::Unit};
 use hub_app::{ConsensusScheme, StatefulHubApp, apply_genesis, genesis_block};
 use hub_backend::{HubStateSet, state_set_config};
 use hub_consensus::components::InMemoryMempool;
-use hub_domain::{Block, PublicKey};
+use hub_domain::Block;
 use hub_executor::{ExecutionConfig, HubExecutor, MempoolValidator, ModuleTrees};
 use hub_indexer::{BlockIndex, LightBlockIndex};
 use hub_jsonrpc::{IndexedStateProvider, NodeState, RpcServer, TxSubmitCallback};
@@ -60,7 +57,7 @@ use crate::{
     DKG_PROBE_CHANNEL, DynamicProvider, FileSecretStore, IO_BUFFER_SIZE, MAILBOX_SIZE,
     MAX_BLOCK_TXS, MAX_MESSAGE_SIZE, MAX_PARTICIPANTS, MAX_SUPPORTED_MODE, MAX_TX_BYTES,
     MEMPOOL_CHANNEL, MESSAGE_RATE, NAMESPACE, NoSync, NodeSettings, P2P_SUFFIX, PAGE_CACHE_SIZE,
-    PAGE_SIZE, RESOLVER_CHANNEL, REVEAL, Registrar, SHARING_MODE, StaticParticipants, TxGossip,
+    PAGE_SIZE, RESOLVER_CHANNEL, REVEAL, Registrar, RegistryParticipants, SHARING_MODE, TxGossip,
     VOTE_CHANNEL,
     sink::{NodeSink, SinkParts},
     spawn_tx_receiver,
@@ -91,7 +88,6 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         .iter()
         .position(|pk| *pk == local)
         .ok_or_else(|| anyhow::anyhow!("validator key is not in peers.json"))?;
-    let participants: Set<PublicKey> = Set::from_iter_dedup(peers.participants.iter().cloned());
     let blocks_per_epoch = std::num::NonZeroU64::new(genesis.blocks_per_epoch)
         .ok_or_else(|| anyhow::anyhow!("genesis blocks_per_epoch must be non-zero"))?;
     let epoch_info = genesis
@@ -112,7 +108,7 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         .filter(|(pk, _)| *pk != local)
         .map(|(pk, addr)| (pk.clone(), Ingress::Socket(*addr)))
         .collect();
-    let max_peers_per_set = authenticated::peer_set_limit(&peers.participants, &local);
+    let max_peers_per_set = NZUsize!(MAX_PARTICIPANTS.get() as usize);
     let mut p2p_config = discovery::Config::local(
         signing_key.clone(),
         &[NAMESPACE, P2P_SUFFIX].concat(),
@@ -296,13 +292,14 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     )
     .await;
     let (fence, gate) = Fence::new(fence_epoch);
+    let participants_provider = RegistryParticipants::new();
     let (reshare_actor, reshare_mailbox) = reshare::Actor::new(
         context.child("reshare"),
         reshare::Config {
             signer: signing_key.clone(),
             manager: oracle.clone(),
             blocker: oracle.clone(),
-            participants_provider: StaticParticipants::new(participants),
+            participants_provider: participants_provider.clone(),
             secret_store: store,
             strategy: Sequential,
             registrar: Registrar::new(provider.clone()),
@@ -439,8 +436,10 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
 
     // Transaction gossip and RPC over the live committed state.
     let state_set = stateful_mailbox.subscribe_databases().await;
+    let committed_state = CommittedState::new(state_set.clone());
+    participants_provider.attach_state(committed_state.clone());
     let _ = validator.set(::tokio::sync::Mutex::new(MempoolValidator::new(
-        CommittedState::new(state_set.clone()),
+        committed_state.clone(),
         ExecutionConfig::new(chain_id),
         0,
     )));
@@ -459,7 +458,7 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     });
     let state_provider = IndexedStateProvider::new(
         block_index.clone(),
-        CommittedState::new(state_set),
+        committed_state,
         chain_id,
         gas_limit,
         modules.clone(),

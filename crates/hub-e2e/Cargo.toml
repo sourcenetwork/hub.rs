@@ -12,6 +12,8 @@ hub-harness.workspace = true
 acp = { workspace = true, default-features = false }
 alloy-primitives.workspace = true
 alloy-sol-types.workspace = true
+commonware-codec.workspace = true
+commonware-cryptography.workspace = true
 hex.workspace = true
 hub-client.workspace = true
 hub-domain.workspace = true
