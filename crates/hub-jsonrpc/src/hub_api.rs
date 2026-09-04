@@ -305,9 +305,7 @@ impl HubApiServer for HubApiImpl {
             .get_block_by_number(height_val)
             .ok_or_else(|| RpcError::Internal(format!("block not found at height {height_val}")))?;
 
-        let mut hasher = Sha256::default();
-        hasher.update(block.hash.as_slice());
-        let consensus_digest = hasher.finalize().0;
+        let consensus_digest = Sha256::hash(&[block.hash.as_slice()]).0;
 
         let cert = light_index
             .get_certificate(&consensus_digest)

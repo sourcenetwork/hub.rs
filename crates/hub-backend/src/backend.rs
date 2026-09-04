@@ -4,7 +4,8 @@ use alloy_primitives::B256;
 use async_trait::async_trait;
 use commonware_codec::RangeCfg;
 use commonware_cryptography::sha256::Digest as QmdbDigest;
-use commonware_runtime::{Metrics as _, buffer::paged::CacheRef};
+use commonware_parallel::Sequential;
+use commonware_runtime::{Supervisor, buffer::paged::CacheRef};
 use commonware_storage::{qmdb::any::VariableConfig, translator::EightCap};
 use commonware_utils::{NZU64, NZUsize};
 use hub_handlers::{HandleError, RootProvider};
@@ -15,8 +16,6 @@ use crate::{
     accounts::AccountStoreDirty, code::CodeStoreDirty, storage::StorageStoreDirty, types::Context,
 };
 
-const CODE_MAX_BYTES: usize = 24_576;
-
 /// Commonware-based QMDB backend.
 ///
 /// Provides storage for accounts, storage slots, and code using
@@ -25,12 +24,9 @@ pub struct CommonwareBackend {
     accounts: AccountStore,
     storage: StorageStore,
     code: CodeStore,
-    context: Context,
-    config: QmdbBackendConfig,
 }
 
 /// Root provider that computes state roots from commonware-storage partitions.
-#[derive(Clone)]
 pub struct CommonwareRootProvider {
     context: Context,
     config: QmdbBackendConfig,
@@ -60,13 +56,11 @@ impl CommonwareRootProvider {
 impl CommonwareBackend {
     /// Open a backend with the given configuration.
     pub async fn open(context: Context, config: QmdbBackendConfig) -> Result<Self, BackendError> {
-        let stores = open_stores(context.clone(), &config).await?;
+        let stores = open_stores(&context, &config).await?;
         Ok(Self {
             accounts: stores.accounts,
             storage: stores.storage,
             code: stores.code,
-            context,
-            config,
         })
     }
 
@@ -111,11 +105,6 @@ impl CommonwareBackend {
         (self.accounts, self.storage, self.code)
     }
 
-    /// Build a root provider for this backend configuration.
-    pub fn root_provider(&self) -> CommonwareRootProvider {
-        CommonwareRootProvider::new(self.context.clone(), self.config.clone())
-    }
-
     /// Get the current state root.
     pub fn state_root(&self) -> Result<B256, BackendError> {
         state_root_from_stores(&self.accounts, &self.storage, &self.code)
@@ -125,7 +114,7 @@ impl CommonwareBackend {
 #[async_trait]
 impl RootProvider for CommonwareRootProvider {
     async fn state_root(&self) -> Result<B256, HandleError> {
-        let stores = open_stores(self.context.clone(), &self.config)
+        let stores = open_stores(&self.context, &self.config)
             .await
             .map_err(|e| HandleError::RootComputation(e.to_string()))?;
         state_root_from_stores(&stores.accounts, &stores.storage, &stores.code)
@@ -137,7 +126,7 @@ impl RootProvider for CommonwareRootProvider {
             return self.state_root().await;
         }
 
-        let stores = open_dirty_stores(self.context.clone(), &self.config)
+        let stores = open_dirty_stores(&self.context, &self.config)
             .await
             .map_err(|e| HandleError::RootComputation(e.to_string()))?;
         let mut qmdb = QmdbStore::new(stores.accounts, stores.storage, stores.code);
@@ -147,9 +136,18 @@ impl RootProvider for CommonwareRootProvider {
         let stores = qmdb
             .take_stores()
             .map_err(|e| HandleError::RootComputation(e.to_string()))?;
-        let accounts = stores.accounts.root();
-        let storage = stores.storage.root();
-        let code = stores.code.root();
+        let accounts = stores
+            .accounts
+            .root()
+            .map_err(|e| HandleError::RootComputation(e.to_string()))?;
+        let storage = stores
+            .storage
+            .root()
+            .map_err(|e| HandleError::RootComputation(e.to_string()))?;
+        let code = stores
+            .code
+            .root()
+            .map_err(|e| HandleError::RootComputation(e.to_string()))?;
         Ok(state_root_from_roots(accounts, storage, code))
     }
 
@@ -175,55 +173,68 @@ pub(crate) fn store_config<C>(
     name: &str,
     page_cache: CacheRef,
     log_codec_config: C,
-) -> VariableConfig<EightCap, C> {
+) -> VariableConfig<EightCap, C, Sequential> {
     VariableConfig {
-        mmr_journal_partition: format!("{prefix}-{name}-mmr"),
-        mmr_metadata_partition: format!("{prefix}-{name}-mmr-meta"),
-        mmr_items_per_blob: NZU64!(128),
-        mmr_write_buffer: NZUsize!(1024 * 1024),
-        log_partition: format!("{prefix}-{name}-log"),
-        log_write_buffer: NZUsize!(1024 * 1024),
-        log_compression: None,
-        log_codec_config,
-        log_items_per_blob: NZU64!(128),
+        merkle_config: commonware_storage::merkle::full::Config {
+            journal_partition: format!("{prefix}-{name}-mmr"),
+            metadata_partition: format!("{prefix}-{name}-mmr-meta"),
+            items_per_blob: NZU64!(128),
+            write_buffer: NZUsize!(1024 * 1024),
+            replay_buffer: NZUsize!(1024 * 1024),
+            strategy: Sequential,
+            page_cache: page_cache.clone(),
+        },
+        journal_config: commonware_storage::journal::contiguous::variable::Config {
+            partition: format!("{prefix}-{name}-log"),
+            items_per_section: NZU64!(128),
+            compression: None,
+            codec_config: log_codec_config,
+            page_cache,
+            write_buffer: NZUsize!(1024 * 1024),
+            replay_buffer: NZUsize!(1024 * 1024),
+        },
         translator: EightCap,
-        thread_pool: None,
-        page_cache,
+        init_cache_size: Some(NZUsize!(1024)),
+        init_buffer: NZUsize!(1 << 21),
+        init_concurrency: (),
     }
 }
 
-async fn open_stores(context: Context, config: &QmdbBackendConfig) -> Result<Stores, BackendError> {
+async fn open_stores(
+    context: &Context,
+    config: &QmdbBackendConfig,
+) -> Result<Stores, BackendError> {
     let accounts = AccountStore::init(
-        context.with_label("accounts"),
+        context.child("accounts"),
         store_config(
             &config.partition_prefix,
             "accounts",
             config.page_cache.clone(),
-            (),
+            ((), ()),
         ),
     )
     .await
     .map_err(|e| BackendError::Storage(e.to_string()))?;
 
     let storage = StorageStore::init(
-        context.with_label("storage"),
+        context.child("storage"),
         store_config(
             &config.partition_prefix,
             "storage",
             config.page_cache.clone(),
-            (),
+            ((), ()),
         ),
     )
     .await
     .map_err(|e| BackendError::Storage(e.to_string()))?;
 
     let code = CodeStore::init(
-        context.with_label("code"),
+        context.child("code"),
         store_config(
             &config.partition_prefix,
             "code",
             config.page_cache.clone(),
-            (RangeCfg::new(0..=CODE_MAX_BYTES), ()),
+            ((), (RangeCfg::new(0..), ())),
         ),
     )
     .await
@@ -237,7 +248,7 @@ async fn open_stores(context: Context, config: &QmdbBackendConfig) -> Result<Sto
 }
 
 async fn open_dirty_stores(
-    context: Context,
+    context: &Context,
     config: &QmdbBackendConfig,
 ) -> Result<DirtyStores, BackendError> {
     let stores = open_stores(context, config).await?;

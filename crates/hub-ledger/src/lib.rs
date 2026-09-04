@@ -2,6 +2,7 @@
 
 #![doc = include_str!("../README.md")]
 #![doc(issue_tracker_base_url = "https://github.com/mizufinance/hub-commonware/issues/")]
+#![recursion_limit = "256"]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
@@ -9,7 +10,7 @@ use std::{collections::BTreeSet, fmt, sync::Arc};
 
 use alloy_primitives::{Address, B256, U256};
 use commonware_cryptography::Committable as _;
-use commonware_runtime::{Metrics as _, buffer::paged::CacheRef, tokio};
+use commonware_runtime::{Supervisor as _, buffer::paged::CacheRef, tokio};
 use futures::{channel::mpsc::UnboundedReceiver, lock::Mutex};
 use hub_consensus::{
     ConsensusError, Mempool as _, Snapshot, SnapshotStore as _,
@@ -113,7 +114,7 @@ impl LedgerView {
         chain_id: u64,
     ) -> LedgerResult<Self> {
         let qmdb = QmdbLedger::init(
-            context.with_label("qmdb"),
+            context.child("qmdb"),
             config,
             genesis_alloc,
             genesis_storage,
@@ -589,8 +590,12 @@ mod tests {
         format!("{prefix}-{id}")
     }
 
-    fn test_page_cache() -> CacheRef {
-        CacheRef::new(NZU16!(BUFFER_BLOCK_BYTES), NZUsize!(BUFFER_BLOCK_COUNT))
+    fn test_page_cache(context: &tokio::Context) -> CacheRef {
+        CacheRef::from_pooler(
+            context,
+            NZU16!(BUFFER_BLOCK_BYTES),
+            NZUsize!(BUFFER_BLOCK_COUNT),
+        )
     }
 
     fn transfer_tx(from_key: &SigningKey, to: Address, value: u64, nonce: u64) -> Tx {
@@ -621,9 +626,10 @@ mod tests {
         partition_prefix: &str,
         allocations: Vec<(Address, U256)>,
     ) -> LedgerSetup {
+        let page_cache = test_page_cache(&context);
         let ledger = LedgerView::init(
             context,
-            test_page_cache(),
+            page_cache,
             next_partition(partition_prefix),
             allocations,
             Vec::new(),

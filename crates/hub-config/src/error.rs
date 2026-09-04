@@ -55,6 +55,10 @@ pub enum ConfigError {
     /// Failed to parse participant public key.
     #[error("invalid participant public key bytes")]
     InvalidParticipantKey,
+
+    /// Failed to decode a codec-encoded value.
+    #[error("codec decode failed: {0}")]
+    Codec(#[from] commonware_codec::Error),
 }
 
 #[cfg(test)]

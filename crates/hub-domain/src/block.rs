@@ -57,9 +57,7 @@ impl Block {
 }
 
 fn digest_for_block_id(id: &BlockId) -> crate::ConsensusDigest {
-    let mut hasher = Sha256::default();
-    hasher.update(id.0.as_slice());
-    hasher.finalize()
+    Sha256::hash(&[id.0.as_slice()])
 }
 
 impl Digestible for Block {
@@ -85,7 +83,7 @@ impl commonware_consensus::Heightable for Block {
 }
 
 impl commonware_consensus::Block for Block {
-    fn parent(&self) -> Self::Commitment {
+    fn parent(&self) -> Self::Digest {
         digest_for_block_id(&self.parent)
     }
 }

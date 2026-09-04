@@ -117,9 +117,7 @@ pub fn verify_light_block(block: &LightBlock) -> Result<(B256, B256), LightBlock
     let block_hash_bytes = decode_hex_32("block_hash", &block.block_hash)?;
     let proposal_payload_bytes = decode_hex_32("proposal_payload", &block.proposal_payload)?;
 
-    let mut hasher = Sha256::default();
-    hasher.update(&block_hash_bytes);
-    let computed_payload = hasher.finalize();
+    let computed_payload = Sha256::hash(&[&block_hash_bytes]);
     if computed_payload.0 != proposal_payload_bytes {
         return Err(LightBlockError::PayloadMismatch);
     }
@@ -244,9 +242,7 @@ mod tests {
         pubkeys.sort();
 
         let block_hash = B256::repeat_byte(0xAB);
-        let mut hasher = Sha256::default();
-        hasher.update(block_hash.as_slice());
-        let payload = hasher.finalize();
+        let payload = Sha256::hash(&[block_hash.as_slice()]);
 
         (private_keys, pubkeys, block_hash, payload.0)
     }

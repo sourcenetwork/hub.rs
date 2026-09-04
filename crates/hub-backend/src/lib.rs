@@ -14,7 +14,7 @@ mod backend;
 pub use backend::{CommonwareBackend, CommonwareRootProvider};
 
 mod code;
-pub use code::{CodeStore, CodeStoreError};
+pub use code::{CodeDbConfig, CodeStore, CodeStoreError};
 
 mod config;
 pub use config::QmdbBackendConfig;
