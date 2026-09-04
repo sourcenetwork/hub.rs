@@ -46,9 +46,40 @@ All repos follow gopath convention at `/Users/johnzampolin/go/src/github.com/{or
 
 ## Architecture
 
-### Dual transaction model
+### Node assembly (`hub-node`)
 
-Blocks contain both BLS-signed native txs and secp256k1-signed EVM txs, processed sequentially by the HubExecutor:
+`hubd` parses its CLI into `NodeSettings` and calls `hub_node::run_node`, which
+assembles the Commonware actor graph on a tokio runtime and runs until one actor
+stops:
+
+- **P2P:** `commonware_p2p::authenticated::discovery` network bootstrapped from
+  `peers.json`, with registered channels for votes, certificates, the marshal
+  resolver, backfill, block broadcast, DKG, DKG probe, and the mempool.
+- **Consensus:** the Commonware `marshal` actor (block archive + finalization
+  storage) driven by the glue `orchestrator` running Simplex with a
+  `FixedEpocher` over genesis `blocks_per_epoch` and a VRF elector that feeds
+  each round's threshold seed to the application.
+- **Execution:** the glue `Stateful` actor wrapping `hub-app`'s
+  `StatefulHubApp` (below).
+- **DKG/resharing:** the glue `probe` actor discovers the latest epoch when a
+  node needs state sync, while the `reshare` actor deals BLS shares for the next
+  epoch to the active set returned by `RegistryParticipants` from finalized
+  state. Shares persist in `FileSecretStore`. Production validators create
+  epoch-0 material together with `hubd genesis`, which runs Commonware's
+  distributed bootstrap DKG; `trusted_setup` is limited to local dev/test
+  networks and is reused by `hub-harness`.
+- **Transaction gossip:** `TxGossip` admits RPC-submitted transactions via a
+  `MempoolValidator` checked against committed state and forwards them to all
+  validators. There is no leader prediction.
+- **RPC:** the `hub-jsonrpc` server over the live committed state (below).
+
+### Execution (`hub-app` + `hub-executor`)
+
+`StatefulHubApp` implements `commonware_glue::stateful::Application`: it builds
+blocks from the mempool, executes them against forked QMDB batch state, verifies
+proposals by re-execution, and hands finalized receipts to a `FinalizedSink`
+(`NodeSink`), which indexes blocks, logs, and light blocks and feeds the RPC
+subscription channels. Block execution goes through `HubExecutor`:
 
 ```
                      HubExecutor
@@ -74,6 +105,7 @@ Blocks contain both BLS-signed native txs and secp256k1-signed EVM txs, processe
 | `0x0810` | ACP | Access control policies (Zanzibar relation tuples) |
 | `0x0811` | Bulletin | Coordination / DKG messages / posts |
 | `0x0812` | Hub | Identity / JWS token lifecycle |
+| `0x0813` | ValidatorRegistry | Validator identity management (feeds resharing) |
 
 ### Shared module pattern
 
@@ -83,44 +115,75 @@ Each module is a plain Rust struct. Two thin shims sit on top:
 
 Business logic lives once.
 
-### State model
+### State (QMDB)
 
-All module state is stored in QMDB (same Merkle-ized KV store that backs EVM state):
+`hub-backend` provides `HubStateSet`, the three QMDB partitions (accounts,
+storage, code) over Commonware storage; `BatchState` is the executor's
+`StateDb` over pending batches. Per-partition `DbTargets` are committed in each
+block for glue's state-sync bookkeeping; the peer QMDB resolver remains stubbed
+pending issue #99. Module state (ACP, Bulletin, Hub, native nonces) lives in
+JMT-backed `ModuleStateTree`s (`hub-state`, RocksDB) and is combined into the
+block header:
 
 ```
-Block state commitment:
+Block header:
     state_root:             QMDB root (EVM accounts + storage + code)
-    module_state_root:      Combined root of module state trees
+    module_state_root:      Combined root of the four module JMTs
         acp_root:           Policies, relationships, objects (zanzi engine)
         bulletin_root:      Namespaces, collaborators, posts
         hub_root:           JWS tokens, invalidation records
-        native_nonce_root:  BLS identity nonces
+        nonces_root:        BLS identity nonces
+    db_targets:             Per-partition QMDB targets for state sync
 ```
 
 ### RPC surfaces
 
-| Endpoint | Signing | Consumer |
+`hub-jsonrpc` serves HTTP + WebSocket JSON-RPC:
+
+| Surface | Methods | Consumer |
 |----------|---------|----------|
-| `eth_sendRawTransaction` | secp256k1 | defradb.rs, MetaMask, wallets |
-| `hub_sendNativeTx` | BLS12-381 | orbis-rs, BLS identities |
-| `eth_call` | none (read-only) | All queries |
+| `eth_*` | `eth_sendRawTransaction`, `eth_call`, `eth_getStorageAt`, `eth_getTransactionReceipt`, … | defradb.rs, MetaMask, wallets |
+| `eth_subscribe` | `newHeads`, `logs` | Indexers, light clients |
+| `hub_*` | `hub_nodeStatus`, `hub_sendNativeTx`, `hub_getTransactionReceipt`, `hub_getNativeNonce`, `hub_getStateProof`, `hub_getLightBlock` | orbis-rs, BLS identities, light clients |
+
+### Light-client material
+
+A `LightBlock` carries the canonical block, the BLS threshold finalization
+certificate, and the epoch's group public key; `hub_domain::verify_light_block`
+verifies it with one aggregate signature. `ModuleStateProof`s verify module
+state against the header's `module_state_root`. Both are served over the `hub_*`
+RPC methods above, and signed `GossipHeader`s stream to `eth_subscribe("headers")`
+subscribers as blocks finalize.
 
 ## Crate Structure
 
+Workspace membership comes from the root `Cargo.toml` (`bin/hubd` + `crates/*`).
+
 ```
 hub.rs/
-    bin/hubd/                  # CLI binary (devnet, testnet, validator)
+    bin/hubd/                  # CLI binary: validator, devnet, testnet, genesis DKG, client
     crates/
-        hub-app/               # Application trait impl, block executor (HubExecutor)
-        hub-modules/           # ACP, Bulletin, Hub module implementations
-        hub-precompiles/       # EVM precompile shims (ABI decode → module calls)
-        hub-native/            # Native BLS tx format, verification, dispatch
-        hub-domain/            # Block, tx, state root types
-        hub-consensus/         # Simplex integration, scheme config
-        hub-state/             # State tree management (per-module Merkle trees)
-        hub-jsonrpc/           # eth_* + hub_* JSON-RPC methods
-        hub-client/            # Rust client library (EVM + BLS paths)
-        hub-e2e/               # Integration test framework
+        hub-app/               # Glue stateful Application around the block executor
+        hub-backend/           # Concrete QMDB backend: HubStateSet, BatchState, DbTargets
+        hub-cli/               # CLI utilities (backtrace + SIGSEGV handlers)
+        hub-client/            # Rust client library (EVM + BLS tx paths, typed queries)
+        hub-config/            # Node configuration types (node, network, rpc, execution)
+        hub-consensus/         # Consensus application layer: mempool, proposal, traits
+        hub-crypto/            # BLS12-381, secp256k1, and JWT utilities
+        hub-domain/            # Block, tx, light block, proof, and DKG payload types
+        hub-e2e/               # End-to-end test harness (see crates/hub-e2e/README.md)
+        hub-executor/          # Block execution: REVM, precompiles, HubExecutor
+        hub-genesis/           # Extended genesis configuration (validators, native mint)
+        hub-harness/           # Node manager, cluster builder, observability (test-only)
+        hub-indexer/           # Block/tx/light-block indexes backing RPC queries
+        hub-jsonrpc/           # eth_* + hub_* JSON-RPC server and subscriptions
+        hub-modules/           # ACP, Bulletin, Hub, ValidatorRegistry module logic
+        hub-node/              # Validator assembly: p2p, marshal, DKG, stateful glue, RPC
+        hub-overlay/           # Overlay state for unpersisted QMDB changes
+        hub-qmdb/              # Core QMDB abstractions and traits
+        hub-state/             # JMT-backed module state trees (RocksDB persistence)
+        hub-traits/            # StateDb trait abstractions for storage/consensus
+        test-infra/            # Shared test primitives: process, ports, logs, binary resolver
 ```
 
 ## Building
@@ -128,7 +191,7 @@ hub.rs/
 ```bash
 cargo check                        # type-check workspace
 cargo build -p hubd                # build binary
-cargo test --workspace             # run all tests
+cargo test --workspace --exclude hub-e2e  # run non-e2e tests
 cargo clippy --all -- -D warnings  # lint
 cargo fmt --all                    # format
 ```
@@ -152,7 +215,7 @@ Borrowed from [defradb.rs](https://github.com/sourcenetwork/defradb.rs):
 ## Before Committing
 
 1. `cargo check` passes
-2. `cargo test --workspace` passes
+2. `cargo test --workspace --exclude hub-e2e` passes
 3. `cargo clippy --all -- -D warnings` clean
 4. `cargo fmt --all` applied
 5. `cargo test -p hub-e2e --test hub_e2e_canonical` passes (requires `cargo build -p hubd` first)
