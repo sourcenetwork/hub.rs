@@ -3867,6 +3867,7 @@ dependencies = [
  "commonware-consensus",
  "commonware-cryptography",
  "commonware-glue",
+ "commonware-parallel",
  "commonware-utils",
  "futures",
  "hex",

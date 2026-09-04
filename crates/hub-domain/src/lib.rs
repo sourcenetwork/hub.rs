@@ -29,7 +29,10 @@ mod native_tx;
 pub use native_tx::{NATIVE_TX_TYPE, NativeTx, NativeTxPayload};
 
 mod light_block;
-pub use light_block::{LightBlock, LightBlockError, verify_light_block};
+pub use light_block::{
+    EpochMaterial, LIGHT_BLOCK_MAX_PARTICIPANTS, LIGHT_BLOCK_NAMESPACE, LightBlock,
+    LightBlockError, LightConsensusScheme, verify_light_block,
+};
 
 mod proof;
 pub use proof::{ModuleId, ModuleStateProof, ProofError, verify_module_state_proof};

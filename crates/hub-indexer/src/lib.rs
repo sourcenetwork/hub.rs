@@ -12,7 +12,7 @@ mod filter;
 pub use filter::LogFilter;
 
 mod light_block_store;
-pub use light_block_store::{LightBlockIndex, StoredCertificate, StoredValidatorSet};
+pub use light_block_store::{LightBlockIndex, StoredEpochMaterial, StoredFinalization};
 
 mod store;
 pub use store::BlockIndex;
