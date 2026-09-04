@@ -169,6 +169,7 @@ mod tests {
             state_root: StateRoot(B256::repeat_byte(0xcd)),
             module_state_root: B256::repeat_byte(0xef),
             txs: vec![Tx::new(Bytes::from_static(&[0xde, 0xad]))],
+            payload: None,
         }
     }
 

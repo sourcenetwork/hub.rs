@@ -143,6 +143,7 @@ mod tests {
                 state_root: hub_domain::StateRoot(alloy_primitives::B256::ZERO),
                 module_state_root: alloy_primitives::B256::ZERO,
                 txs: Vec::new(),
+                payload: None,
             })
         }
 
@@ -176,6 +177,7 @@ mod tests {
             state_root: hub_domain::StateRoot(alloy_primitives::B256::ZERO),
             module_state_root: alloy_primitives::B256::ZERO,
             txs: Vec::new(),
+            payload: None,
         };
         let digest = app.verify(&block).unwrap();
         assert_eq!(digest, block.commitment());

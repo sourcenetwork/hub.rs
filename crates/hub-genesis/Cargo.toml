@@ -10,8 +10,14 @@ alloy-evm.workspace = true
 hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+commonware-codec.workspace = true
+commonware-cryptography.workspace = true
+commonware-glue.workspace = true
+commonware-utils.workspace = true
+hub-domain.workspace = true
 
 [dev-dependencies]
+commonware-consensus.workspace = true
 tempfile = "3"
 
 [lints]

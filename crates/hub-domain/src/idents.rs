@@ -138,6 +138,7 @@ mod tests {
             state_root: StateRoot(B256::from([0xBBu8; 32])),
             module_state_root: B256::ZERO,
             txs,
+            payload: None,
         };
         let encoded = block.encode();
         let decoded = Block::decode_cfg(encoded.clone(), &cfg()).expect("decode block");

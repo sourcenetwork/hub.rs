@@ -14,7 +14,10 @@ mod events;
 pub use events::{LedgerEvent, LedgerEvents};
 
 mod block;
-pub use block::{Block, BlockCfg};
+pub use block::{
+    Block, BlockCfg, DKG_PAYLOAD_CFG, DkgDirectory, DkgPayload, DkgPayloadCfg, DkgSigner,
+    DkgVariant, MAX_DKG_PARTICIPANTS,
+};
 
 mod idents;
 pub use idents::{BlockId, Idents, StateRoot, TxId};

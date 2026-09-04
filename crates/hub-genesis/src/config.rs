@@ -35,6 +35,17 @@ pub struct HubGenesis {
     /// Pre-set storage slot values at genesis.
     #[serde(default)]
     pub extra_storage: Vec<GenesisStorage>,
+    /// Hex-encoded `EpochInfo<MinSig, ed25519::PublicKey, Unit>` for epoch 0
+    /// (commonware codec `Encode`d bytes), produced by the bootstrap DKG.
+    #[serde(default)]
+    pub epoch_info: Option<String>,
+    /// Number of blocks in each DKG epoch.
+    #[serde(default = "default_blocks_per_epoch")]
+    pub blocks_per_epoch: u64,
+}
+
+const fn default_blocks_per_epoch() -> u64 {
+    20
 }
 
 fn default_chain_name() -> String {
@@ -146,6 +157,36 @@ impl HubGenesis {
         Ok(genesis)
     }
 
+    /// Decode the hex-encoded epoch-0 `EpochInfo<MinSig, ed25519::PublicKey, Unit>`.
+    pub fn decode_epoch_info(
+        &self,
+    ) -> Result<
+        Option<
+            commonware_glue::dkg::types::EpochInfo<
+                commonware_cryptography::bls12381::primitives::variant::MinSig,
+                commonware_cryptography::ed25519::PublicKey,
+                commonware_utils::sequence::Unit,
+            >,
+        >,
+        HubGenesisError,
+    > {
+        let Some(raw) = self.epoch_info.as_deref() else {
+            return Ok(None);
+        };
+        let raw = raw.strip_prefix("0x").unwrap_or(raw);
+        let bytes = hex::decode(raw)
+            .map_err(|e| HubGenesisError::Parse(format!("invalid epoch_info hex: {e}")))?;
+        let info = commonware_codec::Decode::decode_cfg(
+            bytes.as_slice(),
+            &(
+                hub_domain::MAX_DKG_PARTICIPANTS,
+                commonware_cryptography::bls12381::primitives::sharing::ModeVersion::v0(),
+            ),
+        )
+        .map_err(|e| HubGenesisError::Parse(format!("invalid epoch_info encoding: {e}")))?;
+        Ok(Some(info))
+    }
+
     /// Build the EVM genesis state: balances, registry storage, and code.
     pub fn to_genesis_state(&self) -> Result<GenesisState, HubGenesisError> {
         let mut genesis_alloc = Vec::with_capacity(self.allocations.len());
@@ -238,6 +279,8 @@ impl HubGenesis {
             validators: Vec::new(),
             contracts: Vec::new(),
             extra_storage: Vec::new(),
+            epoch_info: None,
+            blocks_per_epoch: 20,
         }
     }
 }
@@ -425,6 +468,8 @@ mod tests {
             validators: Vec::new(),
             contracts: Vec::new(),
             extra_storage: Vec::new(),
+            epoch_info: None,
+            blocks_per_epoch: 20,
         };
         let err = genesis.to_genesis_state().unwrap_err();
         assert!(err.to_string().contains("invalid address"));
@@ -440,6 +485,8 @@ mod tests {
             validators,
             contracts: Vec::new(),
             extra_storage: Vec::new(),
+            epoch_info: None,
+            blocks_per_epoch: 20,
         }
     }
 
@@ -497,5 +544,48 @@ mod tests {
         assert_eq!(bootstrap.genesis_code.len(), 1);
         assert_eq!(bootstrap.genesis_code[0].0, VALIDATOR_REGISTRY_ADDRESS);
         assert_eq!(bootstrap.genesis_code[0].1, PRECOMPILE_SENTINEL_BYTECODE);
+    }
+
+    #[test]
+    fn epoch_info_defaults_to_none_and_decodes() {
+        use commonware_codec::Encode as _;
+        use commonware_cryptography::Signer as _;
+
+        let genesis = HubGenesis::devnet();
+        assert_eq!(genesis.blocks_per_epoch, 20);
+        assert!(genesis.decode_epoch_info().unwrap().is_none());
+
+        let players = commonware_utils::ordered::Set::from_iter_dedup((0..4).map(|seed| {
+            commonware_cryptography::ed25519::PrivateKey::from_seed(seed).public_key()
+        }));
+        let (output, _) = commonware_cryptography::bls12381::dkg::feldman_desmedt::deal::<
+            commonware_cryptography::bls12381::primitives::variant::MinSig,
+            _,
+            commonware_utils::N3f1,
+        >(
+            commonware_utils::TestRng::new(1),
+            commonware_cryptography::bls12381::primitives::sharing::Mode::NonZeroCounter,
+            players.clone(),
+        )
+        .expect("trusted deal");
+        let info = commonware_glue::dkg::types::EpochInfo {
+            outcome: commonware_glue::dkg::types::EpochOutcome::Success,
+            epoch: commonware_consensus::types::Epoch::new(0),
+            output,
+            players: players.clone(),
+            next_players: players,
+            directory: commonware_utils::sequence::Unit,
+        };
+        let mut genesis = HubGenesis::devnet();
+        genesis.epoch_info = Some(hex::encode(info.encode()));
+        let decoded = genesis.decode_epoch_info().unwrap().expect("epoch info");
+        assert_eq!(decoded, info);
+    }
+
+    #[test]
+    fn epoch_info_rejects_invalid_hex() {
+        let mut genesis = HubGenesis::devnet();
+        genesis.epoch_info = Some("not-hex".to_string());
+        assert!(genesis.decode_epoch_info().is_err());
     }
 }
