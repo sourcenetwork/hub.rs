@@ -42,8 +42,17 @@ pub(crate) enum Commands {
     Devnet(DevnetArgs),
     /// Run multi-node local testnet (trusted-dealer DKG).
     Testnet(testnet::TestnetArgs),
+    /// Run the distributed epoch-0 DKG ceremony.
+    Genesis(GenesisArgs),
     /// Interact with a running hub node.
     Client(crate::client::ClientArgs),
+}
+
+#[derive(clap::Args, Debug)]
+pub(crate) struct GenesisArgs {
+    /// Path to peers.json containing the bootstrap participants and addresses.
+    #[arg(long)]
+    pub peers: PathBuf,
 }
 
 #[derive(clap::Args, Debug)]
@@ -108,6 +117,7 @@ impl Cli {
                 });
                 testnet::run(chain_id, data_dir, args)
             }
+            Some(Commands::Genesis(args)) => self.run_genesis(args),
             Some(Commands::Client(_)) => unreachable!(),
             None => {
                 eprintln!("No subcommand given. Use --help for usage.");
@@ -155,6 +165,31 @@ impl Cli {
             "Starting hub validator"
         );
         run(settings)
+    }
+
+    fn run_genesis(&self, args: &GenesisArgs) -> eyre::Result<()> {
+        use commonware_runtime::{Runner as _, tokio};
+
+        let config = self.load_config()?;
+        let peers = load_peers(&args.peers)?;
+        let genesis = HubGenesis::load(&config.data_dir.join("genesis.json"))?;
+        let storage = config.data_dir.join("bootstrap-commonware");
+        let settings = hub_node::BootstrapSettings {
+            secrets_path: config.data_dir.join("secrets.json"),
+            config,
+            genesis,
+            peers,
+        };
+        let runtime = tokio::Config::default().with_storage_directory(storage);
+        let info = tokio::Runner::new(runtime)
+            .start(|context| async move { hub_node::run_bootstrap(context, settings).await })
+            .map_err(anyhow_to_eyre)?;
+        tracing::info!(
+            epoch = info.epoch.get(),
+            participants = info.players.len(),
+            "Completed genesis DKG"
+        );
+        Ok(())
     }
 
     fn run_devnet(&self, args: &DevnetArgs) -> eyre::Result<()> {

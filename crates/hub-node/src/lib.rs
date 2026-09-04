@@ -6,7 +6,9 @@
 #![recursion_limit = "256"]
 
 mod bootstrap;
-pub use bootstrap::{GenesisEpochInfo, epoch_info_hex, trusted_setup};
+pub use bootstrap::{
+    BootstrapSettings, GenesisEpochInfo, epoch_info_hex, run_bootstrap, trusted_setup,
+};
 
 mod committed_state;
 pub use committed_state::CommittedState;

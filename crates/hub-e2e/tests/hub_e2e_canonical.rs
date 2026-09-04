@@ -60,8 +60,9 @@ fn parse_policy_id(hex_str: &str) -> FixedBytes<32> {
 
 /// Sign an EVM transaction and broadcast to all nodes in the cluster.
 ///
-/// Simplex leader rotation means the tx may sit in a non-leader's mempool;
-/// broadcasting to every node ensures the current leader has it.
+/// Each node gossips admitted txs to all validators, so one submission
+/// reaches every validator; broadcasting to every node keeps the test
+/// robust against a node that is briefly unavailable.
 async fn broadcast_evm_tx(
     cluster: &TestCluster,
     client: &HubClient,
@@ -103,8 +104,9 @@ async fn broadcast_evm_tx(
 
 /// Sign a native BLS transaction and broadcast to all nodes in the cluster.
 ///
-/// P2P forwarding of native txs to the current leader is not yet reliable
-/// under test conditions, so we submit to every node.
+/// Each node gossips admitted txs to all validators, so one submission
+/// reaches every validator; broadcasting to every node keeps the test
+/// robust against a node that is briefly unavailable.
 async fn broadcast_native_tx(
     cluster: &TestCluster,
     client: &HubClient,
@@ -1021,8 +1023,8 @@ async fn canonical_module_test() {
     }
 
     // G7. Invalidate non-existent token via BLS — should revert.
-    // Uses broadcast_native_tx (all-node submission) instead of single-node
-    // client method for reliable leader delivery under leader rotation.
+    // Uses broadcast_native_tx (all-node submission) so the tx reaches
+    // the cluster even if one node is briefly unavailable.
     let g7_calldata = IHub::invalidateJWSCall {
         tokenHash: "nonexistent_token_hash".into(),
     }

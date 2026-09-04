@@ -342,9 +342,9 @@ async fn node_restart_preserves_state() {
 
     // ── 6. Wait for backfill completion and state convergence ────
     //
-    // The FinalizedReporter replays blocks (skipping already-committed
-    // ones) and updates QMDB. Wait for the restarted node to finish
-    // backfilling and converge on all state indicators.
+    // Marshal backfills missing blocks and Stateful applies their finalized
+    // state. Wait for the restarted node to finish backfilling and converge
+    // on all state indicators.
 
     state
         .wait_for_synced(4, Duration::from_secs(120))
@@ -431,8 +431,8 @@ async fn node_restart_preserves_state() {
 
     // ── 8. Submit tx THROUGH the restarted node ─────────────────
     //
-    // Verifies the restarted node's mempool accepts txs and forwards
-    // them to the leader for inclusion.
+    // Verifies the restarted node's mempool accepts txs and gossips
+    // them to all validators for inclusion.
 
     let through_restarted_receipt = send_evm_tx_to_node(
         &restarted_client,

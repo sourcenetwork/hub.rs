@@ -258,7 +258,7 @@ impl HubClient {
     ) -> Result<TransactionReceipt, ClientError> {
         let wire = signer.sign_native_tx(target, calldata)?;
         let tx_hash = self.send_native_tx(&wire).await?;
-        // Native txs need P2P gossip forwarding to the leader,
+        // Native txs rely on P2P gossip to reach all validators,
         // so use a longer timeout than EVM txs.
         let receipt = self
             .wait_for_receipt(tx_hash, Duration::from_millis(300), 400)
