@@ -20,7 +20,6 @@ hub-config.workspace = true
 hub-crypto.workspace = true
 hub-domain.workspace = true
 hub-jsonrpc.workspace = true
-hub-service.workspace = true
 
 alloy-primitives.workspace = true
 k256.workspace = true

@@ -77,6 +77,8 @@ hub-executor = { path = "crates/hub-executor" }
 hub-genesis = { path = "crates/hub-genesis" }
 hub-runner = { path = "crates/hub-runner" }
 hub-state = { path = "crates/hub-state" }
+hub-harness = { path = "crates/hub-harness" }
+test-infra = { path = "crates/test-infra" }
 
 # Commonware (calver 2026.2.0)
 commonware-p2p = "2026.2.0"
@@ -87,7 +89,6 @@ commonware-consensus = "2026.2.0"
 commonware-cryptography = "2026.2.0"
 commonware-parallel = "2026.2.0"
 commonware-storage = "2026.2.0"
-commonware-stream = "2026.2.0"
 commonware-broadcast = "2026.2.0"
 commonware-resolver = "2026.2.0"
 commonware-macros = "2026.2.0"

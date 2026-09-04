@@ -3,11 +3,7 @@
 use std::path::PathBuf;
 
 use alloy_primitives::hex;
-use commonware_codec::{FixedSize, ReadExt};
-use commonware_cryptography::ed25519;
 use serde::{Deserialize, Serialize};
-
-use crate::ConfigError;
 
 /// Default validator threshold.
 pub const DEFAULT_THRESHOLD: u32 = 2;
@@ -42,25 +38,6 @@ impl Default for ConsensusConfig {
     }
 }
 
-impl ConsensusConfig {
-    /// Build the validator set from configured participants.
-    ///
-    /// Parses the hex-encoded participant public keys into [`ed25519::PublicKey`] values.
-    /// Returns an empty set if no participants are configured.
-    pub fn build_validator_set(&self) -> Result<Vec<ed25519::PublicKey>, ConfigError> {
-        self.participants
-            .iter()
-            .map(|bytes| {
-                if bytes.len() != ed25519::PublicKey::SIZE {
-                    return Err(ConfigError::InvalidParticipantKeyLength(bytes.len()));
-                }
-                let mut buf = bytes.as_slice();
-                ed25519::PublicKey::read(&mut buf).map_err(|_| ConfigError::InvalidParticipantKey)
-            })
-            .collect()
-    }
-}
-
 const fn default_threshold() -> u32 {
     DEFAULT_THRESHOLD
 }
@@ -92,6 +69,7 @@ where
 mod tests {
     use commonware_codec::Write as _;
     use commonware_cryptography::Signer as _;
+    use commonware_cryptography::ed25519;
 
     use super::*;
 
@@ -187,59 +165,6 @@ mod tests {
         let config: ConsensusConfig = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(config.participants.len(), 1);
         assert_eq!(config.participants[0], pk_bytes);
-    }
-
-    #[test]
-    fn build_validator_set_empty() {
-        let config = ConsensusConfig::default();
-        let result = config.build_validator_set().expect("build empty set");
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn build_validator_set_single_key() {
-        let pk_bytes = create_valid_public_key_bytes();
-        let config = ConsensusConfig {
-            participants: vec![pk_bytes],
-            ..Default::default()
-        };
-        let result = config.build_validator_set().expect("build validator set");
-        assert_eq!(result.len(), 1);
-    }
-
-    #[test]
-    fn build_validator_set_multiple_keys() {
-        let keys: Vec<_> = (1..=3u8)
-            .map(|i| {
-                let pk = ed25519::PrivateKey::from(ed25519_consensus::SigningKey::from([i; 32]));
-                let mut bytes = Vec::new();
-                pk.public_key().write(&mut bytes);
-                bytes
-            })
-            .collect();
-
-        let config = ConsensusConfig {
-            participants: keys,
-            threshold: 2,
-            ..Default::default()
-        };
-
-        let result = config.build_validator_set().expect("build validator set");
-        assert_eq!(result.len(), 3);
-    }
-
-    #[test]
-    fn build_validator_set_invalid_length() {
-        let config = ConsensusConfig {
-            participants: vec![vec![0u8; 16]],
-            ..Default::default()
-        };
-        let result = config.build_validator_set();
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            ConfigError::InvalidParticipantKeyLength(16)
-        ));
     }
 
     #[test]

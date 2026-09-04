@@ -3632,7 +3632,6 @@ dependencies = [
 [[package]]
 name = "hub-harness"
 version = "0.1.0"
-source = "git+ssh://git@github.com/sourcenetwork/backbone.git#8b1e37aede6423db38e6a4c1a20ecea5c82b26c0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -3651,6 +3650,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "tempfile",
  "test-infra",
  "tokio",
  "tracing",
@@ -3868,10 +3868,7 @@ dependencies = [
  "commonware-p2p",
  "commonware-runtime",
  "commonware-utils",
- "eyre",
- "futures",
  "hub-config",
- "hub-transport",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -3948,7 +3945,6 @@ dependencies = [
  "hub-genesis",
  "hub-jsonrpc",
  "hub-runner",
- "hub-service",
  "k256",
  "rand 0.8.5",
  "reqwest",
@@ -5961,14 +5957,12 @@ dependencies = [
  "sync_wrapper",
  "tokio",
  "tokio-native-tls",
- "tokio-util",
  "tower 0.5.3",
  "tower-http",
  "tower-service",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
- "wasm-streams",
  "web-sys",
 ]
 
@@ -7181,7 +7175,6 @@ dependencies = [
 [[package]]
 name = "test-infra"
 version = "0.1.0"
-source = "git+ssh://git@github.com/sourcenetwork/backbone.git#8b1e37aede6423db38e6a4c1a20ecea5c82b26c0"
 dependencies = [
  "eyre",
  "futures",
@@ -7943,19 +7936,6 @@ dependencies = [
  "indexmap 2.13.0",
  "wasm-encoder",
  "wasmparser",
-]
-
-[[package]]
-name = "wasm-streams"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15053d8d85c7eccdbefef60f06769760a563c7f0a9d6902a13d35c7800b0ad65"
-dependencies = [
- "futures-util",
- "js-sys",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
 ]
 
 [[package]]

@@ -6,7 +6,7 @@ rust-version.workspace = true
 description = "End-to-end test harness for hub"
 
 [dependencies]
-hub-harness = { git = "ssh://git@github.com/sourcenetwork/backbone.git" }
+hub-harness.workspace = true
 
 [dev-dependencies]
 acp = { workspace = true, default-features = false }
