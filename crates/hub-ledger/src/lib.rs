@@ -133,6 +133,7 @@ impl LedgerView {
             module_state_root: ModuleState::default().state_root(),
             txs: Vec::new(),
             payload: None,
+            db_targets: hub_domain::DbTargets::default(),
         };
         let genesis_digest = genesis_block.commitment();
         let state = OverlayState::new(qmdb.state(), QmdbChangeSet::default());
@@ -679,6 +680,7 @@ mod tests {
             module_state_root: B256::ZERO,
             txs,
             payload: None,
+            db_targets: hub_domain::DbTargets::default(),
         };
         let digest = block.commitment();
         let next_state = OverlayState::new(parent_snapshot.state.base(), merged_changes);

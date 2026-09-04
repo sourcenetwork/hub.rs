@@ -12,7 +12,7 @@ use commonware_utils::{NZU32, sequence::Unit};
 use std::fmt;
 use std::num::NonZeroU32;
 
-use crate::{BlockId, ConsensusContext, Idents, StateRoot, Tx, TxCfg};
+use crate::{BlockId, ConsensusContext, DbTargets, Idents, StateRoot, Tx, TxCfg};
 
 /// BLS variant used by the DKG reshare payload.
 pub type DkgVariant = MinSig;
@@ -71,6 +71,8 @@ pub struct Block {
     pub txs: Vec<Tx>,
     /// Optional DKG reshare payload (dealer log or next-epoch info).
     pub payload: Option<DkgPayload>,
+    /// Per-partition QMDB targets after this block.
+    pub db_targets: DbTargets,
 }
 
 impl Block {
@@ -148,6 +150,7 @@ impl Write for Block {
         Idents::write_b256(&self.module_state_root, buf);
         self.txs.write(buf);
         self.payload.write(buf);
+        self.db_targets.write(buf);
     }
 }
 
@@ -162,6 +165,7 @@ impl EncodeSize for Block {
             + 32
             + self.txs.encode_size()
             + self.payload.encode_size()
+            + self.db_targets.encode_size()
     }
 }
 
@@ -178,6 +182,7 @@ impl Read for Block {
         let module_state_root = Idents::read_b256(buf)?;
         let txs = Vec::<Tx>::read_cfg(buf, &(RangeCfg::new(0..=cfg.max_txs), cfg.tx))?;
         let payload = Option::<DkgPayload>::read_cfg(buf, &DKG_PAYLOAD_CFG)?;
+        let db_targets = DbTargets::read(buf)?;
         Ok(Self {
             context,
             parent,
@@ -188,6 +193,7 @@ impl Read for Block {
             module_state_root,
             txs,
             payload,
+            db_targets,
         })
     }
 }
@@ -214,6 +220,7 @@ impl fmt::Debug for Block {
             .field("module_state_root", &self.module_state_root)
             .field("txs", &self.txs.len())
             .field("payload", &self.payload.is_some())
+            .field("db_targets", &self.db_targets)
             .finish()
     }
 }
@@ -250,6 +257,7 @@ mod tests {
             module_state_root: B256::ZERO,
             txs: vec![Tx::new(Bytes::from_static(&[0xde, 0xad, 0xbe, 0xef]))],
             payload: None,
+            db_targets: crate::DbTargets::default(),
         }
     }
 
@@ -338,6 +346,7 @@ mod tests {
             module_state_root: B256::ZERO,
             txs: vec![],
             payload: None,
+            db_targets: crate::DbTargets::default(),
         };
         let encoded = block.encode();
         let decoded = Block::decode_cfg(encoded, &default_block_cfg()).expect("decode");
