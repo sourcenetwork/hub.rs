@@ -24,7 +24,7 @@ mod node;
 pub use node::run_node;
 
 mod participants;
-pub use participants::StaticParticipants;
+pub use participants::{RegistryParticipants, validator_address};
 
 mod provider;
 pub use provider::{DynamicProvider, Registrar};

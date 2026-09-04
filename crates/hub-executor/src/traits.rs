@@ -1,6 +1,7 @@
 //! Core execution traits.
 
 use alloy_consensus::Header;
+use hub_domain::BlockId;
 use hub_modules::module_state::ModuleState;
 use hub_traits::StateDb;
 
@@ -43,8 +44,8 @@ pub trait BlockExecutor<S: StateDb>: Clone + Send + Sync + 'static {
         None
     }
 
-    /// Get the cached post-execution module state for a given height.
-    fn get_cached_modules(&self, _height: u64) -> Option<ModuleState> {
+    /// Get the cached post-execution module state for a given block.
+    fn get_cached_modules(&self, _block: BlockId) -> Option<ModuleState> {
         None
     }
 

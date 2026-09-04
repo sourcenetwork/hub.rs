@@ -14,7 +14,7 @@ use std::{
 
 use commonware_codec::Encode;
 use commonware_cryptography::{Signer as _, ed25519};
-use hub_genesis::HubGenesis;
+use hub_genesis::{HubGenesis, ValidatorConfig};
 use tracing::info;
 
 /// CLI arguments for the testnet command.
@@ -164,6 +164,17 @@ pub(crate) fn run(chain_id: u64, data_dir: PathBuf, args: &TestnetArgs) -> eyre:
     let (epoch_info, shares) = hub_node::trusted_setup(seed, participants.iter().cloned())
         .map_err(crate::cli::anyhow_to_eyre)?;
     genesis.epoch_info = Some(hub_node::epoch_info_hex(&epoch_info));
+    if genesis.validators.is_empty() {
+        genesis.validators = participants
+            .iter()
+            .zip(&p2p_ports)
+            .map(|(public_key, port)| ValidatorConfig {
+                evm_address: format!("{:?}", hub_node::validator_address(public_key)),
+                consensus_pubkey: hex::encode(Encode::encode(public_key)),
+                p2p_address: format!("127.0.0.1:{port}"),
+            })
+            .collect();
+    }
     let genesis_json = serde_json::to_string_pretty(&genesis)?;
 
     for (i, pk) in participants.iter().enumerate() {

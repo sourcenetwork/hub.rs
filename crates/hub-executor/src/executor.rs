@@ -11,7 +11,7 @@ use crate::{
 };
 use alloy_primitives::{B256, Bytes, U256, keccak256};
 use hub_crypto::bls;
-use hub_domain::NativeTx;
+use hub_domain::{BlockId, NativeTx};
 use hub_modules::acp::AcpModule;
 use hub_modules::bulletin::BulletinModule;
 use hub_modules::hub::HubModule;
@@ -42,6 +42,9 @@ type ReceiptCache = Arc<Mutex<HashMap<u64, (Vec<ExecutionReceipt>, u64)>>>;
 /// Per-block module state cache: height → post-execution ModuleState.
 type ModuleCache = Arc<Mutex<HashMap<u64, ModuleState>>>;
 
+/// Fork-safe module snapshots: block ID → (height, post-execution state).
+type BlockModuleCache = Arc<Mutex<HashMap<BlockId, (u64, ModuleState)>>>;
+
 /// Per-module JMT-backed state trees: [acp, bulletin, hub, nonces].
 pub type ModuleTrees = [Arc<Mutex<ModuleStateTree>>; 4];
 
@@ -63,6 +66,7 @@ pub struct HubExecutor {
     modules: SharedModuleState,
     receipt_cache: ReceiptCache,
     module_cache: ModuleCache,
+    block_module_cache: BlockModuleCache,
     module_trees: Option<ModuleTrees>,
 }
 
@@ -74,6 +78,7 @@ impl HubExecutor {
             modules: Arc::new(RwLock::new(ModuleState::default())),
             receipt_cache: Arc::new(Mutex::new(HashMap::new())),
             module_cache: Arc::new(Mutex::new(HashMap::new())),
+            block_module_cache: Arc::new(Mutex::new(HashMap::new())),
             module_trees: None,
         }
     }
@@ -85,6 +90,7 @@ impl HubExecutor {
             modules: Arc::new(RwLock::new(ModuleState::default())),
             receipt_cache: Arc::new(Mutex::new(HashMap::new())),
             module_cache: Arc::new(Mutex::new(HashMap::new())),
+            block_module_cache: Arc::new(Mutex::new(HashMap::new())),
             module_trees: None,
         }
     }
@@ -116,9 +122,37 @@ impl HubExecutor {
         self.module_trees.as_ref()
     }
 
-    /// Get the cached module state for a given height (clone without removing).
-    pub fn get_cached_modules(&self, height: u64) -> Option<ModuleState> {
-        self.module_cache.lock().unwrap().get(&height).cloned()
+    /// Associate the current base module state with a block that predates execution.
+    pub fn seed_block_modules(&self, block: BlockId, height: u64) {
+        let modules = self.modules.read().unwrap().clone();
+        self.block_module_cache
+            .lock()
+            .unwrap()
+            .insert(block, (height, modules));
+    }
+
+    /// Associate the most recently executed state at `height` with its block ID.
+    pub fn cache_block_modules(&self, block: BlockId, height: u64) {
+        let modules = self
+            .module_cache
+            .lock()
+            .unwrap()
+            .get(&height)
+            .cloned()
+            .expect("executed block must have a module snapshot");
+        self.block_module_cache
+            .lock()
+            .unwrap()
+            .insert(block, (height, modules));
+    }
+
+    /// Get the cached module state for a given block (clone without removing).
+    pub fn get_cached_modules(&self, block: BlockId) -> Option<ModuleState> {
+        self.block_module_cache
+            .lock()
+            .unwrap()
+            .get(&block)
+            .map(|(_, modules)| modules.clone())
     }
 
     /// Remove module cache entries at or below the given height.
@@ -127,6 +161,10 @@ impl HubExecutor {
             .lock()
             .unwrap()
             .retain(|&h, _| h > up_to_height);
+        self.block_module_cache
+            .lock()
+            .unwrap()
+            .retain(|_, (height, _)| *height > up_to_height);
     }
 
     /// Write module state to `SharedModuleState` (used by build/verify
@@ -502,8 +540,8 @@ impl<S: StateDb> BlockExecutor<S> for HubExecutor {
         self.receipt_cache.lock().unwrap().remove(&height)
     }
 
-    fn get_cached_modules(&self, height: u64) -> Option<ModuleState> {
-        self.get_cached_modules(height)
+    fn get_cached_modules(&self, block: BlockId) -> Option<ModuleState> {
+        self.get_cached_modules(block)
     }
 
     fn set_base_modules(&self, modules: ModuleState) {

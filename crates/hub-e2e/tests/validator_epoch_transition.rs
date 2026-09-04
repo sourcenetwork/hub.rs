@@ -1,8 +1,7 @@
 //! Validator set epoch transition integration test.
 //!
-//! Verifies that validator set mutations (add/remove/status change) detected
-//! by the FinalizedReporter flow through to the EpochManager, which registers
-//! new epoch schemes for Simplex consensus.
+//! Verifies that ValidatorRegistry membership feeds resharing and that Simplex
+//! enters an epoch whose key material includes a newly registered validator.
 //!
 //! Requires `cargo build -p hubd` before running.
 
@@ -10,11 +9,13 @@ use std::time::Duration;
 
 use alloy_primitives::{Address, B256, Bytes, FixedBytes};
 use alloy_sol_types::{SolCall, SolEvent};
+use commonware_codec::Encode;
+use commonware_cryptography::{Signer as _, ed25519};
 
 use hub_client::{
     ACP_ADDRESS, EvmSigner, HubClient, TransactionReceipt, VALIDATOR_REGISTRY_ADDRESS,
 };
-use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, TestCluster, ValidatorConfig};
+use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, TestCluster};
 use hub_e2e::{RECEIPT_POLL_ATTEMPTS, RECEIPT_POLL_INTERVAL};
 use hub_modules::acp::abi::IAcp;
 use hub_modules::validator_registry::abi::IValidatorRegistry;
@@ -32,21 +33,6 @@ resources:
       - name: manage
         expr: admin
 ";
-
-fn test_validators() -> Vec<ValidatorConfig> {
-    vec![
-        ValidatorConfig {
-            evm_address: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266".to_string(),
-            consensus_pubkey: "aa".repeat(32),
-            p2p_address: "127.0.0.1:30300".to_string(),
-        },
-        ValidatorConfig {
-            evm_address: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".to_string(),
-            consensus_pubkey: "bb".repeat(32),
-            p2p_address: "127.0.0.1:30301".to_string(),
-        },
-    ]
-}
 
 fn parse_policy_id(hex_str: &str) -> FixedBytes<32> {
     let mut bytes = [0u8; 32];
@@ -145,14 +131,12 @@ async fn validator_epoch_transition() {
     // ── SETUP ─────────────────────────────────────────────────────
 
     let chain_id = 9010;
-    let validators = test_validators();
-    let genesis = GenesisBuilder::devnet()
-        .funded_accounts(3, "1000000000000000000000000")
-        .validators(validators.clone());
+    let genesis = GenesisBuilder::devnet().funded_accounts(3, "1000000000000000000000000");
 
     let cluster = TestCluster::builder()
         .binary(hub_e2e::resolve_binary().expect("resolve hubd binary"))
         .nodes(4)
+        .seed(chain_id)
         .chain_id(chain_id)
         .genesis(genesis)
         .preset(ConsensusPreset::Fast)
@@ -182,7 +166,7 @@ async fn validator_epoch_transition() {
         .expect("abi decode getValidators");
     let all_validators: Vec<ValidatorInfo> =
         serde_json::from_slice(&decoded).expect("parse validators JSON");
-    assert_eq!(all_validators.len(), 2, "should have 2 genesis validators");
+    assert_eq!(all_validators.len(), 4, "should have 4 genesis validators");
 
     // ── B: Set up ACP policy for write access ─────────────────────
 
@@ -193,7 +177,8 @@ async fn validator_epoch_transition() {
     let new_validator_addr: Address = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
         .parse()
         .unwrap();
-    let new_consensus_key = B256::repeat_byte(0xCC);
+    let new_public_key = ed25519::PrivateKey::from_seed(chain_id + 4).public_key();
+    let new_consensus_key = B256::from_slice(Encode::encode(&new_public_key).as_ref());
 
     let calldata = IValidatorRegistry::addValidatorCall {
         evmAddr: new_validator_addr,
@@ -225,27 +210,25 @@ async fn validator_epoch_transition() {
         serde_json::from_slice(&decoded).expect("parse validators JSON");
     assert_eq!(
         all_validators.len(),
-        3,
-        "should have 3 validators after add"
+        5,
+        "should have 5 validators after add"
     );
 
-    // ── D: Verify epoch transition was detected ───────────────────
+    // ── D: Verify the registry-backed set completes resharing ─────
 
-    // Allow a settling period for the finalization pipeline to process
-    // the block and for the epoch manager consumer to handle the update.
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    state
+        .wait_for_height(42, Duration::from_secs(60))
+        .await
+        .expect("cluster should enter epoch 2 with the added validator");
 
     let logs = tokio::fs::read_to_string(state.node_logs(0).log_path())
         .await
         .expect("should read node logs");
 
+    let entered_epochs = logs.matches("entered epoch").count();
     assert!(
-        logs.contains("validator set change detected"),
-        "FinalizedReporter should detect ValidatorAdded event in block receipts"
-    );
-    assert!(
-        logs.contains("entered epoch"),
-        "EpochManager should register a new epoch after validator set change"
+        entered_epochs >= 3,
+        "expected the engine to enter epochs 0, 1, and 2, got {entered_epochs} entries"
     );
 
     // ── E: Deactivate a validator → triggers another epoch ────────
@@ -291,7 +274,7 @@ async fn validator_epoch_transition() {
         "event should be ValidatorRemoved"
     );
 
-    // Verify back to 2 validators
+    // Verify back to 4 validators
     let calldata = IValidatorRegistry::getValidatorsCall {}.abi_encode();
     let result = eth_call_raw(&client, VALIDATOR_REGISTRY_ADDRESS, calldata).await;
     let decoded = IValidatorRegistry::getValidatorsCall::abi_decode_returns(&result)
@@ -300,27 +283,11 @@ async fn validator_epoch_transition() {
         serde_json::from_slice(&decoded).expect("parse validators JSON");
     assert_eq!(
         final_validators.len(),
-        2,
-        "should be back to 2 validators after removal"
+        4,
+        "should be back to 4 validators after removal"
     );
 
-    // ── G: Verify all three mutations were detected ───────────────
-
-    tokio::time::sleep(Duration::from_secs(3)).await;
-
-    let logs = tokio::fs::read_to_string(state.node_logs(0).log_path())
-        .await
-        .expect("should read node logs");
-
-    // Count validator set change detections — should be at least 3
-    // (add in C, status change in E, remove in F).
-    let change_count = logs.matches("validator set change detected").count();
-    assert!(
-        change_count >= 3,
-        "expected at least 3 validator set changes, got {change_count}"
-    );
-
-    // ── H: Cross-node consistency ─────────────────────────────────
+    // ── G: Cross-node consistency ─────────────────────────────────
 
     let client2 = HubClient::new(cluster.node(1).rpc_url());
     let calldata = IValidatorRegistry::getValidatorsCall {}.abi_encode();
