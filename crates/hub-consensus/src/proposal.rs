@@ -137,6 +137,7 @@ where
             state_root,
             module_state_root,
             txs,
+            payload: None,
         };
         let tx_ids = self.tx_ids_from_block(&block);
         let snapshot = Snapshot::new(
@@ -195,6 +196,7 @@ where
             state_root,
             module_state_root,
             txs,
+            payload: None,
         };
         let tx_ids = self.tx_ids_from_block(&block);
         let snapshot = Snapshot::new(
@@ -454,6 +456,7 @@ mod tests {
             state_root: StateRoot(B256::ZERO),
             module_state_root: B256::ZERO,
             txs: Vec::new(),
+            payload: None,
         }
     }
 
@@ -680,6 +683,7 @@ mod tests {
             state_root: StateRoot(B256::ZERO),
             module_state_root: B256::ZERO,
             txs: vec![tx.clone()],
+            payload: None,
         };
         let parent_digest = parent.commitment();
         let parent_snapshot = Snapshot::new(

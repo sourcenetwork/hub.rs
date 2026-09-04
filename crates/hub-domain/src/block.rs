@@ -4,9 +4,42 @@ use alloy_evm::revm::primitives::{B256, keccak256};
 use bytes::{Buf, BufMut};
 use commonware_codec::{Encode, EncodeSize, Error as CodecError, RangeCfg, Read, ReadExt, Write};
 use commonware_consensus::types::{Epoch, Round, View};
-use commonware_cryptography::{Committable, Digestible, Hasher as _, Sha256};
+use commonware_cryptography::{
+    Committable, Digestible, Hasher as _, Sha256, bls12381::primitives::variant::MinSig, ed25519,
+};
+use commonware_glue::dkg::types::Payload;
+use commonware_utils::{NZU32, sequence::Unit};
+use std::fmt;
+use std::num::NonZeroU32;
 
 use crate::{BlockId, ConsensusContext, Idents, StateRoot, Tx, TxCfg};
+
+/// BLS variant used by the DKG reshare payload.
+pub type DkgVariant = MinSig;
+
+/// Signer type used by the DKG reshare payload.
+pub type DkgSigner = ed25519::PrivateKey;
+
+/// Transport directory type carried by the block's epoch artifacts.
+pub type DkgDirectory = Unit;
+
+/// Reshare payload a block may carry for the DKG epoch transition.
+pub type DkgPayload = Payload<DkgVariant, DkgSigner, DkgDirectory>;
+
+/// Maximum entries accepted in each DKG participant set.
+pub const MAX_DKG_PARTICIPANTS: NonZeroU32 = NZU32!(64);
+
+/// Codec configuration used when decoding a block's DKG payload.
+pub type DkgPayloadCfg = (
+    NonZeroU32,
+    commonware_cryptography::bls12381::primitives::sharing::ModeVersion,
+);
+
+/// Codec configuration used when decoding a block's DKG payload.
+pub const DKG_PAYLOAD_CFG: DkgPayloadCfg = (
+    MAX_DKG_PARTICIPANTS,
+    commonware_cryptography::bls12381::primitives::sharing::ModeVersion::v0(),
+);
 
 #[derive(Clone, Copy, Debug)]
 /// Configuration used when decoding blocks and their transactions.
@@ -17,7 +50,7 @@ pub struct BlockCfg {
     pub tx: TxCfg,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 /// Block type agreed on by consensus (via its digest).
 pub struct Block {
     /// Consensus context from the proposing round.
@@ -36,6 +69,8 @@ pub struct Block {
     pub module_state_root: B256,
     /// Transactions included in the block.
     pub txs: Vec<Tx>,
+    /// Optional DKG reshare payload (dealer log or next-epoch info).
+    pub payload: Option<DkgPayload>,
 }
 
 impl Block {
@@ -53,6 +88,12 @@ impl Block {
             leader,
             parent: (View::new(0), sha256::Digest([0u8; 32])),
         }
+    }
+
+    /// Attach a DKG reshare payload without touching other fields.
+    pub fn with_payload(mut self, payload: DkgPayload) -> Self {
+        self.payload = Some(payload);
+        self
     }
 }
 
@@ -106,6 +147,7 @@ impl Write for Block {
         self.state_root.write(buf);
         Idents::write_b256(&self.module_state_root, buf);
         self.txs.write(buf);
+        self.payload.write(buf);
     }
 }
 
@@ -119,6 +161,7 @@ impl EncodeSize for Block {
             + self.state_root.encode_size()
             + 32
             + self.txs.encode_size()
+            + self.payload.encode_size()
     }
 }
 
@@ -134,6 +177,7 @@ impl Read for Block {
         let state_root = StateRoot::read(buf)?;
         let module_state_root = Idents::read_b256(buf)?;
         let txs = Vec::<Tx>::read_cfg(buf, &(RangeCfg::new(0..=cfg.max_txs), cfg.tx))?;
+        let payload = Option::<DkgPayload>::read_cfg(buf, &DKG_PAYLOAD_CFG)?;
         Ok(Self {
             context,
             parent,
@@ -143,7 +187,34 @@ impl Read for Block {
             state_root,
             module_state_root,
             txs,
+            payload,
         })
+    }
+}
+
+impl commonware_glue::dkg::ReshareBlock for Block {
+    type Variant = DkgVariant;
+    type Signer = DkgSigner;
+    type Directory = DkgDirectory;
+
+    fn payload(&self) -> Option<DkgPayload> {
+        self.payload.clone()
+    }
+}
+
+impl fmt::Debug for Block {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Block")
+            .field("context", &self.context)
+            .field("parent", &self.parent)
+            .field("height", &self.height)
+            .field("timestamp", &self.timestamp)
+            .field("prevrandao", &self.prevrandao)
+            .field("state_root", &self.state_root)
+            .field("module_state_root", &self.module_state_root)
+            .field("txs", &self.txs.len())
+            .field("payload", &self.payload.is_some())
+            .finish()
     }
 }
 
@@ -151,6 +222,11 @@ impl Read for Block {
 mod tests {
     use alloy_primitives::Bytes;
     use commonware_codec::Decode;
+    use commonware_cryptography::bls12381::dkg::feldman_desmedt::deal;
+    use commonware_cryptography::bls12381::primitives::sharing::Mode;
+    use commonware_cryptography::{Signer as _, ed25519};
+    use commonware_glue::dkg::types::{EpochInfo, EpochOutcome};
+    use commonware_utils::{N3f1, TestRng, ordered::Set, sequence::Unit};
 
     use super::*;
 
@@ -173,7 +249,29 @@ mod tests {
             state_root: StateRoot(B256::repeat_byte(0xcd)),
             module_state_root: B256::ZERO,
             txs: vec![Tx::new(Bytes::from_static(&[0xde, 0xad, 0xbe, 0xef]))],
+            payload: None,
         }
+    }
+
+    fn sample_epoch_info() -> EpochInfo<DkgVariant, ed25519::PublicKey, DkgDirectory> {
+        let players = Set::from_iter_dedup(
+            (0..4).map(|seed| ed25519::PrivateKey::from_seed(seed).public_key()),
+        );
+        let (output, _) =
+            deal::<DkgVariant, _, N3f1>(TestRng::new(1), Mode::NonZeroCounter, players.clone())
+                .expect("trusted deal");
+        EpochInfo {
+            outcome: EpochOutcome::Success,
+            epoch: Epoch::new(1),
+            output,
+            players: players.clone(),
+            next_players: players,
+            directory: Unit,
+        }
+    }
+
+    fn sample_block_with_payload() -> Block {
+        sample_block().with_payload(DkgPayload::EpochInfo(sample_epoch_info()))
     }
 
     #[test]
@@ -239,10 +337,58 @@ mod tests {
             state_root: StateRoot(B256::ZERO),
             module_state_root: B256::ZERO,
             txs: vec![],
+            payload: None,
         };
         let encoded = block.encode();
         let decoded = Block::decode_cfg(encoded, &default_block_cfg()).expect("decode");
         assert_eq!(block, decoded);
+    }
+
+    #[test]
+    fn block_with_payload_roundtrip() {
+        let block = sample_block_with_payload();
+        let encoded = block.encode();
+        let decoded = Block::decode_cfg(encoded.clone(), &default_block_cfg()).expect("decode");
+        assert_eq!(block, decoded);
+        assert_eq!(decoded.id(), BlockId(keccak256(encoded)));
+    }
+
+    #[test]
+    fn payload_changes_block_id() {
+        let plain = sample_block();
+        let with_payload = sample_block_with_payload();
+        assert_ne!(plain.id(), with_payload.id());
+    }
+
+    #[test]
+    fn reshare_block_payload_accessor() {
+        use commonware_glue::dkg::ReshareBlock as _;
+
+        let plain = sample_block();
+        assert!(plain.payload().is_none());
+        let with_payload = sample_block_with_payload();
+        assert!(with_payload.payload().is_some());
+        assert_eq!(
+            with_payload.payload().unwrap().encode(),
+            with_payload.payload.as_ref().unwrap().encode()
+        );
+    }
+    #[test]
+    fn payload_encoding_is_canonical() {
+        let block = sample_block_with_payload();
+        let encoded = block.encode();
+        let decoded = Block::decode_cfg(encoded.clone(), &default_block_cfg()).expect("decode");
+        assert_eq!(decoded.encode(), encoded);
+    }
+
+    #[test]
+    fn payload_rejects_non_canonical_presence_byte() {
+        let block = sample_block_with_payload();
+        let mut encoded = block.encode().to_vec();
+        let payload_start = encoded.len() - block.payload.encode_size();
+        // Flip the Option presence byte from 1 (Some) to 2 (invalid).
+        encoded[payload_start] = 2;
+        assert!(Block::decode_cfg(encoded.as_slice(), &default_block_cfg()).is_err());
     }
 
     #[test]

@@ -29,6 +29,16 @@ pub struct HubGenesis {
     /// Storage slots pre-set at genesis.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_storage: Vec<GenesisStorage>,
+    /// Hex-encoded epoch-0 DKG `EpochInfo` (optional).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epoch_info: Option<String>,
+    /// Number of blocks in each DKG epoch.
+    #[serde(default, skip_serializing_if = "is_default_blocks_per_epoch")]
+    pub blocks_per_epoch: u64,
+}
+
+const fn is_default_blocks_per_epoch(value: &u64) -> bool {
+    *value == 20
 }
 
 /// A pre-funded account allocation.
@@ -94,6 +104,8 @@ pub struct GenesisBuilder {
     validators: Vec<ValidatorConfig>,
     contracts: Vec<GenesisContract>,
     extra_storage: Vec<GenesisStorage>,
+    epoch_info: Option<String>,
+    blocks_per_epoch: u64,
 }
 
 impl Default for GenesisBuilder {
@@ -106,6 +118,8 @@ impl Default for GenesisBuilder {
             validators: Vec::new(),
             contracts: Vec::new(),
             extra_storage: Vec::new(),
+            epoch_info: None,
+            blocks_per_epoch: 20,
         }
     }
 }
@@ -139,6 +153,8 @@ impl GenesisBuilder {
             validators: Vec::new(),
             contracts: Vec::new(),
             extra_storage: Vec::new(),
+            epoch_info: None,
+            blocks_per_epoch: 20,
         }
     }
 
@@ -226,6 +242,20 @@ impl GenesisBuilder {
         self
     }
 
+    /// Set the hex-encoded epoch-0 DKG `EpochInfo`.
+    #[must_use]
+    pub fn epoch_info(mut self, epoch_info: impl Into<String>) -> Self {
+        self.epoch_info = Some(epoch_info.into());
+        self
+    }
+
+    /// Set the number of blocks in each DKG epoch.
+    #[must_use]
+    pub const fn blocks_per_epoch(mut self, blocks_per_epoch: u64) -> Self {
+        self.blocks_per_epoch = blocks_per_epoch;
+        self
+    }
+
     /// Build the genesis configuration.
     pub fn build(self) -> HubGenesis {
         HubGenesis {
@@ -237,6 +267,8 @@ impl GenesisBuilder {
             validators: self.validators,
             contracts: self.contracts,
             extra_storage: self.extra_storage,
+            epoch_info: self.epoch_info,
+            blocks_per_epoch: self.blocks_per_epoch,
         }
     }
 
@@ -251,6 +283,8 @@ impl GenesisBuilder {
             validators: self.validators.clone(),
             contracts: self.contracts.clone(),
             extra_storage: self.extra_storage.clone(),
+            epoch_info: self.epoch_info.clone(),
+            blocks_per_epoch: self.blocks_per_epoch,
         };
 
         let json = serde_json::to_string_pretty(&genesis)?;
