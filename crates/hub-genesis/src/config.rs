@@ -2,13 +2,13 @@
 
 use std::{collections::HashSet, path::Path, str::FromStr};
 
+use crate::state::GenesisState;
 use alloy_evm::revm::primitives::{Address, U256, keccak256};
-use hub_domain::BootstrapConfig;
 use serde::{Deserialize, Serialize};
 
 /// Hub-extended genesis configuration.
 ///
-/// Extends Kora's base genesis with hub-specific fields:
+/// Extends the base EVM genesis with hub-specific fields:
 /// - `native_mint`: NativeMint precompile configuration
 /// - `chain_name`: Human-readable chain identifier
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -35,10 +35,6 @@ pub struct HubGenesis {
     /// Pre-set storage slot values at genesis.
     #[serde(default)]
     pub extra_storage: Vec<GenesisStorage>,
-    /// Epoch length for consensus (number of views per epoch).
-    /// `None` means a single infinite epoch (`u64::MAX`).
-    #[serde(default)]
-    pub epoch_length: Option<u64>,
 }
 
 fn default_chain_name() -> String {
@@ -150,8 +146,8 @@ impl HubGenesis {
         Ok(genesis)
     }
 
-    /// Convert to Kora's BootstrapConfig.
-    pub fn to_bootstrap_config(&self) -> Result<BootstrapConfig, HubGenesisError> {
+    /// Build the EVM genesis state: balances, registry storage, and code.
+    pub fn to_genesis_state(&self) -> Result<GenesisState, HubGenesisError> {
         let mut genesis_alloc = Vec::with_capacity(self.allocations.len());
         for alloc in &self.allocations {
             let address = Address::from_str(&alloc.address)
@@ -209,11 +205,10 @@ impl HubGenesis {
             })
             .collect();
 
-        Ok(BootstrapConfig {
+        Ok(GenesisState {
             genesis_alloc,
             genesis_storage,
             genesis_code,
-            bootstrap_txs: Vec::new(),
             participant_addresses,
         })
     }
@@ -243,7 +238,6 @@ impl HubGenesis {
             validators: Vec::new(),
             contracts: Vec::new(),
             extra_storage: Vec::new(),
-            epoch_length: None,
         }
     }
 }
@@ -396,11 +390,11 @@ mod tests {
     }
 
     #[test]
-    fn devnet_to_bootstrap_config() {
+    fn devnet_to_genesis_state() {
         let genesis = HubGenesis::devnet();
-        let bootstrap = genesis.to_bootstrap_config().unwrap();
-        assert_eq!(bootstrap.genesis_alloc.len(), 2);
-        assert!(bootstrap.bootstrap_txs.is_empty());
+        let state = genesis.to_genesis_state().unwrap();
+        assert_eq!(state.genesis_alloc.len(), 2);
+        assert!(state.participant_addresses.is_empty());
     }
 
     #[test]
@@ -431,9 +425,8 @@ mod tests {
             validators: Vec::new(),
             contracts: Vec::new(),
             extra_storage: Vec::new(),
-            epoch_length: None,
         };
-        let err = genesis.to_bootstrap_config().unwrap_err();
+        let err = genesis.to_genesis_state().unwrap_err();
         assert!(err.to_string().contains("invalid address"));
     }
 
@@ -447,7 +440,6 @@ mod tests {
             validators,
             contracts: Vec::new(),
             extra_storage: Vec::new(),
-            epoch_length: None,
         }
     }
 
@@ -465,7 +457,7 @@ mod tests {
                 p2p_address: "127.0.0.1:30301".to_string(),
             },
         ]);
-        let err = genesis.to_bootstrap_config().unwrap_err();
+        let err = genesis.to_genesis_state().unwrap_err();
         assert!(err.to_string().contains("duplicate validator address"));
     }
 
@@ -476,7 +468,7 @@ mod tests {
             consensus_pubkey: "aa".repeat(32),
             p2p_address: "not-a-socket-addr".to_string(),
         }]);
-        let err = genesis.to_bootstrap_config().unwrap_err();
+        let err = genesis.to_genesis_state().unwrap_err();
         assert!(err.to_string().contains("invalid validator p2p address"));
     }
 
@@ -487,7 +479,7 @@ mod tests {
             consensus_pubkey: "00".repeat(32),
             p2p_address: "127.0.0.1:30300".to_string(),
         }]);
-        let err = genesis.to_bootstrap_config().unwrap_err();
+        let err = genesis.to_genesis_state().unwrap_err();
         assert!(
             err.to_string()
                 .contains("consensus pubkey cannot be all zeros")
@@ -501,7 +493,7 @@ mod tests {
             consensus_pubkey: "aa".repeat(32),
             p2p_address: "127.0.0.1:30300".to_string(),
         }]);
-        let bootstrap = genesis.to_bootstrap_config().unwrap();
+        let bootstrap = genesis.to_genesis_state().unwrap();
         assert_eq!(bootstrap.genesis_code.len(), 1);
         assert_eq!(bootstrap.genesis_code[0].0, VALIDATOR_REGISTRY_ADDRESS);
         assert_eq!(bootstrap.genesis_code[0].1, PRECOMPILE_SENTINEL_BYTECODE);

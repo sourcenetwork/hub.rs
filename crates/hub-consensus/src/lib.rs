@@ -14,7 +14,7 @@ mod error;
 pub use error::ConsensusError;
 
 mod traits;
-pub use traits::{Digest, Mempool, SeedTracker, Snapshot, SnapshotStore, TxId};
+pub use traits::{Digest, Mempool, Snapshot, SnapshotStore, TxId};
 
 mod ledger;
 pub use ledger::LedgerView;

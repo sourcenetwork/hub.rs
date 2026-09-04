@@ -43,9 +43,9 @@ bytes.workspace = true
 futures.workspace = true
 hex.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 
 [dev-dependencies]
+serde_json.workspace = true
 alloy-eips.workspace = true
 jmt = { version = "0.11", features = ["mocks"] }
 

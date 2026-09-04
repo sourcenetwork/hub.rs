@@ -152,8 +152,6 @@ mod tests {
 
     #[test]
     fn recover_did_roundtrip() {
-        use k256::ecdsa::signature::hazmat::PrehashSigner;
-
         let (signing_key, pubkey) = test_keypair();
         let expected_did = did_from_secp256k1_pubkey(&pubkey).unwrap();
 
@@ -201,8 +199,6 @@ mod tests {
     /// 4. That address must match `ecrecover`'s output
     #[test]
     fn full_sign_recover_did_to_address_roundtrip() {
-        use k256::ecdsa::signature::hazmat::PrehashSigner;
-
         let (signing_key, _pubkey) = test_keypair();
 
         // Derive the canonical EVM address directly from the signing key

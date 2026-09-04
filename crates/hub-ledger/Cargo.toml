@@ -37,6 +37,9 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+# Local crates
+hub-domain = { workspace = true, features = ["evm"] }
+
 # Commonware
 commonware-runtime.workspace = true
 commonware-utils.workspace = true

@@ -8,9 +8,3 @@
 pub mod bls;
 pub mod jwt;
 pub mod secp256k1;
-
-#[cfg(feature = "test-utils")]
-mod test_utils;
-
-#[cfg(feature = "test-utils")]
-pub use test_utils::{Ed25519Scheme, ed25519_schemes};

@@ -5,16 +5,13 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
 mod aliases;
-pub use aliases::{ConsensusContext, ConsensusDigest, FinalizationEvent, PublicKey};
+pub use aliases::{ConsensusContext, ConsensusDigest, PublicKey};
 
 mod commitment;
 pub use commitment::{AccountChange, StateChanges, StateChangesCfg};
 
 mod events;
 pub use events::{LedgerEvent, LedgerEvents};
-
-mod bootstrap;
-pub use bootstrap::{BootstrapConfig, BootstrapError};
 
 mod block;
 pub use block::{Block, BlockCfg};

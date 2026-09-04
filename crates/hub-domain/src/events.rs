@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 
-use alloy_evm::revm::primitives::B256;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use parking_lot::Mutex;
 
@@ -16,8 +15,6 @@ pub enum LedgerEvent {
     TransactionSubmitted(TxId),
     /// A snapshot has been persisted to durable storage.
     SnapshotPersisted(ConsensusDigest),
-    /// The randomness seed has been updated for future blocks.
-    SeedUpdated(ConsensusDigest, B256),
 }
 
 /// Pub-sub registry for ledger events.
