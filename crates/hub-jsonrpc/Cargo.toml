@@ -45,7 +45,7 @@ parking_lot.workspace = true
 # Commonware
 commonware-cryptography.workspace = true
 
-# Kora crates
+# Hub crates
 hub-domain.workspace = true
 hub-executor.workspace = true
 hub-indexer.workspace = true
