@@ -1,7 +1,6 @@
 //! HubExecutor — EVM executor with hub precompiles (ACP, Bulletin, Hub)
 //! and native BLS transaction support.
 
-use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -11,7 +10,7 @@ use crate::{
 };
 use alloy_primitives::{B256, Bytes, U256, keccak256};
 use hub_crypto::bls;
-use hub_domain::{BlockId, NativeTx};
+use hub_domain::NativeTx;
 use hub_modules::acp::AcpModule;
 use hub_modules::bulletin::BulletinModule;
 use hub_modules::hub::HubModule;
@@ -36,12 +35,6 @@ use crate::precompiles::{
 /// Gas budget for native BLS transactions dispatched to modules.
 const NATIVE_TX_GAS_LIMIT: u64 = 1_000_000;
 
-/// Per-block module state cache: height → post-execution ModuleState.
-type ModuleCache = Arc<Mutex<HashMap<u64, ModuleState>>>;
-
-/// Fork-safe module snapshots: block ID → (height, post-execution state).
-type BlockModuleCache = Arc<Mutex<HashMap<BlockId, (u64, ModuleState)>>>;
-
 /// Per-module JMT-backed state trees: [acp, bulletin, hub, nonces].
 pub type ModuleTrees = [Arc<Mutex<ModuleStateTree>>; 4];
 
@@ -51,16 +44,12 @@ pub type ModuleTrees = [Arc<Mutex<ModuleStateTree>>; 4];
 /// (BLS12-381) in block order. The first byte of each transaction determines
 /// the path: `0x45` → native BLS, anything else → REVM.
 ///
-/// Module state persists across block executions via `SharedModuleState`.
-/// Post-execution module state is cached per height so consensus can chain
-/// parent→child state across proposals, and finalization can commit the
-/// winning fork's state.
+/// Shared module state serves committed queries. Consensus execution supplies
+/// an explicit parent snapshot and receives its post-execution state.
 #[derive(Clone, Debug)]
 pub struct HubExecutor {
     config: ExecutionConfig,
     modules: SharedModuleState,
-    module_cache: ModuleCache,
-    block_module_cache: BlockModuleCache,
     module_trees: Option<ModuleTrees>,
 }
 
@@ -70,8 +59,6 @@ impl HubExecutor {
         Self {
             config: ExecutionConfig::new(chain_id),
             modules: Arc::new(RwLock::new(ModuleState::default())),
-            module_cache: Arc::new(Mutex::new(HashMap::new())),
-            block_module_cache: Arc::new(Mutex::new(HashMap::new())),
             module_trees: None,
         }
     }
@@ -81,8 +68,6 @@ impl HubExecutor {
         Self {
             config,
             modules: Arc::new(RwLock::new(ModuleState::default())),
-            module_cache: Arc::new(Mutex::new(HashMap::new())),
-            block_module_cache: Arc::new(Mutex::new(HashMap::new())),
             module_trees: None,
         }
     }
@@ -114,53 +99,7 @@ impl HubExecutor {
         self.module_trees.as_ref()
     }
 
-    /// Associate the current base module state with a block that predates execution.
-    pub fn seed_block_modules(&self, block: BlockId, height: u64) {
-        let modules = self.modules.read().unwrap().clone();
-        self.block_module_cache
-            .lock()
-            .unwrap()
-            .insert(block, (height, modules));
-    }
-
-    /// Associate the most recently executed state at `height` with its block ID.
-    pub fn cache_block_modules(&self, block: BlockId, height: u64) {
-        let modules = self
-            .module_cache
-            .lock()
-            .unwrap()
-            .get(&height)
-            .cloned()
-            .expect("executed block must have a module snapshot");
-        self.block_module_cache
-            .lock()
-            .unwrap()
-            .insert(block, (height, modules));
-    }
-
-    /// Get the cached module state for a given block (clone without removing).
-    pub fn get_cached_modules(&self, block: BlockId) -> Option<ModuleState> {
-        self.block_module_cache
-            .lock()
-            .unwrap()
-            .get(&block)
-            .map(|(_, modules)| modules.clone())
-    }
-
-    /// Remove module cache entries at or below the given height.
-    pub fn cleanup_module_cache(&self, up_to_height: u64) {
-        self.module_cache
-            .lock()
-            .unwrap()
-            .retain(|&h, _| h > up_to_height);
-        self.block_module_cache
-            .lock()
-            .unwrap()
-            .retain(|_, (height, _)| *height > up_to_height);
-    }
-
-    /// Write module state to `SharedModuleState` (used by build/verify
-    /// to set parent state before execute, and by finalization to commit).
+    /// Install module state loaded at startup or selected by finalization.
     pub fn set_base_modules(&self, modules: ModuleState) {
         *self.modules.write().unwrap() = modules;
     }
@@ -285,16 +224,15 @@ impl HubExecutor {
     }
 }
 
-impl<S: StateDb> BlockExecutor<S> for HubExecutor {
-    type Tx = Bytes;
-
-    fn execute(
+impl HubExecutor {
+    /// Execute against an owned parent snapshot without replacing query state.
+    pub fn execute_with_modules<S: StateDb>(
         &self,
         state: &S,
         context: &BlockContext,
-        txs: &[Self::Tx],
-    ) -> Result<ExecutionOutcome, ExecutionError> {
-        let base_modules = self.modules.read().unwrap().clone();
+        txs: &[Bytes],
+        base_modules: ModuleState,
+    ) -> Result<(ExecutionOutcome, ModuleState), ExecutionError> {
         let mut modules = base_modules.clone();
 
         let block_ctx = BlockExecCtx {
@@ -497,12 +435,22 @@ impl<S: StateDb> BlockExecutor<S> for HubExecutor {
             modules.state_root()
         };
 
-        self.module_cache
-            .lock()
-            .unwrap()
-            .insert(context.header.number, modules);
+        Ok((outcome, modules))
+    }
+}
 
-        Ok(outcome)
+impl<S: StateDb> BlockExecutor<S> for HubExecutor {
+    type Tx = Bytes;
+
+    fn execute(
+        &self,
+        state: &S,
+        context: &BlockContext,
+        txs: &[Self::Tx],
+    ) -> Result<ExecutionOutcome, ExecutionError> {
+        let modules = self.modules.read().unwrap().clone();
+        self.execute_with_modules(state, context, txs, modules)
+            .map(|(outcome, _)| outcome)
     }
 
     fn validate_header(&self, header: &alloy_consensus::Header) -> Result<(), ExecutionError> {
@@ -519,20 +467,6 @@ impl<S: StateDb> BlockExecutor<S> for HubExecutor {
             )));
         }
         Ok(())
-    }
-
-    fn mark_height_verified(&self, _height: u64) {}
-
-    fn get_cached_modules(&self, block: BlockId) -> Option<ModuleState> {
-        self.get_cached_modules(block)
-    }
-
-    fn set_base_modules(&self, modules: ModuleState) {
-        self.set_base_modules(modules);
-    }
-
-    fn cleanup_module_cache(&self, up_to_height: u64) {
-        self.cleanup_module_cache(up_to_height);
     }
 }
 

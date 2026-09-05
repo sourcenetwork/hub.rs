@@ -1,0 +1,173 @@
+//! Pending branches must not replace module state served to queries.
+
+#![recursion_limit = "256"]
+
+use std::sync::Arc;
+
+use alloy_sol_types::SolCall;
+use commonware_consensus::marshal::ancestry;
+use commonware_glue::stateful::{Application, Input, Proposed, db::DatabaseSet as _};
+use commonware_runtime::{Runner as _, Supervisor as _, buffer::paged::CacheRef, tokio};
+use commonware_utils::{NZU16, NZUsize};
+use hub_app::{NoopSink, ReshareInput, StatefulHubApp, apply_genesis, genesis_block};
+use hub_backend::{Ctx, HubStateSet, HubUnmerkleized, state_set_config};
+use hub_client::{ACP_ADDRESS, BlsSigner};
+use hub_consensus::{Mempool as _, components::InMemoryMempool};
+use hub_domain::{Block, Tx};
+use hub_executor::HubExecutor;
+use hub_genesis::GenesisState;
+use hub_modules::{ModuleState, acp::abi::IAcp};
+
+const CHAIN_ID: u64 = 9001;
+
+fn create_policy(signer: &BlsSigner, name: &str) -> Tx {
+    Tx::new(
+        signer
+            .sign_native_tx(
+                ACP_ADDRESS,
+                IAcp::createPolicyCall {
+                    policy: format!("name: {name}\nresources:\n  - name: file\n")
+                        .into_bytes()
+                        .into(),
+                    marshalType: 1,
+                }
+                .abi_encode()
+                .into(),
+            )
+            .unwrap()
+            .into(),
+    )
+}
+
+async fn propose(
+    app: &mut StatefulHubApp<NoopSink>,
+    context: Ctx,
+    parent: &Block,
+    batches: HubUnmerkleized,
+    tx: Option<Tx>,
+) -> Proposed<StatefulHubApp<NoopSink>, Ctx> {
+    let provider = InMemoryMempool::new();
+    if let Some(tx) = tx {
+        assert!(provider.insert(tx));
+    }
+    app.propose(
+        (context, Block::genesis_context()),
+        ancestry::from_iter([Arc::new(parent.clone())]),
+        batches,
+        Input {
+            upstream: ReshareInput {
+                upstream: (),
+                payload: None,
+            },
+            provider,
+        },
+    )
+    .await
+    .expect("proposal")
+}
+
+#[test]
+fn pending_branches_do_not_replace_query_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = tokio::Config::default().with_storage_directory(dir.path().to_path_buf());
+    tokio::Runner::new(config).start(|context| async move {
+        let page_cache = CacheRef::from_pooler(&context, NZU16!(4084), NZUsize!(64));
+        let set = HubStateSet::init(
+            context.child("set"),
+            state_set_config("modules", page_cache),
+        )
+        .await;
+        let (root, targets) = apply_genesis(&set, &GenesisState::default()).await.unwrap();
+        let genesis = genesis_block(root, targets, ModuleState::default().state_root());
+        let executor = HubExecutor::new(CHAIN_ID);
+        let mut app = StatefulHubApp::new(
+            executor.clone(),
+            genesis.clone(),
+            InMemoryMempool::new(),
+            NoopSink,
+            64,
+            30_000_000,
+        );
+        let alice = BlsSigner::new(1u64.into(), CHAIN_ID).unwrap();
+        let bob = BlsSigner::new(2u64.into(), CHAIN_ID).unwrap();
+
+        let a = propose(
+            &mut app,
+            context.child("a"),
+            &genesis,
+            set.new_batches().await,
+            Some(create_policy(&alice, "alice")),
+        )
+        .await;
+        let b = propose(
+            &mut app,
+            context.child("b"),
+            &genesis,
+            set.new_batches().await,
+            Some(create_policy(&bob, "bob")),
+        )
+        .await;
+        assert_ne!(a.block.module_state_root, b.block.module_state_root);
+        assert_eq!(a.block.txs.len(), 1);
+        assert_eq!(b.block.txs.len(), 1);
+
+        let mut sibling = app.clone();
+        let (child_a, child_b) = ::tokio::join!(
+            propose(
+                &mut app,
+                context.child("child_a"),
+                &a.block,
+                HubStateSet::fork_batches(&a.merkleized),
+                None
+            ),
+            propose(
+                &mut sibling,
+                context.child("child_b"),
+                &b.block,
+                HubStateSet::fork_batches(&b.merkleized),
+                None
+            ),
+        );
+        assert_eq!(child_a.block.module_state_root, a.block.module_state_root);
+        assert_eq!(child_b.block.module_state_root, b.block.module_state_root);
+        {
+            let visible = executor.modules().read().unwrap();
+            assert_eq!(
+                visible.nonces.get_nonce(alice.did()),
+                0,
+                "pending Alice state leaked to queries"
+            );
+            assert_eq!(
+                visible.nonces.get_nonce(bob.did()),
+                0,
+                "pending Bob state leaked to queries"
+            );
+            assert!(visible.acp.query_policy_ids().unwrap().is_empty());
+        }
+
+        for winner in [a, child_a] {
+            let captured = app
+                .capture(
+                    (context.child("capture"), winner.block.context.clone()),
+                    &winner.block,
+                    &winner.merkleized,
+                    set.readers(),
+                )
+                .await;
+            set.apply(winner.merkleized).await;
+            app.finalized(
+                (context.child("finalized"), winner.block.context.clone()),
+                &winner.block,
+                captured,
+                set.readers(),
+            )
+            .await;
+            let visible = executor.modules().read().unwrap();
+            assert_eq!(visible.nonces.get_nonce(alice.did()), 1);
+            assert_eq!(visible.nonces.get_nonce(bob.did()), 0);
+            assert_eq!(visible.acp.query_policy_ids().unwrap().len(), 1);
+            assert_eq!(visible.state_root(), winner.block.module_state_root);
+        }
+        assert!(set.finalize().await.durable().await);
+    });
+}

@@ -122,7 +122,7 @@ fn competing_proposals_preserve_receipts() {
             (&block, &verified),
             (&competing.block, &competing.merkleized),
         ] {
-            let receipts = app
+            let (_, receipts) = app
                 .capture(
                     (context.child("capture"), candidate.context.clone()),
                     candidate,

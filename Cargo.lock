@@ -3714,6 +3714,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
+ "alloy-sol-types",
  "commonware-consensus",
  "commonware-cryptography",
  "commonware-glue",
@@ -3722,6 +3723,7 @@ dependencies = [
  "commonware-utils",
  "futures",
  "hub-backend",
+ "hub-client",
  "hub-consensus",
  "hub-domain",
  "hub-executor",

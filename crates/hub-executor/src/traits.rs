@@ -1,8 +1,6 @@
 //! Core execution traits.
 
 use alloy_consensus::Header;
-use hub_domain::BlockId;
-use hub_modules::module_state::ModuleState;
 use hub_traits::StateDb;
 
 use crate::{BlockContext, ExecutionError, ExecutionOutcome};
@@ -26,23 +24,4 @@ pub trait BlockExecutor<S: StateDb>: Clone + Send + Sync + 'static {
 
     /// Validate a block header.
     fn validate_header(&self, header: &Header) -> Result<(), ExecutionError>;
-
-    /// Notify the executor that a block at `height` has been verified.
-    ///
-    /// Called when the consensus layer confirms a block without re-execution
-    /// (e.g. the "already verified" fast path). Executors that maintain
-    /// height-ordered state can use this to advance their verified-height
-    /// tracking and unblock subsequent heights.
-    fn mark_height_verified(&self, _height: u64) {}
-
-    /// Get the cached post-execution module state for a given block.
-    fn get_cached_modules(&self, _block: BlockId) -> Option<ModuleState> {
-        None
-    }
-
-    /// Write module state to the executor's shared base state.
-    fn set_base_modules(&self, _modules: ModuleState) {}
-
-    /// Remove module cache entries at or below the given height.
-    fn cleanup_module_cache(&self, _up_to_height: u64) {}
 }
