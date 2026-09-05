@@ -642,3 +642,6 @@ fn test_execute_with_populated_state() {
 
 #[path = "executor/rollback.rs"]
 mod rollback;
+
+#[path = "executor/sequence.rs"]
+mod sequence;

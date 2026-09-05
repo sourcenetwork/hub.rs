@@ -21,7 +21,7 @@ use hub_modules::types::{BlockExecCtx, Timestamp, TxExecCtx};
 use hub_state::ModuleStateTree;
 use hub_traits::StateDb;
 use revm::{
-    Context, InspectEvm, Journal, MainBuilder,
+    Context, ExecuteCommitEvm, InspectEvm, Journal, MainBuilder,
     context::{block::BlockEnv, result::ExecutionResult},
     database::State,
 };
@@ -444,7 +444,9 @@ impl HubExecutor {
                 build_receipt(&result_and_state.result, tx_hash, gas_used, cumulative_gas);
             outcome.receipts.push(receipt);
 
-            let changes = extract_changes(result_and_state.state);
+            let changes = extract_changes(&result_and_state.state);
+            // Advance the proposal cache without writing canonical state.
+            evm.commit(result_and_state.state);
             outcome.changes.merge(changes);
         }
 
