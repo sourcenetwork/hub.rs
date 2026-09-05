@@ -738,6 +738,41 @@ async fn canonical_module_test() {
         "tampered bearer token should revert"
     );
 
+    let expired_token = hub_client::create_bearer_token(&user_key, "acp-bearer-test", 1)
+        .expect("create expired token");
+    for native in [false, true] {
+        let object_id = if native {
+            "expired-native"
+        } else {
+            "expired-relayed"
+        };
+        let cmd =
+            hub_modules::acp::types::PolicyCmd::RegisterObject(hub_modules::acp::types::Object {
+                resource: "document".into(),
+                id: object_id.into(),
+            });
+        let calldata = IAcp::bearerPolicyCmdCall {
+            bearerToken: expired_token.clone(),
+            policyId: evm_policy_id,
+            cmd: serde_json::to_vec(&cmd).unwrap().into(),
+        }
+        .abi_encode();
+        let receipt = if native {
+            broadcast_native_tx(&cluster, &client, &bls_signer, ACP_ADDRESS, calldata).await
+        } else {
+            broadcast_evm_tx(&cluster, &client, &evm_signer, ACP_ADDRESS, calldata).await
+        };
+        assert_eq!(receipt.status, 0, "expired bearer command must fail");
+        for i in 0..cluster.node_count() {
+            let reader = HubClient::new(cluster.node(i).rpc_url());
+            let (registered, _) = reader
+                .get_object_owner(evm_policy_id, "document", object_id)
+                .await
+                .unwrap();
+            assert!(!registered, "expired command changed state on node {i}");
+        }
+    }
+
     // ── E: Bulletin Namespace + Post ─────────────────────────────
 
     // E1+E2. Register namespaces in parallel (different namespaces, different signers)
@@ -1040,24 +1075,22 @@ async fn canonical_module_test() {
         "G7 reverted BLS tx should have empty logs"
     );
 
-    // Final EVM nonce check: 11 EVM txs (A1, B1, C1, D1, D5.1, D5.3, D5.5, E1, E3, E4, G6)
     let final_evm_nonce = client
         .get_nonce(evm_signer.address())
         .await
         .expect("get_nonce should work");
     assert_eq!(
-        final_evm_nonce, 11,
-        "final EVM nonce should be 11 (A1+B1+C1+D1+D5.1+D5.3+D5.5+E1+E3+E4+G6)"
+        final_evm_nonce, 12,
+        "nonce must include rejected bearer commands"
     );
 
-    // Final BLS native nonce check: 5 BLS txs total (A2, B2, E2, E5, G7)
     let final_bls_nonce = client
         .get_native_nonce(&bls_did)
         .await
         .expect("hub_getNativeNonce should work");
     assert_eq!(
-        final_bls_nonce, 5,
-        "final BLS native nonce should be 5 (A2+B2+E2+E5+G7)"
+        final_bls_nonce, 6,
+        "nonce must include rejected bearer commands"
     );
 
     // ── F: Cross-Node Consistency + Health ────────────────────────
@@ -1183,10 +1216,7 @@ async fn canonical_module_test() {
             .get_native_nonce(&bls_did)
             .await
             .unwrap_or_else(|e| panic!("node{node_idx} get_native_nonce: {e}"));
-        assert_eq!(
-            node_bls_nonce, 5,
-            "node{node_idx} BLS native nonce should be 5"
-        );
+        assert_eq!(node_bls_nonce, 6, "node{node_idx} native nonce should be 6");
     }
 
     // F2. Cluster health

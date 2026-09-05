@@ -174,7 +174,7 @@ fn batch_error(index: usize, err: PrecompileError) -> PrecompileError {
 #[allow(clippy::too_many_lines)]
 pub(super) fn dispatch(
     module: &mut AcpModule,
-    _block_ctx: &BlockExecCtx,
+    block_ctx: &BlockExecCtx,
     tx_ctx: &TxExecCtx,
     input: &[u8],
     gas_limit: u64,
@@ -199,7 +199,7 @@ pub(super) fn dispatch(
                 let remaining_gas = gas_limit.saturating_sub(gas_used);
                 let inner = match dispatch(
                     module,
-                    _block_ctx,
+                    block_ctx,
                     tx_ctx,
                     inner_call.as_ref(),
                     remaining_gas,
@@ -757,11 +757,16 @@ pub(super) fn dispatch(
             let cmd: PolicyCmd = serde_json::from_slice(&call.cmd)
                 .map_err(|e| PrecompileError::Other(format!("cmd JSON decode: {e}").into()))?;
 
-            let result =
-                match module.bearer_policy_cmd(&creator, &call.bearerToken, &policy_id, cmd) {
-                    Ok(r) => r,
-                    Err(e) => return Ok(err_dispatch(e)),
-                };
+            let result = match module.bearer_policy_cmd(
+                block_ctx,
+                &creator,
+                &call.bearerToken,
+                &policy_id,
+                cmd,
+            ) {
+                Ok(r) => r,
+                Err(e) => return Ok(err_dispatch(e)),
+            };
 
             let ret = IAcp::bearerPolicyCmdCall::abi_encode_returns(&json_bytes(&result));
             Ok(ok_dispatch(WRITE_GAS, ret, vec![]))

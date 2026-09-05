@@ -344,11 +344,12 @@ impl AcpModule {
 
     /// Execute a policy command authenticated by a bearer JWT token.
     ///
-    /// Verifies the ES256K JWT signature, extracts the issuer's `did:key:`
-    /// as the actor, and delegates to [`Self::direct_policy_cmd`].
+    /// Verifies the signature and expiration against the agreed execution time,
+    /// then uses the issuer's `did:key:` as the actor for [`Self::direct_policy_cmd`].
     /// The `_creator` (EVM tx signer) is not used as the actor.
     pub fn bearer_policy_cmd(
         &mut self,
+        block_ctx: &BlockExecCtx,
         _creator: &Did,
         bearer_token: &str,
         policy_id: &str,
@@ -359,6 +360,12 @@ impl AcpModule {
                 reason: e.to_string(),
             }
         })?;
+
+        if claims.exp == 0 || block_ctx.timestamp.seconds > claims.exp {
+            return Err(AcpError::InvalidBearerToken {
+                reason: "bearer token has expired or has no expiration".into(),
+            });
+        }
 
         let actor_did = Did::new(&claims.iss).map_err(|e| AcpError::InvalidBearerToken {
             reason: format!("invalid issuer DID: {e}"),
@@ -528,15 +535,8 @@ impl AcpModule {
             });
         }
 
-        // Verify no object is already registered.
         for obj in objects {
-            let (registered, _) = self.query_object_owner(policy_id, obj)?;
-            if registered {
-                return Err(AcpError::ObjectAlreadyRegistered {
-                    resource: obj.resource.clone(),
-                    object_id: obj.id.clone(),
-                });
-            }
+            self.ensure_object_unregistered(policy_id, obj)?;
         }
 
         let actor_did = actor.0.to_string();
@@ -1043,6 +1043,19 @@ impl AcpModule {
         Ok(PolicyCmdResult::DeleteRelationship { record_found })
     }
 
+    fn ensure_object_unregistered(&self, policy_id: &str, obj: &Object) -> Result<()> {
+        // Archiving preserves ownership; only unarchive may reactivate it.
+        let owner_prefix = Relationship::relation_prefix(&obj.resource, &obj.id, "owner");
+        let scan_prefix = keys::relationship_storage_prefix(policy_id, &owner_prefix);
+        if !self.store.prefix_scan(&scan_prefix).is_empty() {
+            return Err(AcpError::ObjectAlreadyRegistered {
+                resource: obj.resource.clone(),
+                object_id: obj.id.clone(),
+            });
+        }
+        Ok(())
+    }
+
     fn cmd_register_object(
         &mut self,
         creator: &Did,
@@ -1063,14 +1076,7 @@ impl AcpModule {
             });
         }
 
-        // Object must not already be registered.
-        let (already_registered, _) = self.query_object_owner(policy_id, &obj)?;
-        if already_registered {
-            return Err(AcpError::ObjectAlreadyRegistered {
-                resource: obj.resource,
-                object_id: obj.id,
-            });
-        }
+        self.ensure_object_unregistered(policy_id, &obj)?;
 
         let owner_rel = Relationship::with_entity(obj.resource, obj.id, "owner", creator.clone());
         let storage_key = owner_rel.storage_key();
@@ -1282,6 +1288,7 @@ impl AcpModule {
         };
 
         if !already_registered {
+            self.ensure_object_unregistered(policy_id, &proof.object)?;
             // New registration — creator becomes owner.
             let owner_rel = Relationship::with_entity(
                 proof.object.resource.clone(),

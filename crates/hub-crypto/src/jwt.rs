@@ -20,7 +20,7 @@ pub struct JwtClaims {
     pub iss: String,
     /// Subject — policy context.
     pub sub: String,
-    /// Expiry (unix timestamp). Present for completeness; not enforced.
+    /// Expiry in Unix seconds; the caller must check it against execution time.
     pub exp: u64,
 }
 
@@ -96,8 +96,7 @@ pub fn verify_bearer_token(token: &str) -> Result<JwtClaims, JwtError> {
     let sig_bytes = URL_SAFE_NO_PAD
         .decode(sig_b64)
         .map_err(|e| JwtError::MalformedToken(format!("signature base64: {e}")))?;
-    let signature =
-        Signature::from_bytes((&sig_bytes[..]).into()).map_err(|_| JwtError::InvalidSignature)?;
+    let signature = Signature::from_slice(&sig_bytes).map_err(|_| JwtError::InvalidSignature)?;
 
     let signing_input = format!("{header_b64}.{payload_b64}");
     let digest = Sha256::digest(signing_input.as_bytes());
@@ -258,5 +257,19 @@ mod tests {
             verify_bearer_token("a.b.c.d"),
             Err(JwtError::MalformedToken(_))
         ));
+    }
+
+    #[test]
+    fn verify_rejects_invalid_signature_lengths() {
+        let (sk, did) = test_key_and_did();
+        let token = create_jwt(&sk, &format!(r#"{{"iss":"{did}","exp":100}}"#));
+        let (message, _) = token.rsplit_once('.').unwrap();
+        for len in [0, 1, 63, 65, 128] {
+            let signature = URL_SAFE_NO_PAD.encode(vec![0; len]);
+            assert!(matches!(
+                verify_bearer_token(&format!("{message}.{signature}")),
+                Err(JwtError::InvalidSignature)
+            ));
+        }
     }
 }
