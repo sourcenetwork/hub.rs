@@ -21,6 +21,7 @@ use alloy_primitives::{Address, Bytes};
 use alloy_sol_types::SolCall;
 
 use hub_client::{ACP_ADDRESS, BlsSigner, EvmSigner, HubClient, TransactionReceipt};
+use hub_domain::{LightBlock, verify_light_block};
 use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, TestCluster};
 use hub_e2e::{RECEIPT_POLL_ATTEMPTS, RECEIPT_POLL_INTERVAL};
 use hub_modules::acp::abi::IAcp;
@@ -37,6 +38,23 @@ resources:
       - name: read
         expr: owner
 ";
+
+async fn wait_light_block(client: &HubClient, height: u64) -> LightBlock {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if let Ok(light) = client
+                .rpc_call_typed::<LightBlock>("hub_getLightBlock", serde_json::json!([height]))
+                .await
+            {
+                verify_light_block(&light).expect("historical finalization should verify");
+                return light;
+            }
+            tokio::time::sleep(RECEIPT_POLL_INTERVAL).await;
+        }
+    })
+    .await
+    .expect("historical light block deadline")
+}
 
 fn create_policy_calldata() -> Vec<u8> {
     IAcp::createPolicyCall {
@@ -274,6 +292,37 @@ async fn node_restart_preserves_state() {
         .max()
         .unwrap_or(0);
 
+    let before_restart = HubClient::new(cluster.node(3).rpc_url());
+    let mut history = Vec::new();
+    for receipt in [&evm_receipt, &bls_receipt] {
+        let confirmed = before_restart
+            .wait_for_receipt(
+                receipt.transaction_hash,
+                RECEIPT_POLL_INTERVAL,
+                RECEIPT_POLL_ATTEMPTS,
+            )
+            .await
+            .expect("replica should confirm the historical operation");
+        history.push(confirmed);
+    }
+
+    let historical_light = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            for height in (1..=bls_receipt.block_number.max(evm_receipt.block_number)).rev() {
+                if let Ok(light) = before_restart
+                    .rpc_call_typed::<LightBlock>("hub_getLightBlock", serde_json::json!([height]))
+                    .await
+                {
+                    verify_light_block(&light).unwrap();
+                    return (height, light);
+                }
+            }
+            tokio::time::sleep(RECEIPT_POLL_INTERVAL).await;
+        }
+    })
+    .await
+    .expect("replica should serve a verifiable historical entry");
+
     // ── 3. Kill node 3 ──────────────────────────────────────────
 
     cluster.kill_node(3);
@@ -387,6 +436,23 @@ async fn node_restart_preserves_state() {
         "restarted node should have more policies after catching up (pre-kill: {}, now: {})",
         pre_kill_policies.len(),
         converged_policies.len()
+    );
+
+    for receipt in history {
+        let restored = restarted_client
+            .get_transaction_receipt(receipt.transaction_hash)
+            .await
+            .unwrap()
+            .expect("confirmed receipt must survive restart");
+        assert_eq!(
+            serde_json::to_value(restored).unwrap(),
+            serde_json::to_value(&receipt).unwrap()
+        );
+    }
+    let restored_light = wait_light_block(&restarted_client, historical_light.0).await;
+    assert_eq!(
+        restored_light, historical_light.1,
+        "historical proof material changed on restart"
     );
 
     // ── 7. Post-restart EVM + BLS transactions ──────────────────

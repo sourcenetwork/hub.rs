@@ -9,12 +9,11 @@ use std::{
 
 use commonware_codec::Encode as _;
 use commonware_cryptography::Digestible as _;
-use commonware_glue::dkg::types::Payload;
 use hub_app::FinalizedSink;
 use hub_consensus::components::InMemoryMempool;
-use hub_domain::{Block, EpochMaterial, GossipHeader};
+use hub_domain::{Block, GossipHeader};
 use hub_executor::{ExecutionReceipt, HubExecutor};
-use hub_indexer::{BlockIndex, LightBlockIndex, StoredEpochMaterial, StoredFinalization};
+use hub_indexer::{BlockIndex, LightBlockIndex, StoredFinalization};
 use hub_jsonrpc::{NodeState, RpcBlock, RpcLog};
 use tokio::sync::broadcast;
 use tracing::trace;
@@ -22,8 +21,9 @@ use tracing::trace;
 use hub_backend::HubStateSet;
 
 use crate::{
-    CommittedState,
+    CommittedState, FinalizedHistory,
     finalize::{index_finalized_block, subscription_data},
+    history::restore_epoch,
     tx_gossip::{SharedValidator, recheck},
 };
 
@@ -48,6 +48,8 @@ pub type FinalizationLookup = Arc<
 /// Everything the node does with a finalized block once its state is readable.
 #[derive(Clone)]
 pub struct NodeSink {
+    history: Arc<FinalizedHistory>,
+    failures: tokio::sync::mpsc::Sender<anyhow::Error>,
     index: Arc<BlockIndex>,
     light_index: Arc<LightBlockIndex>,
     heads: broadcast::Sender<RpcBlock>,
@@ -72,6 +74,10 @@ impl std::fmt::Debug for NodeSink {
 
 /// Inputs to [`NodeSink::new`].
 pub struct SinkParts {
+    /// Durable execution history used to restore the query indexes.
+    pub history: Arc<FinalizedHistory>,
+    /// Fatal failures from asynchronous finalization persistence.
+    pub failures: tokio::sync::mpsc::Sender<anyhow::Error>,
     /// Block, transaction, and receipt index served over RPC.
     pub index: Arc<BlockIndex>,
     /// Public consensus artifacts served to light clients.
@@ -110,6 +116,8 @@ impl NodeSink {
     /// Build the sink from its parts.
     pub fn new(parts: SinkParts) -> Self {
         Self {
+            history: parts.history,
+            failures: parts.failures,
             index: parts.index,
             light_index: parts.light_index,
             heads: parts.heads,
@@ -139,6 +147,9 @@ impl FinalizedSink for NodeSink {
     }
 
     async fn finalized(&self, block: &Block, receipts: Vec<ExecutionReceipt>) {
+        self.history
+            .append(block, &receipts, self.gas_limit)
+            .expect("persist finalized execution before publication");
         self.node_state.inc_finalized();
         self.node_state.set_view(block.context.round.view().get());
         self.node_state.set_backfilling(false);
@@ -152,16 +163,7 @@ impl FinalizedSink for NodeSink {
         if !rpc_logs.is_empty() && self.logs.send(rpc_logs).is_err() {
             trace!(height = block.height, "no logs subscribers");
         }
-        if let Some(Payload::EpochInfo(info)) = &block.payload {
-            let material =
-                EpochMaterial::new(info.output.players().clone(), info.output.public().clone());
-            self.light_index.insert_epoch_material(
-                info.epoch.get(),
-                StoredEpochMaterial {
-                    bytes: material.encode().into(),
-                },
-            );
-        }
+        restore_epoch(&self.light_index, block);
         // Marshal invokes reporters while processing this finalization, so it
         // cannot answer its own mailbox until the callback returns. Finish the
         // lookup, indexing, and header publication in a detached task.
@@ -172,8 +174,15 @@ impl FinalizedSink for NodeSink {
         let lookup = self.finalization_lookup.clone();
         let light_index = self.light_index.clone();
         let headers = self.headers.clone();
+        let history = self.history.clone();
+        let failures = self.failures.clone();
         ::tokio::spawn(async move {
-            if let Some(artifacts) = lookup(height).await {
+            let artifacts = lookup(height).await;
+            if let Err(error) = history.store_finalization(height, artifacts.as_ref()) {
+                let _ = failures.try_send(error);
+                return;
+            }
+            if let Some(artifacts) = artifacts {
                 header.set_signature(&artifacts.certificate);
                 light_index.insert_finalization(
                     digest,
@@ -187,7 +196,7 @@ impl FinalizedSink for NodeSink {
                     trace!(height, "no headers subscribers");
                 }
             } else {
-                tracing::warn!(height, "finalization unavailable from marshal");
+                trace!(height, "no direct finalization certificate in marshal");
             }
         });
 

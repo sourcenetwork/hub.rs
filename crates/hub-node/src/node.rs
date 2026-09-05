@@ -324,6 +324,11 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
 
     // Mempool, RPC plumbing, and the application.
     let mempool = InMemoryMempool::default();
+    let history = Arc::new(crate::FinalizedHistory::open(
+        config.data_dir.join("history"),
+        &genesis_block,
+    )?);
+    let (history_failures, mut history_failure_rx) = ::tokio::sync::mpsc::channel(1);
     let block_index = Arc::new(BlockIndex::new());
     let light_block_index = Arc::new(LightBlockIndex::new());
     let initial_material = EpochMaterial::new(
@@ -350,29 +355,28 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     let finalization_lookup: FinalizationLookup = Arc::new(move |height| {
         let marshal = finalization_marshal.clone();
         Box::pin(async move {
-            // The stateful finalization callback is normally downstream of the
-            // marshal write. A short retry also covers scheduler reordering.
-            for _ in 0..100 {
-                if let Some(finalization) = marshal.get_finalization(Height::new(height)).await {
-                    return Some(FinalizationArtifacts {
-                        epoch: finalization.proposal.round.epoch().get(),
-                        certificate: finalization.certificate.encode().to_vec(),
-                        finalization: finalization.encode().to_vec(),
-                    });
-                }
-                ::tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-            None
+            // Marshal dispatches only after its finalized archive is durable.
+            // Ancestors finalized by a descendant need not have a certificate.
+            marshal
+                .get_finalization(Height::new(height))
+                .await
+                .map(|finalization| FinalizationArtifacts {
+                    epoch: finalization.proposal.round.epoch().get(),
+                    certificate: finalization.certificate.encode().to_vec(),
+                    finalization: finalization.encode().to_vec(),
+                })
         })
     });
     let sink = NodeSink::new(SinkParts {
+        history: history.clone(),
+        failures: history_failures,
         index: block_index.clone(),
         light_index: light_block_index.clone(),
         heads: heads_tx.clone(),
         logs: logs_tx.clone(),
         headers: headers_tx.clone(),
         node_state: node_state.clone(),
-        finalization_lookup,
+        finalization_lookup: finalization_lookup.clone(),
         chain_id,
         publisher_index: validator_index as u32,
         gas_limit,
@@ -388,7 +392,7 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         .collect();
     let application = StatefulHubApp::new(
         executor.clone(),
-        genesis_block,
+        genesis_block.clone(),
         mempool.clone(),
         sink.clone(),
         MAX_BLOCK_TXS,
@@ -488,6 +492,15 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         None => anyhow::bail!("missing recovered module anchor"),
     };
     recover_modules(&executor, &module_trees, &recovered)?;
+    history
+        .recover(
+            &genesis_block,
+            &recovered,
+            &block_index,
+            &light_block_index,
+            &finalization_lookup,
+        )
+        .await?;
     let stateful_handle = stateful_actor.start();
 
     // Transaction gossip and RPC over the live committed state.
@@ -537,17 +550,18 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     });
     info!(validator_index, %rpc_addr, "hub validator started");
 
-    Handle::select([
-        p2p_handle,
-        broadcast_handle,
-        probe_handle,
-        reshare_handle,
-        orchestrator_handle,
-        marshal_handle,
-        stateful_handle,
-    ])
-    .await
-    .map_err(|e| anyhow::anyhow!("validator actor failed: {e:?}"))
+    ::tokio::select! {
+        failure = history_failure_rx.recv() => Err(failure.unwrap_or_else(|| anyhow::anyhow!("history failure channel closed"))),
+        result = Handle::select([
+            p2p_handle,
+            broadcast_handle,
+            probe_handle,
+            reshare_handle,
+            orchestrator_handle,
+            marshal_handle,
+            stateful_handle,
+        ]) => result.map_err(|e| anyhow::anyhow!("validator actor failed: {e:?}")),
+    }
 }
 
 fn open_module_trees(data_dir: &Path) -> anyhow::Result<(ModuleTrees, ModuleState)> {
@@ -618,7 +632,7 @@ async fn load_or_create_genesis(
     Ok(block)
 }
 
-const fn block_cfg() -> hub_domain::BlockCfg {
+pub(crate) const fn block_cfg() -> hub_domain::BlockCfg {
     hub_domain::BlockCfg {
         max_txs: MAX_BLOCK_TXS,
         tx: hub_domain::TxCfg {

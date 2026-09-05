@@ -22,6 +22,9 @@ pub use consts::*;
 mod finalize;
 pub use finalize::{index_finalized_block, subscription_data};
 
+mod history;
+pub use history::FinalizedHistory;
+
 mod node;
 pub use node::run_node;
 

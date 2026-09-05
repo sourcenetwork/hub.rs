@@ -1,0 +1,278 @@
+//! Durable execution records used to restore query indexes after restart.
+
+use std::path::Path;
+
+use alloy_primitives::{Address, B256, Log};
+use alloy_rlp::Decodable as _;
+use anyhow::{Context as _, Result, ensure};
+use borsh::{BorshDeserialize, BorshSerialize};
+use commonware_codec::{Decode as _, Encode as _};
+use commonware_cryptography::Digestible as _;
+use commonware_glue::dkg::types::Payload;
+use hub_domain::{Block, BlockId, EpochMaterial};
+use hub_executor::ExecutionReceipt;
+use hub_indexer::{BlockIndex, LightBlockIndex, StoredEpochMaterial, StoredFinalization};
+use parking_lot::Mutex;
+use rocksdb::{DB, IteratorMode, WriteBatch, WriteOptions};
+
+use crate::{FinalizationArtifacts, FinalizationLookup, index_finalized_block};
+
+const RECORD: u8 = 1;
+const CERTIFICATE: u8 = 2;
+const FORMAT: &[u8] = b"format";
+const GENESIS: &[u8] = b"genesis";
+const HEAD: &[u8] = b"head";
+
+#[derive(BorshSerialize, BorshDeserialize)]
+struct StoredReceipt {
+    hash: [u8; 32],
+    gas_used: u64,
+    contract: Option<[u8; 20]>,
+    success: bool,
+    cumulative_gas_used: u64,
+    logs: Vec<Vec<u8>>,
+}
+
+#[derive(BorshSerialize, BorshDeserialize)]
+struct Record {
+    block: Vec<u8>,
+    gas_limit: u64,
+    receipts: Vec<StoredReceipt>,
+}
+
+impl Record {
+    fn decode(&self) -> Result<(Block, Vec<ExecutionReceipt>)> {
+        let block = Block::decode_cfg(self.block.as_slice(), &crate::node::block_cfg())?;
+        let receipts = self
+            .receipts
+            .iter()
+            .map(|r| {
+                let logs = r
+                    .logs
+                    .iter()
+                    .map(|bytes| {
+                        let mut encoded = bytes.as_slice();
+                        let log = Log::decode(&mut encoded)?;
+                        ensure!(encoded.is_empty(), "trailing log bytes");
+                        Ok(log)
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                Ok(ExecutionReceipt::new(
+                    B256::from(r.hash),
+                    r.success,
+                    r.gas_used,
+                    r.cumulative_gas_used,
+                    logs,
+                    r.contract.map(Address::from),
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        ensure!(
+            receipts.len() == block.txs.len(),
+            "incomplete execution record"
+        );
+        Ok((block, receipts))
+    }
+}
+
+/// Synced records of executed finalizations, independent of RPC process memory.
+///
+/// Startup must reconcile this store before opening the RPC server. The query
+/// indexes are derived from its retained records; they are not recovery metadata.
+#[derive(Debug)]
+pub struct FinalizedHistory {
+    db: DB,
+    head: Mutex<(u64, BlockId)>,
+}
+
+impl FinalizedHistory {
+    /// Open the history for a specific genesis identity.
+    pub fn open(path: impl AsRef<Path>, genesis: &Block) -> Result<Self> {
+        let db = DB::open_default(path)?;
+        match db.get(FORMAT)? {
+            Some(version) => {
+                ensure!(version == [1], "unsupported finalized history format");
+                ensure!(
+                    db.get(GENESIS)?.as_deref() == Some(genesis.id().0.as_slice()),
+                    "finalized history belongs to another genesis"
+                );
+            }
+            None => {
+                ensure!(
+                    db.iterator(IteratorMode::Start).next().is_none(),
+                    "missing finalized history format"
+                );
+                let mut batch = WriteBatch::default();
+                batch.put(FORMAT, [1]);
+                batch.put(GENESIS, genesis.id().0);
+                batch.put(HEAD, borsh::to_vec(&(0u64, genesis.id().0.0))?);
+                write(&db, batch)?;
+            }
+        }
+        let (height, hash): (u64, [u8; 32]) =
+            borsh::from_slice(&db.get(HEAD)?.context("missing history head")?)?;
+        Ok(Self {
+            db,
+            head: Mutex::new((height, BlockId(hash.into()))),
+        })
+    }
+
+    /// Persist execution results before publishing receipts or acknowledging execution.
+    pub fn append(
+        &self,
+        block: &Block,
+        receipts: &[ExecutionReceipt],
+        gas_limit: u64,
+    ) -> Result<()> {
+        ensure!(
+            receipts.len() == block.txs.len(),
+            "incomplete execution record"
+        );
+        let record = Record {
+            block: block.encode().to_vec(),
+            gas_limit,
+            receipts: receipts
+                .iter()
+                .map(|r| StoredReceipt {
+                    hash: r.tx_hash.0,
+                    gas_used: r.gas_used,
+                    contract: r.contract_address.map(|a| a.0.0),
+                    success: r.success(),
+                    cumulative_gas_used: r.cumulative_gas_used(),
+                    logs: r.logs().iter().map(alloy_rlp::encode).collect(),
+                })
+                .collect(),
+        };
+        let bytes = borsh::to_vec(&record)?;
+        let mut head = self.head.lock();
+        if block.height <= head.0 {
+            ensure!(
+                self.db.get(key(RECORD, block.height))?.as_deref() == Some(bytes.as_slice()),
+                "conflicting finalized history record"
+            );
+            return Ok(());
+        }
+        ensure!(
+            block.height == head.0 + 1 && block.parent == head.1,
+            "finalized history is not contiguous"
+        );
+        let mut batch = WriteBatch::default();
+        batch.put(key(RECORD, block.height), bytes);
+        batch.put(HEAD, borsh::to_vec(&(block.height, block.id().0.0))?);
+        write(&self.db, batch)?;
+        *head = (block.height, block.id());
+        Ok(())
+    }
+
+    /// Persist marshal's lookup result before publishing a light-client proof.
+    /// An ancestor finalized through a descendant may have no direct certificate.
+    pub fn store_finalization(
+        &self,
+        height: u64,
+        artifacts: Option<&FinalizationArtifacts>,
+    ) -> Result<()> {
+        let mut batch = WriteBatch::default();
+        batch.put(
+            key(CERTIFICATE, height),
+            borsh::to_vec(&artifacts.map(|a| (a.epoch, &a.finalization)))?,
+        );
+        write(&self.db, batch)
+    }
+
+    /// Restore indexes through the same anchor as application state. Later
+    /// records are discarded and will be regenerated by Commonware replay.
+    pub async fn recover(
+        &self,
+        genesis: &Block,
+        anchor: &Block,
+        index: &BlockIndex,
+        light: &LightBlockIndex,
+        lookup: &FinalizationLookup,
+    ) -> Result<()> {
+        let mut previous = genesis.id();
+        for height in 1..=anchor.height {
+            let bytes = self
+                .db
+                .get(key(RECORD, height))?
+                .context("missing finalized execution history; restore a complete node backup")?;
+            let record: Record = borsh::from_slice(&bytes)?;
+            let (block, receipts) = record.decode()?;
+            ensure!(
+                block.height == height && block.parent == previous,
+                "finalized history ancestry mismatch"
+            );
+            if height == anchor.height {
+                ensure!(
+                    block.id() == anchor.id(),
+                    "finalized history does not match recovery anchor"
+                );
+            }
+            let gas_used = receipts.iter().map(|r| r.gas_used).sum();
+            index_finalized_block(index, &block, record.gas_limit, &receipts, gas_used);
+            restore_epoch(light, &block);
+            let finalization = match self.db.get(key(CERTIFICATE, height))? {
+                Some(bytes) => borsh::from_slice::<Option<(u64, Vec<u8>)>>(&bytes)?,
+                None => {
+                    let artifacts = lookup(height).await;
+                    self.store_finalization(height, artifacts.as_ref())?;
+                    artifacts.map(|a| (a.epoch, a.finalization))
+                }
+            };
+            if let Some((epoch, bytes)) = finalization {
+                light.insert_finalization(
+                    block.digest().0,
+                    StoredFinalization {
+                        epoch,
+                        bytes,
+                        block: record.block,
+                    },
+                );
+            }
+            previous = block.id();
+        }
+        let mut head = self.head.lock();
+        ensure!(
+            head.0 >= anchor.height,
+            "finalized history is behind application state"
+        );
+        let mut batch = WriteBatch::default();
+        for prefix in [RECORD, CERTIFICATE] {
+            if let Some(next) = anchor.height.checked_add(1) {
+                batch.delete_range(key(prefix, next).as_slice(), &[prefix + 1]);
+            }
+        }
+        batch.put(HEAD, borsh::to_vec(&(anchor.height, anchor.id().0.0))?);
+        write(&self.db, batch)?;
+        *head = (anchor.height, anchor.id());
+        Ok(())
+    }
+}
+
+pub(crate) fn restore_epoch(index: &LightBlockIndex, block: &Block) {
+    if let Some(Payload::EpochInfo(info)) = &block.payload {
+        let material =
+            EpochMaterial::new(info.output.players().clone(), info.output.public().clone());
+        index.insert_epoch_material(
+            info.epoch.get(),
+            StoredEpochMaterial {
+                bytes: material.encode().into(),
+            },
+        );
+    }
+}
+
+fn key(prefix: u8, height: u64) -> [u8; 9] {
+    let mut key = [prefix; 9];
+    key[1..].copy_from_slice(&height.to_be_bytes());
+    key
+}
+
+fn write(db: &DB, batch: WriteBatch) -> Result<()> {
+    let mut options = WriteOptions::default();
+    options.set_sync(true);
+    db.write_opt(batch, &options)
+        .context("persist finalized history")
+}
+
+#[cfg(test)]
+mod tests;
