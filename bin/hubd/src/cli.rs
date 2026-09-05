@@ -5,7 +5,7 @@ use std::{path::PathBuf, time::Duration};
 use clap::{Parser, Subcommand};
 use commonware_cryptography::Signer as _;
 use hub_config::NodeConfig;
-use hub_genesis::HubGenesis;
+use hub_genesis::{HubGenesis, ValidatorConfig};
 use hub_node::{NodeSettings, PeerSet, load_peers};
 
 use crate::testnet;
@@ -204,6 +204,7 @@ impl Cli {
         std::fs::create_dir_all(&config.data_dir)?;
         let key = config.validator_key()?;
         let local = key.public_key();
+        configure_devnet_membership(&mut genesis, &local, &config.network.listen_addr)?;
         let (epoch_info, shares) =
             hub_node::trusted_setup(0, [local.clone()]).map_err(anyhow_to_eyre)?;
         genesis.epoch_info = Some(hub_node::epoch_info_hex(&epoch_info));
@@ -238,6 +239,31 @@ impl Cli {
         );
         run(settings)
     }
+}
+
+fn configure_devnet_membership(
+    genesis: &mut HubGenesis,
+    local: &commonware_cryptography::ed25519::PublicKey,
+    listen_addr: &str,
+) -> eyre::Result<()> {
+    let consensus_pubkey = hex::encode(commonware_codec::Encode::encode(local));
+    if genesis.validators.is_empty() {
+        genesis.validators.push(ValidatorConfig {
+            evm_address: format!("{:?}", hub_node::validator_address(local)),
+            consensus_pubkey,
+            p2p_address: listen_addr.into(),
+        });
+    } else {
+        eyre::ensure!(
+            genesis.validators.len() == 1
+                && genesis.validators[0]
+                    .consensus_pubkey
+                    .trim_start_matches("0x")
+                    == consensus_pubkey,
+            "devnet membership must contain only the local consensus key"
+        );
+    }
+    Ok(())
 }
 
 /// Convert node-crate errors into CLI reports.
@@ -290,4 +316,24 @@ fn run(settings: NodeSettings) -> eyre::Result<()> {
     tokio::Runner::new(runtime)
         .start(|context| async move { hub_node::run_node(context, settings).await })
         .map_err(|e| eyre::eyre!("node stopped: {e:#}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn devnet_initializes_registry_membership_and_rejects_a_different_key() {
+        let key = commonware_cryptography::ed25519::PrivateKey::from_seed(1).public_key();
+        let mut genesis = HubGenesis::devnet();
+        configure_devnet_membership(&mut genesis, &key, "127.0.0.1:3000").unwrap();
+        assert_eq!(
+            genesis.to_genesis_state().unwrap().participant_addresses,
+            vec![hub_node::validator_address(&key)]
+        );
+        configure_devnet_membership(&mut genesis, &key, "127.0.0.1:3000").unwrap();
+        assert_eq!(genesis.validators.len(), 1);
+        let other = commonware_cryptography::ed25519::PrivateKey::from_seed(2).public_key();
+        assert!(configure_devnet_membership(&mut genesis, &other, "127.0.0.1:3000").is_err());
+    }
 }
