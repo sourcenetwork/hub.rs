@@ -14,19 +14,48 @@ use sha2::{Digest, Sha256};
 const SECP256K1_PUB_MULTICODEC: u64 = 0xe7;
 
 /// Verified claims extracted from a JWT bearer token.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct JwtClaims {
     /// Issuer — a `did:key:z...` (secp256k1) identifier.
     pub iss: String,
-    /// Subject — policy context.
+    /// Authenticated submitting identity.
     pub sub: String,
     /// Expiry in Unix seconds; the caller must check it against execution time.
     pub exp: u64,
+    /// Deployment audience, formatted as `vera:<deployment_id>`.
+    pub aud: String,
+    /// Delegated operation scope.
+    pub scope: String,
+    /// Issuance time in Unix seconds.
+    pub iat: u64,
+    /// Earliest execution time in Unix seconds.
+    pub nbf: u64,
+}
+
+impl JwtClaims {
+    /// Check the authenticated caller, deployment and agreed execution time.
+    pub fn authorize(&self, submitter: &str, deployment_id: u64, now: u64) -> Result<(), JwtError> {
+        if self.sub != submitter || self.aud != format!("vera:{deployment_id}") {
+            return Err(JwtError::InvalidClaims(
+                "caller or deployment mismatch".into(),
+            ));
+        }
+        if now < self.nbf || now > self.exp {
+            return Err(JwtError::InvalidClaims(
+                "token is outside its validity interval".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Errors from JWT verification.
 #[derive(Debug, thiserror::Error)]
 pub enum JwtError {
+    /// Required delegation claims are invalid.
+    #[error("invalid delegation claims: {0}")]
+    InvalidClaims(String),
     /// Token does not have exactly three `.`-separated segments.
     #[error("malformed token: {0}")]
     MalformedToken(String),
@@ -50,43 +79,36 @@ pub enum JwtError {
 /// secp256k1 `did:key:` — the public key is extracted from the DID and
 /// used to verify the ECDSA signature.
 pub fn verify_bearer_token(token: &str) -> Result<JwtClaims, JwtError> {
-    let parts: Vec<&str> = token.split('.').collect();
-    if parts.len() != 3 {
-        return Err(JwtError::MalformedToken(format!(
-            "expected 3 segments, got {}",
-            parts.len()
-        )));
+    if token.len() > 16 * 1024 {
+        return Err(JwtError::MalformedToken("token exceeds 16 KiB".into()));
     }
-    let (header_b64, payload_b64, sig_b64) = (parts[0], parts[1], parts[2]);
-
+    let mut parts = token.split('.');
+    let (Some(header_b64), Some(payload_b64), Some(sig_b64), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Err(JwtError::MalformedToken("expected three segments".into()));
+    };
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Header {
+        alg: String,
+        typ: String,
+    }
     let header_bytes = URL_SAFE_NO_PAD
         .decode(header_b64)
         .map_err(|e| JwtError::MalformedToken(format!("header base64: {e}")))?;
-    let header: serde_json::Value = serde_json::from_slice(&header_bytes)
+    let header: Header = serde_json::from_slice(&header_bytes)
         .map_err(|e| JwtError::MalformedToken(format!("header JSON: {e}")))?;
-
-    let alg = header
-        .get("alg")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default();
-    if alg != "ES256K" {
-        return Err(JwtError::UnsupportedAlgorithm(alg.to_string()));
+    if header.alg != "ES256K" {
+        return Err(JwtError::UnsupportedAlgorithm(header.alg));
     }
-
+    if header.typ != "vera-delegation-v1+jwt" {
+        return Err(JwtError::InvalidClaims("unsupported token type".into()));
+    }
     let payload_bytes = URL_SAFE_NO_PAD
         .decode(payload_b64)
         .map_err(|e| JwtError::PayloadDecode(format!("payload base64: {e}")))?;
-
-    #[derive(serde::Deserialize)]
-    struct RawClaims {
-        iss: String,
-        #[serde(default)]
-        sub: String,
-        #[serde(default)]
-        exp: u64,
-    }
-
-    let raw: RawClaims = serde_json::from_slice(&payload_bytes)
+    let raw: JwtClaims = serde_json::from_slice(&payload_bytes)
         .map_err(|e| JwtError::PayloadDecode(format!("payload JSON: {e}")))?;
 
     let compressed_pubkey = compressed_pubkey_from_did(&raw.iss)?;
@@ -98,6 +120,10 @@ pub fn verify_bearer_token(token: &str) -> Result<JwtClaims, JwtError> {
         .map_err(|e| JwtError::MalformedToken(format!("signature base64: {e}")))?;
     let signature = Signature::from_slice(&sig_bytes).map_err(|_| JwtError::InvalidSignature)?;
 
+    if signature.normalize_s().is_some() {
+        return Err(JwtError::InvalidSignature);
+    }
+
     let signing_input = format!("{header_b64}.{payload_b64}");
     let digest = Sha256::digest(signing_input.as_bytes());
 
@@ -105,11 +131,25 @@ pub fn verify_bearer_token(token: &str) -> Result<JwtClaims, JwtError> {
         .verify_prehash(&digest, &signature)
         .map_err(|_| JwtError::InvalidSignature)?;
 
-    Ok(JwtClaims {
-        iss: raw.iss,
-        sub: raw.sub,
-        exp: raw.exp,
-    })
+    if raw.scope != "acp:policy" || raw.sub.is_empty() || raw.nbf > raw.iat || raw.iat >= raw.exp {
+        return Err(JwtError::InvalidClaims(
+            "invalid scope, subject or validity interval".into(),
+        ));
+    }
+    Ok(raw)
+}
+
+/// Match an issuer for revocation, including compressed and uncompressed key DIDs.
+/// This does not change the issuer identity recorded in policies or token indexes.
+pub fn matches_issuer(issuer: &str, caller: &str) -> bool {
+    issuer == caller
+        || match (
+            compressed_pubkey_from_did(issuer),
+            compressed_pubkey_from_did(caller),
+        ) {
+            (Ok(issuer), Ok(caller)) => issuer == caller,
+            _ => false,
+        }
 }
 
 /// Extract a compressed secp256k1 public key (33 bytes) from a `did:key:` string.
@@ -152,8 +192,39 @@ mod tests {
     use super::*;
     use k256::ecdsa::SigningKey;
 
+    #[test]
+    fn issuer_revocation_matches_key_encodings() {
+        let key = SigningKey::from_slice(&[42; 32]).unwrap();
+        let did = |compressed| {
+            let mut bytes = vec![0xe7, 0x01];
+            bytes.extend_from_slice(key.verifying_key().to_encoded_point(compressed).as_bytes());
+            format!(
+                "did:key:{}",
+                multibase::encode(multibase::Base::Base58Btc, bytes)
+            )
+        };
+        assert!(matches_issuer(&did(true), &did(false)));
+        assert!(matches_issuer(&did(false), &did(true)));
+        let other = SigningKey::from_slice(&[43; 32]).unwrap();
+        let other = crate::secp256k1::did_from_secp256k1_pubkey(
+            other.verifying_key().to_encoded_point(true).as_bytes(),
+        )
+        .unwrap();
+        assert!(!matches_issuer(&did(false), &other));
+        assert!(!matches_issuer("invalid", &did(true)));
+    }
+
     fn create_jwt(signing_key: &SigningKey, claims_json: &str) -> String {
-        let header = r#"{"alg":"ES256K","typ":"JWT"}"#;
+        let mut claims: serde_json::Value = serde_json::from_str(claims_json).unwrap();
+        claims["aud"] = "vera:9001".into();
+        claims["scope"] = "acp:policy".into();
+        claims["iat"] = 1.into();
+        claims["nbf"] = 1.into();
+        if claims.get("sub").is_none() {
+            claims["sub"] = "caller".into();
+        }
+        let claims_json = serde_json::to_string(&claims).unwrap();
+        let header = r#"{"alg":"ES256K","typ":"vera-delegation-v1+jwt"}"#;
         let header_b64 = URL_SAFE_NO_PAD.encode(header.as_bytes());
         let payload_b64 = URL_SAFE_NO_PAD.encode(claims_json.as_bytes());
 
@@ -199,8 +270,11 @@ mod tests {
         let token = create_jwt(&sk, &claims);
 
         let parts: Vec<&str> = token.split('.').collect();
-        let tampered_claims = format!(r#"{{"iss":"{did}","sub":"tampered","exp":0}}"#);
-        let tampered_payload = URL_SAFE_NO_PAD.encode(tampered_claims.as_bytes());
+        let mut tampered_claims: serde_json::Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(parts[1]).unwrap()).unwrap();
+        tampered_claims["sub"] = "tampered".into();
+        let tampered_payload =
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&tampered_claims).unwrap());
         let tampered_token = format!("{}.{}.{}", parts[0], tampered_payload, parts[2]);
 
         assert!(matches!(
@@ -271,5 +345,82 @@ mod tests {
                 Err(JwtError::InvalidSignature)
             ));
         }
+    }
+    fn sign_raw(key: &SigningKey, header: &str, payload: &str) -> String {
+        let message = format!(
+            "{}.{}",
+            URL_SAFE_NO_PAD.encode(header),
+            URL_SAFE_NO_PAD.encode(payload)
+        );
+        let digest = Sha256::digest(message.as_bytes());
+        let (signature, _) = key.sign_prehash_recoverable(&digest).unwrap();
+        format!("{message}.{}", URL_SAFE_NO_PAD.encode(signature.to_bytes()))
+    }
+
+    #[test]
+    fn delegation_rejects_missing_duplicate_and_unsupported_claims() {
+        let (key, did) = test_key_and_did();
+        let header = r#"{"alg":"ES256K","typ":"vera-delegation-v1+jwt"}"#;
+        let claims = serde_json::json!({"iss": did, "sub": "caller", "aud": "vera:9001", "scope": "acp:policy", "iat": 10, "nbf": 5, "exp": 100});
+        for field in ["iss", "sub", "aud", "scope", "iat", "nbf", "exp"] {
+            let mut missing = claims.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(
+                verify_bearer_token(&sign_raw(&key, header, &missing.to_string())).is_err(),
+                "missing {field}"
+            );
+        }
+        for (field, value) in [
+            ("scope", serde_json::json!("relay")),
+            ("nbf", serde_json::json!(11)),
+            ("exp", serde_json::json!(10)),
+        ] {
+            let mut invalid = claims.clone();
+            invalid[field] = value;
+            assert!(verify_bearer_token(&sign_raw(&key, header, &invalid.to_string())).is_err());
+        }
+        let duplicate = format!(r#"{{"sub":"attacker",{}"#, &claims.to_string()[1..]);
+        assert!(verify_bearer_token(&sign_raw(&key, header, &duplicate)).is_err());
+        let duplicate_header = r#"{"alg":"ES256K","alg":"ES256K","typ":"vera-delegation-v1+jwt"}"#;
+        assert!(
+            verify_bearer_token(&sign_raw(&key, duplicate_header, &claims.to_string())).is_err()
+        );
+        assert!(
+            verify_bearer_token(&sign_raw(
+                &key,
+                r#"{"alg":"ES256K","typ":"JWT"}"#,
+                &claims.to_string()
+            ))
+            .is_err()
+        );
+        assert!(verify_bearer_token(&"x".repeat(16 * 1024 + 1)).is_err());
+    }
+
+    #[test]
+    fn delegation_rejects_signature_aliases_and_checks_context() {
+        let (key, did) = test_key_and_did();
+        let token = create_jwt(
+            &key,
+            &serde_json::json!({"iss": did, "sub": "caller", "exp": 100}).to_string(),
+        );
+        let claims = verify_bearer_token(&token).unwrap();
+        assert!(claims.authorize("caller", 9001, 1).is_ok());
+        assert!(claims.authorize("caller", 9001, 100).is_ok());
+        assert!(claims.authorize("caller", 9001, 0).is_err());
+        assert!(claims.authorize("caller", 9001, 101).is_err());
+        assert!(claims.authorize("other", 9001, 50).is_err());
+        assert!(claims.authorize("caller", 9002, 50).is_err());
+        let (message, encoded) = token.rsplit_once('.').unwrap();
+        let signature = Signature::from_slice(&URL_SAFE_NO_PAD.decode(encoded).unwrap()).unwrap();
+        let (r, s) = signature.split_scalars();
+        let high = Signature::from_scalars(r.to_bytes(), (-s).to_bytes()).unwrap();
+        assert!(matches!(
+            verify_bearer_token(&format!(
+                "{message}.{}",
+                URL_SAFE_NO_PAD.encode(high.to_bytes())
+            )),
+            Err(JwtError::InvalidSignature)
+        ));
+        assert!(verify_bearer_token(&format!("{token}=")).is_err());
     }
 }

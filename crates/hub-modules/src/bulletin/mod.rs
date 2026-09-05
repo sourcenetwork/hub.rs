@@ -837,6 +837,7 @@ mod tests {
 
     fn make_block_ctx(seconds: u64, height: u64) -> BlockExecCtx {
         BlockExecCtx {
+            deployment_id: 9001,
             timestamp: Timestamp {
                 seconds,
                 block_height: height,

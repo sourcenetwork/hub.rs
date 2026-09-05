@@ -182,6 +182,7 @@ fn main() {
 
     let mut bulletin = BulletinModule::new();
     let context = BlockExecCtx {
+        deployment_id: 9001,
         timestamp: Timestamp {
             seconds: 1_000,
             block_height: 1,

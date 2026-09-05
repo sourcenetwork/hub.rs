@@ -8,6 +8,7 @@ use hub_modules::acp::types::{
     AccessRequest, AcpParams, Actor, ContentType, Object, Operation, PolicyCmd,
     PolicyMarshalingType, RelationshipSelector,
 };
+use hub_modules::hub::HubModule;
 use hub_modules::types::{BlockExecCtx, TxExecCtx};
 use identity::Did;
 use revm::precompile::{PrecompileError, PrecompileOutput};
@@ -174,6 +175,7 @@ fn batch_error(index: usize, err: PrecompileError) -> PrecompileError {
 #[allow(clippy::too_many_lines)]
 pub(super) fn dispatch(
     module: &mut AcpModule,
+    hub: &mut HubModule,
     block_ctx: &BlockExecCtx,
     tx_ctx: &TxExecCtx,
     input: &[u8],
@@ -190,7 +192,7 @@ pub(super) fn dispatch(
         // ── Write methods ────────────────────────────────────────────
         IAcp::batchCallsCall::SELECTOR => {
             let call = IAcp::batchCallsCall::abi_decode(input).map_err(decode_error)?;
-            let snapshot = module.clone();
+            let snapshot = (module.clone(), hub.clone());
             let mut results = Vec::with_capacity(call.calls.len());
             let mut logs = Vec::new();
             let mut gas_used = 0u64;
@@ -199,6 +201,7 @@ pub(super) fn dispatch(
                 let remaining_gas = gas_limit.saturating_sub(gas_used);
                 let inner = match dispatch(
                     module,
+                    hub,
                     block_ctx,
                     tx_ctx,
                     inner_call.as_ref(),
@@ -206,7 +209,7 @@ pub(super) fn dispatch(
                 ) {
                     Ok(inner) => inner,
                     Err(err) => {
-                        *module = snapshot;
+                        (*module, *hub) = snapshot;
                         return Err(batch_error(index, err));
                     }
                 };
@@ -214,13 +217,13 @@ pub(super) fn dispatch(
                 let inner_gas = match gas_used.checked_add(inner.precompile.gas_used) {
                     Some(total) => total,
                     None => {
-                        *module = snapshot;
+                        (*module, *hub) = snapshot;
                         return Err(PrecompileError::OutOfGas);
                     }
                 };
 
                 if inner.precompile.reverted {
-                    *module = snapshot;
+                    (*module, *hub) = snapshot;
                     return Ok(batch_revert(index, inner_gas, &inner.precompile.bytes));
                 }
 
@@ -758,6 +761,7 @@ pub(super) fn dispatch(
                 .map_err(|e| PrecompileError::Other(format!("cmd JSON decode: {e}").into()))?;
 
             let result = match module.bearer_policy_cmd(
+                hub,
                 block_ctx,
                 &creator,
                 &call.bearerToken,
@@ -1108,6 +1112,7 @@ resources:
 
         let mut module = AcpModule::new();
         let block_ctx = BlockExecCtx {
+            deployment_id: 9001,
             timestamp: Timestamp {
                 seconds: 1000,
                 block_height: 5,
@@ -1118,7 +1123,14 @@ resources:
             signer: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK".to_string(),
         };
 
-        let result = dispatch(&mut module, &block_ctx, &tx_ctx, &calldata, 1_000_000);
+        let result = dispatch(
+            &mut module,
+            &mut HubModule::new(),
+            &block_ctx,
+            &tx_ctx,
+            &calldata,
+            1_000_000,
+        );
         match &result {
             Ok(dr) => {
                 assert!(
@@ -1153,6 +1165,7 @@ resources:
 
         let mut module = AcpModule::new();
         let block_ctx = BlockExecCtx {
+            deployment_id: 9001,
             timestamp: Timestamp {
                 seconds: 1000,
                 block_height: 5,
@@ -1163,7 +1176,15 @@ resources:
             signer: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK".to_string(),
         };
 
-        let result = dispatch(&mut module, &block_ctx, &tx_ctx, &calldata, 1_000_000).unwrap();
+        let result = dispatch(
+            &mut module,
+            &mut HubModule::new(),
+            &block_ctx,
+            &tx_ctx,
+            &calldata,
+            1_000_000,
+        )
+        .unwrap();
         assert!(!result.precompile.reverted);
         assert_eq!(result.logs.len(), 2);
         assert_eq!(module.query_policy_ids().unwrap().len(), 2);
@@ -1172,6 +1193,7 @@ resources:
     #[test]
     fn dispatch_batch_calls_rollback_on_failure() {
         let block_ctx = BlockExecCtx {
+            deployment_id: 9001,
             timestamp: Timestamp {
                 seconds: 1000,
                 block_height: 5,
@@ -1210,7 +1232,15 @@ resources:
         }
         .abi_encode();
 
-        let err = dispatch(&mut module, &block_ctx, &tx_ctx, &calldata, 1_000_000).unwrap_err();
+        let err = dispatch(
+            &mut module,
+            &mut HubModule::new(),
+            &block_ctx,
+            &tx_ctx,
+            &calldata,
+            1_000_000,
+        )
+        .unwrap_err();
         match err {
             PrecompileError::Other(message) => {
                 assert!(message.contains("batch call 2"), "{message}");
@@ -1338,6 +1368,7 @@ resources:
 
         let mut module = AcpModule::new();
         let block_ctx = BlockExecCtx {
+            deployment_id: 9001,
             timestamp: Timestamp {
                 seconds: 1000,
                 block_height: 5,
@@ -1367,7 +1398,15 @@ resources:
         };
 
         let set = fields().abi_encode();
-        let dr = dispatch(&mut module, &block_ctx, &tx_ctx, &set, 1_000_000).unwrap();
+        let dr = dispatch(
+            &mut module,
+            &mut HubModule::new(),
+            &block_ctx,
+            &tx_ctx,
+            &set,
+            1_000_000,
+        )
+        .unwrap();
         assert!(
             !dr.precompile.reverted,
             "set subject should not revert: {}",
@@ -1404,7 +1443,15 @@ resources:
             subjectRelation: c.subjectRelation,
         }
         .abi_encode();
-        let dr = dispatch(&mut module, &block_ctx, &tx_ctx, &del, 1_000_000).unwrap();
+        let dr = dispatch(
+            &mut module,
+            &mut HubModule::new(),
+            &block_ctx,
+            &tx_ctx,
+            &del,
+            1_000_000,
+        )
+        .unwrap();
         assert!(!dr.precompile.reverted, "delete subject should not revert");
         let rels = module
             .query_filter_relationships(&policy_id, &selector)

@@ -102,12 +102,12 @@ fn execute(state: &MockStateDb, to: TxKind, input: Bytes) -> (ExecutionOutcome, 
 }
 
 #[rstest]
-#[case(&[0x00], &[0x00], false, true, 1)]
+#[case(&[0x00], &[0x00], false, true, 0)]
 #[case(&[0x00], &[0x5f, 0x5f, 0xfd], false, false, 0)]
 #[case(&[0x5f, 0x5f, 0xfd], &[0x00], false, true, 0)]
 #[case(&[0xfe], &[0x00], false, true, 0)]
 #[case(&[0x00], &[0x00], true, true, 0)]
-fn module_writes_follow_nested_call_outcomes(
+fn nested_calls_cannot_inherit_signer_authority(
     #[case] inner_end: &[u8],
     #[case] outer_end: &[u8],
     #[case] is_static: bool,
@@ -133,45 +133,14 @@ fn module_writes_follow_nested_call_outcomes(
 #[rstest]
 #[case(&[0x00], true)]
 #[case(&[0x5f, 0x5f, 0xfd], false)]
-fn creation_frames_restore_module_state(#[case] end: &[u8], #[case] success: bool) {
+fn creation_cannot_inherit_signer_authority(#[case] end: &[u8], #[case] success: bool) {
     let (outcome, modules) = execute(
         &MockStateDb::new(),
         TxKind::Create,
         embedded_call(&policy("constructor"), end),
     );
     assert_eq!(outcome.receipts[0].success(), success);
-    assert_eq!(
-        modules.acp.query_policy_ids().unwrap().len(),
-        usize::from(success)
-    );
-}
-
-#[test]
-fn failed_child_preserves_prior_parent_writes() {
-    let state = MockStateDb::new();
-    let inner = Address::repeat_byte(0x11);
-    let outer = Address::repeat_byte(0x22);
-    install(
-        &state,
-        inner,
-        embedded_call(&policy("discarded"), &[0x5f, 0x5f, 0xfd]),
-    );
-    let mut code = forwarding_code(ACP_ADDRESS, &[], false).to_vec();
-    code.extend_from_slice(&forwarding_code(inner, &[0x00], false));
-    install(&state, outer, code.into());
-    let (outcome, modules) = execute(&state, TxKind::Call(outer), policy("kept"));
-    assert!(outcome.receipts[0].success());
-    let ids = modules.acp.query_policy_ids().unwrap();
-    assert_eq!(ids.len(), 1);
-    assert!(
-        modules
-            .acp
-            .query_policy(&ids[0])
-            .unwrap()
-            .raw_policy
-            .contains("kept")
-    );
-    assert_eq!(outcome.receipts[0].logs().len(), 1);
+    assert!(modules.acp.query_policy_ids().unwrap().is_empty());
 }
 
 #[test]

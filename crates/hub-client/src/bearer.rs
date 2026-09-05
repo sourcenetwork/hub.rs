@@ -10,12 +10,17 @@ use crate::error::ClientError;
 /// Create a JWT bearer token signed with ES256K.
 ///
 /// The issuer (`iss`) is derived from the signing key's secp256k1 `did:key:`.
-/// The `subject` and `expiry_secs` are embedded as `sub` and `exp` claims.
+/// Bind the submitting DID and deployment. Times are Unix seconds.
 pub fn create_bearer_token(
     signing_key: &SigningKey,
     subject: &str,
-    expiry_secs: u64,
+    deployment_id: u64,
+    issued_at: u64,
+    expires_at: u64,
 ) -> Result<String, ClientError> {
+    if issued_at >= expires_at {
+        return Err(ClientError::Signing("invalid delegation lifetime".into()));
+    }
     let compressed = signing_key
         .verifying_key()
         .to_encoded_point(true)
@@ -24,8 +29,13 @@ pub fn create_bearer_token(
     let iss = hub_crypto::secp256k1::did_from_secp256k1_pubkey(&compressed)
         .map_err(|e| ClientError::Signing(format!("DID derivation: {e}")))?;
 
-    let header = r#"{"alg":"ES256K","typ":"JWT"}"#;
-    let payload = format!(r#"{{"iss":"{iss}","sub":"{subject}","exp":{expiry_secs}}}"#);
+    let header = r#"{"alg":"ES256K","typ":"vera-delegation-v1+jwt"}"#;
+    let payload = serde_json::json!({
+        "iss": iss, "sub": subject, "aud": format!("vera:{deployment_id}"),
+        "scope": "acp:policy", "iat": issued_at,
+        "nbf": issued_at.saturating_sub(30), "exp": expires_at,
+    })
+    .to_string();
 
     let header_b64 = URL_SAFE_NO_PAD.encode(header.as_bytes());
     let payload_b64 = URL_SAFE_NO_PAD.encode(payload.as_bytes());
@@ -52,18 +62,22 @@ mod tests {
     #[test]
     fn create_and_verify_roundtrip() {
         let key = test_key();
-        let token = create_bearer_token(&key, "test-subject", 9_999_999_999).unwrap();
+        let subject = "did:key:zSubject\",\"scope\":\"other";
+        let token = create_bearer_token(&key, subject, 9001, 50, 100).unwrap();
 
         let claims = hub_crypto::jwt::verify_bearer_token(&token).unwrap();
-        assert_eq!(claims.sub, "test-subject");
-        assert_eq!(claims.exp, 9_999_999_999);
+        assert_eq!(claims.sub, subject);
+        assert_eq!(claims.scope, "acp:policy");
+        assert_eq!(claims.exp, 100);
+        claims.authorize(subject, 9001, 50).unwrap();
         assert!(claims.iss.starts_with("did:key:"));
     }
 
     #[test]
-    fn token_has_three_segments() {
+    fn invalid_lifetime_is_rejected() {
         let key = test_key();
-        let token = create_bearer_token(&key, "s", 0).unwrap();
-        assert_eq!(token.split('.').count(), 3);
+        for expires_at in [0, 50] {
+            assert!(create_bearer_token(&key, "s", 9001, 50, expires_at).is_err());
+        }
     }
 }

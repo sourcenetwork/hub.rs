@@ -341,35 +341,50 @@ impl AcpModule {
         })
     }
 
-    /// Execute a policy command authenticated by a bearer JWT token.
-    ///
-    /// Verifies the signature and expiration against the agreed execution time,
-    /// then uses the issuer's `did:key:` as the actor for [`Self::direct_policy_cmd`].
-    /// The `_creator` (EVM tx signer) is not used as the actor.
+    /// Execute a caller-bound delegation and record usage only on success.
     pub fn bearer_policy_cmd(
         &mut self,
+        hub: &mut crate::hub::HubModule,
         block_ctx: &BlockExecCtx,
-        _creator: &Did,
+        creator: &Did,
         bearer_token: &str,
         policy_id: &str,
         cmd: PolicyCmd,
     ) -> Result<PolicyCmdResult> {
-        let claims = hub_crypto::jwt::verify_bearer_token(bearer_token).map_err(|e| {
-            AcpError::InvalidBearerToken {
-                reason: e.to_string(),
-            }
+        let invalid = |error: crate::hub::error::HubError| AcpError::InvalidBearerToken {
+            reason: error.to_string(),
+        };
+        let claims = hub
+            .authorize_delegation(block_ctx, creator, bearer_token)
+            .map_err(invalid)?;
+        let actor = Did::new(&claims.iss).map_err(|e| AcpError::InvalidBearerToken {
+            reason: e.to_string(),
         })?;
-
-        if claims.exp == 0 || block_ctx.timestamp.seconds > claims.exp {
-            return Err(AcpError::InvalidBearerToken {
-                reason: "bearer token has expired or has no expiration".into(),
+        let before = self.clone();
+        let result = self
+            .direct_policy_cmd(&actor, policy_id, cmd)
+            .and_then(|result| {
+                hub.store_or_update_jws_token(
+                    block_ctx,
+                    bearer_token,
+                    &actor,
+                    &claims.sub,
+                    Timestamp {
+                        seconds: claims.iat,
+                        block_height: 0,
+                    },
+                    Timestamp {
+                        seconds: claims.exp,
+                        block_height: 0,
+                    },
+                )
+                .map_err(invalid)?;
+                Ok(result)
             });
+        if result.is_err() {
+            *self = before;
         }
-
-        let actor_did = Did::new(&claims.iss).map_err(|e| AcpError::InvalidBearerToken {
-            reason: format!("invalid issuer DID: {e}"),
-        })?;
-        self.direct_policy_cmd(&actor_did, policy_id, cmd)
+        result
     }
 
     /// Update governance-controlled module parameters.
@@ -1954,6 +1969,7 @@ resources:
 
         // Block context: time = 200 (> 100 + 10).
         let block_ctx = BlockExecCtx {
+            deployment_id: 9001,
             timestamp: Timestamp {
                 seconds: 200,
                 block_height: 20,

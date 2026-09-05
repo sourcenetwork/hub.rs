@@ -35,6 +35,26 @@ pub(super) fn dispatch(
 
     match selector {
         // ── Write methods ────────────────────────────────────────────
+        IHub::revokeDelegationCall::SELECTOR => {
+            if gas_limit < WRITE_GAS {
+                return Err(PrecompileError::OutOfGas);
+            }
+            let call = IHub::revokeDelegationCall::abi_decode(input).map_err(decode_error)?;
+            let caller = did_from_signer(&tx_ctx.signer)?;
+            let record = match module.revoke_delegation(block_ctx, &caller, &call.token) {
+                Ok(record) => record,
+                Err(error) => return Ok(err_dispatch(error)),
+            };
+            let event = IHub::JWSTokenInvalidated {
+                tokenHash: alloy_primitives::keccak256(record.token_hash.as_bytes()),
+                issuerDid: record.issuer_did,
+            };
+            Ok(ok_dispatch(
+                WRITE_GAS,
+                Vec::new(),
+                vec![event_log(HUB_ADDRESS, &event)],
+            ))
+        }
         IHub::invalidateJWSCall::SELECTOR => {
             if gas_limit < WRITE_GAS {
                 return Err(PrecompileError::OutOfGas);
@@ -130,6 +150,20 @@ pub(super) fn dispatch(
             };
 
             let ret = IHub::getJWSTokensByAccountCall::abi_encode_returns(&json_bytes(&tokens));
+            Ok(ok_dispatch(READ_GAS, ret, vec![]))
+        }
+
+        IHub::getDelegationsBySubmitterCall::SELECTOR => {
+            if gas_limit < READ_GAS {
+                return Err(PrecompileError::OutOfGas);
+            }
+            let call =
+                IHub::getDelegationsBySubmitterCall::abi_decode(input).map_err(decode_error)?;
+            let tokens = match module.get_jws_tokens_by_account(&call.submitter) {
+                Ok(tokens) => tokens,
+                Err(error) => return Ok(err_dispatch(error)),
+            };
+            let ret = IHub::getDelegationsBySubmitterCall::abi_encode_returns(&json_bytes(&tokens));
             Ok(ok_dispatch(READ_GAS, ret, vec![]))
         }
 

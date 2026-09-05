@@ -634,8 +634,9 @@ async fn canonical_module_test() {
     )
     .expect("valid DID");
 
-    let bearer_token = hub_client::create_bearer_token(&user_key, "acp-bearer-test", 9_999_999_999)
-        .expect("create bearer token");
+    let bearer_token =
+        hub_client::create_bearer_token(&user_key, &evm_did, chain_id, 0, 9_999_999_999)
+            .expect("create bearer token");
 
     // D5.1. Register object via bearer token — account 1 (JWT issuer) becomes owner
     let d5_cmd =
@@ -738,9 +739,10 @@ async fn canonical_module_test() {
         "tampered bearer token should revert"
     );
 
-    let expired_token = hub_client::create_bearer_token(&user_key, "acp-bearer-test", 1)
-        .expect("create expired token");
     for native in [false, true] {
+        let subject = if native { &bls_did } else { &evm_did };
+        let expired_token = hub_client::create_bearer_token(&user_key, subject, chain_id, 0, 1)
+            .expect("create expired token");
         let object_id = if native {
             "expired-native"
         } else {

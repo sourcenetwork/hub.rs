@@ -25,7 +25,7 @@ use hub_modules::types::{BlockExecCtx, Timestamp, TxExecCtx};
 use identity::Did;
 use revm::{
     context::Cfg,
-    context_interface::{Block, ContextTr, JournalTr},
+    context_interface::{Block, ContextTr, JournalTr, Transaction},
     handler::{EthPrecompiles, PrecompileProvider},
     interpreter::{CallInputs, InterpreterResult},
     precompile::{
@@ -152,7 +152,9 @@ pub fn dispatch_to_module(
     gas_limit: u64,
 ) -> Option<DispatchReturn> {
     if target == ACP_ADDRESS {
-        Some(acp::dispatch(acp, block_ctx, tx_ctx, calldata, gas_limit))
+        Some(acp::dispatch(
+            acp, hub, block_ctx, tx_ctx, calldata, gas_limit,
+        ))
     } else if target == BULLETIN_ADDRESS {
         Some(bulletin::dispatch(
             bulletin, acp, block_ctx, tx_ctx, calldata, gas_limit,
@@ -263,18 +265,34 @@ impl<CTX: ContextTr> PrecompileProvider<CTX> for HubPrecompiles {
         if self.custom.contains(&inputs.bytecode_address) {
             let block = context.block();
             let block_ctx = BlockExecCtx {
+                deployment_id: context.cfg().chain_id(),
                 timestamp: Timestamp {
                     seconds: block.timestamp().as_limbs()[0],
                     block_height: block.number().as_limbs()[0],
                 },
             };
+            let direct_caller = inputs.caller == context.tx().caller();
             let tx_ctx = TxExecCtx {
                 tx_hash: self.current_tx_hash.to_vec(),
-                signer: self.current_signer_did.clone(),
+                // A contract cannot inherit the submitting key's module authority.
+                signer: if direct_caller {
+                    self.current_signer_did.clone()
+                } else {
+                    String::new()
+                },
             };
             let calldata = inputs.input.bytes(context);
 
             if inputs.bytecode_address == VALIDATOR_REGISTRY_ADDRESS {
+                if !direct_caller && !validator_registry::is_query(&calldata) {
+                    return Self::dispatch_result_to_interpreter(
+                        inputs,
+                        Err(PrecompileError::Other(
+                            "module write requires an authenticated caller".into(),
+                        )),
+                    )
+                    .map(|(result, _)| result);
+                }
                 if inputs.is_static && !validator_registry::is_query(&calldata) {
                     return Ok(Some(Self::static_write_error(inputs)));
                 }

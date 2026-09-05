@@ -25,6 +25,8 @@ pub struct Timestamp {
 /// `BlockContext.header`, guaranteeing consistency.
 #[derive(Clone, Debug, Default)]
 pub struct BlockExecCtx {
+    /// Configured deployment identifier shared by all execution transports.
+    pub deployment_id: u64,
     pub timestamp: Timestamp,
 }
 

@@ -22,13 +22,13 @@ pub(crate) enum KeysCommand {
         /// Hex-encoded private key (32 bytes).
         key: String,
     },
-    /// Create a JWT ES256K bearer token from --key.
+    /// Delegate policy operations to a submitting DID using --key.
     BearerToken {
-        /// Subject claim for the JWT.
+        /// DID allowed to submit the delegated operations.
         subject: String,
-        /// Expiry as a Unix timestamp (seconds).
-        #[arg(long, default_value = "9999999999")]
-        expiry: u64,
+        /// Expiry as a Unix timestamp (seconds); defaults to five minutes from now.
+        #[arg(long)]
+        expiry: Option<u64>,
     },
 }
 
@@ -87,8 +87,18 @@ impl KeysCommand {
                     .as_ref()
                     .ok_or_else(|| eyre::eyre!("--key is required for bearer-token"))?;
                 let signing_key = parse_signing_key(key_hex)?;
-                let token = create_bearer_token(&signing_key, &subject, expiry)
-                    .map_err(|e| eyre::eyre!("bearer token creation failed: {e}"))?;
+                let issued_at = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)?
+                    .as_secs();
+                let expires_at = expiry.unwrap_or(issued_at + 300);
+                let token = create_bearer_token(
+                    &signing_key,
+                    &subject,
+                    ctx.require_evm_signer()?.chain_id(),
+                    issued_at,
+                    expires_at,
+                )
+                .map_err(|e| eyre::eyre!("bearer token creation failed: {e}"))?;
                 ctx.print_json(&serde_json::json!({ "token": token }))?;
             }
         }

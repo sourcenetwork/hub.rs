@@ -14,6 +14,8 @@ sol! {
 
         function invalidateJWS(string tokenHash) external;
 
+        function revokeDelegation(string token) external;
+
         function updateParams(bytes params) external;
 
         // ── Read methods ────────────────────────────────────────────────
@@ -28,6 +30,10 @@ sol! {
 
         function getJWSTokensByAccount(
             address account
+        ) external view returns (bytes);
+
+        function getDelegationsBySubmitter(
+            string submitter
         ) external view returns (bytes);
 
         function getChainConfig() external view returns (bytes);

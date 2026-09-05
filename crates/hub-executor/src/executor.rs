@@ -319,6 +319,7 @@ impl HubExecutor {
         let mut modules = base_modules.clone();
 
         let block_ctx = BlockExecCtx {
+            deployment_id: self.config.chain_id,
             timestamp: Timestamp {
                 seconds: context.header.timestamp,
                 block_height: context.header.number,
@@ -591,6 +592,7 @@ mod tests {
 
     fn test_block_ctx() -> BlockExecCtx {
         BlockExecCtx {
+            deployment_id: 9001,
             timestamp: Timestamp {
                 seconds: 1_700_000_000,
                 block_height: 1,

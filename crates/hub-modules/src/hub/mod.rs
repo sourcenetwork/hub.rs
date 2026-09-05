@@ -2,6 +2,7 @@
 
 /// Solidity ABI interface for the Hub precompile.
 pub mod abi;
+mod delegation;
 /// Hub error types.
 pub mod error;
 /// Key prefixes and builders for Hub KV storage.
@@ -122,7 +123,7 @@ impl HubModule {
                 token_hash: token_hash.to_string(),
             });
         }
-        let is_issuer = creator.to_string() == record.issuer_did;
+        let is_issuer = hub_crypto::jwt::matches_issuer(&record.issuer_did, creator.as_ref());
         let is_authorized_account =
             !record.authorized_account.is_empty() && tx_ctx.signer == record.authorized_account;
         if !is_issuer && !is_authorized_account {
@@ -296,6 +297,14 @@ impl HubModule {
                 .ok_or_else(|| HubError::TokenNotFound {
                     token_hash: token_hash.to_string(),
                 })?;
+        if record.status != JWSTokenStatus::Valid
+            || (record.expires_at.seconds != 0
+                && record.expires_at.seconds < block_ctx.timestamp.seconds)
+        {
+            return Err(HubError::InvalidJws {
+                reason: "token is invalid or expired".into(),
+            });
+        }
         if record.first_used_at.is_none() {
             record.first_used_at = Some(block_ctx.timestamp.clone());
         }
@@ -753,6 +762,7 @@ mod tests {
 
     fn block_ctx(seconds: u64) -> BlockExecCtx {
         BlockExecCtx {
+            deployment_id: 9001,
             timestamp: Timestamp {
                 seconds,
                 block_height: seconds,
