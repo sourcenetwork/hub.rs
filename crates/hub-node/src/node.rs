@@ -320,7 +320,6 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
             batch_verifier: PhantomData::<commonware_cryptography::ed25519::Batch>,
         },
     );
-    let reshare_handle = reshare_actor.start(dkg_network);
 
     // Mempool, RPC plumbing, and the application.
     let mempool = InMemoryMempool::default();
@@ -507,6 +506,7 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     let state_set = stateful_mailbox.subscribe_databases().await;
     let committed_state = CommittedState::new(state_set.clone());
     participants_provider.attach_state(committed_state.clone());
+    let reshare_handle = reshare_actor.start(dkg_network);
     sink.attach_state(state_set.clone());
     {
         // Hold the module read lock through publication so finalization cannot
