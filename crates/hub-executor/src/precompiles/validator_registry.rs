@@ -515,12 +515,12 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
             }
 
             let count = journal_sload(context, SLOT_VALIDATOR_COUNT)?.as_limbs()[0];
-            let idx = call.index.as_limbs()[0];
-            if idx >= count {
+            if call.index >= U256::from(count) {
                 return Ok(err_dispatch(ValidatorRegistryError::ValidatorNotFound(
-                    format!("index {idx} out of range (count={count})"),
+                    format!("index {} out of range (count={count})", call.index),
                 )));
             }
+            let idx = call.index.as_limbs()[0];
             let addr_slot = array_element_slot(SLOT_VALIDATORS_ARRAY_BASE, idx);
             let target_addr = u256_to_address(journal_sload(context, addr_slot)?);
             let (addr, consensus, p2p, _, index) = match load_validator_raw(context, target_addr)? {

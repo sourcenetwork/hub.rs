@@ -170,3 +170,61 @@ fn registry_rejects_malformed_consensus_key() {
             .is_none_or(|account| account.storage.is_empty())
     );
 }
+
+#[rstest]
+#[case(U256::ZERO, true)]
+#[case(U256::from(1), false)]
+#[case(U256::from_limbs([0, 1, 0, 0]), false)]
+#[case(U256::MAX, false)]
+fn registry_status_checks_the_full_member_index(#[case] index: U256, #[case] success: bool) {
+    let (state, executor) = authorized_state();
+    let member = Address::repeat_byte(0x11);
+    let registration = IValidatorRegistry::addValidatorCall {
+        evmAddr: member,
+        consensusPubkey: "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+            .parse()
+            .unwrap(),
+        p2pAddr: "127.0.0.1:3000".into(),
+    }
+    .abi_encode();
+    let (registered, _) = execute_with_executor(
+        &state,
+        TxKind::Call(VALIDATOR_REGISTRY_ADDRESS),
+        registration.into(),
+        executor.clone(),
+    );
+    assert_eq!(registered.receipts.len(), 1);
+    assert!(registered.receipts[0].success());
+    state
+        .accounts
+        .write()
+        .unwrap()
+        .get_mut(&VALIDATOR_REGISTRY_ADDRESS)
+        .unwrap()
+        .storage
+        .extend(
+            registered.changes.accounts[&VALIDATOR_REGISTRY_ADDRESS]
+                .storage
+                .clone(),
+        );
+    let calldata = IValidatorRegistry::setValidatorStatusByIndexCall {
+        index,
+        active: false,
+    }
+    .abi_encode();
+    let (outcome, _) = execute_with_executor(
+        &state,
+        TxKind::Call(VALIDATOR_REGISTRY_ADDRESS),
+        calldata.into(),
+        executor,
+    );
+    assert_eq!(outcome.receipts.len(), 1);
+    assert_eq!(outcome.receipts[0].success(), success);
+    let changes = outcome.changes.accounts.get(&VALIDATOR_REGISTRY_ADDRESS);
+    if success {
+        let packed = changes.unwrap().storage[&member_slot(member)].to_be_bytes::<32>();
+        assert_eq!(packed[20], 0);
+    } else {
+        assert!(changes.is_none_or(|account| account.storage.is_empty()));
+    }
+}
