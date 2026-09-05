@@ -9,6 +9,7 @@
 #[path = "support/administration.rs"]
 mod administration;
 
+use commonware_cryptography::{Signer as _, ed25519};
 use hub_client::BlsSigner;
 use hub_client::administration::AdministrativeCommand;
 
@@ -41,16 +42,20 @@ resources:
         expr: admin
 ";
 
+fn consensus_key(seed: u64) -> B256 {
+    B256::from_slice(ed25519::PrivateKey::from_seed(seed).public_key().as_ref())
+}
+
 fn test_validators() -> Vec<ValidatorConfig> {
     vec![
         ValidatorConfig {
             evm_address: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266".to_string(),
-            consensus_pubkey: "aa".repeat(32),
+            consensus_pubkey: hex::encode(consensus_key(1)),
             p2p_address: "127.0.0.1:30300".to_string(),
         },
         ValidatorConfig {
             evm_address: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".to_string(),
-            consensus_pubkey: "bb".repeat(32),
+            consensus_pubkey: hex::encode(consensus_key(2)),
             p2p_address: "127.0.0.1:30301".to_string(),
         },
     ]
@@ -259,7 +264,7 @@ async fn validator_bootstrap() {
     let new_validator_addr: Address = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
         .parse()
         .unwrap();
-    let new_consensus_key = B256::repeat_byte(0xCC);
+    let new_consensus_key = consensus_key(3);
     let calldata = IValidatorRegistry::addValidatorCall {
         evmAddr: new_validator_addr,
         consensusPubkey: new_consensus_key,
@@ -488,7 +493,7 @@ async fn validator_registry_adversarial() {
 
     let calldata = IValidatorRegistry::addValidatorCall {
         evmAddr: rogue_signer.address(),
-        consensusPubkey: B256::repeat_byte(0xDD),
+        consensusPubkey: consensus_key(4),
         p2pAddr: "127.0.0.1:40000".to_string(),
     }
     .abi_encode();
@@ -611,7 +616,7 @@ async fn validator_registry_adversarial() {
 
     let calldata = IValidatorRegistry::addValidatorCall {
         evmAddr: rogue_signer.address(),
-        consensusPubkey: B256::repeat_byte(0xDD),
+        consensusPubkey: consensus_key(4),
         p2pAddr: "127.0.0.1:40000".to_string(),
     }
     .abi_encode();
@@ -632,7 +637,7 @@ async fn validator_registry_adversarial() {
 
     let calldata = IValidatorRegistry::addValidatorCall {
         evmAddr: Address::ZERO,
-        consensusPubkey: B256::repeat_byte(0xDD),
+        consensusPubkey: consensus_key(4),
         p2pAddr: "127.0.0.1:40000".to_string(),
     }
     .abi_encode();
@@ -678,7 +683,7 @@ async fn validator_registry_adversarial() {
         evmAddr: "0x90F79bf6EB2c4f870365E785982E1f101E93b906"
             .parse()
             .unwrap(),
-        consensusPubkey: B256::repeat_byte(0xEE),
+        consensusPubkey: consensus_key(5),
         p2pAddr: "not-a-socket-addr".to_string(),
     }
     .abi_encode();
@@ -701,7 +706,7 @@ async fn validator_registry_adversarial() {
         evmAddr: "0x90F79bf6EB2c4f870365E785982E1f101E93b906"
             .parse()
             .unwrap(),
-        consensusPubkey: B256::repeat_byte(0xEE),
+        consensusPubkey: consensus_key(5),
         p2pAddr: "111.222.333.444:55555-padding-xx".to_string(),
     }
     .abi_encode();
@@ -722,7 +727,7 @@ async fn validator_registry_adversarial() {
 
     let calldata = IValidatorRegistry::addValidatorCall {
         evmAddr: rogue_signer.address(),
-        consensusPubkey: B256::repeat_byte(0xDD),
+        consensusPubkey: consensus_key(4),
         p2pAddr: "127.0.0.1:40000".to_string(),
     }
     .abi_encode();
@@ -740,7 +745,7 @@ async fn validator_registry_adversarial() {
 
     let calldata = IValidatorRegistry::addValidatorCall {
         evmAddr: rogue_signer.address(),
-        consensusPubkey: B256::repeat_byte(0xFF),
+        consensusPubkey: consensus_key(6),
         p2pAddr: "127.0.0.1:40001".to_string(),
     }
     .abi_encode();

@@ -27,6 +27,7 @@ struct MockAccount {
 #[derive(Clone, Debug, Default)]
 struct MockStateDb {
     unreadable_account: Option<Address>,
+    unreadable_storage: Option<(Address, U256)>,
     /// Accounts indexed by address.
     accounts: Arc<RwLock<HashMap<Address, MockAccount>>>,
     /// Contract code indexed by code hash.
@@ -95,6 +96,11 @@ impl StateDbRead for MockStateDb {
     }
 
     async fn storage(&self, address: &Address, slot: &U256) -> Result<U256, StateDbError> {
+        if self.unreadable_storage == Some((*address, *slot)) {
+            return Err(StateDbError::Storage(
+                "injected storage read failure".into(),
+            ));
+        }
         let accounts = self.accounts.read().unwrap();
         Ok(accounts
             .get(address)
@@ -645,3 +651,6 @@ mod rollback;
 
 #[path = "executor/sequence.rs"]
 mod sequence;
+
+#[path = "executor/registry_storage.rs"]
+mod registry_storage;

@@ -18,6 +18,7 @@ hub-traits.workspace = true
 hub-qmdb.workspace = true
 
 acp.workspace = true
+commonware-codec.workspace = true
 alloy-consensus.workspace = true
 alloy-eips.workspace = true
 alloy-primitives.workspace = true

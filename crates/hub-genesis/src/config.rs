@@ -4,6 +4,7 @@ use std::{collections::HashSet, path::Path, str::FromStr};
 
 use crate::state::GenesisState;
 use alloy_evm::revm::primitives::{Address, U256, keccak256};
+use commonware_codec::ReadExt as _;
 use serde::{Deserialize, Serialize};
 
 /// Hub-extended genesis configuration.
@@ -399,6 +400,9 @@ fn validator_storage_entries(
                 "consensus pubkey cannot be all zeros".into(),
             ));
         }
+        hub_domain::PublicKey::read(&mut consensus.as_slice()).map_err(|error| {
+            HubGenesisError::Parse(format!("invalid consensus pubkey: {error}"))
+        })?;
         validate_genesis_p2p_address(&v.p2p_address)?;
 
         let addr_slot = vr_array_element_slot(SLOT_VALIDATORS_ARRAY_BASE, i as u64);
@@ -528,6 +532,16 @@ mod tests {
         }]);
         let err = genesis.to_genesis_state().unwrap_err();
         assert!(err.to_string().contains("invalid validator p2p address"));
+    }
+
+    #[test]
+    fn genesis_rejects_malformed_consensus_key() {
+        let genesis = genesis_with_validators(vec![ValidatorConfig {
+            evm_address: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266".into(),
+            consensus_pubkey: "dd".repeat(32),
+            p2p_address: "127.0.0.1:30300".into(),
+        }]);
+        assert!(genesis.to_genesis_state().is_err());
     }
 
     #[test]

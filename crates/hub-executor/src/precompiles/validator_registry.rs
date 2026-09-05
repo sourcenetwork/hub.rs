@@ -6,6 +6,7 @@
 
 use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_sol_types::SolCall;
+use commonware_codec::ReadExt as _;
 use hub_modules::acp::AcpModule;
 use hub_modules::acp::types::{AccessRequest, Actor, Object, Operation};
 use hub_modules::hub::HubModule;
@@ -90,18 +91,28 @@ fn u256_to_address(val: U256) -> Address {
 
 // ── Journal helpers ────────────────────────────────────────────────────
 
-fn journal_sload<CTX: ContextTr>(context: &mut CTX, slot: U256) -> U256 {
+fn journal_sload<CTX: ContextTr>(context: &mut CTX, slot: U256) -> Result<U256, PrecompileError> {
     context
         .journal_mut()
         .sload(VALIDATOR_REGISTRY_ADDRESS, slot)
         .map(|r| r.data)
-        .unwrap_or_default()
+        .map_err(|error| {
+            PrecompileError::Fatal(format!("membership storage read failed: {error:?}"))
+        })
 }
 
-fn journal_sstore<CTX: ContextTr>(context: &mut CTX, slot: U256, value: U256) {
-    let _ = context
+fn journal_sstore<CTX: ContextTr>(
+    context: &mut CTX,
+    slot: U256,
+    value: U256,
+) -> Result<(), PrecompileError> {
+    context
         .journal_mut()
-        .sstore(VALIDATOR_REGISTRY_ADDRESS, slot, value);
+        .sstore(VALIDATOR_REGISTRY_ADDRESS, slot, value)
+        .map(|_| ())
+        .map_err(|error| {
+            PrecompileError::Fatal(format!("membership storage write failed: {error:?}"))
+        })
 }
 
 // ── ACP access check ──────────────────────────────────────────────────
@@ -150,11 +161,9 @@ fn load_policy_id<CTX: ContextTr>(
         return Ok(hex::encode(policy));
     }
     // Retain policies installed in existing genesis configurations.
-    let value = context
-        .journal_mut()
-        .sload(VALIDATOR_REGISTRY_ADDRESS, SLOT_POLICY_ID)
-        .map_err(|_| PrecompileError::Fatal("membership policy read failed".into()))?;
-    Ok(hex::encode(value.data.to_be_bytes::<32>()))
+    Ok(hex::encode(
+        journal_sload(context, SLOT_POLICY_ID)?.to_be_bytes::<32>(),
+    ))
 }
 
 fn validate_p2p_address(addr: &str) -> Result<(), ValidatorRegistryError> {
@@ -173,29 +182,37 @@ fn validate_p2p_address(addr: &str) -> Result<(), ValidatorRegistryError> {
 
 // ── Read helpers ───────────────────────────────────────────────────────
 
+type StoredValidator = (Address, [u8; 32], String, bool, u64);
+
 fn load_validator_raw<CTX: ContextTr>(
     context: &mut CTX,
     addr: Address,
-) -> Option<(Address, [u8; 32], String, bool, u64)> {
+) -> Result<Option<StoredValidator>, PrecompileError> {
     let entry_base = mapping_slot(addr, SLOT_VALIDATORS_MAPPING_BASE);
-    let packed = journal_sload(context, entry_base);
+    let packed = journal_sload(context, entry_base)?;
     if packed.is_zero() {
-        return None;
+        return Ok(None);
     }
     let (evm_address, active) = unpack_address_active(packed);
     let consensus_bytes: [u8; 32] =
-        journal_sload(context, entry_base.wrapping_add(U256::from(1))).to_be_bytes();
-    let index = journal_sload(context, entry_base.wrapping_add(U256::from(2))).as_limbs()[0];
+        journal_sload(context, entry_base.wrapping_add(U256::from(1)))?.to_be_bytes();
+    let index = journal_sload(context, entry_base.wrapping_add(U256::from(2)))?.as_limbs()[0];
     let p2p_len =
-        journal_sload(context, entry_base.wrapping_add(U256::from(3))).as_limbs()[0] as usize;
+        journal_sload(context, entry_base.wrapping_add(U256::from(3)))?.as_limbs()[0] as usize;
     let p2p_data: [u8; 32] =
-        journal_sload(context, entry_base.wrapping_add(U256::from(4))).to_be_bytes();
+        journal_sload(context, entry_base.wrapping_add(U256::from(4)))?.to_be_bytes();
     let p2p_address = String::from_utf8_lossy(&p2p_data[..p2p_len.min(32)]).to_string();
 
-    Some((evm_address, consensus_bytes, p2p_address, active, index))
+    Ok(Some((
+        evm_address,
+        consensus_bytes,
+        p2p_address,
+        active,
+        index,
+    )))
 }
 
-fn to_validator_info(raw: (Address, [u8; 32], String, bool, u64)) -> ValidatorInfo {
+fn to_validator_info(raw: StoredValidator) -> ValidatorInfo {
     ValidatorInfo {
         evm_address: format!("{:?}", raw.0),
         consensus_pubkey: hex::encode(raw.1),
@@ -205,17 +222,19 @@ fn to_validator_info(raw: (Address, [u8; 32], String, bool, u64)) -> ValidatorIn
     }
 }
 
-fn load_all_validators<CTX: ContextTr>(context: &mut CTX) -> Vec<ValidatorInfo> {
-    let count = journal_sload(context, SLOT_VALIDATOR_COUNT).as_limbs()[0];
+fn load_all_validators<CTX: ContextTr>(
+    context: &mut CTX,
+) -> Result<Vec<ValidatorInfo>, PrecompileError> {
+    let count = journal_sload(context, SLOT_VALIDATOR_COUNT)?.as_limbs()[0];
     let mut validators = Vec::with_capacity(count as usize);
     for i in 0..count {
         let addr_slot = array_element_slot(SLOT_VALIDATORS_ARRAY_BASE, i);
-        let addr = u256_to_address(journal_sload(context, addr_slot));
-        if let Some(raw) = load_validator_raw(context, addr) {
+        let addr = u256_to_address(journal_sload(context, addr_slot)?);
+        if let Some(raw) = load_validator_raw(context, addr)? {
             validators.push(to_validator_info(raw));
         }
     }
-    validators
+    Ok(validators)
 }
 
 // ── Write helpers ──────────────────────────────────────────────────────
@@ -227,25 +246,25 @@ fn store_validator_raw<CTX: ContextTr>(
     p2p_address: &str,
     active: bool,
     index: u64,
-) {
+) -> Result<(), PrecompileError> {
     let entry_base = mapping_slot(addr, SLOT_VALIDATORS_MAPPING_BASE);
-    journal_sstore(context, entry_base, pack_address_active(addr, active));
+    journal_sstore(context, entry_base, pack_address_active(addr, active))?;
     journal_sstore(
         context,
         entry_base.wrapping_add(U256::from(1)),
         U256::from_be_bytes(consensus_pubkey),
-    );
+    )?;
     journal_sstore(
         context,
         entry_base.wrapping_add(U256::from(2)),
         U256::from(index),
-    );
+    )?;
     let p2p_bytes = p2p_address.as_bytes();
     journal_sstore(
         context,
         entry_base.wrapping_add(U256::from(3)),
         U256::from(p2p_bytes.len()),
-    );
+    )?;
     let mut padded = [0u8; 32];
     let copy_len = p2p_bytes.len().min(32);
     padded[..copy_len].copy_from_slice(&p2p_bytes[..copy_len]);
@@ -253,18 +272,23 @@ fn store_validator_raw<CTX: ContextTr>(
         context,
         entry_base.wrapping_add(U256::from(4)),
         U256::from_be_bytes(padded),
-    );
+    )?;
+    Ok(())
 }
 
-fn clear_validator<CTX: ContextTr>(context: &mut CTX, addr: Address) {
+fn clear_validator<CTX: ContextTr>(
+    context: &mut CTX,
+    addr: Address,
+) -> Result<(), PrecompileError> {
     let entry_base = mapping_slot(addr, SLOT_VALIDATORS_MAPPING_BASE);
     for offset in 0..5u64 {
         journal_sstore(
             context,
             entry_base.wrapping_add(U256::from(offset)),
             U256::ZERO,
-        );
+        )?;
     }
+    Ok(())
 }
 
 // ── Dispatch entry point ───────────────────────────────────────────────
@@ -311,19 +335,21 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
                     "zero address".to_string(),
                 )));
             }
-            if call.consensusPubkey == B256::ZERO {
+            if call.consensusPubkey == B256::ZERO
+                || hub_domain::PublicKey::read(&mut call.consensusPubkey.as_slice()).is_err()
+            {
                 return Ok(err_dispatch(ValidatorRegistryError::InvalidPublicKey));
             }
             if let Err(e) = validate_p2p_address(&call.p2pAddr) {
                 return Ok(err_dispatch(e));
             }
-            if load_validator_raw(context, call.evmAddr).is_some() {
+            if load_validator_raw(context, call.evmAddr)?.is_some() {
                 return Ok(err_dispatch(
                     ValidatorRegistryError::ValidatorAlreadyExists(format!("{:?}", call.evmAddr)),
                 ));
             }
 
-            let count = journal_sload(context, SLOT_VALIDATOR_COUNT).as_limbs()[0];
+            let count = journal_sload(context, SLOT_VALIDATOR_COUNT)?.as_limbs()[0];
             store_validator_raw(
                 context,
                 call.evmAddr,
@@ -331,11 +357,11 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
                 &call.p2pAddr,
                 true,
                 count,
-            );
+            )?;
 
             let addr_slot = array_element_slot(SLOT_VALIDATORS_ARRAY_BASE, count);
-            journal_sstore(context, addr_slot, address_to_padded_u256(call.evmAddr));
-            journal_sstore(context, SLOT_VALIDATOR_COUNT, U256::from(count + 1));
+            journal_sstore(context, addr_slot, address_to_padded_u256(call.evmAddr))?;
+            journal_sstore(context, SLOT_VALIDATOR_COUNT, U256::from(count + 1))?;
 
             let event = IValidatorRegistry::ValidatorAdded {
                 evmAddr: call.evmAddr,
@@ -369,7 +395,7 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
                 return Ok(err_dispatch(e));
             }
 
-            let (_, _, _, _, val_index) = match load_validator_raw(context, call.evmAddr) {
+            let (_, _, _, _, val_index) = match load_validator_raw(context, call.evmAddr)? {
                 Some(v) => v,
                 None => {
                     return Ok(err_dispatch(ValidatorRegistryError::ValidatorNotFound(
@@ -378,20 +404,20 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
                 }
             };
 
-            let count = journal_sload(context, SLOT_VALIDATOR_COUNT).as_limbs()[0];
+            let count = journal_sload(context, SLOT_VALIDATOR_COUNT)?.as_limbs()[0];
             let last_index = count - 1;
 
             if val_index != last_index {
                 let last_addr_slot = array_element_slot(SLOT_VALIDATORS_ARRAY_BASE, last_index);
-                let last_addr_val = journal_sload(context, last_addr_slot);
+                let last_addr_val = journal_sload(context, last_addr_slot)?;
                 let last_addr = u256_to_address(last_addr_val);
 
                 let removed_slot = array_element_slot(SLOT_VALIDATORS_ARRAY_BASE, val_index);
-                journal_sstore(context, removed_slot, last_addr_val);
+                journal_sstore(context, removed_slot, last_addr_val)?;
 
-                match load_validator_raw(context, last_addr) {
+                match load_validator_raw(context, last_addr)? {
                     Some((la, lc, lp, ls, _)) => {
-                        store_validator_raw(context, la, lc, &lp, ls, val_index);
+                        store_validator_raw(context, la, lc, &lp, ls, val_index)?;
                     }
                     None => {
                         return Ok(err_dispatch(ValidatorRegistryError::State(
@@ -399,14 +425,14 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
                         )));
                     }
                 }
-                journal_sstore(context, last_addr_slot, U256::ZERO);
+                journal_sstore(context, last_addr_slot, U256::ZERO)?;
             } else {
                 let removed_slot = array_element_slot(SLOT_VALIDATORS_ARRAY_BASE, val_index);
-                journal_sstore(context, removed_slot, U256::ZERO);
+                journal_sstore(context, removed_slot, U256::ZERO)?;
             }
 
-            clear_validator(context, call.evmAddr);
-            journal_sstore(context, SLOT_VALIDATOR_COUNT, U256::from(last_index));
+            clear_validator(context, call.evmAddr)?;
+            journal_sstore(context, SLOT_VALIDATOR_COUNT, U256::from(last_index))?;
 
             let event = IValidatorRegistry::ValidatorRemoved {
                 evmAddr: call.evmAddr,
@@ -445,7 +471,8 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
                 return Ok(err_dispatch(e));
             }
 
-            let (addr, consensus, p2p, _, index) = match load_validator_raw(context, call.evmAddr) {
+            let (addr, consensus, p2p, _, index) = match load_validator_raw(context, call.evmAddr)?
+            {
                 Some(v) => v,
                 None => {
                     return Ok(err_dispatch(ValidatorRegistryError::ValidatorNotFound(
@@ -453,7 +480,7 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
                     )));
                 }
             };
-            store_validator_raw(context, addr, consensus, &p2p, call.active, index);
+            store_validator_raw(context, addr, consensus, &p2p, call.active, index)?;
 
             let event = IValidatorRegistry::ValidatorStatusChanged {
                 evmAddr: call.evmAddr,
@@ -487,7 +514,7 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
                 return Ok(err_dispatch(e));
             }
 
-            let count = journal_sload(context, SLOT_VALIDATOR_COUNT).as_limbs()[0];
+            let count = journal_sload(context, SLOT_VALIDATOR_COUNT)?.as_limbs()[0];
             let idx = call.index.as_limbs()[0];
             if idx >= count {
                 return Ok(err_dispatch(ValidatorRegistryError::ValidatorNotFound(
@@ -495,8 +522,8 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
                 )));
             }
             let addr_slot = array_element_slot(SLOT_VALIDATORS_ARRAY_BASE, idx);
-            let target_addr = u256_to_address(journal_sload(context, addr_slot));
-            let (addr, consensus, p2p, _, index) = match load_validator_raw(context, target_addr) {
+            let target_addr = u256_to_address(journal_sload(context, addr_slot)?);
+            let (addr, consensus, p2p, _, index) = match load_validator_raw(context, target_addr)? {
                 Some(v) => v,
                 None => {
                     return Ok(err_dispatch(ValidatorRegistryError::State(format!(
@@ -504,7 +531,7 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
                     ))));
                 }
             };
-            store_validator_raw(context, addr, consensus, &p2p, call.active, index);
+            store_validator_raw(context, addr, consensus, &p2p, call.active, index)?;
 
             let event = IValidatorRegistry::ValidatorStatusChanged {
                 evmAddr: target_addr,
@@ -534,16 +561,16 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
             if let Err(e) = validate_p2p_address(&call.p2pAddr) {
                 return Ok(err_dispatch(e));
             }
-            let (addr, consensus, _, active, index) = match load_validator_raw(context, caller_addr)
-            {
-                Some(v) => v,
-                None => {
-                    return Ok(err_dispatch(ValidatorRegistryError::Unauthorized(
-                        "caller is not a registered validator".to_string(),
-                    )));
-                }
-            };
-            store_validator_raw(context, addr, consensus, &call.p2pAddr, active, index);
+            let (addr, consensus, _, active, index) =
+                match load_validator_raw(context, caller_addr)? {
+                    Some(v) => v,
+                    None => {
+                        return Ok(err_dispatch(ValidatorRegistryError::Unauthorized(
+                            "caller is not a registered validator".to_string(),
+                        )));
+                    }
+                };
+            store_validator_raw(context, addr, consensus, &call.p2pAddr, active, index)?;
 
             let event = IValidatorRegistry::ValidatorUpdated {
                 evmAddr: caller_addr,
@@ -560,7 +587,7 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
             if gas_limit < gas_required {
                 return Err(PrecompileError::OutOfGas);
             }
-            let validators = load_all_validators(context);
+            let validators = load_all_validators(context)?;
             let ret =
                 IValidatorRegistry::getValidatorsCall::abi_encode_returns(&json_bytes(&validators));
             Ok(ok_dispatch(gas_required, ret, vec![]))
@@ -573,7 +600,7 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
             }
             let call =
                 IValidatorRegistry::getValidatorCall::abi_decode(input).map_err(decode_error)?;
-            let validator = load_validator_raw(context, call.evmAddr).map(to_validator_info);
+            let validator = load_validator_raw(context, call.evmAddr)?.map(to_validator_info);
             let ret =
                 IValidatorRegistry::getValidatorCall::abi_encode_returns(&json_bytes(&validator));
             Ok(ok_dispatch(gas_required, ret, vec![]))
@@ -584,7 +611,7 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
             if gas_limit < gas_required {
                 return Err(PrecompileError::OutOfGas);
             }
-            let validators = load_all_validators(context);
+            let validators = load_all_validators(context)?;
             let active_count = validators.iter().filter(|v| v.active).count();
             let ret = IValidatorRegistry::getActiveValidatorCountCall::abi_encode_returns(
                 &U256::from(active_count),

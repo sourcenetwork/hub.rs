@@ -67,7 +67,7 @@ fn execute(state: &MockStateDb, to: TxKind, input: Bytes) -> (ExecutionOutcome, 
     execute_with_executor(state, to, input, HubExecutor::new(9001))
 }
 
-fn execute_with_executor(
+pub(super) fn execute_with_executor(
     state: &MockStateDb,
     to: TxKind,
     input: Bytes,

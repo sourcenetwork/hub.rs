@@ -3924,6 +3924,7 @@ dependencies = [
  "ark-ff 0.4.2",
  "ark-serialize 0.4.2",
  "ark-std 0.4.0",
+ "commonware-codec",
  "futures",
  "hex",
  "hub-crypto",
