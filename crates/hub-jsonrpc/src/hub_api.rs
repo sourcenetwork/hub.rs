@@ -57,11 +57,10 @@ pub trait HubApi {
         height: U64,
     ) -> RpcResult<ModuleStateProof>;
 
-    /// Returns a self-contained light block at the given height.
+    /// Returns a light block at the given height.
     ///
-    /// Includes the canonical block, aggregate finalization, and epoch verifier material —
-    /// everything needed to verify the block's authenticity via
-    /// `hub_domain::verify_light_block`.
+    /// Verify it with `hub_domain::verify_light_block` and a consensus key from
+    /// the deployment's authenticated bootstrap configuration.
     #[method(name = "getLightBlock")]
     async fn get_light_block(&self, height: U64) -> RpcResult<LightBlock>;
 }

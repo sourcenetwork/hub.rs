@@ -17,7 +17,7 @@ use commonware_cryptography::{
     Hasher as _, Sha256,
     bls12381::primitives::{
         sharing::{ModeVersion, Sharing},
-        variant::MinSig,
+        variant::{MinSig, Variant},
     },
 };
 use commonware_parallel::Sequential;
@@ -35,6 +35,9 @@ const LIGHT_BLOCK_MAX_TX_BYTES: usize = 65_536;
 
 /// The threshold VRF scheme whose recovered certificate finalizes Hub blocks.
 pub type LightConsensusScheme = vrf::Scheme<PublicKey, MinSig>;
+
+/// Public consensus identity, retained across resharing epochs.
+pub type ConsensusPublicKey = <MinSig as Variant>::Public;
 
 /// Public verifier material for one consensus epoch.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -94,7 +97,7 @@ impl Read for EpochMaterial {
     }
 }
 
-/// A finalized Hub block with every public artifact needed for offline verification.
+/// A finalized block and its certificate; verification requires a trusted consensus key.
 ///
 /// Binary fields use `0x`-prefixed hex so the type remains directly usable over JSON-RPC.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -182,6 +185,9 @@ pub enum LightBlockError {
     /// Epoch material is structurally inconsistent.
     #[error("invalid epoch material: {0}")]
     EpochMaterial(String),
+    /// The response names a different consensus identity from the trusted deployment.
+    #[error("light block consensus key does not match the trusted key")]
+    UntrustedConsensusKey,
     /// The aggregate threshold finalization certificate is invalid.
     #[error("BLS threshold finalization certificate verification failed")]
     InvalidCertificate,
@@ -224,10 +230,16 @@ fn decode_block(bytes: &[u8]) -> Result<Block, LightBlockError> {
     )?)
 }
 
-/// Verify the authenticated block, its aggregate finalization, and epoch key.
+/// Verify a block's finalization against an independently trusted consensus key.
 ///
+/// Obtain `trusted_key` from the deployment's authenticated bootstrap configuration,
+/// never from the response being verified. The identity remains constant across
+/// resharing epochs. Epoch material in the response cannot establish trust.
 /// Returns the authenticated `(state_root, module_state_root)` on success.
-pub fn verify_light_block(light: &LightBlock) -> Result<(B256, B256), LightBlockError> {
+pub fn verify_light_block(
+    light: &LightBlock,
+    trusted_key: &ConsensusPublicKey,
+) -> Result<(B256, B256), LightBlockError> {
     let block_hash = decode_b256("block_hash", &light.block_hash)?;
     let block_bytes = decode_hex("block", &light.block)?;
     if keccak256(&block_bytes) != block_hash {
@@ -271,6 +283,10 @@ pub fn verify_light_block(light: &LightBlock) -> Result<(B256, B256), LightBlock
         ));
     }
 
+    if material.sharing.public() != trusted_key {
+        return Err(LightBlockError::UntrustedConsensusKey);
+    }
+
     let expected = Proposal::new(
         Round::new(Epoch::new(light.epoch), View::new(light.view)),
         View::new(light.parent_view),
@@ -283,11 +299,7 @@ pub fn verify_light_block(light: &LightBlock) -> Result<(B256, B256), LightBlock
         return Err(LightBlockError::ProposalMismatch);
     }
 
-    let verifier = LightConsensusScheme::verifier(
-        LIGHT_BLOCK_NAMESPACE,
-        material.participants,
-        material.sharing,
-    );
+    let verifier = LightConsensusScheme::certificate_verifier(LIGHT_BLOCK_NAMESPACE, *trusted_key);
     if !finalization.verify(&mut commonware_utils::test_rng(), &verifier, &Sequential) {
         return Err(LightBlockError::InvalidCertificate);
     }
@@ -382,11 +394,24 @@ mod tests {
         LightBlock::from_parts(&block, &finalization.encode(), &material.encode())
     }
 
+    fn trusted_key() -> ConsensusPublicKey {
+        *fixture(42).2.sharing.public()
+    }
+
+    #[test]
+    fn unrelated_consensus_group_is_rejected() {
+        let light = light_fixture(100);
+        assert_eq!(
+            verify_light_block(&light, &trusted_key()),
+            Err(LightBlockError::UntrustedConsensusKey)
+        );
+    }
+
     #[test]
     fn valid_light_block_verifies() {
         let light = light_fixture(42);
         assert_eq!(
-            verify_light_block(&light).unwrap(),
+            verify_light_block(&light, &trusted_key()).unwrap(),
             (B256::repeat_byte(0x01), B256::repeat_byte(0x02))
         );
     }
@@ -396,7 +421,7 @@ mod tests {
         let mut light = light_fixture(42);
         light.module_state_root = encode_hex(B256::repeat_byte(0x99).as_slice());
         assert_eq!(
-            verify_light_block(&light),
+            verify_light_block(&light, &trusted_key()),
             Err(LightBlockError::BlockFieldMismatch("module_state_root"))
         );
     }
@@ -410,7 +435,7 @@ mod tests {
         finalization.proposal.payload = ConsensusDigest::from([0x99; 32]);
         light.finalization = encode_hex(&finalization.encode());
         assert_eq!(
-            verify_light_block(&light),
+            verify_light_block(&light, &trusted_key()),
             Err(LightBlockError::ProposalMismatch)
         );
     }
@@ -420,7 +445,7 @@ mod tests {
         let mut light = light_fixture(42);
         light.finalization = "0xdeadbeef".into();
         assert!(matches!(
-            verify_light_block(&light),
+            verify_light_block(&light, &trusted_key()),
             Err(LightBlockError::Codec(_))
         ));
     }
@@ -431,7 +456,31 @@ mod tests {
         let (_, _, other) = fixture(100);
         light.epoch_material = encode_hex(&other.encode());
         assert_eq!(
-            verify_light_block(&light),
+            verify_light_block(&light, &trusted_key()),
+            Err(LightBlockError::UntrustedConsensusKey)
+        );
+    }
+
+    #[test]
+    fn substituted_certificate_is_rejected() {
+        let mut light = light_fixture(42);
+        let mut finalization: Finalization<LightConsensusScheme, ConsensusDigest> =
+            Finalization::decode(
+                decode_hex("finalization", &light.finalization)
+                    .unwrap()
+                    .as_slice(),
+            )
+            .unwrap();
+        let unrelated: Finalization<LightConsensusScheme, ConsensusDigest> = Finalization::decode(
+            decode_hex("finalization", &light_fixture(100).finalization)
+                .unwrap()
+                .as_slice(),
+        )
+        .unwrap();
+        finalization.certificate = unrelated.certificate;
+        light.finalization = encode_hex(&finalization.encode());
+        assert_eq!(
+            verify_light_block(&light, &trusted_key()),
             Err(LightBlockError::InvalidCertificate)
         );
     }
@@ -442,6 +491,6 @@ mod tests {
         let json = serde_json::to_string(&light).unwrap();
         let decoded: LightBlock = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, light);
-        verify_light_block(&decoded).unwrap();
+        verify_light_block(&decoded, &trusted_key()).unwrap();
     }
 }

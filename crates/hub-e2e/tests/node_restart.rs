@@ -21,8 +21,8 @@ use alloy_primitives::{Address, Bytes};
 use alloy_sol_types::SolCall;
 
 use hub_client::{ACP_ADDRESS, BlsSigner, EvmSigner, HubClient, TransactionReceipt};
-use hub_domain::{LightBlock, verify_light_block};
-use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, TestCluster};
+use hub_domain::{ConsensusPublicKey, LightBlock, verify_light_block};
+use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, KeySet, TestCluster};
 use hub_e2e::{RECEIPT_POLL_ATTEMPTS, RECEIPT_POLL_INTERVAL};
 use hub_modules::acp::abi::IAcp;
 
@@ -39,14 +39,19 @@ resources:
         expr: owner
 ";
 
-async fn wait_light_block(client: &HubClient, height: u64) -> LightBlock {
+async fn wait_light_block(
+    client: &HubClient,
+    height: u64,
+    trusted_key: ConsensusPublicKey,
+) -> LightBlock {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if let Ok(light) = client
                 .rpc_call_typed::<LightBlock>("hub_getLightBlock", serde_json::json!([height]))
                 .await
             {
-                verify_light_block(&light).expect("historical finalization should verify");
+                verify_light_block(&light, &trusted_key)
+                    .expect("historical finalization should verify");
                 return light;
             }
             tokio::time::sleep(RECEIPT_POLL_INTERVAL).await;
@@ -206,11 +211,20 @@ async fn wait_for_nonce(rpc_url: &str, address: Address, expected: u64) {
 #[tokio::test]
 async fn node_restart_preserves_state() {
     let chain_id = 9001;
+    let trusted_key = *KeySet::builder()
+        .seed(chain_id)
+        .build()
+        .expect("bootstrap keys")
+        .epoch_info()
+        .output
+        .public()
+        .public();
     let genesis = GenesisBuilder::devnet().funded_accounts(1, "1000000000000000000000000");
 
     let mut cluster = TestCluster::builder()
         .binary(hub_e2e::resolve_binary().expect("resolve hubd binary"))
         .nodes(4)
+        .seed(chain_id)
         .chain_id(chain_id)
         .genesis(genesis)
         .preset(ConsensusPreset::Stress)
@@ -313,7 +327,7 @@ async fn node_restart_preserves_state() {
                     .rpc_call_typed::<LightBlock>("hub_getLightBlock", serde_json::json!([height]))
                     .await
                 {
-                    verify_light_block(&light).unwrap();
+                    verify_light_block(&light, &trusted_key).unwrap();
                     return (height, light);
                 }
             }
@@ -449,7 +463,7 @@ async fn node_restart_preserves_state() {
             serde_json::to_value(&receipt).unwrap()
         );
     }
-    let restored_light = wait_light_block(&restarted_client, historical_light.0).await;
+    let restored_light = wait_light_block(&restarted_client, historical_light.0, trusted_key).await;
     assert_eq!(
         restored_light, historical_light.1,
         "historical proof material changed on restart"

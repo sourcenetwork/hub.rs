@@ -13,7 +13,7 @@ use alloy_sol_types::SolCall;
 
 use hub_client::{ACP_ADDRESS, EvmSigner, HubClient, TransactionReceipt};
 use hub_domain::{LightBlock, ModuleStateProof, verify_light_block, verify_module_state_proof};
-use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, TestCluster};
+use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, KeySet, TestCluster};
 use hub_e2e::{RECEIPT_POLL_ATTEMPTS, RECEIPT_POLL_INTERVAL};
 use hub_modules::acp::abi::IAcp;
 use jsonrpsee::core::client::SubscriptionClientT;
@@ -84,11 +84,20 @@ async fn broadcast_evm_tx(
 async fn light_client_proof_verification() {
     // ── Phase 1: Setup ───────────────────────────────────────────────
     let chain_id = 9003;
+    let trusted_key = *KeySet::builder()
+        .seed(chain_id)
+        .build()
+        .expect("bootstrap keys")
+        .epoch_info()
+        .output
+        .public()
+        .public();
     let genesis = GenesisBuilder::devnet().funded_accounts(1, "1000000000000000000000000");
 
     let cluster = TestCluster::builder()
         .binary(hub_e2e::resolve_binary().expect("resolve hubd binary"))
         .nodes(4)
+        .seed(chain_id)
         .chain_id(chain_id)
         .genesis(genesis)
         .preset(ConsensusPreset::Fast)
@@ -205,7 +214,7 @@ async fn light_client_proof_verification() {
         .expect("hub_getLightBlock should succeed");
 
     let (_state_root, module_state_root) =
-        verify_light_block(&light_block).expect("light block should verify");
+        verify_light_block(&light_block, &trusted_key).expect("light block should verify");
 
     let lb_msr_hex = format!("0x{}", hex::encode(module_state_root.as_slice()));
     assert_eq!(
@@ -269,7 +278,8 @@ async fn light_client_proof_verification() {
                 .rpc_call_typed("hub_getLightBlock", serde_json::json!([height]))
                 .await
                 .expect("hub_getLightBlock should succeed");
-            let (_, msr) = verify_light_block(&lb).expect("light block should verify");
+            let (_, msr) =
+                verify_light_block(&lb, &trusted_key).expect("light block should verify");
 
             if verify_module_state_proof(msr, &proof_1).is_err() {
                 return (height, msr);
