@@ -11,6 +11,12 @@ mod bulletin;
 mod hub;
 pub(crate) mod validator_registry;
 
+use std::sync::{Arc, Mutex};
+
+mod journal;
+pub use journal::ModuleInspector;
+use journal::ModuleJournal;
+
 use alloy_primitives::{Address, B256, Bytes, Log};
 use hub_modules::acp::AcpModule;
 use hub_modules::bulletin::BulletinModule;
@@ -121,13 +127,11 @@ const fn stub_precompile(_input: &[u8], _gas_limit: u64) -> PrecompileResult {
 
 /// Hub precompile provider that extends standard Ethereum precompiles
 /// with ABI-dispatching precompiles for ACP, Bulletin, and Hub modules.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct HubPrecompiles {
     eth: EthPrecompiles,
     custom: Precompiles,
-    acp_module: AcpModule,
-    bulletin_module: BulletinModule,
-    hub_module: HubModule,
+    journal: Arc<Mutex<ModuleJournal>>,
     current_tx_hash: B256,
     current_signer_did: String,
 }
@@ -185,9 +189,7 @@ impl HubPrecompiles {
         Self {
             eth: EthPrecompiles::new(spec),
             custom: new_custom_precompiles(),
-            acp_module: AcpModule::new(),
-            bulletin_module: BulletinModule::new(),
-            hub_module: HubModule::new(),
+            journal: Arc::default(),
             current_tx_hash: B256::ZERO,
             current_signer_did: String::new(),
         }
@@ -203,9 +205,11 @@ impl HubPrecompiles {
         Self {
             eth: EthPrecompiles::new(spec),
             custom: new_custom_precompiles(),
-            acp_module,
-            bulletin_module,
-            hub_module,
+            journal: Arc::new(Mutex::new(ModuleJournal::new((
+                acp_module,
+                bulletin_module,
+                hub_module,
+            )))),
             current_tx_hash: B256::ZERO,
             current_signer_did: String::new(),
         }
@@ -221,9 +225,26 @@ impl HubPrecompiles {
         self.current_signer_did = did;
     }
 
+    /// Inspector required to align module mutations with call-frame outcomes.
+    pub fn inspector(&self) -> ModuleInspector {
+        ModuleInspector(self.journal.clone())
+    }
+
+    /// Retain a transaction checkpoint through post-execution validation.
+    pub fn begin_transaction(&self) {
+        self.journal.lock().unwrap().begin();
+    }
+
+    /// Commit or restore module changes after the complete execution result.
+    pub fn finish_transaction(&self, success: bool) {
+        self.journal.lock().unwrap().finish(success);
+    }
+
     /// Extract module state after block execution.
     pub fn take_modules(self) -> (AcpModule, BulletinModule, HubModule) {
-        (self.acp_module, self.bulletin_module, self.hub_module)
+        let mut journal = self.journal.lock().unwrap();
+        journal.finish(true);
+        std::mem::take(&mut journal.modules)
     }
 }
 
@@ -254,9 +275,12 @@ impl<CTX: ContextTr> PrecompileProvider<CTX> for HubPrecompiles {
             let calldata = inputs.input.bytes(context);
 
             if inputs.bytecode_address == VALIDATOR_REGISTRY_ADDRESS {
+                if inputs.is_static && !validator_registry::is_query(&calldata) {
+                    return Ok(Some(Self::static_write_error(inputs)));
+                }
                 let dispatch_result = validator_registry::dispatch_with_journal(
                     context,
-                    &self.acp_module,
+                    &self.journal.lock().unwrap().modules.0,
                     &block_ctx,
                     &tx_ctx,
                     &calldata,
@@ -333,6 +357,14 @@ impl HubPrecompiles {
         }
     }
 
+    const fn static_write_error(inputs: &CallInputs) -> InterpreterResult {
+        InterpreterResult {
+            result: revm::interpreter::InstructionResult::StateChangeDuringStaticCall,
+            gas: revm::interpreter::Gas::new(inputs.gas_limit),
+            output: Bytes::new(),
+        }
+    }
+
     fn run_custom(
         &mut self,
         inputs: &CallInputs,
@@ -340,20 +372,32 @@ impl HubPrecompiles {
         block_ctx: &BlockExecCtx,
         tx_ctx: &TxExecCtx,
     ) -> Result<(Option<InterpreterResult>, Vec<Log>), String> {
-        let dispatch_result = match dispatch_to_module(
-            &mut self.acp_module,
-            &mut self.bulletin_module,
-            &mut self.hub_module,
-            inputs.bytecode_address,
-            calldata,
-            block_ctx,
-            tx_ctx,
-            inputs.gas_limit,
-        ) {
-            Some(r) => r,
-            None => return Ok((None, vec![])),
+        let mut journal = self.journal.lock().unwrap();
+        journal.checkpoint()?;
+        let (acp, bulletin, hub) = &mut journal.modules;
+        let dispatch_result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            dispatch_to_module(
+                acp,
+                bulletin,
+                hub,
+                inputs.bytecode_address,
+                calldata,
+                block_ctx,
+                tx_ctx,
+                inputs.gas_limit,
+            )
+        })) {
+            Ok(Some(result)) => result,
+            Ok(None) => return Ok((None, vec![])),
+            Err(_) => {
+                tracing::warn!("module call panicked");
+                Err(PrecompileError::Other("module execution failed".into()))
+            }
         };
 
+        if inputs.is_static && journal.changed() {
+            return Ok((Some(Self::static_write_error(inputs)), vec![]));
+        }
         Self::dispatch_result_to_interpreter(inputs, dispatch_result)
     }
 }

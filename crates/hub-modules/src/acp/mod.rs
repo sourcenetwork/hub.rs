@@ -59,7 +59,7 @@ type Result<T> = std::result::Result<T, AcpError>;
 #[derive(Clone, Debug)]
 pub struct AcpModule {
     store: InMemoryKvStore,
-    zanzibar_policies: HashMap<String, Policy>,
+    zanzibar_policies: Arc<HashMap<String, Policy>>,
 }
 
 impl Default for AcpModule {
@@ -74,7 +74,7 @@ impl AcpModule {
     pub fn new() -> Self {
         Self {
             store: InMemoryKvStore::default(),
-            zanzibar_policies: HashMap::new(),
+            zanzibar_policies: Arc::default(),
         }
     }
 
@@ -93,7 +93,7 @@ impl AcpModule {
         }
         Self {
             store,
-            zanzibar_policies,
+            zanzibar_policies: Arc::new(zanzibar_policies),
         }
     }
 
@@ -142,7 +142,7 @@ impl AcpModule {
 
         let policy_id = zanzibar_policy.id.clone();
         self.set_policy_record(&policy_id, &record);
-        self.zanzibar_policies.insert(policy_id, zanzibar_policy);
+        Arc::make_mut(&mut self.zanzibar_policies).insert(policy_id, zanzibar_policy);
 
         Ok(record)
     }
@@ -230,8 +230,7 @@ impl AcpModule {
         };
 
         self.set_policy_record(policy_id, &new_record);
-        self.zanzibar_policies
-            .insert(policy_id.to_string(), new_zanzibar);
+        Arc::make_mut(&mut self.zanzibar_policies).insert(policy_id.to_string(), new_zanzibar);
 
         Ok((removed, new_record))
     }

@@ -21,9 +21,8 @@ use hub_modules::types::{BlockExecCtx, Timestamp, TxExecCtx};
 use hub_state::ModuleStateTree;
 use hub_traits::StateDb;
 use revm::{
-    Context, ExecuteEvm, Journal, MainBuilder,
+    Context, InspectEvm, Journal, MainBuilder,
     context::{block::BlockEnv, result::ExecutionResult},
-    context_interface::ContextSetters,
     database::State,
 };
 use tracing::warn;
@@ -209,17 +208,6 @@ impl HubExecutor {
         let signer_did = bls::did_from_bls_pubkey(&pubkey)
             .map_err(|e| ExecutionError::BlsVerification(format!("DID: {e}")))?;
 
-        nonce_store
-            .check_and_increment(&signer_did, native_tx.nonce)
-            .map_err(|e| match e {
-                hub_modules::native_account::NonceError::Mismatch { did, expected, got } => {
-                    ExecutionError::NonceMismatch { did, expected, got }
-                }
-                hub_modules::native_account::NonceError::Overflow(did) => {
-                    ExecutionError::InvalidTx(format!("nonce overflow for {did}"))
-                }
-            })?;
-
         if native_tx.target == VALIDATOR_REGISTRY_ADDRESS {
             return Err(ExecutionError::InvalidTx(
                 "ValidatorRegistry does not support native transactions".to_string(),
@@ -232,12 +220,24 @@ impl HubExecutor {
             return Err(ExecutionError::UnknownNativeTarget(native_tx.target));
         }
 
+        nonce_store
+            .check_and_increment(&signer_did, native_tx.nonce)
+            .map_err(|e| match e {
+                hub_modules::native_account::NonceError::Mismatch { did, expected, got } => {
+                    ExecutionError::NonceMismatch { did, expected, got }
+                }
+                hub_modules::native_account::NonceError::Overflow(did) => {
+                    ExecutionError::InvalidTx(format!("nonce overflow for {did}"))
+                }
+            })?;
+
         let tx_hash = native_tx.tx_id().0;
         let tx_ctx = TxExecCtx {
             tx_hash: tx_hash.to_vec(),
             signer: signer_did,
         };
 
+        let before = (acp.clone(), bulletin.clone(), hub.clone());
         let dispatch_result = catch_unwind(AssertUnwindSafe(|| {
             dispatch_to_module(
                 acp,
@@ -251,6 +251,10 @@ impl HubExecutor {
             )
             .expect("target validated above")
         }));
+
+        if !matches!(&dispatch_result, Ok(Ok(result)) if !result.precompile.reverted) {
+            (*acp, *bulletin, *hub) = before;
+        }
 
         let failed_receipt = || {
             ExecutionReceipt::new(
@@ -376,14 +380,15 @@ impl HubExecutor {
                 blk.prevrandao = Some(context.prevrandao);
             });
 
+        let precompiles = HubPrecompiles::with_modules(
+            self.config.spec_id,
+            modules.acp.clone(),
+            modules.bulletin.clone(),
+            modules.hub.clone(),
+        );
         let mut evm = ctx
-            .build_mainnet()
-            .with_precompiles(HubPrecompiles::with_modules(
-                self.config.spec_id,
-                modules.acp.clone(),
-                modules.bulletin.clone(),
-                modules.hub.clone(),
-            ));
+            .build_mainnet_with_inspector(precompiles.inspector())
+            .with_precompiles(precompiles);
 
         for (i, tx_bytes) in txs.iter().enumerate() {
             if !tx_bytes.is_empty() && NativeTx::is_native_tx(tx_bytes[0]) {
@@ -401,11 +406,14 @@ impl HubExecutor {
                 Err(e) => return Err(e),
             };
 
-            evm.set_tx(tx_env);
             evm.precompiles.set_tx_hash(tx_hash);
             evm.precompiles.set_signer_did(signer_did);
 
-            let result_and_state = match evm.replay() {
+            evm.precompiles.begin_transaction();
+            let execution = evm.inspect_tx(tx_env);
+            evm.precompiles
+                .finish_transaction(execution.as_ref().is_ok_and(|r| r.result.is_success()));
+            let result_and_state = match execution {
                 Ok(r) => r,
                 Err(e) if building => {
                     warn!(%tx_hash, ?e, "skipping tx: execution error");
@@ -767,6 +775,10 @@ mod tests {
             result,
             Err(ExecutionError::UnknownNativeTarget(_))
         ));
+        assert!(
+            nonces.store().is_empty(),
+            "invalid target must not consume a nonce"
+        );
     }
 
     #[test]
