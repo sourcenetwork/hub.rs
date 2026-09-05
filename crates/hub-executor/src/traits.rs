@@ -35,15 +35,6 @@ pub trait BlockExecutor<S: StateDb>: Clone + Send + Sync + 'static {
     /// tracking and unblock subsequent heights.
     fn mark_height_verified(&self, _height: u64) {}
 
-    /// Retrieve cached receipts for a block at `height`.
-    ///
-    /// Executors that cache receipts during verification return them here
-    /// to avoid re-execution in the finalized block reporter. The entry
-    /// is removed from the cache on retrieval.
-    fn cached_receipts(&self, _height: u64) -> Option<(Vec<crate::ExecutionReceipt>, u64)> {
-        None
-    }
-
     /// Get the cached post-execution module state for a given block.
     fn get_cached_modules(&self, _block: BlockId) -> Option<ModuleState> {
         None

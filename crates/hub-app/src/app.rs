@@ -15,16 +15,17 @@ use commonware_glue::stateful::{Application, Input, Proposed, db::DatabaseSet};
 use futures::StreamExt as _;
 use hub_backend::{BatchState, Ctx, HubMerkleized, HubStateSet, HubSyncTargets, HubUnmerkleized};
 use hub_consensus::{Mempool as _, TxId, components::InMemoryMempool};
-use hub_domain::{Block, ConsensusContext, PublicKey};
+use hub_domain::{Block, BlockId, ConsensusContext, PublicKey};
 use hub_executor::{BlockContext, BlockExecutor, ExecutionReceipt, HubExecutor};
+use parking_lot::Mutex;
 use tracing::{info, warn};
 
-use crate::{
-    AppError, ConsensusScheme, Executed, FinalizedSink, ReshareInput, execute_block, sync_targets,
-};
+use crate::{AppError, ConsensusScheme, FinalizedSink, ReshareInput, execute_block, sync_targets};
 
 const MAX_CLOCK_DRIFT_SECS: u64 = 15;
 const MAX_PENDING_ANCESTORS: usize = 64;
+
+type ReceiptCache = Arc<Mutex<HashMap<BlockId, (u64, Vec<ExecutionReceipt>)>>>;
 
 /// VRF randomness recovered by consensus while it unlocks each proposal round.
 ///
@@ -65,6 +66,7 @@ pub struct StatefulHubApp<S: FinalizedSink> {
     gas_limit: u64,
     participant_addresses: Arc<Vec<(PublicKey, Address)>>,
     vrf_seeds: VrfSeedCache,
+    receipts: ReceiptCache,
 }
 
 impl<S: FinalizedSink> std::fmt::Debug for StatefulHubApp<S> {
@@ -96,6 +98,7 @@ impl<S: FinalizedSink> StatefulHubApp<S> {
             gas_limit,
             participant_addresses: Arc::new(Vec::new()),
             vrf_seeds: VrfSeedCache::default(),
+            receipts: Arc::default(),
         }
     }
 
@@ -155,7 +158,7 @@ impl<S: FinalizedSink> StatefulHubApp<S> {
         &self,
         block: &Block,
         batches: HubUnmerkleized,
-    ) -> Result<Executed, AppError> {
+    ) -> Result<HubMerkleized, AppError> {
         self.chain_modules_from(block.parent);
         let context = self
             .block_context(
@@ -177,7 +180,14 @@ impl<S: FinalizedSink> StatefulHubApp<S> {
             return Err(AppError::RootMismatch("db targets"));
         }
         self.executor.cache_block_modules(block.id(), block.height);
-        Ok(executed)
+        self.cache_receipts(block, executed.outcome.receipts);
+        Ok(executed.merkleized)
+    }
+
+    fn cache_receipts(&self, block: &Block, receipts: Vec<ExecutionReceipt>) {
+        self.receipts
+            .lock()
+            .insert(block.id(), (block.height, receipts));
     }
 
     fn pending_tx_ids(blocks: &[Arc<Block>]) -> BTreeSet<TxId> {
@@ -270,6 +280,7 @@ impl<S: FinalizedSink> Application<Ctx> for StatefulHubApp<S> {
             db_targets: executed.db_targets,
         };
         self.executor.cache_block_modules(block.id(), block.height);
+        self.cache_receipts(&block, executed.outcome.receipts);
         info!(
             block_digest = ?block.digest(),
             height,
@@ -335,7 +346,7 @@ impl<S: FinalizedSink> Application<Ctx> for StatefulHubApp<S> {
             return None;
         }
         match self.re_execute(&block, batches).await {
-            Ok(executed) => {
+            Ok(merkleized) => {
                 <HubExecutor as BlockExecutor<BatchState>>::mark_height_verified(
                     &self.executor,
                     block.height,
@@ -350,7 +361,7 @@ impl<S: FinalizedSink> Application<Ctx> for StatefulHubApp<S> {
                     total_ms = start.elapsed().as_millis(),
                     "verified block"
                 );
-                Some(executed.merkleized)
+                Some(merkleized)
             }
             Err(e) => {
                 warn!(?digest, height = block.height, error = %e, "verification failed");
@@ -366,7 +377,7 @@ impl<S: FinalizedSink> Application<Ctx> for StatefulHubApp<S> {
         batches: HubUnmerkleized,
     ) -> Option<HubMerkleized> {
         match self.re_execute(block, batches).await {
-            Ok(executed) => Some(executed.merkleized),
+            Ok(merkleized) => Some(merkleized),
             Err(e) => {
                 warn!(height = block.height, error = %e, "apply failed");
                 None
@@ -381,9 +392,12 @@ impl<S: FinalizedSink> Application<Ctx> for StatefulHubApp<S> {
         _batches: &HubMerkleized,
         _readers: <HubStateSet as DatabaseSet<Ctx>>::Readers,
     ) -> Self::Captured {
-        <HubExecutor as BlockExecutor<BatchState>>::cached_receipts(&self.executor, block.height)
-            .map(|(receipts, _)| receipts)
-            .unwrap_or_default()
+        self.receipts
+            .lock()
+            .get(&block.id())
+            .expect("finalized block must have its execution receipts")
+            .1
+            .clone()
     }
 
     async fn finalized(
@@ -401,5 +415,8 @@ impl<S: FinalizedSink> Application<Ctx> for StatefulHubApp<S> {
         self.executor
             .cleanup_module_cache(block.height.saturating_sub(1));
         self.sink.finalized(block, captured).await;
+        self.receipts
+            .lock()
+            .retain(|_, (height, _)| *height > block.height);
     }
 }

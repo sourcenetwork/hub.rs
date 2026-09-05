@@ -36,9 +36,6 @@ use crate::precompiles::{
 /// Gas budget for native BLS transactions dispatched to modules.
 const NATIVE_TX_GAS_LIMIT: u64 = 1_000_000;
 
-/// Per-block receipt cache: height → (receipts, total gas used).
-type ReceiptCache = Arc<Mutex<HashMap<u64, (Vec<ExecutionReceipt>, u64)>>>;
-
 /// Per-block module state cache: height → post-execution ModuleState.
 type ModuleCache = Arc<Mutex<HashMap<u64, ModuleState>>>;
 
@@ -58,13 +55,10 @@ pub type ModuleTrees = [Arc<Mutex<ModuleStateTree>>; 4];
 /// Post-execution module state is cached per height so consensus can chain
 /// parent→child state across proposals, and finalization can commit the
 /// winning fork's state.
-/// Receipts are cached per block height so the finalized block reporter
-/// can retrieve them without re-executing (which would fail nonce checks).
 #[derive(Clone, Debug)]
 pub struct HubExecutor {
     config: ExecutionConfig,
     modules: SharedModuleState,
-    receipt_cache: ReceiptCache,
     module_cache: ModuleCache,
     block_module_cache: BlockModuleCache,
     module_trees: Option<ModuleTrees>,
@@ -76,7 +70,6 @@ impl HubExecutor {
         Self {
             config: ExecutionConfig::new(chain_id),
             modules: Arc::new(RwLock::new(ModuleState::default())),
-            receipt_cache: Arc::new(Mutex::new(HashMap::new())),
             module_cache: Arc::new(Mutex::new(HashMap::new())),
             block_module_cache: Arc::new(Mutex::new(HashMap::new())),
             module_trees: None,
@@ -88,7 +81,6 @@ impl HubExecutor {
         Self {
             config,
             modules: Arc::new(RwLock::new(ModuleState::default())),
-            receipt_cache: Arc::new(Mutex::new(HashMap::new())),
             module_cache: Arc::new(Mutex::new(HashMap::new())),
             block_module_cache: Arc::new(Mutex::new(HashMap::new())),
             module_trees: None,
@@ -505,11 +497,6 @@ impl<S: StateDb> BlockExecutor<S> for HubExecutor {
             modules.state_root()
         };
 
-        self.receipt_cache.lock().unwrap().insert(
-            context.header.number,
-            (outcome.receipts.clone(), cumulative_gas),
-        );
-
         self.module_cache
             .lock()
             .unwrap()
@@ -535,10 +522,6 @@ impl<S: StateDb> BlockExecutor<S> for HubExecutor {
     }
 
     fn mark_height_verified(&self, _height: u64) {}
-
-    fn cached_receipts(&self, height: u64) -> Option<(Vec<ExecutionReceipt>, u64)> {
-        self.receipt_cache.lock().unwrap().remove(&height)
-    }
 
     fn get_cached_modules(&self, block: BlockId) -> Option<ModuleState> {
         self.get_cached_modules(block)
