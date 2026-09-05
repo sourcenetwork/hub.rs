@@ -14,9 +14,11 @@ use hub_backend::{Ctx, HubStateSet, HubUnmerkleized, state_set_config};
 use hub_client::{ACP_ADDRESS, BlsSigner};
 use hub_consensus::{Mempool as _, components::InMemoryMempool};
 use hub_domain::{Block, Tx};
-use hub_executor::HubExecutor;
+use hub_executor::{HubExecutor, ModuleTrees};
 use hub_genesis::GenesisState;
+use hub_modules::module_state::state_root_from_jmt;
 use hub_modules::{ModuleState, acp::abi::IAcp};
+use hub_state::ModuleStateTree;
 
 const CHAIN_ID: u64 = 9001;
 
@@ -68,6 +70,15 @@ async fn propose(
 
 #[test]
 fn pending_branches_do_not_replace_query_state() {
+    check_pending_branches(false);
+}
+
+#[test]
+fn pending_branches_do_not_change_persistent_trees() {
+    check_pending_branches(true);
+}
+
+fn check_pending_branches(persistent: bool) {
     let dir = tempfile::tempdir().unwrap();
     let config = tokio::Config::default().with_storage_directory(dir.path().to_path_buf());
     tokio::Runner::new(config).start(|context| async move {
@@ -79,7 +90,17 @@ fn pending_branches_do_not_replace_query_state() {
         .await;
         let (root, targets) = apply_genesis(&set, &GenesisState::default()).await.unwrap();
         let genesis = genesis_block(root, targets, ModuleState::default().state_root());
-        let executor = HubExecutor::new(CHAIN_ID);
+        let trees: Option<ModuleTrees> = persistent.then(|| {
+            std::array::from_fn(|i| {
+                Arc::new(std::sync::Mutex::new(
+                    ModuleStateTree::open(dir.path().join(format!("module-{i}"))).unwrap(),
+                ))
+            })
+        });
+        let mut executor = HubExecutor::new(CHAIN_ID);
+        if let Some(trees) = &trees {
+            executor = executor.with_module_trees(trees.clone());
+        }
         let mut app = StatefulHubApp::new(
             executor.clone(),
             genesis.clone(),
@@ -128,8 +149,27 @@ fn pending_branches_do_not_replace_query_state() {
                 None
             ),
         );
-        assert_eq!(child_a.block.module_state_root, a.block.module_state_root);
-        assert_eq!(child_b.block.module_state_root, b.block.module_state_root);
+        assert_eq!(
+            child_a.block.module_state_root, a.block.module_state_root,
+            "empty child changed Alice's state root"
+        );
+        assert_eq!(
+            child_b.block.module_state_root, b.block.module_state_root,
+            "empty child changed Bob's state root"
+        );
+        if let Some(trees) = &trees {
+            for tree in trees {
+                let tree = tree.lock().unwrap();
+                assert_eq!(
+                    tree.version(),
+                    0,
+                    "pending execution advanced the persistent version"
+                );
+                assert_eq!(tree.canonical_height(), 0);
+                assert!(tree.load_all().unwrap().is_empty());
+                assert!(tree.root_at_height(1).is_err());
+            }
+        }
         {
             let visible = executor.modules().read().unwrap();
             assert_eq!(
@@ -166,7 +206,18 @@ fn pending_branches_do_not_replace_query_state() {
             assert_eq!(visible.nonces.get_nonce(alice.did()), 1);
             assert_eq!(visible.nonces.get_nonce(bob.did()), 0);
             assert_eq!(visible.acp.query_policy_ids().unwrap().len(), 1);
-            assert_eq!(visible.state_root(), winner.block.module_state_root);
+            if let Some(trees) = &trees {
+                let roots = std::array::from_fn(|i| {
+                    let tree = trees[i].lock().unwrap();
+                    assert_eq!(tree.canonical_height(), winner.block.height);
+                    let root = tree.root().unwrap();
+                    assert_eq!(tree.root_at_height(winner.block.height).unwrap(), root);
+                    root.0
+                });
+                assert_eq!(state_root_from_jmt(&roots), winner.block.module_state_root);
+            } else {
+                assert_eq!(visible.state_root(), winner.block.module_state_root);
+            }
         }
         assert!(set.finalize().await.durable().await);
     });

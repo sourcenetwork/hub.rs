@@ -1,5 +1,6 @@
 //! RocksDB-backed JMT store with four column families.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -22,6 +23,7 @@ const META_VERSION_KEY: &[u8] = b"\x00__canonical_version__";
 
 /// Well-known key in `raw_kv` for persisting the canonical height.
 const META_HEIGHT_KEY: &[u8] = b"\x00__canonical_height__";
+const HEIGHT_PREFIX: &[u8] = b"\x00__height_version__";
 
 /// RocksDB-backed JMT store with four column families:
 /// - `jmt_nodes`: `Borsh<NodeKey> -> Borsh<Node>`
@@ -87,23 +89,6 @@ impl JmtStore {
         Ok(result)
     }
 
-    /// Atomically write a batch of operations to the `raw_kv` column family.
-    ///
-    /// Each entry is `(key, Option<value>)` — `None` means delete.
-    pub fn raw_kv_write_batch(&self, ops: &[(Vec<u8>, Option<Vec<u8>>)]) -> Result<()> {
-        let handle = self.db.cf_handle(CF_RAW_KV).context("missing raw_kv CF")?;
-        let mut batch = rocksdb::WriteBatch::default();
-        for (key, value) in ops {
-            match value {
-                Some(v) => batch.put_cf(&handle, key, v),
-                None => batch.delete_cf(&handle, key),
-            }
-        }
-        self.db
-            .write(batch)
-            .context("rocksdb raw_kv batch write failed")
-    }
-
     /// Read the persisted canonical JMT version from `raw_kv` metadata.
     pub fn read_canonical_version(&self) -> Result<Option<u64>> {
         match self.get_raw(CF_RAW_KV, META_VERSION_KEY)? {
@@ -128,17 +113,6 @@ impl JmtStore {
             }
             None => Ok(None),
         }
-    }
-
-    /// Persist canonical version and height to `raw_kv` metadata atomically.
-    pub fn write_metadata(&self, version: u64, height: u64) -> Result<()> {
-        let handle = self.db.cf_handle(CF_RAW_KV).context("missing raw_kv CF")?;
-        let mut batch = rocksdb::WriteBatch::default();
-        batch.put_cf(&handle, META_VERSION_KEY, version.to_be_bytes());
-        batch.put_cf(&handle, META_HEIGHT_KEY, height.to_be_bytes());
-        self.db
-            .write(batch)
-            .context("rocksdb metadata write failed")
     }
 }
 
@@ -230,9 +204,82 @@ impl HasPreimage for JmtStore {
 }
 
 impl JmtStore {
+    pub(crate) fn read_height_versions(&self) -> Result<BTreeMap<u64, u64>> {
+        let cf = self.db.cf_handle(CF_RAW_KV).context("missing raw_kv CF")?;
+        let mut versions = BTreeMap::new();
+        for item in self.db.iterator_cf(
+            &cf,
+            rocksdb::IteratorMode::From(HEIGHT_PREFIX, rocksdb::Direction::Forward),
+        ) {
+            let (key, value) = item?;
+            let Some(suffix) = key.strip_prefix(HEIGHT_PREFIX) else {
+                break;
+            };
+            let height = u64::from_be_bytes(suffix.try_into().context("corrupt height key")?);
+            let version = u64::from_be_bytes(
+                value
+                    .as_ref()
+                    .try_into()
+                    .context("corrupt height version")?,
+            );
+            versions.insert(height, version);
+        }
+        Ok(versions)
+    }
+
+    pub(crate) fn write_revision(
+        &self,
+        nodes: &NodeBatch,
+        entries: &[(Vec<u8>, Option<Vec<u8>>)],
+        version: u64,
+        height: u64,
+        retain_from: u64,
+    ) -> Result<()> {
+        let preimages: Vec<_> = entries
+            .iter()
+            .map(|(key, _)| (KeyHash::with::<sha2::Sha256>(key), key.as_slice()))
+            .collect();
+        let mut batch = rocksdb::WriteBatch::default();
+        self.append_nodes(&mut batch, nodes, &preimages)?;
+        let cf = self.db.cf_handle(CF_RAW_KV).context("missing raw_kv CF")?;
+        for (key, value) in entries {
+            match value {
+                Some(value) => batch.put_cf(&cf, key, value),
+                None => batch.delete_cf(&cf, key),
+            }
+        }
+        batch.put_cf(&cf, META_VERSION_KEY, version.to_be_bytes());
+        batch.put_cf(&cf, META_HEIGHT_KEY, height.to_be_bytes());
+        let height_key = |h: u64| [HEIGHT_PREFIX, &h.to_be_bytes()].concat();
+        batch.put_cf(&cf, height_key(height), version.to_be_bytes());
+        if retain_from > 0 {
+            batch.delete_range_cf(&cf, height_key(0), height_key(retain_from));
+        }
+        let mut options = rocksdb::WriteOptions::default();
+        options.set_sync(true);
+        self.db
+            .write_opt(batch, &options)
+            .context("rocksdb revision write failed")?;
+        *self.rightmost_leaf_cache.lock().unwrap() = None;
+        Ok(())
+    }
+
     /// Atomically writes JMT nodes, values, and preimages in a single RocksDB batch.
     pub(crate) fn write_batch(
         &self,
+        node_batch: &NodeBatch,
+        preimages: &[(KeyHash, &[u8])],
+    ) -> Result<()> {
+        let mut batch = rocksdb::WriteBatch::default();
+        self.append_nodes(&mut batch, node_batch, preimages)?;
+        self.db.write(batch).context("rocksdb batch write failed")?;
+        *self.rightmost_leaf_cache.lock().unwrap() = None;
+        Ok(())
+    }
+
+    fn append_nodes(
+        &self,
+        batch: &mut rocksdb::WriteBatch,
         node_batch: &NodeBatch,
         preimages: &[(KeyHash, &[u8])],
     ) -> Result<()> {
@@ -249,44 +296,19 @@ impl JmtStore {
             .cf_handle(CF_PREIMAGES)
             .context("missing jmt_preimages CF")?;
 
-        let mut batch = rocksdb::WriteBatch::default();
         for (key_hash, preimage) in preimages {
             batch.put_cf(&preimages_cf, key_hash.0, preimage);
         }
 
-        // Track the rightmost leaf among new nodes for cache update.
-        let mut new_rightmost: Option<(NodeKey, LeafNode)> = None;
         for (node_key, node) in node_batch.nodes() {
             let key_bytes = borsh::to_vec(node_key).context("failed to serialize JMT node key")?;
             let val_bytes = borsh::to_vec(node).context("failed to serialize JMT node")?;
             batch.put_cf(&nodes_cf, key_bytes, val_bytes);
-
-            if let Node::Leaf(leaf) = node
-                && (new_rightmost.is_none()
-                    || leaf.key_hash() > new_rightmost.as_ref().unwrap().1.key_hash())
-            {
-                new_rightmost = Some((node_key.clone(), leaf.clone()));
-            }
         }
         for ((version, key_hash), value) in node_batch.values() {
             let val_bytes = borsh::to_vec(value).context("failed to serialize JMT value")?;
             batch.put_cf(&values_cf, value_key(*version, *key_hash), val_bytes);
         }
-        self.db.write(batch).context("rocksdb batch write failed")?;
-
-        // Update rightmost leaf cache if a new leaf exceeds the cached one.
-        if let Some(new) = new_rightmost {
-            let mut cache = self.rightmost_leaf_cache.lock().unwrap();
-            let should_update = match &*cache {
-                None => true,
-                Some(None) => true,
-                Some(Some((_, existing))) => new.1.key_hash() >= existing.key_hash(),
-            };
-            if should_update {
-                *cache = Some(Some(new));
-            }
-        }
-
         Ok(())
     }
 }

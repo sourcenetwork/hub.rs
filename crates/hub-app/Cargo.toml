@@ -32,6 +32,7 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+hub-state.workspace = true
 hub-client.workspace = true
 alloy-sol-types.workspace = true
 hub-domain = { workspace = true, features = ["evm"] }

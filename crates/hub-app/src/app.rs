@@ -16,8 +16,7 @@ use futures::StreamExt as _;
 use hub_backend::{Ctx, HubMerkleized, HubStateSet, HubSyncTargets, HubUnmerkleized};
 use hub_consensus::{Mempool as _, TxId, components::InMemoryMempool};
 use hub_domain::{Block, BlockId, ConsensusContext, PublicKey};
-use hub_executor::{BlockContext, ExecutionReceipt, HubExecutor};
-use hub_modules::ModuleState;
+use hub_executor::{BlockContext, ExecutionReceipt, HubExecutor, ModuleSnapshot};
 use parking_lot::Mutex;
 use tracing::{info, warn};
 
@@ -28,7 +27,7 @@ const MAX_PENDING_ANCESTORS: usize = 64;
 
 struct PendingExecution {
     height: u64,
-    modules: ModuleState,
+    modules: ModuleSnapshot,
     receipts: Vec<ExecutionReceipt>,
 }
 
@@ -93,7 +92,7 @@ impl<S: FinalizedSink> StatefulHubApp<S> {
         max_txs: usize,
         gas_limit: u64,
     ) -> Self {
-        let modules = executor.modules().read().unwrap().clone();
+        let modules = executor.snapshot().expect("read initial module snapshot");
         let pending = HashMap::from([(
             genesis.id(),
             PendingExecution {
@@ -161,12 +160,16 @@ impl<S: FinalizedSink> StatefulHubApp<S> {
         BlockContext::new(header, B256::ZERO, prevrandao)
     }
 
-    fn modules_for(&self, parent: BlockId) -> ModuleState {
+    fn modules_for(&self, parent: BlockId) -> ModuleSnapshot {
         self.pending
             .lock()
             .get(&parent)
             .map(|execution| execution.modules.clone())
-            .unwrap_or_else(|| self.executor.modules().read().unwrap().clone())
+            .unwrap_or_else(|| {
+                self.executor
+                    .snapshot()
+                    .expect("read committed module snapshot")
+            })
     }
 
     async fn re_execute(
@@ -202,7 +205,7 @@ impl<S: FinalizedSink> StatefulHubApp<S> {
     fn cache_execution(
         &self,
         block: &Block,
-        modules: ModuleState,
+        modules: ModuleSnapshot,
         receipts: Vec<ExecutionReceipt>,
     ) {
         self.pending.lock().insert(
@@ -235,7 +238,7 @@ impl<S: FinalizedSink> Application<Ctx> for StatefulHubApp<S> {
     type Context = ConsensusContext;
     type Block = Block;
     type Databases = HubStateSet;
-    type Captured = (ModuleState, Vec<ExecutionReceipt>);
+    type Captured = (ModuleSnapshot, Vec<ExecutionReceipt>);
     type Provider = InMemoryMempool;
     type Input = ReshareInput;
 
@@ -430,7 +433,9 @@ impl<S: FinalizedSink> Application<Ctx> for StatefulHubApp<S> {
         let ids: Vec<TxId> = block.txs.iter().map(hub_domain::Tx::id).collect();
         self.mempool.prune(&ids);
         let (modules, receipts) = captured;
-        self.executor.set_base_modules(modules);
+        self.executor
+            .commit_snapshot(block.height, modules)
+            .expect("persist finalized modules");
         self.sink.finalized(block, receipts).await;
         self.pending
             .lock()

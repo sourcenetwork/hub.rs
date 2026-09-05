@@ -14,7 +14,9 @@ pub use context::{BlockContext, ParentBlock};
 mod error;
 pub use error::ExecutionError;
 
+mod module_snapshot;
 mod outcome;
+pub use module_snapshot::ModuleSnapshot;
 pub use outcome::{ExecutionOutcome, ExecutionReceipt};
 
 mod revm;

@@ -3,8 +3,7 @@
 use alloy_primitives::Bytes;
 use hub_backend::{BatchState, HubMerkleized, HubUnmerkleized, combined_root};
 use hub_domain::{DbTargets, StateRoot, Tx};
-use hub_executor::{BlockContext, ExecutionOutcome, HubExecutor};
-use hub_modules::ModuleState;
+use hub_executor::{BlockContext, ExecutionOutcome, HubExecutor, ModuleSnapshot};
 
 use crate::{AppError, db_targets_from_merkleized};
 
@@ -19,7 +18,7 @@ pub struct Executed {
     /// Receipts, module root, and executed transaction indices.
     pub outcome: ExecutionOutcome,
     /// Module state produced from the supplied parent snapshot.
-    pub modules: ModuleState,
+    pub modules: ModuleSnapshot,
 }
 
 impl std::fmt::Debug for Executed {
@@ -38,7 +37,7 @@ pub async fn execute_block(
     batches: HubUnmerkleized,
     context: &BlockContext,
     txs: &[Tx],
-    modules: ModuleState,
+    modules: ModuleSnapshot,
 ) -> Result<Executed, AppError> {
     let state = BatchState::new(batches);
     let tx_bytes: Vec<Bytes> = txs.iter().map(|tx| tx.bytes.clone()).collect();

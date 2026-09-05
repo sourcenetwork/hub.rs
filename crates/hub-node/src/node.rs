@@ -526,8 +526,17 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
 fn open_module_trees(data_dir: &Path) -> anyhow::Result<(ModuleTrees, ModuleState)> {
     let mut stores: [InMemoryKvStore; 4] = Default::default();
     let mut trees = Vec::with_capacity(4);
+    let mut height = None;
     for (store, name) in stores.iter_mut().zip(MODULE_NAMES) {
         let tree = ModuleStateTree::open(data_dir.join("state").join(name))?;
+        if let Some(expected) = height {
+            anyhow::ensure!(
+                tree.canonical_height() == expected,
+                "module revisions differ at startup; recovery is required"
+            );
+        } else {
+            height = Some(tree.canonical_height());
+        }
         *store = InMemoryKvStore::from_pairs(tree.load_all()?);
         trees.push(Arc::new(std::sync::Mutex::new(tree)));
     }

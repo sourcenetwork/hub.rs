@@ -6,7 +6,8 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use crate::{
     BlockContext, BlockExecutor, ExecutionConfig, ExecutionError, ExecutionOutcome,
-    ExecutionReceipt, StateDbAdapter, build_receipt, decode_evm_tx, extract_changes,
+    ExecutionReceipt, ModuleSnapshot, StateDbAdapter, build_receipt, decode_evm_tx,
+    extract_changes,
 };
 use alloy_primitives::{B256, Bytes, U256, keccak256};
 use hub_crypto::bls;
@@ -51,6 +52,7 @@ pub struct HubExecutor {
     config: ExecutionConfig,
     modules: SharedModuleState,
     module_trees: Option<ModuleTrees>,
+    commit_lock: Arc<Mutex<()>>,
 }
 
 impl HubExecutor {
@@ -60,6 +62,7 @@ impl HubExecutor {
             config: ExecutionConfig::new(chain_id),
             modules: Arc::new(RwLock::new(ModuleState::default())),
             module_trees: None,
+            commit_lock: Arc::default(),
         }
     }
 
@@ -69,6 +72,7 @@ impl HubExecutor {
             config,
             modules: Arc::new(RwLock::new(ModuleState::default())),
             module_trees: None,
+            commit_lock: Arc::default(),
         }
     }
 
@@ -102,6 +106,54 @@ impl HubExecutor {
     /// Install module state loaded at startup or selected by finalization.
     pub fn set_base_modules(&self, modules: ModuleState) {
         *self.modules.write().unwrap() = modules;
+    }
+
+    /// Capture module values and tree views from the same committed revision.
+    pub fn snapshot(&self) -> Result<ModuleSnapshot, ExecutionError> {
+        let _guard = self.commit_lock.lock().unwrap();
+        let trees = self
+            .module_trees
+            .as_ref()
+            .map(|trees| {
+                let snapshots = trees
+                    .iter()
+                    .map(|tree| tree.lock().unwrap().snapshot())
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| ExecutionError::ModuleTree(e.to_string()))?;
+                Ok::<_, ExecutionError>(snapshots.try_into().expect("four module trees"))
+            })
+            .transpose()?;
+        Ok(ModuleSnapshot {
+            modules: self.modules.read().unwrap().clone(),
+            trees,
+        })
+    }
+
+    /// Persist selected tree updates before replacing the shared module values.
+    pub fn commit_snapshot(
+        &self,
+        height: u64,
+        snapshot: ModuleSnapshot,
+    ) -> Result<(), ExecutionError> {
+        let _guard = self.commit_lock.lock().unwrap();
+        match (&self.module_trees, &snapshot.trees) {
+            (Some(trees), Some(snapshots)) => {
+                for (tree, snapshot) in trees.iter().zip(snapshots) {
+                    tree.lock()
+                        .unwrap()
+                        .commit_prepared(height, snapshot)
+                        .map_err(|e| ExecutionError::ModuleTree(e.to_string()))?;
+                }
+            }
+            (None, None) => {}
+            _ => {
+                return Err(ExecutionError::ModuleTree(
+                    "module snapshot has incompatible trees".into(),
+                ));
+            }
+        }
+        self.set_base_modules(snapshot.modules);
+        Ok(())
     }
 
     /// Execute a native BLS transaction: verify signature, derive DID, dispatch to module.
@@ -231,8 +283,12 @@ impl HubExecutor {
         state: &S,
         context: &BlockContext,
         txs: &[Bytes],
-        base_modules: ModuleState,
-    ) -> Result<(ExecutionOutcome, ModuleState), ExecutionError> {
+        parent: ModuleSnapshot,
+    ) -> Result<(ExecutionOutcome, ModuleSnapshot), ExecutionError> {
+        let ModuleSnapshot {
+            modules: base_modules,
+            trees: mut snapshots,
+        } = parent;
         let mut modules = base_modules.clone();
 
         let block_ctx = BlockExecCtx {
@@ -389,45 +445,18 @@ impl HubExecutor {
                 base_modules.nonces.store(),
             ];
 
-            // Phase 1: Begin execution and populate overlays on all trees.
-            let height = context.header.number;
+            let parents = snapshots
+                .as_mut()
+                .ok_or_else(|| ExecutionError::ModuleTree("missing parent tree views".into()))?;
             for (i, tree_lock) in trees.iter().enumerate() {
                 let dirty = stores[i].diff_from(base_stores[i]);
-                let mut tree = tree_lock.lock().unwrap();
-                tree.begin_execution(height);
-                for (key, value) in &dirty {
-                    tree.put(key, value.clone())
-                        .map_err(|e| ExecutionError::ModuleTree(e.to_string()))?;
-                }
+                parents[i] = tree_lock
+                    .lock()
+                    .unwrap()
+                    .prepare(&parents[i], dirty)
+                    .map_err(|e| ExecutionError::ModuleTree(e.to_string()))?;
             }
-
-            // Phase 2: Compute speculative roots from overlays (no persistence).
-            let mut jmt_roots = [[0u8; 32]; 4];
-            for (i, tree_lock) in trees.iter().enumerate() {
-                let tree = tree_lock.lock().unwrap();
-                jmt_roots[i] = tree
-                    .root()
-                    .map_err(|e| ExecutionError::ModuleTree(e.to_string()))?
-                    .0;
-            }
-
-            // Phase 3: Flush all overlays. If any fails, discard remaining.
-            let mut flush_error = None;
-            for (i, tree_lock) in trees.iter().enumerate() {
-                let mut tree = tree_lock.lock().unwrap();
-                if flush_error.is_some() {
-                    tree.discard_overlay();
-                } else if let Err(e) = tree.flush_overlay() {
-                    flush_error = Some((i, e));
-                    tree.discard_overlay();
-                }
-            }
-            if let Some((idx, e)) = flush_error {
-                return Err(ExecutionError::ModuleTree(format!(
-                    "flush failed on tree {idx}: {e}"
-                )));
-            }
-
+            let jmt_roots = std::array::from_fn(|i| parents[i].root().0);
             state_root_from_jmt(&jmt_roots)
         } else {
             // Fallback for tests without JMT trees. Production code always
@@ -435,7 +464,13 @@ impl HubExecutor {
             modules.state_root()
         };
 
-        Ok((outcome, modules))
+        Ok((
+            outcome,
+            ModuleSnapshot {
+                modules,
+                trees: snapshots,
+            },
+        ))
     }
 }
 
@@ -448,7 +483,7 @@ impl<S: StateDb> BlockExecutor<S> for HubExecutor {
         context: &BlockContext,
         txs: &[Self::Tx],
     ) -> Result<ExecutionOutcome, ExecutionError> {
-        let modules = self.modules.read().unwrap().clone();
+        let modules = self.snapshot()?;
         self.execute_with_modules(state, context, txs, modules)
             .map(|(outcome, _)| outcome)
     }
