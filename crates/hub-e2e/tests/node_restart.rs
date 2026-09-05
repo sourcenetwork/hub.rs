@@ -165,6 +165,26 @@ async fn poll_until(
     }
 }
 
+async fn wait_for_nonce(rpc_url: &str, address: Address, expected: u64) {
+    let rpc_url = rpc_url.to_owned();
+    poll_until(
+        "restarted replica sequence convergence",
+        Duration::from_secs(120),
+        Duration::from_millis(500),
+        move || {
+            let rpc_url = rpc_url.clone();
+            Box::pin(async move {
+                match HubClient::new(rpc_url).get_nonce(address).await {
+                    Ok(nonce) if nonce >= expected => None,
+                    Ok(nonce) => Some(format!("sequence {nonce}, need {expected}")),
+                    Err(error) => Some(error.to_string()),
+                }
+            })
+        },
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn node_restart_preserves_state() {
     let chain_id = 9001;
@@ -355,27 +375,7 @@ async fn node_restart_preserves_state() {
     // tx submitted while it was down.
     let restarted_url = cluster.node(3).rpc_url();
     let addr = evm_signer.address();
-    let target_nonce = while_down_evm_nonce;
-    poll_until(
-        "restarted node EVM nonce convergence",
-        Duration::from_secs(120),
-        Duration::from_millis(500),
-        {
-            let url = restarted_url.clone();
-            move || {
-                let url = url.clone();
-                Box::pin(async move {
-                    let nonce = HubClient::new(url).get_nonce(addr).await.unwrap_or(0);
-                    if nonce >= target_nonce {
-                        None
-                    } else {
-                        Some(format!("nonce {nonce}, need {target_nonce}"))
-                    }
-                })
-            }
-        },
-    )
-    .await;
+    wait_for_nonce(&restarted_url, addr, while_down_evm_nonce).await;
 
     // The restarted node should now see the policy created while it was down.
     let converged_policies = restarted_client
@@ -433,6 +433,10 @@ async fn node_restart_preserves_state() {
     //
     // Verifies the restarted node's mempool accepts txs and gossips
     // them to all validators for inclusion.
+
+    // A receipt from replica 0 does not guarantee replica 3 has applied the write.
+    let post_evm_nonce = client.get_nonce(addr).await.expect("sequence after write");
+    wait_for_nonce(&restarted_url, addr, post_evm_nonce).await;
 
     let through_restarted_receipt = send_evm_tx_to_node(
         &restarted_client,
