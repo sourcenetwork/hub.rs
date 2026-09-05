@@ -92,15 +92,6 @@ impl<S: FinalizedSink> StatefulHubApp<S> {
         max_txs: usize,
         gas_limit: u64,
     ) -> Self {
-        let modules = executor.snapshot().expect("read initial module snapshot");
-        let pending = HashMap::from([(
-            genesis.id(),
-            PendingExecution {
-                height: genesis.height,
-                modules,
-                receipts: Vec::new(),
-            },
-        )]);
         Self {
             executor,
             genesis,
@@ -110,7 +101,7 @@ impl<S: FinalizedSink> StatefulHubApp<S> {
             gas_limit,
             participant_addresses: Arc::new(Vec::new()),
             vrf_seeds: VrfSeedCache::default(),
-            pending: Arc::new(Mutex::new(pending)),
+            pending: Arc::default(),
         }
     }
 

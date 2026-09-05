@@ -48,6 +48,28 @@ impl ModuleStateTree {
         self.canonical_height
     }
 
+    /// Rewind during startup before any snapshots are handed to execution.
+    pub fn rewind_to_height(&mut self, height: u64) -> Result<()> {
+        ensure!(
+            Arc::strong_count(&self.store) == 1,
+            "cannot rewind while tree snapshots are alive"
+        );
+        ensure!(
+            height <= self.canonical_height,
+            "module tree is behind the recovered height"
+        );
+        self.version_at_height(height)?;
+        while self.canonical_height > height {
+            let (previous_height, version) =
+                self.store.rewind_revision(self.canonical_height, height)?;
+            self.height_versions.remove(&self.canonical_height);
+            self.canonical_height = previous_height;
+            self.canonical_version = version;
+        }
+        self.root()?;
+        Ok(())
+    }
+
     /// Take a read-only view of the current canonical state.
     pub fn snapshot(&self) -> Result<TreeSnapshot> {
         Ok(TreeSnapshot {

@@ -25,6 +25,9 @@ const META_VERSION_KEY: &[u8] = b"\x00__canonical_version__";
 const META_HEIGHT_KEY: &[u8] = b"\x00__canonical_height__";
 const HEIGHT_PREFIX: &[u8] = b"\x00__height_version__";
 
+mod recovery;
+use recovery::{UNDO_PREFIX, height_key};
+
 /// RocksDB-backed JMT store with four column families:
 /// - `jmt_nodes`: `Borsh<NodeKey> -> Borsh<Node>`
 /// - `jmt_values`: `KeyHash (32B) ++ Version (8B BE) -> Borsh<Option<OwnedValue>>`
@@ -240,6 +243,7 @@ impl JmtStore {
             .map(|(key, _)| (KeyHash::with::<sha2::Sha256>(key), key.as_slice()))
             .collect();
         let mut batch = rocksdb::WriteBatch::default();
+        self.append_undo(&mut batch, height, nodes, entries)?;
         self.append_nodes(&mut batch, nodes, &preimages)?;
         let cf = self.db.cf_handle(CF_RAW_KV).context("missing raw_kv CF")?;
         for (key, value) in entries {
@@ -250,10 +254,15 @@ impl JmtStore {
         }
         batch.put_cf(&cf, META_VERSION_KEY, version.to_be_bytes());
         batch.put_cf(&cf, META_HEIGHT_KEY, height.to_be_bytes());
-        let height_key = |h: u64| [HEIGHT_PREFIX, &h.to_be_bytes()].concat();
-        batch.put_cf(&cf, height_key(height), version.to_be_bytes());
+        batch.put_cf(
+            &cf,
+            height_key(HEIGHT_PREFIX, height),
+            version.to_be_bytes(),
+        );
         if retain_from > 0 {
-            batch.delete_range_cf(&cf, height_key(0), height_key(retain_from));
+            for prefix in [HEIGHT_PREFIX, UNDO_PREFIX] {
+                batch.delete_range_cf(&cf, height_key(prefix, 0), height_key(prefix, retain_from));
+            }
         }
         let mut options = rocksdb::WriteOptions::default();
         options.set_sync(true);

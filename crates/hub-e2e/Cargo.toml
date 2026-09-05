@@ -5,6 +5,13 @@ edition.workspace = true
 rust-version.workspace = true
 description = "End-to-end test harness for hub"
 
+[features]
+fault-injection = []
+
+[[test]]
+name = "module_commit_crash"
+required-features = ["fault-injection"]
+
 [dependencies]
 hub-harness.workspace = true
 

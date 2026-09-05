@@ -13,7 +13,8 @@ use commonware_codec::{Decode as _, Encode as _};
 use commonware_consensus::{
     Reporters,
     marshal::{
-        self, core::Actor as MarshalActor, resolver::p2p as marshal_resolver, standard::Deferred,
+        self, Identifier, core::Actor as MarshalActor, resolver::p2p as marshal_resolver,
+        standard::Deferred,
     },
     simplex::{
         SkipBudget,
@@ -47,6 +48,7 @@ use hub_domain::{Block, EpochMaterial};
 use hub_executor::{ExecutionConfig, HubExecutor, MempoolValidator, ModuleTrees};
 use hub_indexer::{BlockIndex, LightBlockIndex, StoredEpochMaterial};
 use hub_jsonrpc::{IndexedStateProvider, NodeState, RpcServer, TxSubmitCallback};
+use hub_modules::module_state::state_root_from_jmt;
 use hub_modules::{ModuleState, kv_store::InMemoryKvStore};
 use hub_state::ModuleStateTree;
 use tracing::{error, info};
@@ -149,6 +151,8 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     // Module state trees and executor.
     let (module_trees, persisted_modules) = open_module_trees(&config.data_dir)?;
     let executor = HubExecutor::new(chain_id).with_module_trees(module_trees.clone());
+    #[cfg(feature = "fault-injection")]
+    let executor = executor.with_crash_marker(config.data_dir.join("module-commit-crash"));
     executor.set_base_modules(persisted_modules);
     let modules = executor.modules().clone();
     let module_root = modules
@@ -226,6 +230,7 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
 
     let stateful_startup = context.child("stateful_startup");
     let mut plan = SyncPlan::init(&stateful_startup, PARTITION_PREFIX).await;
+    let completed_sync_height = plan.sync_height();
     let probe_artifact = if plan.should_state_sync(false) {
         let artifact = probe_mailbox
             .subscribe()
@@ -382,7 +387,7 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         .zip(genesis.to_genesis_state()?.participant_addresses)
         .collect();
     let application = StatefulHubApp::new(
-        executor,
+        executor.clone(),
         genesis_block,
         mempool.clone(),
         sink.clone(),
@@ -465,18 +470,40 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     ));
     let marshal_handle = marshal_actor.start(reporters, buffer, resolver);
     probe_mailbox.attach(marshal.clone());
+    let processed_height = marshal.get_processed_height().await;
+    let recovered_height = processed_height
+        .into_iter()
+        .chain(completed_sync_height)
+        .max()
+        .unwrap_or_else(Height::zero);
+    let recovered = match marshal
+        .get_block(Identifier::Height(recovered_height))
+        .await
+    {
+        Some(block) => block,
+        None if processed_height == Some(recovered_height) => marshal
+            .get_block(Identifier::Height(recovered_height.next()))
+            .await
+            .ok_or_else(|| anyhow::anyhow!("missing recovered module anchor"))?,
+        None => anyhow::bail!("missing recovered module anchor"),
+    };
+    recover_modules(&executor, &module_trees, &recovered)?;
     let stateful_handle = stateful_actor.start();
 
     // Transaction gossip and RPC over the live committed state.
     let state_set = stateful_mailbox.subscribe_databases().await;
     let committed_state = CommittedState::new(state_set.clone());
     participants_provider.attach_state(committed_state.clone());
-    let _ = validator.set(::tokio::sync::Mutex::new(MempoolValidator::new(
-        committed_state.clone(),
-        ExecutionConfig::new(chain_id),
-        0,
-    )));
     sink.attach_state(state_set.clone());
+    {
+        // Hold the module read lock through publication so finalization cannot
+        // advance nonces between loading them and enabling admission.
+        let recovered_modules = modules.read().expect("module state lock poisoned");
+        let mut admission =
+            MempoolValidator::new(committed_state.clone(), ExecutionConfig::new(chain_id), 0);
+        admission.reset(committed_state.clone(), recovered_modules.nonces.clone());
+        let _ = validator.set(::tokio::sync::Mutex::new(admission));
+    }
     let gossip = TxGossip::new(mempool.clone(), validator.clone(), chain_id, mempool_sender);
     spawn_tx_receiver(
         context.child("tx_receiver"),
@@ -526,17 +553,8 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
 fn open_module_trees(data_dir: &Path) -> anyhow::Result<(ModuleTrees, ModuleState)> {
     let mut stores: [InMemoryKvStore; 4] = Default::default();
     let mut trees = Vec::with_capacity(4);
-    let mut height = None;
     for (store, name) in stores.iter_mut().zip(MODULE_NAMES) {
         let tree = ModuleStateTree::open(data_dir.join("state").join(name))?;
-        if let Some(expected) = height {
-            anyhow::ensure!(
-                tree.canonical_height() == expected,
-                "module revisions differ at startup; recovery is required"
-            );
-        } else {
-            height = Some(tree.canonical_height());
-        }
         *store = InMemoryKvStore::from_pairs(tree.load_all()?);
         trees.push(Arc::new(std::sync::Mutex::new(tree)));
     }
@@ -544,6 +562,33 @@ fn open_module_trees(data_dir: &Path) -> anyhow::Result<(ModuleTrees, ModuleStat
         .try_into()
         .map_err(|_| anyhow::anyhow!("expected four module trees"))?;
     Ok((trees, ModuleState::from_stores(stores)))
+}
+
+fn recover_modules(
+    executor: &HubExecutor,
+    trees: &ModuleTrees,
+    anchor: &Block,
+) -> anyhow::Result<()> {
+    let mut stores: [InMemoryKvStore; 4] = Default::default();
+    let mut roots = [[0; 32]; 4];
+    for (i, tree) in trees.iter().enumerate() {
+        let mut tree = tree.lock().unwrap();
+        tree.rewind_to_height(anchor.height)?;
+        roots[i] = tree.root()?.0;
+        stores[i] = InMemoryKvStore::from_pairs(tree.load_all()?);
+    }
+    let modules = ModuleState::from_stores(stores);
+    let root = if anchor.height == 0 {
+        modules.state_root()
+    } else {
+        state_root_from_jmt(&roots)
+    };
+    anyhow::ensure!(
+        root == anchor.module_state_root,
+        "recovered module root does not match the durable anchor"
+    );
+    executor.set_base_modules(modules);
+    Ok(())
 }
 
 /// Apply the genesis state on first boot and persist the genesis block so

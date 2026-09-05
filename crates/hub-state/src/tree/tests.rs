@@ -5,6 +5,93 @@ fn entry(key: &[u8], value: &[u8]) -> Entries {
 }
 
 #[test]
+fn rewind_restores_raw_values_and_removes_abandoned_versions() {
+    let dir = TempDir::new().unwrap();
+    let root;
+    {
+        let mut tree = open_tree(&dir);
+        let first = tree
+            .prepare(&tree.snapshot().unwrap(), entry(b"shared", b"original"))
+            .unwrap();
+        tree.commit_prepared(1, &first).unwrap();
+        root = first.root();
+        let second = tree
+            .prepare(
+                &first,
+                vec![
+                    (b"shared".to_vec(), Some(b"abandoned".to_vec())),
+                    (b"abandoned".to_vec(), Some(b"value".to_vec())),
+                ],
+            )
+            .unwrap();
+        tree.commit_prepared(2, &second).unwrap();
+        let third = tree
+            .prepare(&second, vec![(b"shared".to_vec(), None)])
+            .unwrap();
+        tree.commit_prepared(3, &third).unwrap();
+        assert!(
+            tree.rewind_to_height(1).is_err(),
+            "live snapshots must prevent rollback"
+        );
+    }
+    {
+        let mut tree = open_tree(&dir);
+        tree.rewind_to_height(1).unwrap();
+        tree.rewind_to_height(1).unwrap();
+        assert_eq!(tree.version(), 1);
+        assert_eq!(tree.root().unwrap(), root);
+        assert_eq!(
+            tree.load_all().unwrap(),
+            vec![(b"shared".to_vec(), b"original".to_vec())]
+        );
+        assert!(tree.root_at_height(2).is_err());
+        let replacement = tree
+            .prepare(&tree.snapshot().unwrap(), entry(b"replacement", b"value"))
+            .unwrap();
+        tree.commit_prepared(2, &replacement).unwrap();
+        assert_eq!(tree.get(b"shared").unwrap(), Some(b"original".to_vec()));
+        assert!(tree.get(b"abandoned").unwrap().is_none());
+        let (value, proof) = tree.prove(b"shared").unwrap();
+        proof
+            .verify(
+                tree.root().unwrap(),
+                KeyHash::with::<Sha256>(b"shared"),
+                value,
+            )
+            .unwrap();
+    }
+    let tree = open_tree(&dir);
+    assert_eq!(tree.canonical_height(), 2);
+    assert_eq!(tree.get(b"shared").unwrap(), Some(b"original".to_vec()));
+    assert_eq!(tree.get(b"replacement").unwrap(), Some(b"value".to_vec()));
+    assert!(tree.get(b"abandoned").unwrap().is_none());
+}
+
+#[test]
+fn rewind_to_genesis_and_across_unchanged_heights() {
+    let dir = TempDir::new().unwrap();
+    {
+        let mut tree = open_tree(&dir);
+        let changed = tree
+            .prepare(&tree.snapshot().unwrap(), entry(b"key", b"value"))
+            .unwrap();
+        tree.commit_prepared(1, &changed).unwrap();
+        tree.commit_prepared(2, &changed).unwrap();
+    }
+    {
+        let mut tree = open_tree(&dir);
+        assert!(tree.rewind_to_height(3).is_err());
+        tree.rewind_to_height(1).unwrap();
+    }
+    let mut tree = open_tree(&dir);
+    tree.rewind_to_height(0).unwrap();
+    assert_eq!(tree.version(), 0);
+    assert_eq!(tree.root().unwrap().0, empty_root());
+    assert!(tree.load_all().unwrap().is_empty());
+    assert!(tree.get(b"key").unwrap().is_none());
+}
+
+#[test]
 fn competing_branches_remain_isolated_after_commit() {
     let dir = TempDir::new().unwrap();
     let mut tree = open_tree(&dir);

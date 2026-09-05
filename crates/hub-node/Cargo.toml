@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 description = "Hub validator node assembly on commonware glue"
 
+[features]
+fault-injection = ["hub-executor/fault-injection"]
+
 [lints]
 workspace = true
 

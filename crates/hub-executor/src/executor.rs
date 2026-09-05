@@ -53,9 +53,18 @@ pub struct HubExecutor {
     modules: SharedModuleState,
     module_trees: Option<ModuleTrees>,
     commit_lock: Arc<Mutex<()>>,
+    #[cfg(feature = "fault-injection")]
+    crash_marker: Option<std::path::PathBuf>,
 }
 
 impl HubExecutor {
+    /// Configure a one-shot process crash marker for persistence tests.
+    #[cfg(feature = "fault-injection")]
+    #[must_use]
+    pub fn with_crash_marker(mut self, path: std::path::PathBuf) -> Self {
+        self.crash_marker = Some(path);
+        self
+    }
     /// Create a new hub executor.
     pub fn new(chain_id: u64) -> Self {
         Self {
@@ -63,6 +72,8 @@ impl HubExecutor {
             modules: Arc::new(RwLock::new(ModuleState::default())),
             module_trees: None,
             commit_lock: Arc::default(),
+            #[cfg(feature = "fault-injection")]
+            crash_marker: None,
         }
     }
 
@@ -73,6 +84,8 @@ impl HubExecutor {
             modules: Arc::new(RwLock::new(ModuleState::default())),
             module_trees: None,
             commit_lock: Arc::default(),
+            #[cfg(feature = "fault-injection")]
+            crash_marker: None,
         }
     }
 
@@ -138,11 +151,21 @@ impl HubExecutor {
         let _guard = self.commit_lock.lock().unwrap();
         match (&self.module_trees, &snapshot.trees) {
             (Some(trees), Some(snapshots)) => {
-                for (tree, snapshot) in trees.iter().zip(snapshots) {
+                #[cfg(feature = "fault-injection")]
+                let changed = trees.iter().zip(snapshots).any(|(tree, snapshot)| {
+                    tree.lock().unwrap().root().expect("read module root") != snapshot.root()
+                });
+                for (index, (tree, snapshot)) in trees.iter().zip(snapshots).enumerate() {
                     tree.lock()
                         .unwrap()
                         .commit_prepared(height, snapshot)
                         .map_err(|e| ExecutionError::ModuleTree(e.to_string()))?;
+                    #[cfg(feature = "fault-injection")]
+                    if changed && let Some(marker) = &self.crash_marker {
+                        crate::faults::after_module_commit(marker, height, index);
+                    }
+                    #[cfg(not(feature = "fault-injection"))]
+                    let _ = index;
                 }
             }
             (None, None) => {}
