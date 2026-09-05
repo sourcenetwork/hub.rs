@@ -1,6 +1,9 @@
-//! Ordered Commonware prefix-proof qualification and local component timings.
-//! No consensus, transport, production protocol or backend selection is measured.
+//! Ordered Commonware proof and recovery qualification with local component timings.
+//! Timings exclude consensus and transport.
 
+#[cfg(test)]
+#[path = "ordered_prefix/lifecycle.rs"]
+mod lifecycle;
 #[path = "ordered_prefix/proof.rs"]
 mod proof;
 #[cfg(test)]
