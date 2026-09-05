@@ -6,6 +6,8 @@
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
+/// Operator approval types, signing and submission.
+pub mod administration;
 mod bearer;
 mod bls_signer;
 mod client;

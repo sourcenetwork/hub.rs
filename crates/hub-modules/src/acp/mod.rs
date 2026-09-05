@@ -387,10 +387,11 @@ impl AcpModule {
         result
     }
 
-    /// Update governance-controlled module parameters.
-    #[allow(unused_variables)]
-    pub fn update_params(&mut self, authority: &Did, params: AcpParams) -> Result<()> {
-        self.set_params(&params)
+    /// Reject legacy parameter writes without operator approvals.
+    pub fn update_params(&mut self, _authority: &Did, _params: AcpParams) -> Result<()> {
+        Err(AcpError::Unauthorized {
+            reason: "operator approvals are required".into(),
+        })
     }
 
     // ── Query handlers ──────────────────────────────────────────────────
@@ -714,7 +715,7 @@ impl AcpModule {
     }
 
     #[allow(unused_variables)]
-    fn set_params(&mut self, params: &AcpParams) -> Result<()> {
+    pub(crate) fn set_params(&mut self, params: &AcpParams) -> Result<()> {
         let bytes =
             borsh::to_vec(params).map_err(|e| AcpError::State(format!("serialize params: {e}")))?;
         self.store.put(keys::PARAMS_KEY, bytes);
@@ -1921,7 +1922,7 @@ resources:
     }
 
     #[test]
-    fn update_params_and_query() {
+    fn unauthenticated_parameter_update_is_rejected() {
         let mut module = AcpModule::new();
         let authority = alice();
 
@@ -1930,10 +1931,10 @@ resources:
             registrations_commitment_validity: crate::types::Duration::Seconds(600),
         };
 
-        module.update_params(&authority, params.clone()).unwrap();
+        assert!(module.update_params(&authority, params).is_err());
 
         let fetched = module.query_params().unwrap();
-        assert_eq!(fetched, params);
+        assert_eq!(fetched, AcpParams::default());
     }
 
     #[test]
@@ -1969,6 +1970,7 @@ resources:
 
         // Block context: time = 200 (> 100 + 10).
         let block_ctx = BlockExecCtx {
+            genesis_id: [0; 32],
             deployment_id: 9001,
             timestamp: Timestamp {
                 seconds: 200,

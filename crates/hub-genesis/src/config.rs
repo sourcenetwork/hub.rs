@@ -15,6 +15,9 @@ use serde::{Deserialize, Serialize};
 pub struct HubGenesis {
     /// Chain ID.
     pub chain_id: u64,
+    /// Initial operator approval policy. Omission disables administrative writes.
+    #[serde(default)]
+    pub operators: Option<hub_modules::hub::administration::OperatorPolicy>,
     /// Chain name (e.g., "hub-devnet").
     #[serde(default = "default_chain_name")]
     pub chain_name: String,
@@ -189,6 +192,11 @@ impl HubGenesis {
 
     /// Build the EVM genesis state: balances, registry storage, and code.
     pub fn to_genesis_state(&self) -> Result<GenesisState, HubGenesisError> {
+        if let Some(policy) = &self.operators {
+            policy
+                .validate()
+                .map_err(|error| HubGenesisError::Parse(error.to_string()))?;
+        }
         let mut genesis_alloc = Vec::with_capacity(self.allocations.len());
         for alloc in &self.allocations {
             let address = Address::from_str(&alloc.address)
@@ -258,6 +266,7 @@ impl HubGenesis {
     #[must_use]
     pub fn devnet() -> Self {
         Self {
+            operators: None,
             chain_id: 9001,
             chain_name: "hub-devnet".to_string(),
             timestamp: 0,
@@ -457,6 +466,7 @@ mod tests {
     #[test]
     fn genesis_parse_error_on_invalid_address() {
         let genesis = HubGenesis {
+            operators: None,
             chain_id: 1,
             chain_name: "test".to_string(),
             timestamp: 0,
@@ -477,6 +487,7 @@ mod tests {
 
     fn genesis_with_validators(validators: Vec<ValidatorConfig>) -> HubGenesis {
         HubGenesis {
+            operators: None,
             chain_id: 1,
             chain_name: "test".to_string(),
             timestamp: 0,

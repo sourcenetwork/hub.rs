@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 test-infra = { path = "../test-infra" }
 hub-node.workspace = true
+hub-modules.workspace = true
 
 commonware-codec.workspace = true
 commonware-consensus.workspace = true

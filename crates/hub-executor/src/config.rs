@@ -55,6 +55,8 @@ impl Default for BaseFeeParams {
 /// Execution configuration.
 #[derive(Clone, Debug)]
 pub struct ExecutionConfig {
+    /// Genesis record identifier used to bind administrative approvals.
+    pub genesis_id: [u8; 32],
     /// Chain ID for transaction validation.
     pub chain_id: u64,
     /// Hardfork specification.
@@ -70,6 +72,7 @@ impl ExecutionConfig {
     pub const fn new(chain_id: u64) -> Self {
         Self {
             chain_id,
+            genesis_id: [0; 32],
             spec_id: SpecId::CANCUN,
             gas_limit_bounds: GasLimitBounds::DEFAULT,
             base_fee_params: BaseFeeParams::DEFAULT,

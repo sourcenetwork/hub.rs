@@ -6,6 +6,9 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 #[allow(missing_docs)]
 pub enum HubError {
+    #[error("invalid administrative request: {reason}")]
+    InvalidAdministrativeRequest { reason: String },
+
     #[error("JWS token not found: {token_hash}")]
     TokenNotFound { token_hash: String },
 

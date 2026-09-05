@@ -252,6 +252,7 @@ pub enum AcpOp {
 #[derive(
     Clone, Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize,
 )]
+#[serde(deny_unknown_fields)]
 pub struct AcpParams {
     pub policy_command_max_expiration_delta: u64,
     pub registrations_commitment_validity: Duration,

@@ -64,6 +64,15 @@ fn install(state: &MockStateDb, address: Address, code: Bytes) {
 }
 
 fn execute(state: &MockStateDb, to: TxKind, input: Bytes) -> (ExecutionOutcome, ModuleState) {
+    execute_with_executor(state, to, input, HubExecutor::new(9001))
+}
+
+fn execute_with_executor(
+    state: &MockStateDb,
+    to: TxKind,
+    input: Bytes,
+    executor: HubExecutor,
+) -> (ExecutionOutcome, ModuleState) {
     let signer: PrivateKeySigner = "42".repeat(32).parse().unwrap();
     state.insert_account(
         signer.address(),
@@ -83,7 +92,6 @@ fn execute(state: &MockStateDb, to: TxKind, input: Bytes) -> (ExecutionOutcome, 
     let wire = TxEnvelope::Legacy(tx.into_signed(signature))
         .encoded_2718()
         .into();
-    let executor = HubExecutor::new(9001);
     let context = BlockContext::new(
         Header {
             number: 1,
@@ -184,4 +192,104 @@ fn registry_static_calls_allow_only_queries(#[case] query: bool) {
             .get(&VALIDATOR_REGISTRY_ADDRESS)
             .is_none_or(|account| account.storage.values().all(U256::is_zero))
     );
+}
+
+#[test]
+fn unconfigured_membership_policy_cannot_be_claimed() {
+    let call = IValidatorRegistry::setPolicyCall {
+        policyId: B256::repeat_byte(7),
+    };
+    let (outcome, _) = execute(
+        &MockStateDb::new(),
+        TxKind::Call(VALIDATOR_REGISTRY_ADDRESS),
+        call.abi_encode().into(),
+    );
+    assert!(!outcome.receipts[0].success());
+    assert!(
+        outcome
+            .changes
+            .accounts
+            .get(&VALIDATOR_REGISTRY_ADDRESS)
+            .is_none_or(|account| account.storage.values().all(U256::is_zero))
+    );
+}
+
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn administrative_state_follows_outer_call_result(#[case] revert: bool) {
+    use hub_modules::{
+        acp::types::AcpParams,
+        hub::{abi::IHub, administration::*},
+    };
+    let key: PrivateKeySigner = "01".repeat(32).parse().unwrap();
+    let mut modules = ModuleState::default();
+    modules
+        .hub
+        .initialize_administration(OperatorPolicy {
+            threshold: 1,
+            keys: vec![hex::encode(
+                key.credential().verifying_key().to_sec1_bytes(),
+            )],
+        })
+        .unwrap();
+    let before = (
+        modules.hub.store().serialize(),
+        modules.acp.store().serialize(),
+    );
+    let request = AdministrativeRequest {
+        genesis_id: [7; 32],
+        sequence: 0,
+        expires_at: 100,
+        command: AdministrativeCommand::SetAcpParameters(AcpParams {
+            policy_command_max_expiration_delta: 42,
+            ..Default::default()
+        }),
+    };
+    let signature = key
+        .sign_hash_sync(&B256::from(request.signing_digest().unwrap()))
+        .unwrap();
+    let signed = SignedAdministrativeRequest {
+        request,
+        approvals: vec![OperatorApproval {
+            signer: 0,
+            signature: hex::encode(&signature.as_bytes()[..64]),
+        }],
+    };
+    let input = IHub::applyAdministrationCall {
+        request: serde_json::to_vec(&signed).unwrap().into(),
+    }
+    .abi_encode();
+    let executor = HubExecutor::new(9001).with_genesis_id([7; 32]);
+    executor.set_base_modules(modules);
+    let state = MockStateDb::new();
+    let outer = Address::repeat_byte(0x11);
+    let end: &[u8] = if revert { &[0x5f, 0x5f, 0xfd] } else { &[0x00] };
+    install(
+        &state,
+        outer,
+        forwarding_code(hub_executor::precompiles::HUB_ADDRESS, end, false),
+    );
+    let (outcome, modules) =
+        execute_with_executor(&state, TxKind::Call(outer), input.into(), executor);
+    assert_eq!(outcome.receipts[0].success(), !revert);
+    if revert {
+        assert_eq!(
+            (
+                modules.hub.store().serialize(),
+                modules.acp.store().serialize()
+            ),
+            before
+        );
+    } else {
+        assert_eq!(modules.hub.administration().unwrap().unwrap().sequence, 1);
+        assert_eq!(
+            modules
+                .acp
+                .query_params()
+                .unwrap()
+                .policy_command_max_expiration_delta,
+            42
+        );
+    }
 }

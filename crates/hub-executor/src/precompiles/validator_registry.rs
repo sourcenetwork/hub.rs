@@ -8,6 +8,7 @@ use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_sol_types::SolCall;
 use hub_modules::acp::AcpModule;
 use hub_modules::acp::types::{AccessRequest, Actor, Object, Operation};
+use hub_modules::hub::HubModule;
 use hub_modules::types::{BlockExecCtx, TxExecCtx};
 use hub_modules::validator_registry::abi::IValidatorRegistry;
 use hub_modules::validator_registry::error::ValidatorRegistryError;
@@ -138,9 +139,22 @@ fn check_manage_access(
     }
 }
 
-fn load_policy_id<CTX: ContextTr>(context: &mut CTX) -> String {
-    let val = journal_sload(context, SLOT_POLICY_ID);
-    hex::encode(val.to_be_bytes::<32>())
+fn load_policy_id<CTX: ContextTr>(
+    context: &mut CTX,
+    hub: &HubModule,
+) -> Result<String, PrecompileError> {
+    let state = hub
+        .administration()
+        .map_err(|error| PrecompileError::Other(error.to_string().into()))?;
+    if let Some(policy) = state.and_then(|state| state.membership_policy) {
+        return Ok(hex::encode(policy));
+    }
+    // Retain policies installed in existing genesis configurations.
+    let value = context
+        .journal_mut()
+        .sload(VALIDATOR_REGISTRY_ADDRESS, SLOT_POLICY_ID)
+        .map_err(|_| PrecompileError::Fatal("membership policy read failed".into()))?;
+    Ok(hex::encode(value.data.to_be_bytes::<32>()))
 }
 
 fn validate_p2p_address(addr: &str) -> Result<(), ValidatorRegistryError> {
@@ -258,6 +272,7 @@ fn clear_validator<CTX: ContextTr>(context: &mut CTX, addr: Address) {
 pub(super) fn dispatch_with_journal<CTX: ContextTr>(
     context: &mut CTX,
     acp: &AcpModule,
+    hub: &HubModule,
     _block_ctx: &BlockExecCtx,
     tx_ctx: &TxExecCtx,
     input: &[u8],
@@ -279,7 +294,7 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
             let call =
                 IValidatorRegistry::addValidatorCall::abi_decode(input).map_err(decode_error)?;
 
-            let policy_id = load_policy_id(context);
+            let policy_id = load_policy_id(context, hub)?;
             let caller_did = match did_from_signer(&tx_ctx.signer) {
                 Ok(d) => d,
                 Err(_) => {
@@ -341,7 +356,7 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
             let call =
                 IValidatorRegistry::removeValidatorCall::abi_decode(input).map_err(decode_error)?;
 
-            let policy_id = load_policy_id(context);
+            let policy_id = load_policy_id(context, hub)?;
             let caller_did = match did_from_signer(&tx_ctx.signer) {
                 Ok(d) => d,
                 Err(_) => {
@@ -404,32 +419,9 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
         }
 
         IValidatorRegistry::setPolicyCall::SELECTOR => {
-            let gas_required = SET_STATUS_GAS + input_cost(input.len());
-            if gas_limit < gas_required {
-                return Err(PrecompileError::OutOfGas);
-            }
-            let call =
-                IValidatorRegistry::setPolicyCall::abi_decode(input).map_err(decode_error)?;
-
-            let current = load_policy_id(context);
-            if !current.chars().all(|c| c == '0') {
-                return Ok(err_dispatch(ValidatorRegistryError::Unauthorized(
-                    "policy already configured".to_string(),
-                )));
-            }
-            if call.policyId == B256::ZERO {
-                return Ok(err_dispatch(ValidatorRegistryError::Unauthorized(
-                    "cannot set zero policy".to_string(),
-                )));
-            }
-
-            journal_sstore(
-                context,
-                SLOT_POLICY_ID,
-                U256::from_be_bytes(call.policyId.0),
-            );
-
-            Ok(ok_dispatch(gas_required, Vec::new(), vec![]))
+            Ok(err_dispatch(ValidatorRegistryError::Unauthorized(
+                "operator approvals are required to initialize membership policy".into(),
+            )))
         }
 
         IValidatorRegistry::setValidatorStatusCall::SELECTOR => {
@@ -440,7 +432,7 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
             let call = IValidatorRegistry::setValidatorStatusCall::abi_decode(input)
                 .map_err(decode_error)?;
 
-            let policy_id = load_policy_id(context);
+            let policy_id = load_policy_id(context, hub)?;
             let caller_did = match did_from_signer(&tx_ctx.signer) {
                 Ok(d) => d,
                 Err(_) => {
@@ -482,7 +474,7 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
             let call = IValidatorRegistry::setValidatorStatusByIndexCall::abi_decode(input)
                 .map_err(decode_error)?;
 
-            let policy_id = load_policy_id(context);
+            let policy_id = load_policy_id(context, hub)?;
             let caller_did = match did_from_signer(&tx_ctx.signer) {
                 Ok(d) => d,
                 Err(_) => {

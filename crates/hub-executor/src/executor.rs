@@ -95,6 +95,13 @@ impl HubExecutor {
         self
     }
 
+    /// Bind administrative execution to the deployment genesis record.
+    #[must_use]
+    pub const fn with_genesis_id(mut self, genesis_id: [u8; 32]) -> Self {
+        self.config.genesis_id = genesis_id;
+        self
+    }
+
     /// Get the chain ID.
     pub const fn chain_id(&self) -> u64 {
         self.config.chain_id
@@ -319,6 +326,7 @@ impl HubExecutor {
         let mut modules = base_modules.clone();
 
         let block_ctx = BlockExecCtx {
+            genesis_id: self.config.genesis_id,
             deployment_id: self.config.chain_id,
             timestamp: Timestamp {
                 seconds: context.header.timestamp,
@@ -386,7 +394,8 @@ impl HubExecutor {
             modules.acp.clone(),
             modules.bulletin.clone(),
             modules.hub.clone(),
-        );
+        )
+        .with_genesis_id(self.config.genesis_id);
         let mut evm = ctx
             .build_mainnet_with_inspector(precompiles.inspector())
             .with_precompiles(precompiles);
@@ -592,6 +601,7 @@ mod tests {
 
     fn test_block_ctx() -> BlockExecCtx {
         BlockExecCtx {
+            genesis_id: [0; 32],
             deployment_id: 9001,
             timestamp: Timestamp {
                 seconds: 1_700_000_000,

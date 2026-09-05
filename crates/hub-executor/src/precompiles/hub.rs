@@ -2,8 +2,10 @@
 
 use alloy_primitives::Bytes;
 use alloy_sol_types::SolCall;
+use hub_modules::acp::AcpModule;
 use hub_modules::hub::HubModule;
 use hub_modules::hub::abi::IHub;
+use hub_modules::hub::administration::SignedAdministrativeRequest;
 use hub_modules::types::{BlockExecCtx, TxExecCtx};
 use identity::Did;
 use revm::precompile::PrecompileError;
@@ -21,6 +23,7 @@ const WRITE_GAS: u64 = 5000;
 /// Dispatch an ABI-encoded call to the Hub module by selector.
 pub(super) fn dispatch(
     module: &mut HubModule,
+    acp: &mut AcpModule,
     block_ctx: &BlockExecCtx,
     tx_ctx: &TxExecCtx,
     input: &[u8],
@@ -34,6 +37,41 @@ pub(super) fn dispatch(
     let selector: [u8; 4] = input[..4].try_into().expect("checked length above");
 
     match selector {
+        IHub::applyAdministrationCall::SELECTOR => {
+            if gas_limit < 500_000 {
+                return Err(PrecompileError::OutOfGas);
+            }
+            let call = IHub::applyAdministrationCall::abi_decode(input).map_err(decode_error)?;
+            if call.request.len() > 32_768 {
+                return Err(PrecompileError::Other(
+                    "administrative request is too large".into(),
+                ));
+            }
+            let signed: SignedAdministrativeRequest = serde_json::from_slice(&call.request)
+                .map_err(|error| PrecompileError::Other(error.to_string().into()))?;
+            match module.apply_administrative_request(
+                acp,
+                block_ctx.genesis_id,
+                block_ctx.timestamp.seconds,
+                &signed,
+            ) {
+                Ok(()) => Ok(ok_dispatch(500_000, Vec::new(), vec![])),
+                Err(error) => Ok(err_dispatch(error)),
+            }
+        }
+        IHub::getAdministrationCall::SELECTOR => {
+            if gas_limit < READ_GAS {
+                return Err(PrecompileError::OutOfGas);
+            }
+            match module.administration() {
+                Ok(state) => Ok(ok_dispatch(
+                    READ_GAS,
+                    IHub::getAdministrationCall::abi_encode_returns(&json_bytes(&state)),
+                    vec![],
+                )),
+                Err(error) => Ok(err_dispatch(error)),
+            }
+        }
         // ── Write methods ────────────────────────────────────────────
         IHub::revokeDelegationCall::SELECTOR => {
             if gas_limit < WRITE_GAS {

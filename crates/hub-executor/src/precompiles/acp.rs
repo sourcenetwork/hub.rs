@@ -1112,6 +1112,7 @@ resources:
 
         let mut module = AcpModule::new();
         let block_ctx = BlockExecCtx {
+            genesis_id: [0; 32],
             deployment_id: 9001,
             timestamp: Timestamp {
                 seconds: 1000,
@@ -1165,6 +1166,7 @@ resources:
 
         let mut module = AcpModule::new();
         let block_ctx = BlockExecCtx {
+            genesis_id: [0; 32],
             deployment_id: 9001,
             timestamp: Timestamp {
                 seconds: 1000,
@@ -1193,6 +1195,7 @@ resources:
     #[test]
     fn dispatch_batch_calls_rollback_on_failure() {
         let block_ctx = BlockExecCtx {
+            genesis_id: [0; 32],
             deployment_id: 9001,
             timestamp: Timestamp {
                 seconds: 1000,
@@ -1368,6 +1371,7 @@ resources:
 
         let mut module = AcpModule::new();
         let block_ctx = BlockExecCtx {
+            genesis_id: [0; 32],
             deployment_id: 9001,
             timestamp: Timestamp {
                 seconds: 1000,

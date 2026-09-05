@@ -134,6 +134,7 @@ pub struct HubPrecompiles {
     journal: Arc<Mutex<ModuleJournal>>,
     current_tx_hash: B256,
     current_signer_did: String,
+    genesis_id: [u8; 32],
 }
 
 /// Route calldata to the appropriate module based on the target precompile address.
@@ -160,7 +161,9 @@ pub fn dispatch_to_module(
             bulletin, acp, block_ctx, tx_ctx, calldata, gas_limit,
         ))
     } else if target == HUB_ADDRESS {
-        Some(hub::dispatch(hub, block_ctx, tx_ctx, calldata, gas_limit))
+        Some(hub::dispatch(
+            hub, acp, block_ctx, tx_ctx, calldata, gas_limit,
+        ))
     } else {
         None
     }
@@ -194,6 +197,7 @@ impl HubPrecompiles {
             journal: Arc::default(),
             current_tx_hash: B256::ZERO,
             current_signer_did: String::new(),
+            genesis_id: [0; 32],
         }
     }
 
@@ -214,7 +218,15 @@ impl HubPrecompiles {
             )))),
             current_tx_hash: B256::ZERO,
             current_signer_did: String::new(),
+            genesis_id: [0; 32],
         }
+    }
+
+    /// Bind administrative approvals to the deployment genesis record.
+    #[must_use]
+    pub const fn with_genesis_id(mut self, genesis_id: [u8; 32]) -> Self {
+        self.genesis_id = genesis_id;
+        self
     }
 
     /// Set the tx hash for the current EVM transaction being executed.
@@ -265,6 +277,7 @@ impl<CTX: ContextTr> PrecompileProvider<CTX> for HubPrecompiles {
         if self.custom.contains(&inputs.bytecode_address) {
             let block = context.block();
             let block_ctx = BlockExecCtx {
+                genesis_id: self.genesis_id,
                 deployment_id: context.cfg().chain_id(),
                 timestamp: Timestamp {
                     seconds: block.timestamp().as_limbs()[0],
@@ -296,9 +309,11 @@ impl<CTX: ContextTr> PrecompileProvider<CTX> for HubPrecompiles {
                 if inputs.is_static && !validator_registry::is_query(&calldata) {
                     return Ok(Some(Self::static_write_error(inputs)));
                 }
+                let journal = self.journal.lock().unwrap();
                 let dispatch_result = validator_registry::dispatch_with_journal(
                     context,
-                    &self.journal.lock().unwrap().modules.0,
+                    &journal.modules.0,
+                    &journal.modules.2,
                     &block_ctx,
                     &tx_ctx,
                     &calldata,

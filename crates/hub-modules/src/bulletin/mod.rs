@@ -418,25 +418,11 @@ impl BulletinModule {
         Ok(collaborator_did.to_string())
     }
 
-    /// Update governance-controlled module parameters.
-    ///
-    /// # Flow
-    ///
-    /// 1. Verify `authority` matches the governance module address.
-    ///    Return `Unauthorized` if not.
-    /// 2. Write `params` to `"p_bulletin"` key.
-    /// 3. Return `Ok(())`.
-    ///
-    /// # Reads
-    /// None (authority check is against a known constant).
-    ///
-    /// # Writes
-    /// - `"p_bulletin"`
-    ///
-    /// # Errors
-    /// - `Unauthorized` — caller is not the governance authority
-    pub fn update_params(&mut self, _authority: &Did, params: BulletinParams) -> Result<()> {
-        self.set_params(&params)
+    /// Reject legacy parameter writes without operator approvals.
+    pub fn update_params(&mut self, _authority: &Did, _params: BulletinParams) -> Result<()> {
+        Err(BulletinError::Unauthorized {
+            reason: "operator approvals are required".into(),
+        })
     }
 
     // ── Query handlers ──────────────────────────────────────────────────
@@ -837,6 +823,7 @@ mod tests {
 
     fn make_block_ctx(seconds: u64, height: u64) -> BlockExecCtx {
         BlockExecCtx {
+            genesis_id: [0; 32],
             deployment_id: 9001,
             timestamp: Timestamp {
                 seconds,
@@ -883,10 +870,10 @@ mod tests {
     }
 
     #[test]
-    fn update_params_stores_and_retrieves() {
+    fn unauthenticated_parameter_update_is_rejected() {
         let mut m = BulletinModule::default();
         let did = make_did("did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK");
-        m.update_params(&did, BulletinParams {}).unwrap();
+        assert!(m.update_params(&did, BulletinParams {}).is_err());
         let p = m.query_params().unwrap();
         assert_eq!(p, BulletinParams {});
     }

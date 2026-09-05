@@ -5,6 +5,12 @@
 //!
 //! Requires `cargo build -p hubd` before running.
 
+#[path = "support/administration.rs"]
+mod administration;
+
+use hub_client::BlsSigner;
+use hub_client::administration::AdministrativeCommand;
+
 use std::time::Duration;
 
 use alloy_primitives::{Address, B256, Bytes, FixedBytes};
@@ -117,13 +123,20 @@ async fn setup_acp_policy(cluster: &TestCluster, client: &HubClient, admin: &Evm
     let receipt = broadcast_evm_tx(cluster, client, admin, ACP_ADDRESS, calldata).await;
     assert_eq!(receipt.status, 1, "setRelationship should succeed");
 
-    let calldata = IValidatorRegistry::setPolicyCall {
-        policyId: B256::from(policy_id.0),
-    }
-    .abi_encode();
-    let receipt =
-        broadcast_evm_tx(cluster, client, admin, VALIDATOR_REGISTRY_ADDRESS, calldata).await;
-    assert_eq!(receipt.status, 1, "setPolicy should succeed");
+    let signed = administration::approve(
+        client,
+        AdministrativeCommand::InitializeMembershipPolicy(policy_id.0),
+        0,
+    )
+    .await;
+    let receipt = client
+        .native_apply_administration(
+            &BlsSigner::new(42u64.into(), admin.chain_id()).unwrap(),
+            &signed,
+        )
+        .await
+        .expect("initialize membership policy");
+    assert_eq!(receipt.status, 1);
 }
 
 #[tokio::test]
@@ -131,7 +144,9 @@ async fn validator_epoch_transition() {
     // ── SETUP ─────────────────────────────────────────────────────
 
     let chain_id = 9010;
-    let genesis = GenesisBuilder::devnet().funded_accounts(3, "1000000000000000000000000");
+    let genesis = GenesisBuilder::devnet()
+        .operators(administration::operators())
+        .funded_accounts(3, "1000000000000000000000000");
 
     let cluster = TestCluster::builder()
         .binary(hub_e2e::resolve_binary().expect("resolve hubd binary"))

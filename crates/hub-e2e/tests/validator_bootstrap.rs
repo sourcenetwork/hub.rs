@@ -6,6 +6,12 @@
 //!
 //! Requires `cargo build -p hubd` before running.
 
+#[path = "support/administration.rs"]
+mod administration;
+
+use hub_client::BlsSigner;
+use hub_client::administration::AdministrativeCommand;
+
 use std::{sync::OnceLock, time::Duration};
 
 use alloy_primitives::{Address, B256, Bytes, FixedBytes, U256};
@@ -112,6 +118,7 @@ async fn validator_bootstrap() {
     let chain_id = 9001;
     let validators = test_validators();
     let genesis = GenesisBuilder::devnet()
+        .operators(administration::operators())
         .funded_accounts(3, "1000000000000000000000000")
         .validators(validators.clone());
 
@@ -232,19 +239,20 @@ async fn validator_bootstrap() {
     assert_eq!(receipt.status, 1, "setRelationship should succeed");
 
     // ACP4: Set the policy on the ValidatorRegistry
-    let calldata = IValidatorRegistry::setPolicyCall {
-        policyId: B256::from(policy_id.0),
-    }
-    .abi_encode();
-    let receipt = broadcast_evm_tx(
-        &cluster,
+    let signed = administration::approve(
         &client,
-        &admin_signer,
-        VALIDATOR_REGISTRY_ADDRESS,
-        calldata,
+        AdministrativeCommand::InitializeMembershipPolicy(policy_id.0),
+        0,
     )
     .await;
-    assert_eq!(receipt.status, 1, "setPolicy should succeed");
+    let receipt = client
+        .native_apply_administration(
+            &BlsSigner::new(42u64.into(), admin_signer.chain_id()).unwrap(),
+            &signed,
+        )
+        .await
+        .expect("initialize membership policy");
+    assert_eq!(receipt.status, 1);
 
     // ── B: Add a new validator via EVM tx ─────────────────────────
 
@@ -447,6 +455,7 @@ async fn validator_registry_adversarial() {
     let chain_id = 9002;
     let validators = test_validators();
     let genesis = GenesisBuilder::devnet()
+        .operators(administration::operators())
         .funded_accounts(4, "1000000000000000000000000")
         .validators(validators.clone());
 
@@ -551,19 +560,20 @@ async fn validator_registry_adversarial() {
     let receipt = broadcast_evm_tx(&cluster, &client, &admin_signer, ACP_ADDRESS, calldata).await;
     assert_eq!(receipt.status, 1, "setRelationship should succeed");
 
-    let calldata = IValidatorRegistry::setPolicyCall {
-        policyId: B256::from(policy_id.0),
-    }
-    .abi_encode();
-    let receipt = broadcast_evm_tx(
-        &cluster,
+    let signed = administration::approve(
         &client,
-        &admin_signer,
-        VALIDATOR_REGISTRY_ADDRESS,
-        calldata,
+        AdministrativeCommand::InitializeMembershipPolicy(policy_id.0),
+        0,
     )
     .await;
-    assert_eq!(receipt.status, 1, "setPolicy should succeed");
+    let receipt = client
+        .native_apply_administration(
+            &BlsSigner::new(42u64.into(), admin_signer.chain_id()).unwrap(),
+            &signed,
+        )
+        .await
+        .expect("initialize membership policy");
+    assert_eq!(receipt.status, 1);
 
     // ── N3: setPolicy again → revert (immutable) ────────────────
 
@@ -580,6 +590,22 @@ async fn validator_registry_adversarial() {
     )
     .await;
     assert_eq!(receipt.status, 0, "N3: setPolicy twice should revert");
+    let repeated = administration::approve(
+        &client,
+        AdministrativeCommand::InitializeMembershipPolicy(policy_id.0),
+        1,
+    )
+    .await;
+    assert!(matches!(
+        client
+            .native_apply_administration(
+                &BlsSigner::new(43u64.into(), chain_id).unwrap(),
+                &repeated,
+            )
+            .await,
+        Err(hub_client::ClientError::TxReverted { .. })
+    ));
+    assert_eq!(client.administration().await.unwrap().unwrap().sequence, 1);
 
     // ── N4: Unauthorized caller → revert ────────────────────────
 

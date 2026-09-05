@@ -2,6 +2,8 @@
 
 /// Solidity ABI interface for the Hub precompile.
 pub mod abi;
+/// Operator approvals and administrative state transitions.
+pub mod administration;
 mod delegation;
 /// Hub error types.
 pub mod error;
@@ -140,23 +142,11 @@ impl HubModule {
         Ok(true)
     }
 
-    /// Update governance-controlled module parameters.
-    ///
-    /// # Flow
-    ///
-    /// 1. Verify `authority` matches the governance module address.
-    ///    Return `Unauthorized` if not.
-    /// 2. Write `params` to `"p_hub"` key.
-    /// 3. Return `Ok(())`.
-    ///
-    /// # Writes
-    /// - `"p_hub"`
-    ///
-    /// # Errors
-    /// - `Unauthorized` — caller is not the governance authority
-    /// - `State` — store write failure
-    pub fn update_params(&mut self, _authority: &Did, params: HubParams) -> Result<()> {
-        self.set_params(&params)
+    /// Reject legacy parameter writes without operator approvals.
+    pub fn update_params(&mut self, _authority: &Did, _params: HubParams) -> Result<()> {
+        Err(HubError::Unauthorized {
+            reason: "operator approvals are required".into(),
+        })
     }
 
     // ── Query handlers ──────────────────────────────────────────────────
@@ -762,6 +752,7 @@ mod tests {
 
     fn block_ctx(seconds: u64) -> BlockExecCtx {
         BlockExecCtx {
+            genesis_id: [0; 32],
             deployment_id: 9001,
             timestamp: Timestamp {
                 seconds,
@@ -1177,10 +1168,10 @@ mod tests {
     }
 
     #[test]
-    fn update_params_writes() {
+    fn unauthenticated_parameter_update_is_rejected() {
         let mut hub = HubModule::new();
         let authority = make_did("did:key:z6MkGov");
-        hub.update_params(&authority, HubParams {}).unwrap();
+        assert!(hub.update_params(&authority, HubParams {}).is_err());
         assert_eq!(hub.get_params(), HubParams {});
     }
 

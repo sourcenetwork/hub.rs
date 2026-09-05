@@ -52,6 +52,7 @@ fn bearer_expiration_uses_execution_time_before_mutating_state() {
         }
         let token = signed_token(&key, claims);
         let context = BlockExecCtx {
+            genesis_id: [0; 32],
             deployment_id: 9001,
             timestamp: Timestamp {
                 seconds: now,
@@ -109,6 +110,7 @@ fn delegation_binds_caller_deployment_and_revocation() {
         }),
     );
     let mut context = BlockExecCtx {
+        genesis_id: [0; 32],
         deployment_id: 9001,
         timestamp: Timestamp {
             seconds: 20,

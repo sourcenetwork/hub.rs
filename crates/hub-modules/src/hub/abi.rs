@@ -18,6 +18,10 @@ sol! {
 
         function updateParams(bytes params) external;
 
+        function applyAdministration(bytes request) external;
+
+        function getAdministration() external view returns (bytes);
+
         // ── Read methods ────────────────────────────────────────────────
 
         function getJWSToken(

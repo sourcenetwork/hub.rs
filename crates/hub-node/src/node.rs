@@ -149,16 +149,18 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     }
 
     // Module state trees and executor.
-    let (module_trees, persisted_modules) = open_module_trees(&config.data_dir)?;
+    let (module_trees, mut persisted_modules) = open_module_trees(&config.data_dir)?;
+    let module_root = initialize_genesis_modules(
+        &config.data_dir,
+        &genesis,
+        &module_trees,
+        &mut persisted_modules,
+    )?;
     let executor = HubExecutor::new(chain_id).with_module_trees(module_trees.clone());
     #[cfg(feature = "fault-injection")]
     let executor = executor.with_crash_marker(config.data_dir.join("module-commit-crash"));
     executor.set_base_modules(persisted_modules);
     let modules = executor.modules().clone();
-    let module_root = modules
-        .read()
-        .map(|m| m.state_root())
-        .map_err(|_| anyhow::anyhow!("module state lock poisoned"))?;
 
     // Genesis: apply EVM genesis state once, then persist the resulting block.
     let genesis_block = load_or_create_genesis(
@@ -170,6 +172,7 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     )
     .await?
     .with_payload(Payload::EpochInfo(epoch_info.clone()));
+    let executor = executor.with_genesis_id(genesis_block.id().0.0);
 
     // Marshal, broadcast, archives.
     let resolver = marshal_resolver::init(
@@ -578,6 +581,46 @@ fn open_module_trees(data_dir: &Path) -> anyhow::Result<(ModuleTrees, ModuleStat
     Ok((trees, ModuleState::from_stores(stores)))
 }
 
+fn initialize_genesis_modules(
+    data_dir: &Path,
+    genesis: &hub_genesis::HubGenesis,
+    trees: &ModuleTrees,
+    persisted: &mut ModuleState,
+) -> anyhow::Result<alloy_primitives::B256> {
+    let mut initial = ModuleState::default();
+    if let Some(policy) = &genesis.operators {
+        initial.hub.initialize_administration(policy.clone())?;
+    }
+    let root = initial.state_root();
+    if data_dir.join("genesis_block.bin").exists() {
+        return Ok(root);
+    }
+    for tree in trees {
+        anyhow::ensure!(
+            tree.lock().unwrap().canonical_height() == 0,
+            "module history exists without a genesis record"
+        );
+    }
+    let empty = ModuleState::default();
+    anyhow::ensure!(
+        persisted.state_root() == empty.state_root() || persisted.state_root() == root,
+        "unexpected module state before genesis initialization"
+    );
+    if persisted.state_root() != root {
+        use hub_modules::kv_store::ModuleKvStore as _;
+        let entries = initial
+            .hub
+            .store()
+            .prefix_scan(b"")
+            .into_iter()
+            .map(|(key, value)| (key, Some(value)))
+            .collect();
+        trees[2].lock().unwrap().commit(entries)?;
+    }
+    *persisted = initial;
+    Ok(root)
+}
+
 fn recover_modules(
     executor: &HubExecutor,
     trees: &ModuleTrees,
@@ -617,7 +660,12 @@ async fn load_or_create_genesis(
     let path = data_dir.join("genesis_block.bin");
     if path.exists() {
         let bytes = std::fs::read(&path)?;
-        return Ok(Block::decode_cfg(bytes.as_slice(), &block_cfg())?);
+        let block = Block::decode_cfg(bytes.as_slice(), &block_cfg())?;
+        anyhow::ensure!(
+            block.module_state_root == module_root,
+            "configured initial module state differs from persisted genesis"
+        );
+        return Ok(block);
     }
     let set = HubStateSet::init(
         context.child("genesis"),
@@ -670,3 +718,7 @@ fn archive_config<C>(
         replay_buffer: IO_BUFFER_SIZE,
     }
 }
+
+#[cfg(test)]
+#[path = "node/genesis_tests.rs"]
+mod genesis_tests;
