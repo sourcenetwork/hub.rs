@@ -70,7 +70,7 @@ fn native_proposals_bind_every_target_and_isolate_competing_execution() {
                         .unwrap()
                         .is_empty()
                 );
-                for mutation in 0..5 {
+                for mutation in 0..7 {
                     let mut changed = proposal.block.clone();
                     match mutation {
                         0 => changed.native_targets.as_mut().unwrap()[0].root.0[0] ^= 1,
@@ -78,6 +78,8 @@ fn native_proposals_bind_every_target_and_isolate_competing_execution() {
                         2 => changed.native_targets.as_mut().unwrap()[2].tip += 1,
                         3 => changed.module_state_root.0[0] ^= 1,
                         4 => changed.native_targets = None,
+                        5 => changed.receipt_commitment.as_mut().unwrap().0[0] ^= 1,
+                        6 => changed.receipt_commitment = None,
                         _ => unreachable!(),
                     }
                     assert!(

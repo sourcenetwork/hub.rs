@@ -73,6 +73,7 @@ impl Record {
             receipts.len() == block.txs.len(),
             "incomplete execution record"
         );
+        check_receipts(&block, &receipts, self.gas_limit)?;
         Ok((block, receipts))
     }
 }
@@ -130,6 +131,7 @@ impl FinalizedHistory {
             receipts.len() == block.txs.len(),
             "incomplete execution record"
         );
+        check_receipts(block, receipts, gas_limit)?;
         let record = Record {
             block: block.encode().to_vec(),
             gas_limit,
@@ -261,6 +263,20 @@ pub(crate) fn restore_epoch(index: &LightBlockIndex, block: &Block) {
             },
         );
     }
+}
+
+fn check_receipts(block: &Block, receipts: &[ExecutionReceipt], gas_limit: u64) -> Result<()> {
+    match block.receipt_commitment {
+        Some(expected) => ensure!(
+            hub_executor::receipt_commitment(gas_limit, receipts) == expected,
+            "execution receipt commitment mismatch"
+        ),
+        None => ensure!(
+            block.native_targets.is_none(),
+            "native receipt commitment missing"
+        ),
+    }
+    Ok(())
 }
 
 fn key(prefix: u8, height: u64) -> [u8; 9] {

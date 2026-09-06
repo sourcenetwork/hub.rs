@@ -42,6 +42,7 @@ pub(super) async fn block(source: &OrderedState, height: u64) -> Block {
         module_state_root,
         txs: Vec::new(),
         payload: None,
+        receipt_commitment: Some(hub_executor::receipt_commitment(30_000_000, &[])),
         native_targets: Some(
             [target.3, target.4, target.5, target.6]
                 .each_ref()
@@ -124,6 +125,12 @@ fn checkpoint_rejects_bad_evidence_and_checks_rebuilt_state_before_publication()
                 bad_root.state_root.0[0] ^= 1;
                 assert!(
                     OrderedCheckpoint::verify(&certify(&bad_root, 42).0, &key, &proof).is_err()
+                );
+                let mut missing_receipts = block.clone();
+                missing_receipts.receipt_commitment = None;
+                assert!(
+                    OrderedCheckpoint::verify(&certify(&missing_receipts, 42).0, &key, &proof)
+                        .is_err()
                 );
 
                 // A certificate can bind internally inconsistent state; verify the rebuilt bitmap too.

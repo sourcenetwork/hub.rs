@@ -17,6 +17,7 @@ fn block(height: u64, parent: BlockId) -> Block {
         txs: Vec::new(),
         payload: None,
         native_targets: None,
+        receipt_commitment: None,
         db_targets: DbTargets::default(),
     }
 }
@@ -141,7 +142,17 @@ fn execution_record_preserves_receipt_fields_and_rejects_corruption() {
         vec![log.clone()],
         Some(Address::repeat_byte(5)),
     );
+    first.native_targets = Some([hub_domain::DbTarget::default(); 4]);
+    first.receipt_commitment = Some(hub_executor::receipt_commitment(
+        31,
+        std::slice::from_ref(&receipt),
+    ));
     let history = FinalizedHistory::open(dir.path(), &genesis).unwrap();
+    assert!(
+        history
+            .append(&first, std::slice::from_ref(&receipt), 32)
+            .is_err()
+    );
     history
         .append(&first, std::slice::from_ref(&receipt), 31)
         .unwrap();
@@ -157,9 +168,61 @@ fn execution_record_preserves_receipt_fields_and_rejects_corruption() {
     assert!(!actual.success());
     assert_eq!(actual.logs(), &[log]);
     assert_eq!(record.gas_limit, 31);
+    for mutation in 0..9 {
+        let mut altered: Record = borsh::from_slice(&bytes).unwrap();
+        match mutation {
+            0 => altered.receipts[0].hash[0] ^= 1,
+            1 => altered.receipts[0].success = true,
+            2 => altered.receipts[0].gas_used += 1,
+            3 => altered.receipts[0].cumulative_gas_used += 1,
+            4 => altered.receipts[0].contract = None,
+            5 => altered.receipts[0].logs.clear(),
+            6 => altered.gas_limit += 1,
+            7 => altered.receipts.clear(),
+            8 => {
+                let mut missing = first.clone();
+                missing.receipt_commitment = None;
+                altered.block = missing.encode().to_vec();
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            altered.decode().is_err(),
+            "accepted receipt mutation {mutation}"
+        );
+    }
     record.receipts[0].logs[0].push(0);
     assert!(record.decode().is_err());
     assert!(borsh::from_slice::<Record>(&bytes[..bytes.len() - 1]).is_err());
+}
+
+#[tokio::test]
+async fn receipt_corruption_is_rejected_before_recovery_publishes_the_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let genesis = block(0, BlockId(B256::ZERO));
+    let mut first = block(1, genesis.id());
+    first.native_targets = Some([hub_domain::DbTarget::default(); 4]);
+    first.receipt_commitment = Some(hub_executor::receipt_commitment(100, &[]));
+    let history = FinalizedHistory::open(dir.path(), &genesis).unwrap();
+    history.append(&first, &[], 100).unwrap();
+    let bytes = history.db.get(key(RECORD, 1)).unwrap().unwrap();
+    let mut record: Record = borsh::from_slice(&bytes).unwrap();
+    record.gas_limit = 101;
+    history
+        .db
+        .put(key(RECORD, 1), borsh::to_vec(&record).unwrap())
+        .unwrap();
+    let index = BlockIndex::new();
+    let light = LightBlockIndex::new();
+    let lookup: FinalizationLookup =
+        Arc::new(|_| panic!("invalid record must not reach certificate lookup"));
+    let error = history
+        .recover(&genesis, &first, &index, &light, &lookup)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("receipt commitment mismatch"));
+    assert!(index.get_block_by_number(1).is_none());
+    assert_eq!(*history.head.lock(), (1, first.id()));
 }
 
 #[tokio::test]

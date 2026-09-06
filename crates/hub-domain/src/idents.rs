@@ -140,6 +140,7 @@ mod tests {
             txs,
             payload: None,
             native_targets: None,
+            receipt_commitment: None,
             db_targets: crate::DbTargets::default(),
         };
         let encoded = block.encode();

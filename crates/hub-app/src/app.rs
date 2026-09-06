@@ -17,7 +17,7 @@ use futures::StreamExt as _;
 use hub_backend::Ctx;
 use hub_consensus::{Mempool as _, TxId, components::InMemoryMempool};
 use hub_domain::{Block, BlockId, ConsensusContext, PublicKey};
-use hub_executor::{BlockContext, ExecutionReceipt, HubExecutor};
+use hub_executor::{BlockContext, ExecutionReceipt, HubExecutor, receipt_commitment};
 use parking_lot::Mutex;
 use std::marker::PhantomData;
 use tracing::{info, warn};
@@ -187,6 +187,11 @@ impl<S: FinalizedSink, D: ApplicationState> StatefulHubApp<S, D> {
         {
             return Err(AppError::RootMismatch("db targets"));
         }
+        if block.receipt_commitment.is_some_and(|expected| {
+            receipt_commitment(self.gas_limit, &executed.outcome.receipts) != expected
+        }) {
+            return Err(AppError::RootMismatch("execution receipts"));
+        }
         self.cache_execution(block, executed.outcome.receipts);
         Ok(executed.batches)
     }
@@ -292,6 +297,10 @@ impl<S: FinalizedSink, D: ApplicationState> Application<Ctx> for StatefulHubApp<
             txs,
             payload: input.upstream.payload,
             native_targets: executed.native_targets,
+            receipt_commitment: Some(receipt_commitment(
+                self.gas_limit,
+                &executed.outcome.receipts,
+            )),
             db_targets: executed.db_targets,
         };
         self.cache_execution(&block, executed.outcome.receipts);

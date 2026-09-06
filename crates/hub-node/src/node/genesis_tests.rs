@@ -112,6 +112,22 @@ fn native_genesis_recovers_partial_initialization_and_binds_configuration() {
                     .await
                     .is_err()
             );
+            let mut old = block;
+            old.receipt_commitment = None;
+            let mut record = keccak256(serde_json::to_vec(genesis).unwrap()).to_vec();
+            record.extend_from_slice(&old.encode());
+            persist(&directory.join("native-genesis.bin"), &record).unwrap();
+            assert!(
+                load_or_create(&context, directory, genesis, &cache)
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("explicit migration")
+            );
+            assert_eq!(
+                fs::read(directory.join("native-genesis.bin")).unwrap(),
+                record
+            );
         });
     }
 }

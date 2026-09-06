@@ -1,0 +1,104 @@
+use alloy_primitives::{B256, Keccak256};
+
+use crate::ExecutionReceipt;
+
+/// Commit the execution limit and ordered receipt fields using the v1 encoding.
+/// Integers and collection lengths are big-endian u64; presence and status use one byte.
+/// Logs include their address, ordered topics and length-prefixed data, without copying.
+pub fn receipt_commitment(gas_limit: u64, receipts: &[ExecutionReceipt]) -> B256 {
+    let mut hash = Keccak256::new();
+    hash.update(b"vera/receipts/v1");
+    hash.update(gas_limit.to_be_bytes());
+    hash.update((receipts.len() as u64).to_be_bytes());
+    for receipt in receipts {
+        hash.update(receipt.tx_hash);
+        hash.update(receipt.gas_used.to_be_bytes());
+        hash.update(receipt.cumulative_gas_used().to_be_bytes());
+        hash.update([u8::from(receipt.success())]);
+        hash.update([u8::from(receipt.contract_address.is_some())]);
+        if let Some(address) = receipt.contract_address {
+            hash.update(address);
+        }
+        hash.update((receipt.logs().len() as u64).to_be_bytes());
+        for log in receipt.logs() {
+            hash.update(log.address);
+            hash.update((log.topics().len() as u64).to_be_bytes());
+            for topic in log.topics() {
+                hash.update(topic);
+            }
+            hash.update((log.data.data.len() as u64).to_be_bytes());
+            hash.update(&log.data.data);
+        }
+    }
+    hash.finalize()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::{Address, Log, keccak256};
+
+    #[test]
+    fn encoding_binds_every_receipt_field_and_collection_boundary() {
+        let receipt = ExecutionReceipt::new(
+            B256::repeat_byte(1),
+            true,
+            2,
+            3,
+            vec![Log::new_unchecked(
+                Address::repeat_byte(4),
+                vec![B256::repeat_byte(5)],
+                vec![6, 7].into(),
+            )],
+            Some(Address::repeat_byte(8)),
+        );
+        let expected = [
+            b"vera/receipts/v1".as_slice(),
+            &9_u64.to_be_bytes(),
+            &1_u64.to_be_bytes(),
+            &[1; 32],
+            &2_u64.to_be_bytes(),
+            &3_u64.to_be_bytes(),
+            &[1, 1],
+            &[8; 20],
+            &1_u64.to_be_bytes(),
+            &[4; 20],
+            &1_u64.to_be_bytes(),
+            &[5; 32],
+            &2_u64.to_be_bytes(),
+            &[6, 7],
+        ]
+        .concat();
+        let root = receipt_commitment(9, std::slice::from_ref(&receipt));
+        assert_eq!(root, keccak256(expected));
+        assert_ne!(root, receipt_commitment(10, std::slice::from_ref(&receipt)));
+        assert_ne!(root, receipt_commitment(9, &[]));
+        for mutation in 0..11 {
+            let mut changed = receipt.clone();
+            match mutation {
+                0 => changed.tx_hash.0[0] ^= 1,
+                1 => changed.gas_used += 1,
+                2 => changed.receipt.cumulative_gas_used += 1,
+                3 => changed.receipt.status = false.into(),
+                4 => changed.contract_address = None,
+                5 => changed.contract_address = Some(Address::ZERO),
+                6 => changed.receipt.logs[0].address = Address::ZERO,
+                7 => {
+                    changed.receipt.logs[0].data = alloy_primitives::LogData::new_unchecked(
+                        vec![B256::ZERO],
+                        vec![6, 7].into(),
+                    )
+                }
+                8 => changed.receipt.logs[0].data.data = vec![6].into(),
+                9 => changed.receipt.logs.clear(),
+                10 => changed.receipt.logs.push(changed.receipt.logs[0].clone()),
+                _ => unreachable!(),
+            }
+            assert_ne!(root, receipt_commitment(9, std::slice::from_ref(&changed)));
+            assert_ne!(
+                receipt_commitment(9, &[receipt.clone(), changed.clone()]),
+                receipt_commitment(9, &[changed, receipt.clone()]),
+            );
+        }
+    }
+}

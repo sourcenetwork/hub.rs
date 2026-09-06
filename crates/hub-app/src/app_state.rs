@@ -74,7 +74,7 @@ impl ApplicationState for VeraStateSet {
 
 impl ApplicationState for OrderedState {
     fn accepts(block: &Block) -> bool {
-        block.native_targets.is_some()
+        block.native_targets.is_some() && block.receipt_commitment.is_some()
     }
     fn targets(block: &Block) -> Self::SyncTargets {
         let execution = crate::sync_targets(&block.db_targets);

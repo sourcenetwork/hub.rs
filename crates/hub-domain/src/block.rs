@@ -76,6 +76,9 @@ pub struct Block {
     /// Ordered module log targets in ACP, bulletin, hub and sequence order.
     /// Presence selects the native commitment encoding; legacy blocks omit them.
     pub native_targets: Option<[DbTarget; 4]>,
+    /// Commitment to ordered execution receipts and the execution gas limit.
+    /// Legacy encodings omit this field; native execution requires it.
+    pub receipt_commitment: Option<B256>,
 }
 
 impl Block {
@@ -152,7 +155,12 @@ impl Write for Block {
         self.state_root.write(buf);
         Idents::write_b256(&self.module_state_root, buf);
         self.txs.write(buf);
-        if let Some(targets) = &self.native_targets {
+        if let Some(commitment) = &self.receipt_commitment {
+            3_u8.write(buf);
+            self.payload.write(buf);
+            self.native_targets.write(buf);
+            Idents::write_b256(commitment, buf);
+        } else if let Some(targets) = &self.native_targets {
             2_u8.write(buf);
             self.payload.write(buf);
             targets.write(buf);
@@ -173,11 +181,15 @@ impl EncodeSize for Block {
             + self.state_root.encode_size()
             + 32
             + self.txs.encode_size()
-            + self.payload.encode_size()
-            + self
-                .native_targets
-                .as_ref()
-                .map_or(0, |targets| 1 + targets.encode_size())
+            + if self.receipt_commitment.is_some() {
+                1 + self.payload.encode_size() + self.native_targets.encode_size() + 32
+            } else {
+                self.payload.encode_size()
+                    + self
+                        .native_targets
+                        .as_ref()
+                        .map_or(0, |targets| 1 + targets.encode_size())
+            }
             + self.db_targets.encode_size()
     }
 }
@@ -195,12 +207,22 @@ impl Read for Block {
         let module_state_root = Idents::read_b256(buf)?;
         let txs = Vec::<Tx>::read_cfg(buf, &(RangeCfg::new(0..=cfg.max_txs), cfg.tx))?;
         // Tags 0 and 1 retain the original optional DKG payload encoding.
-        let (payload, native_targets) = match u8::read(buf)? {
-            0 => (None, None),
-            1 => (Some(DkgPayload::read_cfg(buf, &DKG_PAYLOAD_CFG)?), None),
+        let (payload, native_targets, receipt_commitment) = match u8::read(buf)? {
+            0 => (None, None, None),
+            1 => (
+                Some(DkgPayload::read_cfg(buf, &DKG_PAYLOAD_CFG)?),
+                None,
+                None,
+            ),
             2 => (
                 Option::<DkgPayload>::read_cfg(buf, &DKG_PAYLOAD_CFG)?,
                 Some(<[DbTarget; 4]>::read(buf)?),
+                None,
+            ),
+            3 => (
+                Option::<DkgPayload>::read_cfg(buf, &DKG_PAYLOAD_CFG)?,
+                Option::<[DbTarget; 4]>::read(buf)?,
+                Some(Idents::read_b256(buf)?),
             ),
             _ => return Err(CodecError::Invalid("Block", "unknown commitment encoding")),
         };
@@ -217,6 +239,7 @@ impl Read for Block {
             payload,
             db_targets,
             native_targets,
+            receipt_commitment,
         })
     }
 }
@@ -245,6 +268,7 @@ impl fmt::Debug for Block {
             .field("payload", &self.payload.is_some())
             .field("db_targets", &self.db_targets)
             .field("native_targets", &self.native_targets)
+            .field("receipt_commitment", &self.receipt_commitment)
             .finish()
     }
 }
@@ -282,6 +306,7 @@ mod tests {
             txs: vec![Tx::new(Bytes::from_static(&[0xde, 0xad, 0xbe, 0xef]))],
             payload: None,
             native_targets: None,
+            receipt_commitment: None,
             db_targets: crate::DbTargets::default(),
         }
     }
@@ -396,13 +421,55 @@ mod tests {
             );
             assert!(input.is_empty());
             let mut invalid = bytes.to_vec();
-            invalid[offset] = 3;
+            invalid[offset] = 4;
             assert!(Block::decode_cfg(invalid.as_slice(), &default_block_cfg()).is_err());
             for end in offset..bytes.len() {
                 assert!(Block::decode_cfg(&bytes[..end], &default_block_cfg()).is_err());
             }
             native.native_targets = None;
             assert_eq!(native.encode(), original);
+        }
+    }
+
+    #[test]
+    fn receipt_commitment_is_canonical_bound_and_streamable() {
+        for legacy in [sample_block(), sample_block_with_payload()] {
+            for targets in [None, Some([DbTarget::default(); 4])] {
+                let offset = legacy.encode_size()
+                    - legacy.db_targets.encode_size()
+                    - legacy.payload.encode_size();
+                let mut block = legacy.clone();
+                block.native_targets = targets;
+                let previous = block.encode();
+                block.receipt_commitment = Some(B256::repeat_byte(7));
+                let encoded = block.encode();
+                assert_eq!(encoded[offset], 3);
+                assert_eq!(encoded.len(), block.encode_size());
+                assert_eq!(
+                    Block::decode_cfg(encoded.clone(), &default_block_cfg()).unwrap(),
+                    block
+                );
+                let mut changed = block.clone();
+                changed.receipt_commitment = Some(B256::repeat_byte(8));
+                assert_ne!(block.id(), changed.id());
+                let mut concatenated = encoded.to_vec();
+                concatenated.extend_from_slice(&previous);
+                let mut input = concatenated.as_slice();
+                assert_eq!(
+                    Block::read_cfg(&mut input, &default_block_cfg()).unwrap(),
+                    block
+                );
+                block.receipt_commitment = None;
+                assert_eq!(block.encode(), previous);
+                assert_eq!(
+                    Block::read_cfg(&mut input, &default_block_cfg()).unwrap(),
+                    block
+                );
+                assert!(input.is_empty());
+                for end in offset..encoded.len() {
+                    assert!(Block::decode_cfg(&encoded[..end], &default_block_cfg()).is_err());
+                }
+            }
         }
     }
 
@@ -419,6 +486,7 @@ mod tests {
             txs: vec![],
             payload: None,
             native_targets: None,
+            receipt_commitment: None,
             db_targets: crate::DbTargets::default(),
         };
         let encoded = block.encode();
@@ -469,8 +537,7 @@ mod tests {
         let mut encoded = block.encode().to_vec();
         let payload_start =
             encoded.len() - block.db_targets.encode_size() - block.payload.encode_size();
-        // Tag 3 is not a supported commitment encoding.
-        encoded[payload_start] = 3;
+        encoded[payload_start] = 4;
         assert!(Block::decode_cfg(encoded.as_slice(), &default_block_cfg()).is_err());
     }
 

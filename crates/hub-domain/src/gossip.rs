@@ -171,6 +171,7 @@ mod tests {
             txs: vec![Tx::new(Bytes::from_static(&[0xde, 0xad]))],
             payload: None,
             native_targets: None,
+            receipt_commitment: None,
             db_targets: crate::DbTargets::default(),
         }
     }

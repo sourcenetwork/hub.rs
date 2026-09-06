@@ -24,6 +24,9 @@ impl OrderedCheckpoint {
     ) -> Result<Self, AppError> {
         let block = verify_finalized_block(light, trusted_key)
             .map_err(|e| AppError::Execution(e.to_string()))?;
+        if !<OrderedState as crate::ApplicationState>::accepts(&block) {
+            return Err(AppError::RootMismatch("native checkpoint commitments"));
+        }
         let native = proof.verify(block.module_state_root)?;
         if let Some(targets) = &block.native_targets
             && *targets

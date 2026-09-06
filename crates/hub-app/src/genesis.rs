@@ -85,6 +85,7 @@ pub fn genesis_block(
         txs: Vec::new(),
         payload: None,
         native_targets: None,
+        receipt_commitment: None,
         db_targets,
     }
 }

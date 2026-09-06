@@ -34,6 +34,10 @@ pub(super) async fn load_or_create(
             block.native_targets.is_some(),
             "native genesis commitments missing"
         );
+        ensure!(
+            block.receipt_commitment == Some(hub_executor::receipt_commitment(0, &[])),
+            "native genesis predates receipt commitments; an explicit migration is required"
+        );
         return Ok(block);
     }
     ensure!(
@@ -93,6 +97,7 @@ pub(super) async fn load_or_create(
     );
     let native_targets = native.committed_targets().await;
     let mut block = hub_app::genesis_block(root, targets, module_root);
+    block.receipt_commitment = Some(hub_executor::receipt_commitment(0, &[]));
     block.native_targets = Some(
         [
             &native_targets.0,

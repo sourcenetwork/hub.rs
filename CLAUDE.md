@@ -110,6 +110,10 @@ Pending alternatives retain isolated module snapshots. Database transitions fini
 before query maps are published. Startup aligns all journals to marshal's durable
 anchor, checks the combined native root, and then enables admission and RPC.
 Finalized receipts and certificates are recovered through `FinalizedHistory`.
+Native proposals also bind ordered receipt fields and the execution gas limit
+through `Block::receipt_commitment`. Re-execution verifies this commitment;
+history checks it before persistence and before indexing a recovered record.
+See `docs/receipt-commitments.md` for the canonical encoding.
 
 First boot records a durable initialization intent before changing journals, then
 publishes `native-genesis.bin` after all seven partitions are durable. Interrupted
@@ -117,6 +121,7 @@ initialization can rewind and retry only with the same genesis configuration.
 Existing JMT directories or a legacy genesis record require an explicit migration;
 this node does not convert them. Missing genesis records alongside finalized
 history are rejected instead of resetting state.
+Native genesis predating receipt commitments also requires an explicit migration.
 
 Seven authenticated peer resolvers serve bounded operation-log ranges. Fetches
 allow up to 64 operations, with eight-operation inspection batches and responses
@@ -151,8 +156,9 @@ See `docs/permission-proofs.md` for formats and limits.
 
 Legacy `VeraStateSet` and JMT proof support remain available to explicit library
 callers. Native blocks select a tagged commitment encoding and carry four
-additional module log targets; blocks without those targets retain their original
-encoding. Native and legacy application layouts cannot share one consensus group.
+additional module log targets and a receipt commitment; blocks omitting both
+retain their original encoding. Native and legacy application layouts cannot
+share one consensus group.
 
 ### RPC surfaces
 

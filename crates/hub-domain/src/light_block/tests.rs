@@ -73,6 +73,7 @@ fn light_fixture(seed: u64) -> LightBlock {
         txs: vec![crate::Tx::new(Bytes::from_static(b"light-block"))],
         payload: None,
         native_targets: None,
+        receipt_commitment: Some(B256::repeat_byte(9)),
         db_targets: DbTargets::default(),
     };
     let proposal = Proposal::new(round, View::new(16), block.digest());
