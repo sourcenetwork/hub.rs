@@ -11,3 +11,6 @@ pub use snapshot::TreeSnapshot;
 /// Canonical module state and preparation of branch-local tree updates.
 mod tree;
 pub use tree::ModuleStateTree;
+
+mod transfer;
+pub use transfer::{ModuleRestore, SnapshotChunk};

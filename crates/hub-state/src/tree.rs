@@ -21,6 +21,10 @@ impl ModuleStateTree {
     /// Open a tree and restore its canonical revision and retained proof heights.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let store = Arc::new(JmtStore::open(path)?);
+        ensure!(
+            !store.restore_in_progress()?,
+            "module restore is incomplete"
+        );
         let canonical_version = store.read_canonical_version()?.unwrap_or(0);
         let canonical_height = store.read_canonical_height()?.unwrap_or(0);
         let mut height_versions = store.read_height_versions()?;

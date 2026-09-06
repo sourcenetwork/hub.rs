@@ -26,6 +26,7 @@ const META_HEIGHT_KEY: &[u8] = b"\x00__canonical_height__";
 const HEIGHT_PREFIX: &[u8] = b"\x00__height_version__";
 
 mod recovery;
+mod transfer;
 use recovery::{UNDO_PREFIX, height_key};
 
 /// RocksDB-backed JMT store with four column families:
