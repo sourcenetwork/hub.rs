@@ -626,11 +626,7 @@ async fn canonical_module_test() {
         k256::ecdsa::SigningKey::from_bytes((&hex::decode(HARDHAT_KEY_1).unwrap()[..]).into())
             .expect("valid signing key");
     let user_did = hub_crypto::secp256k1::did_from_secp256k1_pubkey(
-        &user_key
-            .verifying_key()
-            .to_encoded_point(true)
-            .as_bytes()
-            .to_vec(),
+        user_key.verifying_key().to_encoded_point(true).as_bytes(),
     )
     .expect("valid DID");
 
@@ -1051,6 +1047,7 @@ async fn canonical_module_test() {
         .await;
     match &evm_invalidate_err {
         Err(ClientError::TxReverted { receipt, .. }) => {
+            max_block = max_block.max(receipt.block_number);
             assert!(
                 receipt.logs.is_empty(),
                 "G6 reverted EVM tx should have empty logs"
@@ -1076,6 +1073,7 @@ async fn canonical_module_test() {
         g7_receipt.logs.is_empty(),
         "G7 reverted BLS tx should have empty logs"
     );
+    max_block = max_block.max(g7_receipt.block_number);
 
     let final_evm_nonce = client
         .get_nonce(evm_signer.address())
