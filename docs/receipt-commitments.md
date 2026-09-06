@@ -39,8 +39,8 @@ History checks the commitment before appending a record and again before
 publishing that record to query indexes during recovery. A changed receipt or
 execution limit fails recovery. Record decoding also checks receipt count and
 rejects malformed or trailing log bytes. The bounded peer transport below applies
-the same checks. Snapshot startup remains disabled until state and history
-recovery are coordinated.
+the same checks. Snapshot startup coordinates this import with storage recovery
+before accepting requests; see `snapshot-recovery.md`.
 
 ## Staging retained history
 
@@ -99,10 +99,12 @@ The caller must keep admission and query publication stopped, recover applicatio
 state at the selected revision, and call `recover` with that same anchor. Recovery
 rejects unfinished imports and other anchors before indexing records. Its final
 durable batch removes the marker. This is the history-side handoff; the running
-node serves record and finality chunks but does not yet start snapshot import.
+node drives this handoff before synchronized databases reach the processor.
 
 Starting an import upgrades the history metadata format to 3 in the same batch
-as the import marker. Older binaries reject that format rather than treating an
+as the import marker. A later authenticated selection can restart the descending
+cursor while retaining the original committed-prefix boundary. Older binaries
+reject that format rather than treating an
 unfinished import as an execution suffix to discard. Record bytes remain
 unchanged. Format 1 and completed format 2 histories remain readable; unfinished
 format 2 imports require the previous binary to complete recovery before upgrade.

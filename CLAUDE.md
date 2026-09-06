@@ -129,9 +129,11 @@ below the 4 MiB transport limit. Native keys are limited to 64 KiB; values and
 commit metadata to 1 MiB. Code-partition peer messages cap values at 1 MiB even
 though the older local journal codec permits larger records.
 
-Fresh checkpoint catch-up remains disabled in node startup: finalized history and
-receipts must be supplied along with current state. Existing retained-history
-replay remains the catch-up path. `OrderedCheckpoint` separately verifies direct
+A `[snapshot]` configuration section requests initial authenticated snapshot
+catch-up for an admitted member. Startup resumes interrupted synchronization from
+durable metadata and uses retained-history replay after snapshot completion.
+History and receipts are imported at the actual synchronized revision before
+query-state publication and normal execution. See `docs/snapshot-recovery.md`. `OrderedCheckpoint` separately verifies direct
 or descendant finality against caller-provisioned trust and authenticates native
 log targets through `SyncProof`. Synchronization and recovery check reconstructed
 current-state roots before publishing query maps. Operation-log proofs do not
@@ -146,7 +148,7 @@ resolver on authenticated channel 16. `HistoryPeer::import_next_from` bounds
 record and finality-proof assembly, verifies both before persistence and cancels
 pending fetches when dropped. Imported certificates retain their verifier material
 and any descendants beyond the recovery anchor without advancing execution.
-Snapshot startup remains disabled pending coordinated state/history recovery.
+The storage handoff waits for history recovery at the final selected revision.
 See `docs/receipt-commitments.md` for protocol and upgrade details.
 
 `hub-backend::native` rebuilds query maps from the retained operation log and

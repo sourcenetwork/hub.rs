@@ -30,6 +30,7 @@ struct NodeStateInner {
     peer_count: AtomicU64,
     is_leader: RwLock<bool>,
     backfilling: AtomicBool,
+    snapshot_revision: AtomicU64,
 }
 
 impl NodeState {
@@ -49,6 +50,7 @@ impl NodeState {
                 peer_count: AtomicU64::new(0),
                 is_leader: RwLock::new(false),
                 backfilling: AtomicBool::new(false),
+                snapshot_revision: AtomicU64::new(0),
             }),
         }
     }
@@ -115,6 +117,13 @@ impl NodeState {
         self.inner.backfilling.load(Ordering::Relaxed)
     }
 
+    /// Record the revision recovered through snapshot transfer or its persisted startup floor.
+    pub fn set_snapshot_revision(&self, revision: u64) {
+        self.inner
+            .snapshot_revision
+            .store(revision, Ordering::Relaxed);
+    }
+
     /// Get the finalized block count.
     pub fn finalized_count(&self) -> u64 {
         self.inner.finalized_count.load(Ordering::Relaxed)
@@ -122,6 +131,7 @@ impl NodeState {
 
     /// Get current node status.
     pub fn status(&self) -> NodeStatus {
+        let snapshot_revision = self.inner.snapshot_revision.load(Ordering::Relaxed);
         NodeStatus {
             chain_id: self.inner.chain_id,
             validator_index: self.inner.validator_index,
@@ -134,6 +144,7 @@ impl NodeState {
             peer_count: self.inner.peer_count.load(Ordering::Relaxed),
             is_leader: *self.inner.is_leader.read(),
             backfilling: self.inner.backfilling.load(Ordering::Relaxed),
+            snapshot_revision: (snapshot_revision > 0).then_some(snapshot_revision),
         }
     }
 }
@@ -164,6 +175,9 @@ pub struct NodeStatus {
     pub is_leader: bool,
     /// Whether this node is backfilling historical blocks.
     pub backfilling: bool,
+    /// Revision recovered through snapshot transfer, or its persisted recovery floor on restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_revision: Option<u64>,
 }
 
 #[cfg(test)]
@@ -184,6 +198,7 @@ mod tests {
             peer_count: 3,
             is_leader: true,
             backfilling: false,
+            snapshot_revision: None,
         };
 
         let json = serde_json::to_string(&status).unwrap();
@@ -203,6 +218,24 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_revision_is_optional_and_serialized() {
+        let state = NodeState::new(1, 0, 4);
+        let before = serde_json::to_value(state.status()).unwrap();
+        assert!(before.get("snapshotRevision").is_none());
+        assert!(
+            serde_json::from_value::<NodeStatus>(before)
+                .unwrap()
+                .snapshot_revision
+                .is_none()
+        );
+        state.set_snapshot_revision(42);
+        assert_eq!(
+            serde_json::to_value(state.status()).unwrap()["snapshotRevision"],
+            42
+        );
+    }
+
+    #[test]
     fn node_status_json_uses_camel_case() {
         let status = NodeStatus {
             chain_id: 1,
@@ -216,6 +249,7 @@ mod tests {
             peer_count: 0,
             is_leader: false,
             backfilling: false,
+            snapshot_revision: None,
         };
 
         let json = serde_json::to_string(&status).unwrap();

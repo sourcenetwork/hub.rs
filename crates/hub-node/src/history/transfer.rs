@@ -62,7 +62,8 @@ impl FinalizedHistory {
         })
     }
 
-    /// Start or resume an import anchored by independently verified finalization.
+    /// Start, resume, or advance an import anchored by independently verified finalization.
+    /// An advancing selection restarts the cursor at the same committed-prefix boundary.
     /// Keep admission and query publication stopped until state reaches this anchor
     /// and recover() completes. The destination may already have a committed prefix.
     pub fn begin_import(&self, revision: &LightBlock, trusted: &ConsensusPublicKey) -> Result<()> {
@@ -72,25 +73,31 @@ impl FinalizedHistory {
             "native import commitments missing"
         );
         let head = self.head.lock();
-        if let Some(bytes) = self.db.get(IMPORT)? {
+        let base = if let Some(bytes) = self.db.get(IMPORT)? {
             let import: Import = borsh::from_slice(&bytes)?;
-            ensure!(
-                import.anchor == anchor.encode().as_ref(),
-                "another history import is pending"
-            );
             ensure!(
                 import.trusted == trusted.encode().as_ref(),
                 "history import trust changed"
             );
-            return Ok(());
-        }
-        ensure!(
-            anchor.height > head.0,
-            "history import must advance the committed prefix"
-        );
+            if import.anchor == anchor.encode().as_ref() {
+                return Ok(());
+            }
+            let previous = Block::decode_cfg(import.anchor.as_slice(), &crate::node::block_cfg())?;
+            ensure!(
+                anchor.height > previous.height,
+                "history import selection must advance"
+            );
+            import.base
+        } else {
+            ensure!(
+                anchor.height > head.0,
+                "history import must advance the committed prefix"
+            );
+            (head.0, head.1.0.0)
+        };
         let import = Import {
             anchor: anchor.encode().to_vec(),
-            base: (head.0, head.1.0.0),
+            base,
             next: (anchor.height, anchor.id().0.0),
             trusted: trusted.encode().to_vec(),
         };

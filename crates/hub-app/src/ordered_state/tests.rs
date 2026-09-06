@@ -198,9 +198,20 @@ fn sync_publishes_latest_modules_before_suffix_execution() {
                 (),
             );
             let (mut tip_tx, tip_rx) = ring::channel(NZUsize!(4));
+            let handoff_entered = Arc::new(::tokio::sync::Notify::new());
+            let handoff_release = Arc::new(::tokio::sync::Notify::new());
+            let entered = handoff_entered.clone();
+            let release = handoff_release.clone();
             let sync = OrderedState::sync(
                 context.child("destination"),
-                config(&context, "destination", destination_executor.clone()),
+                config(&context, "destination", destination_executor.clone()).with_sync_handoff(
+                    move |reached| async move {
+                        assert_eq!(reached, anchor(2));
+                        entered.notify_one();
+                        release.notified().await;
+                        Ok(())
+                    },
+                ),
                 sources,
                 anchor(1),
                 initial,
@@ -242,6 +253,27 @@ fn sync_publishes_latest_modules_before_suffix_execution() {
                     .await
                     .unwrap();
                 paused.gate.add_permits(2);
+                handoff_entered.notified().await;
+                assert_eq!(
+                    destination_executor
+                        .modules()
+                        .read()
+                        .unwrap()
+                        .nonces
+                        .get_nonce("stale"),
+                    1
+                );
+                assert!(
+                    destination_executor
+                        .modules()
+                        .read()
+                        .unwrap()
+                        .acp
+                        .query_policy_ids()
+                        .unwrap()
+                        .is_empty()
+                );
+                handoff_release.notify_one();
                 (target, second_outcome.module_state_root)
             };
             let (synced, (target, module_root)) =

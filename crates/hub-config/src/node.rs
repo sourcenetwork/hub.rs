@@ -13,6 +13,28 @@ pub const DEFAULT_CHAIN_ID: u64 = 1;
 /// Default data directory.
 pub const DEFAULT_DATA_DIR: &str = "/var/lib/hubd";
 
+/// Bounds for initial snapshot catch-up. Subsequent starts resume durable progress.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct SnapshotConfig {
+    /// Maximum assembled execution record, including receipts (default 64 MiB).
+    pub record_bytes: usize,
+    /// Maximum logs in one imported execution record (default 100,000).
+    pub logs: usize,
+    /// Deadline for one record or finality proof from one peer (default 10 seconds).
+    pub peer_timeout_ms: u64,
+}
+
+impl Default for SnapshotConfig {
+    fn default() -> Self {
+        Self {
+            record_bytes: 64 << 20,
+            logs: 100_000,
+            peer_timeout_ms: 10_000,
+        }
+    }
+}
+
 /// Complete node configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NodeConfig {
@@ -35,6 +57,10 @@ pub struct NodeConfig {
     /// RPC configuration.
     #[serde(default)]
     pub rpc: RpcConfig,
+
+    /// Request initial authenticated snapshot catch-up. Omit for retained-history replay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<SnapshotConfig>,
 }
 
 impl Default for NodeConfig {
@@ -45,6 +71,7 @@ impl Default for NodeConfig {
             network: NetworkConfig::default(),
             execution: ExecutionConfig::default(),
             rpc: RpcConfig::default(),
+            snapshot: None,
         }
     }
 }
@@ -179,6 +206,24 @@ mod tests {
         let config = NodeConfig::default();
         assert_eq!(config.chain_id, DEFAULT_CHAIN_ID);
         assert_eq!(config.data_dir, PathBuf::from(DEFAULT_DATA_DIR));
+    }
+
+    #[test]
+    fn snapshot_is_opt_in_and_preserves_configured_bounds() {
+        assert!(NodeConfig::from_toml("").unwrap().snapshot.is_none());
+        let default = NodeConfig::from_toml("[snapshot]").unwrap();
+        assert_eq!(default.snapshot, Some(SnapshotConfig::default()));
+        let configured = NodeConfig::from_toml(
+            "[snapshot]\nrecord_bytes = 1024\nlogs = 4\npeer_timeout_ms = 500",
+        )
+        .unwrap();
+        assert_eq!(configured.snapshot.as_ref().unwrap().record_bytes, 1024);
+        assert_eq!(configured.snapshot.as_ref().unwrap().logs, 4);
+        assert_eq!(configured.snapshot.as_ref().unwrap().peer_timeout_ms, 500);
+        assert_eq!(
+            NodeConfig::from_toml(&configured.to_toml().unwrap()).unwrap(),
+            configured
+        );
     }
 
     #[test]

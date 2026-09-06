@@ -144,6 +144,21 @@ impl Drop for Pending {
 }
 
 impl HistoryPeer {
+    pub(super) async fn proof_from(
+        &mut self,
+        peer: &PublicKey,
+        height: u64,
+        deadline: Duration,
+    ) -> Result<LightBlock> {
+        let bytes = tokio::time::timeout(
+            deadline,
+            self.fetch(peer, height, 1, LIGHT_BLOCK_RESPONSE_BYTES),
+        )
+        .await
+        .context("history finality transfer deadline exceeded")??;
+        Ok(serde_json::from_slice(&bytes)?)
+    }
+
     /// Fetch and durably stage the next required record from one current group member.
     /// The deadline covers all chunks and resolver retries. Cancellation retires the fetch;
     /// the durable import cursor advances only after complete record verification.

@@ -21,7 +21,7 @@ use commonware_consensus::{
     },
     types::{Epoch, FixedEpocher, Height, ViewDelta},
 };
-use commonware_cryptography::Signer as _;
+use commonware_cryptography::{Digestible as _, Signer as _};
 use commonware_glue::{
     dkg::{
         SecretStore as _,
@@ -35,7 +35,7 @@ use commonware_glue::{
         db::{Shared, SyncEngineConfig, p2p as state_p2p},
     },
 };
-use commonware_p2p::{Ingress, authenticated::discovery};
+use commonware_p2p::{Ingress, Provider as _, authenticated::discovery};
 use commonware_parallel::Sequential;
 use commonware_runtime::{Handle, Spawner as _, Supervisor as _, buffer::paged::CacheRef, tokio};
 use commonware_storage::{archive::prunable, translator::TwoCap};
@@ -85,6 +85,11 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     } = settings;
     let chain_id = config.chain_id;
     let gas_limit = config.execution.gas_limit;
+    let snapshot = config.snapshot.clone().unwrap_or_default();
+    anyhow::ensure!(
+        snapshot.record_bytes > 0 && snapshot.peer_timeout_ms > 0,
+        "snapshot byte limit and peer deadline must be positive"
+    );
     let signing_key = config.validator_key()?;
     let local = signing_key.public_key();
     let validator_index = peers
@@ -255,7 +260,8 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     let stateful_startup = context.child("stateful_startup");
     let mut plan = SyncPlan::init(&stateful_startup, PARTITION_PREFIX).await;
     let completed_sync_height = plan.sync_height();
-    let probe_artifact = if plan.should_state_sync(false) {
+    let snapshot_sync = plan.should_state_sync(config.snapshot.is_some());
+    let probe_artifact = if snapshot_sync {
         let artifact = probe_mailbox
             .subscribe()
             .await
@@ -364,7 +370,7 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
             bytes: initial_material.encode().into(),
         },
     );
-    let (_history_peer, history_peer_handle) = crate::start_history_peer(
+    let (history_peer, history_peer_handle) = crate::start_history_peer(
         context.child("history_peer"),
         history.clone(),
         light_block_index.clone(),
@@ -373,11 +379,15 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         local.clone(),
         history_network,
     );
+    let history_peer = Arc::new(::tokio::sync::Mutex::new(history_peer));
     let node_state = NodeState::new(
         chain_id,
         validator_index as u32,
         peers.participants.len() as u32,
     );
+    if let Some(height) = completed_sync_height {
+        node_state.set_snapshot_revision(height.get());
+    }
     let (heads_tx, _) = ::tokio::sync::broadcast::channel(64);
     let (logs_tx, _) = ::tokio::sync::broadcast::channel(256);
     let (headers_tx, _) = ::tokio::sync::broadcast::channel(64);
@@ -433,6 +443,26 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     .with_participant_addresses(participant_addresses);
     let vrf_elector = VrfElectorConfig::new(application.vrf_seed_cache());
 
+    let snapshot_history = crate::history::SnapshotHistory {
+        history: history.clone(),
+        genesis: genesis_block.clone(),
+        index: block_index.clone(),
+        epochs: light_block_index.clone(),
+        trusted: *sharing.public(),
+        lookup: finalization_lookup.clone(),
+        limits: crate::HistoryLimits {
+            record_bytes: snapshot.record_bytes,
+            logs: snapshot.logs,
+        },
+        deadline: Duration::from_millis(snapshot.peer_timeout_ms),
+        #[cfg(feature = "fault-injection")]
+        crash_marker: config.data_dir.join("snapshot-import-crash"),
+    };
+    let sync_marshal = marshal.clone();
+    let mut sync_peers = oracle.clone();
+    let sync_local = local.clone();
+    let sync_history_peer = history_peer.clone();
+    let sync_status = node_state.clone();
     let (stateful_actor, stateful_mailbox) = Stateful::init(
         context.child("stateful"),
         StatefulConfig {
@@ -442,7 +472,34 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
                 native::state_config(PARTITION_PREFIX, page_cache.clone()),
                 executor.clone(),
             )
-            .recover_from_marshal(),
+            .recover_from_marshal()
+            .with_sync_handoff(move |anchor| async move {
+                let selected: hub_domain::Block = sync_marshal
+                    .get_block(Identifier::Height(anchor.height))
+                    .await
+                    .ok_or_else(|| "missing synchronized history anchor".to_string())?;
+                if selected.digest() != anchor.digest || selected.context.round != anchor.round {
+                    return Err("synchronized history anchor mismatch".into());
+                }
+                let mut updates = sync_peers.subscribe().await;
+                let peers = updates
+                    .recv()
+                    .await
+                    .ok_or_else(|| "history peer subscription closed".to_string())?;
+                let peers: Vec<_> = peers
+                    .all
+                    .primary
+                    .into_iter()
+                    .filter(|peer| *peer != sync_local)
+                    .collect();
+                let mut client = sync_history_peer.lock().await;
+                snapshot_history
+                    .recover(&mut client, &peers, &selected)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                sync_status.set_snapshot_revision(anchor.height.get());
+                Ok(())
+            }),
             provider: mempool.clone(),
             marshal: (marshal.clone(), floor),
             mailbox_size: MAILBOX_SIZE,
@@ -511,32 +568,34 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     ));
     let marshal_handle = marshal_actor.start(reporters, buffer, resolver);
     probe_mailbox.attach(marshal.clone());
-    let processed_height = marshal.get_processed_height().await;
-    let recovered_height = processed_height
-        .into_iter()
-        .chain(completed_sync_height)
-        .max()
-        .unwrap_or_else(Height::zero);
-    let recovered = match marshal
-        .get_block(Identifier::Height(recovered_height))
-        .await
-    {
-        Some(block) => block,
-        None if processed_height == Some(recovered_height) => marshal
-            .get_block(Identifier::Height(recovered_height.next()))
+    if !snapshot_sync {
+        let processed_height = marshal.get_processed_height().await;
+        let recovered_height = processed_height
+            .into_iter()
+            .chain(completed_sync_height)
+            .max()
+            .unwrap_or_else(Height::zero);
+        let recovered = match marshal
+            .get_block(Identifier::Height(recovered_height))
             .await
-            .ok_or_else(|| anyhow::anyhow!("missing recovered module anchor"))?,
-        None => anyhow::bail!("missing recovered module anchor"),
-    };
-    history
-        .recover(
-            &genesis_block,
-            &recovered,
-            &block_index,
-            &light_block_index,
-            &finalization_lookup,
-        )
-        .await?;
+        {
+            Some(block) => block,
+            None if processed_height == Some(recovered_height) => marshal
+                .get_block(Identifier::Height(recovered_height.next()))
+                .await
+                .ok_or_else(|| anyhow::anyhow!("missing recovered module anchor"))?,
+            None => anyhow::bail!("missing recovered module anchor"),
+        };
+        history
+            .recover(
+                &genesis_block,
+                &recovered,
+                &block_index,
+                &light_block_index,
+                &finalization_lookup,
+            )
+            .await?;
+    }
     let stateful_handle = stateful_actor.start();
 
     // Transaction gossip and RPC over the live committed state.

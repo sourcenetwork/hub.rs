@@ -107,7 +107,10 @@ impl OrderedState {
         if root != checkpoint.module_root || reached != checkpoint.anchor {
             return Err("synchronized state differs from verified checkpoint".into());
         }
-        let state = Self::restore(databases, config.executor)
+        if let Some(handoff) = config.sync_handoff {
+            handoff(reached).await?;
+        }
+        let state = Self::hydrate(databases, config.executor)
             .await
             .map_err(|e| e.to_string())?;
         Ok((state, reached))

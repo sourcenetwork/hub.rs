@@ -12,6 +12,10 @@ fault-injection = []
 name = "module_commit_crash"
 required-features = ["fault-injection"]
 
+[[test]]
+name = "snapshot_interrupt"
+required-features = ["fault-injection"]
+
 [dependencies]
 hub-harness.workspace = true
 

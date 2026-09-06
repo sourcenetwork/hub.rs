@@ -364,3 +364,63 @@ fn previous_format_imports_are_rejected_without_modification() {
     }
     FinalizedHistory::open(dir.path(), &genesis).unwrap();
 }
+
+#[tokio::test]
+async fn resumed_snapshot_can_advance_an_unpublished_history_selection() {
+    let (genesis, _) = revision(0, BlockId(B256::ZERO));
+    let (first, first_receipts) = revision(1, genesis.id());
+    let (second, second_receipts) = revision(2, first.id());
+    let (third, third_receipts) = revision(3, second.id());
+    let source_dir = tempfile::tempdir().unwrap();
+    let source = FinalizedHistory::open(source_dir.path(), &genesis).unwrap();
+    for (block, receipts) in [
+        (&first, &first_receipts),
+        (&second, &second_receipts),
+        (&third, &third_receipts),
+    ] {
+        source.append(block, receipts, 100).unwrap();
+    }
+    let proofs = [&first, &second, &third].map(|block| certify(block, 7).0);
+    let (_, trusted) = certify(&second, 7);
+    let limits = HistoryLimits {
+        record_bytes: collect(&source, 3).len(),
+        logs: 1,
+    };
+    for complete in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        {
+            let target = FinalizedHistory::open(directory.path(), &genesis).unwrap();
+            target.begin_import(&proofs[1], &trusted).unwrap();
+            target
+                .import_record(&collect(&source, 2), limits, &proofs[1])
+                .unwrap();
+            if complete {
+                target
+                    .import_record(&collect(&source, 1), limits, &proofs[0])
+                    .unwrap();
+            }
+            target.begin_import(&proofs[2], &trusted).unwrap();
+            assert_eq!(target.import_anchor().unwrap(), Some(third.clone()));
+            assert!(target.record_chunk(1, 0, 1).is_err());
+        }
+        let target = FinalizedHistory::open(directory.path(), &genesis).unwrap();
+        for height in [3, 2, 1] {
+            assert_eq!(target.import_next().unwrap().unwrap().0, height);
+            target
+                .import_record(
+                    &collect(&source, height),
+                    limits,
+                    &proofs[height as usize - 1],
+                )
+                .unwrap();
+        }
+        let index = BlockIndex::new();
+        let lookup: FinalizationLookup =
+            Arc::new(|_| panic!("imported certificates must be retained"));
+        target
+            .recover(&genesis, &third, &index, &LightBlockIndex::new(), &lookup)
+            .await
+            .unwrap();
+        assert_eq!(index.head_block_number(), 3);
+    }
+}

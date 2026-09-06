@@ -27,7 +27,9 @@ const HEAD: &[u8] = b"head";
 
 mod peer;
 mod proof;
+mod startup;
 pub use peer::{HistoryPeer, start_history_peer};
+pub(crate) use startup::SnapshotHistory;
 mod transfer;
 pub use transfer::{HISTORY_CHUNK_BYTES, HistoryChunk, HistoryLimits};
 

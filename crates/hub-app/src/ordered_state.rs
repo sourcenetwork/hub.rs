@@ -17,6 +17,10 @@ use hub_executor::{BlockContext, ExecutionOutcome, HubExecutor, ModuleSnapshot};
 
 use crate::{AppError, execute_block};
 
+type SyncHandoff = Box<
+    dyn FnOnce(Anchor<Digest>) -> futures::future::BoxFuture<'static, Result<(), String>> + Send,
+>;
+
 /// Execution and ordered native partitions, coordinated by Commonware as one set.
 pub type OrderedDatabases = (
     Shared<AccountsDb>,
@@ -47,6 +51,7 @@ pub struct OrderedConfig {
     executor: HubExecutor,
     recovery: Option<OrderedTargets>,
     marshal_recovery: bool,
+    sync_handoff: Option<SyncHandoff>,
 }
 
 impl std::fmt::Debug for OrderedConfig {
@@ -58,6 +63,18 @@ impl std::fmt::Debug for OrderedConfig {
 }
 
 impl OrderedConfig {
+    /// Finish dependent durable recovery before synced databases reach the processor.
+    /// The callback receives the final selected anchor, which may advance during transfer.
+    #[must_use]
+    pub fn with_sync_handoff<F, Fut>(mut self, handoff: F) -> Self
+    where
+        F: FnOnce(Anchor<Digest>) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<(), String>> + Send + 'static,
+    {
+        self.sync_handoff = Some(Box::new(move |anchor| Box::pin(handoff(anchor))));
+        self
+    }
+
     /// Let the stateful actor align journals to marshal's durable anchor before publication.
     /// The in-memory commitment starts unset, forcing its startup target comparison to rewind.
     #[must_use]
@@ -175,6 +192,7 @@ pub fn ordered_config(
         executor,
         recovery: None,
         marshal_recovery: false,
+        sync_handoff: None,
     }
 }
 
@@ -235,6 +253,10 @@ impl OrderedState {
 
     async fn restore(databases: OrderedDatabases, executor: HubExecutor) -> Result<Self, AppError> {
         Self::check_module_root(&databases).await?;
+        Self::hydrate(databases, executor).await
+    }
+
+    async fn hydrate(databases: OrderedDatabases, executor: HubExecutor) -> Result<Self, AppError> {
         let set = Self {
             databases,
             executor,
@@ -452,7 +474,13 @@ where
             sync_config,
         ))
         .await?;
-        let state = Self::restore(databases, config.executor)
+        Self::check_module_root(&databases)
+            .await
+            .map_err(|e| e.to_string())?;
+        if let Some(handoff) = config.sync_handoff {
+            handoff(anchor).await?;
+        }
+        let state = Self::hydrate(databases, config.executor)
             .await
             .map_err(|e| e.to_string())?;
         Ok((state, anchor))
