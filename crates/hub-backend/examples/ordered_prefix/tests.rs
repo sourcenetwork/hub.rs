@@ -1,6 +1,6 @@
 use super::*;
 
-async fn write(db: Store, entries: Vec<(Vec<u8>, Option<Bytes>)>) -> Store {
+pub(super) async fn write(db: Store, entries: Vec<(Vec<u8>, Option<Bytes>)>) -> Store {
     let mut batch = db.new_batch();
     for (key, value) in entries {
         batch = batch.write(key, value);

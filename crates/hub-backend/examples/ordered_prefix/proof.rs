@@ -13,10 +13,11 @@ use commonware_storage::{
             variable::{Db, KeyValueProof},
         },
     },
-    translator::EightCap,
 };
 
-pub(super) type Store = Db<mmr::Family, Context, Vec<u8>, Bytes, Sha256, EightCap, 32, Sequential>;
+use super::index::KeyPrefix;
+
+pub(super) type Store = Db<mmr::Family, Context, Vec<u8>, Bytes, Sha256, KeyPrefix, 32, Sequential>;
 type Boundary = ExclusionProof<mmr::Family, Vec<u8>, VariableEncoding<Bytes>, Digest, 32>;
 type Membership = KeyValueProof<mmr::Family, Vec<u8>, Digest, 32>;
 const MAX_RECORDS: usize = 4096;

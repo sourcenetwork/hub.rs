@@ -1,6 +1,11 @@
 //! Ordered Commonware proof and recovery qualification with local component timings.
 //! Timings exclude consensus and transport.
 
+#[path = "ordered_prefix/index.rs"]
+mod index;
+#[cfg(test)]
+#[path = "ordered_prefix/index_tests.rs"]
+mod index_tests;
 #[cfg(test)]
 #[path = "ordered_prefix/lifecycle.rs"]
 mod lifecycle;
@@ -17,7 +22,7 @@ use commonware_parallel::Sequential;
 use commonware_runtime::{Runner as _, buffer::paged::CacheRef, tokio};
 use commonware_storage::{
     journal::contiguous::variable, merkle::full, qmdb::current::VariableConfig,
-    translator::EightCap,
+    translator::Translator,
 };
 use commonware_utils::{NZU16, NZU64, NZUsize};
 use proof::Store;
@@ -25,7 +30,9 @@ use std::{hint::black_box, time::Instant};
 
 type LogCodec = ((RangeCfg<usize>, ()), RangeCfg<usize>);
 
-fn config(context: &tokio::Context) -> VariableConfig<EightCap, LogCodec, Sequential> {
+fn config<T: Translator + Default>(
+    context: &tokio::Context,
+) -> VariableConfig<T, LogCodec, Sequential> {
     let cache = CacheRef::from_pooler(context, NZU16!(4096), NZUsize!(1024));
     VariableConfig {
         merkle_config: full::Config {
@@ -47,7 +54,7 @@ fn config(context: &tokio::Context) -> VariableConfig<EightCap, LogCodec, Sequen
             replay_buffer: NZUsize!(1 << 20),
         },
         grafted_metadata_partition: "prefix-graft".into(),
-        translator: EightCap,
+        translator: T::default(),
         init_cache_size: Some(NZUsize!(1024)),
         init_buffer: NZUsize!(1 << 21),
         init_concurrency: (),
