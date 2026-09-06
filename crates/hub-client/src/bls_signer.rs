@@ -1,6 +1,6 @@
 //! BLS12-381 signer for native transactions.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 use alloy_primitives::{Address, Bytes, FixedBytes};
 use ark_bls12_381::{Fr, G1Affine, G1Projective};
@@ -14,19 +14,27 @@ use crate::error::ClientError;
 
 /// BLS12-381 signer for native hub transactions.
 ///
-/// Wraps a single BLS keypair with a chain ID. Tracks nonces locally
-/// since there is no RPC endpoint to query native nonces.
+/// Wraps a BLS keypair and deployment ID. Serializes signing for this identity
+/// so successful concurrent calls receive distinct local sequences.
 ///
 /// In production, orbis-rs produces threshold BLS signatures via DKG,
 /// but the wire format is identical. This signer enables testing
 /// without a full orbis cluster.
-#[derive(Debug)]
 pub struct BlsSigner {
     secret_key: Fr,
     pubkey_bytes: FixedBytes<48>,
     did: String,
     chain_id: u64,
-    nonce: AtomicU64,
+    nonce: Mutex<u64>,
+}
+
+impl std::fmt::Debug for BlsSigner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BlsSigner")
+            .field("did", &self.did)
+            .field("chain_id", &self.chain_id)
+            .finish_non_exhaustive()
+    }
 }
 
 impl BlsSigner {
@@ -48,7 +56,7 @@ impl BlsSigner {
             pubkey_bytes,
             did,
             chain_id,
-            nonce: AtomicU64::new(0),
+            nonce: Mutex::new(0),
         })
     }
 
@@ -76,18 +84,25 @@ impl BlsSigner {
 
     /// Return the current local nonce counter.
     pub fn nonce(&self) -> u64 {
-        self.nonce.load(Ordering::SeqCst)
+        *self.nonce.lock().expect("native sequence lock poisoned")
     }
 
     /// Build, sign, and encode a native transaction in wire format.
     ///
-    /// Increments the local nonce counter on success.
+    /// Advances the local sequence on success. Callers must submit in sequence
+    /// order and coordinate retries; signing alone does not confirm submission.
     pub fn sign_native_tx(&self, target: Address, calldata: Bytes) -> Result<Vec<u8>, ClientError> {
-        let nonce = self.nonce.load(Ordering::SeqCst);
+        let mut nonce = self
+            .nonce
+            .lock()
+            .map_err(|_| ClientError::Signing("native sequence lock poisoned".into()))?;
+        let next = nonce
+            .checked_add(1)
+            .ok_or_else(|| ClientError::Signing("native sequence exhausted".into()))?;
 
         let mut tx = NativeTx {
             chain_id: self.chain_id,
-            nonce,
+            nonce: *nonce,
             bls_pubkey: self.pubkey_bytes,
             target,
             calldata,
@@ -100,7 +115,7 @@ impl BlsSigner {
         tx.signature = FixedBytes::from_slice(&sig_bytes);
 
         let wire = tx.encode_wire();
-        self.nonce.fetch_add(1, Ordering::SeqCst);
+        *nonce = next;
         Ok(wire)
     }
 }
@@ -215,5 +230,45 @@ mod tests {
         let wire1 = s1.sign_native_tx(target, Bytes::from(vec![0x01])).unwrap();
         let wire2 = s2.sign_native_tx(target, Bytes::from(vec![0x02])).unwrap();
         assert_ne!(wire1, wire2);
+    }
+
+    #[test]
+    fn concurrent_signing_uses_distinct_sequences() {
+        let signer = test_signer();
+        let barrier = std::sync::Barrier::new(8);
+        let mut sequences = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..8u8)
+                .map(|index| {
+                    let signer = &signer;
+                    let barrier = &barrier;
+                    scope.spawn(move || {
+                        barrier.wait();
+                        let wire = signer
+                            .sign_native_tx(Address::ZERO, Bytes::from(vec![index]))
+                            .unwrap();
+                        NativeTx::decode_wire(&wire).unwrap().nonce
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        sequences.sort_unstable();
+        assert_eq!(sequences, (0..8).collect::<Vec<_>>());
+        assert_eq!(signer.nonce(), 8);
+    }
+
+    #[test]
+    fn failed_or_exhausted_signing_does_not_advance_the_sequence() {
+        let mut invalid = test_signer();
+        invalid.secret_key = Fr::from(0u64);
+        assert!(invalid.sign_native_tx(Address::ZERO, Bytes::new()).is_err());
+        assert_eq!(invalid.nonce(), 0);
+        let signer = test_signer();
+        *signer.nonce.lock().unwrap() = u64::MAX;
+        assert!(signer.sign_native_tx(Address::ZERO, Bytes::new()).is_err());
+        assert_eq!(signer.nonce(), u64::MAX);
     }
 }
