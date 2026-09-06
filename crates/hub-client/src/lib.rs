@@ -27,7 +27,7 @@ mod subject;
 mod tx;
 mod types;
 
-pub use bearer::create_bearer_token;
+pub use bearer::{create_bearer_token, create_scoped_bearer_token};
 pub use bls_signer::BlsSigner;
 pub use client::{
     ACP_ADDRESS, BULLETIN_ADDRESS, HUB_ADDRESS, HubClient, VALIDATOR_REGISTRY_ADDRESS,
@@ -35,6 +35,7 @@ pub use client::{
 };
 pub use document_acp::HubDocumentACP;
 pub use error::ClientError;
+pub use hub_crypto::jwt::DelegationScope;
 pub use signer::EvmSigner;
 pub use subject::RelationshipSubject;
 pub use types::{Log, NativeReceipt, NodeStatus, TransactionReceipt};

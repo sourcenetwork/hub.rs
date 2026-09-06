@@ -236,6 +236,73 @@ pub(super) fn dispatch(
             Ok(ok_dispatch(gas_used, ret, logs))
         }
 
+        IAcp::bearerCreatePolicyCall::SELECTOR => {
+            if gas_limit < WRITE_GAS {
+                return Err(PrecompileError::OutOfGas);
+            }
+            let call = IAcp::bearerCreatePolicyCall::abi_decode(input).map_err(decode_error)?;
+            let policy = std::str::from_utf8(&call.policy)
+                .map_err(|_| PrecompileError::Other("invalid UTF-8 in policy".into()))?;
+            let record = match module.bearer_create_policy(
+                hub,
+                block_ctx,
+                tx_ctx,
+                &call.bearerToken,
+                policy,
+                marshal_type_from_u8(call.marshalType),
+            ) {
+                Ok(record) => record,
+                Err(error) => return Ok(err_dispatch(error)),
+            };
+            let event = IAcp::DelegatedPolicyCreated {
+                policyId: record.policy.id.parse().map_err(|_| {
+                    PrecompileError::Other("invalid created policy identifier".into())
+                })?,
+                creator: record.metadata.owner_did.clone(),
+            };
+            Ok(ok_dispatch(
+                WRITE_GAS,
+                IAcp::bearerCreatePolicyCall::abi_encode_returns(&json_bytes(&record)),
+                vec![event_log(ACP_ADDRESS, &event)],
+            ))
+        }
+
+        IAcp::bearerEditPolicyCall::SELECTOR => {
+            if gas_limit < WRITE_GAS {
+                return Err(PrecompileError::OutOfGas);
+            }
+            let call = IAcp::bearerEditPolicyCall::abi_decode(input).map_err(decode_error)?;
+            let policy = std::str::from_utf8(&call.policy)
+                .map_err(|_| PrecompileError::Other("invalid UTF-8 in policy".into()))?;
+            let caller = did_from_signer(&tx_ctx.signer)?;
+            let policy_id = policy_id_to_string(&call.policyId);
+            let (removed, record) = match module.bearer_edit_policy(
+                hub,
+                block_ctx,
+                &caller,
+                &call.bearerToken,
+                &policy_id,
+                policy,
+                marshal_type_from_u8(call.marshalType),
+            ) {
+                Ok(result) => result,
+                Err(error) => return Ok(err_dispatch(error)),
+            };
+            let event = IAcp::PolicyEdited {
+                policyId: alloy_primitives::keccak256(policy_id.as_bytes()),
+                creator: record.metadata.owner_did.clone(),
+                relationshipsRemoved: alloy_primitives::U256::from(removed),
+            };
+            Ok(ok_dispatch(
+                WRITE_GAS,
+                IAcp::bearerEditPolicyCall::abi_encode_returns(&IAcp::bearerEditPolicyReturn {
+                    relationshipsRemoved: removed,
+                    record: json_bytes(&record),
+                }),
+                vec![event_log(ACP_ADDRESS, &event)],
+            ))
+        }
+
         IAcp::createPolicyCall::SELECTOR => {
             if gas_limit < WRITE_GAS {
                 return Err(PrecompileError::OutOfGas);

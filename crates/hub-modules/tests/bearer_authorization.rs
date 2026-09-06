@@ -212,3 +212,264 @@ fn delegation_binds_caller_deployment_and_revocation() {
         JWSTokenStatus::Invalid
     );
 }
+
+#[test]
+fn delegated_policy_lifecycle_preserves_ownership_and_revocation() {
+    use hub_modules::hub::HubModule;
+
+    let key = SigningKey::from_slice(&[42; 32]).unwrap();
+    let issuer = hub_crypto::secp256k1::did_from_secp256k1_pubkey(
+        key.verifying_key().to_encoded_point(true).as_bytes(),
+    )
+    .unwrap();
+    let owner = Did::new(&issuer).unwrap();
+    let worker = Did::new("did:key:worker").unwrap();
+    let submission = hub_modules::types::TxExecCtx {
+        sequence: 0,
+        tx_hash: vec![7; 32],
+        signer: worker.to_string(),
+    };
+    let other_worker = Did::new("did:key:other-worker").unwrap();
+    let context = BlockExecCtx {
+        deployment_id: 9001,
+        timestamp: Timestamp {
+            seconds: 20,
+            block_height: 1,
+        },
+        ..Default::default()
+    };
+    let claims = serde_json::json!({
+        "iss": issuer, "sub": worker.to_string(), "aud": "vera:9001",
+        "scope": "acp:policy:create", "iat": 10, "nbf": 5, "exp": 100,
+    });
+    let token = signed_token(&key, claims.clone());
+    let mut edit_claims = claims.clone();
+    edit_claims["scope"] = serde_json::json!("acp:policy:edit");
+    let edit_token = signed_token(&key, edit_claims);
+    let policy = "name: files\nresources:\n  - name: file\n";
+    let mut module = AcpModule::new();
+    let mut hub = HubModule::new();
+    for (field, value) in [
+        ("sub", serde_json::json!(other_worker.to_string())),
+        ("aud", serde_json::json!("vera:9002")),
+        ("scope", serde_json::json!("bulletin")),
+        ("scope", serde_json::json!("acp:policy")),
+        ("scope", serde_json::json!("acp:policy:edit")),
+        ("exp", serde_json::json!(19)),
+    ] {
+        let mut invalid_claims = claims.clone();
+        invalid_claims[field] = value;
+        let invalid_token = signed_token(&key, invalid_claims);
+        let before = module.store().serialize();
+        assert!(
+            module
+                .bearer_create_policy(
+                    &mut hub,
+                    &context,
+                    &submission,
+                    &invalid_token,
+                    policy,
+                    PolicyMarshalingType::ShortYaml,
+                )
+                .is_err()
+        );
+        assert_eq!(module.store().serialize(), before);
+        assert!(hub.store().is_empty());
+    }
+    let created = module
+        .bearer_create_policy(
+            &mut hub,
+            &context,
+            &submission,
+            &token,
+            policy,
+            PolicyMarshalingType::ShortYaml,
+        )
+        .unwrap();
+    assert_eq!(created.metadata.owner_did, issuer);
+    assert_eq!(created.metadata.tx_hash, submission.tx_hash);
+    assert_eq!(created.metadata.tx_signer, submission.signer);
+    assert_eq!(created.metadata.creation_ts, context.timestamp);
+    let before = module.store().serialize();
+    let hub_before = hub.store().serialize();
+    for lifecycle_token in [&token, &edit_token] {
+        assert!(
+            module
+                .bearer_policy_cmd(
+                    &mut hub,
+                    &context,
+                    &worker,
+                    lifecycle_token,
+                    &created.policy.id,
+                    PolicyCmd::RegisterObject(Object {
+                        resource: "file".into(),
+                        id: "report".into()
+                    }),
+                )
+                .is_err()
+        );
+    }
+    assert_eq!(module.store().serialize(), before);
+    assert_eq!(hub.store().serialize(), hub_before);
+    let edited = "name: updated\nresources:\n  - name: file\n";
+    let before = module.store().serialize();
+    let intruder_key = SigningKey::from_slice(&[43; 32]).unwrap();
+    let intruder = hub_crypto::secp256k1::did_from_secp256k1_pubkey(
+        intruder_key
+            .verifying_key()
+            .to_encoded_point(true)
+            .as_bytes(),
+    )
+    .unwrap();
+    let mut intruder_claims = claims.clone();
+    intruder_claims["iss"] = serde_json::json!(intruder);
+    intruder_claims["scope"] = serde_json::json!("acp:policy:edit");
+    let intruder_token = signed_token(&intruder_key, intruder_claims);
+    let hub_before = hub.store().serialize();
+    assert!(matches!(
+        module.bearer_edit_policy(
+            &mut hub,
+            &context,
+            &worker,
+            &intruder_token,
+            &created.policy.id,
+            edited,
+            PolicyMarshalingType::ShortYaml,
+        ),
+        Err(AcpError::Unauthorized { .. })
+    ));
+    assert_eq!(module.store().serialize(), before);
+    assert_eq!(hub.store().serialize(), hub_before);
+    assert!(
+        module
+            .edit_policy(
+                &worker,
+                &created.policy.id,
+                edited,
+                PolicyMarshalingType::ShortYaml
+            )
+            .is_err()
+    );
+    assert_eq!(module.store().serialize(), before);
+    let mut other_claims = claims;
+    other_claims["sub"] = serde_json::json!(other_worker.to_string());
+    other_claims["scope"] = serde_json::json!("acp:policy:edit");
+    let other_token = signed_token(&key, other_claims);
+    let (_, updated) = module
+        .bearer_edit_policy(
+            &mut hub,
+            &context,
+            &other_worker,
+            &other_token,
+            &created.policy.id,
+            edited,
+            PolicyMarshalingType::ShortYaml,
+        )
+        .unwrap();
+    assert_eq!(updated.metadata.owner_did, issuer);
+    assert_eq!(updated.raw_policy, edited);
+    let before = module.store().serialize();
+    let hub_before = hub.store().serialize();
+    assert!(
+        module
+            .bearer_edit_policy(
+                &mut hub,
+                &context,
+                &worker,
+                &edit_token,
+                &created.policy.id,
+                "name: removes-resource\nresources: []\n",
+                PolicyMarshalingType::ShortYaml,
+            )
+            .is_err()
+    );
+    assert_eq!(module.store().serialize(), before);
+    assert_eq!(hub.store().serialize(), hub_before);
+    hub.revoke_delegation(&context, &owner, &token).unwrap();
+    hub.revoke_delegation(&context, &owner, &edit_token)
+        .unwrap();
+    let hub_before = hub.store().serialize();
+    assert!(
+        module
+            .bearer_create_policy(
+                &mut hub,
+                &context,
+                &submission,
+                &token,
+                policy,
+                PolicyMarshalingType::ShortYaml,
+            )
+            .is_err()
+    );
+    assert!(
+        module
+            .bearer_edit_policy(
+                &mut hub,
+                &context,
+                &worker,
+                &edit_token,
+                &created.policy.id,
+                policy,
+                PolicyMarshalingType::ShortYaml,
+            )
+            .is_err()
+    );
+    assert_eq!(module.store().serialize(), before);
+    assert_eq!(hub.store().serialize(), hub_before);
+}
+
+#[test]
+fn delegated_policy_creation_rolls_back_when_usage_cannot_be_recorded() {
+    use hub_modules::{
+        hub::HubModule,
+        kv_store::{InMemoryKvStore, ModuleKvStore},
+    };
+
+    let key = SigningKey::from_slice(&[42; 32]).unwrap();
+    let issuer = hub_crypto::secp256k1::did_from_secp256k1_pubkey(
+        key.verifying_key().to_encoded_point(true).as_bytes(),
+    )
+    .unwrap();
+    let worker = Did::new("did:key:worker").unwrap();
+    let submission = hub_modules::types::TxExecCtx {
+        sequence: 0,
+        tx_hash: vec![7; 32],
+        signer: worker.to_string(),
+    };
+    let token = signed_token(
+        &key,
+        serde_json::json!({
+            "iss": issuer, "sub": worker.to_string(), "aud": "vera:9001",
+            "scope": "acp:policy:create", "iat": 10, "nbf": 5, "exp": 100,
+        }),
+    );
+    let context = BlockExecCtx {
+        deployment_id: 9001,
+        timestamp: Timestamp {
+            seconds: 20,
+            block_height: 1,
+        },
+        ..Default::default()
+    };
+    let mut store = InMemoryKvStore::default();
+    store.put(hub_modules::hub::keys::CHAIN_CONFIG_KEY, vec![0xff]);
+    let mut hub = HubModule::from_store(store);
+    let mut module = AcpModule::new();
+    let before = module.store().serialize();
+    let hub_before = hub.store().serialize();
+    assert!(
+        module
+            .bearer_create_policy(
+                &mut hub,
+                &context,
+                &submission,
+                &token,
+                "name: files\nresources:\n  - name: file\n",
+                PolicyMarshalingType::ShortYaml,
+            )
+            .is_err()
+    );
+    assert_eq!(module.store().serialize(), before);
+    assert_eq!(hub.store().serialize(), hub_before);
+    assert!(module.query_policy_ids().unwrap().is_empty());
+}

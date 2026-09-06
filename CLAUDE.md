@@ -96,6 +96,12 @@ Each module is a plain Rust struct. Two thin shims sit on top:
 
 Business logic lives once.
 
+Delegated policy creation and editing preserve the actor as owner while a
+separate worker signs the submission. Creation and editing require distinct
+scopes; existing object-command tokens do not authorize either operation.
+Created records bind the owner, worker, signed submission ID and creation
+revision. See `docs/delegated-policies.md` for result verification.
+
 ### State and recovery
 
 The node uses `hub-app::OrderedState`: three execution partitions (accounts,

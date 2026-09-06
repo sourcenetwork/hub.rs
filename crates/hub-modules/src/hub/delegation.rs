@@ -1,4 +1,4 @@
-use hub_crypto::jwt::{JwtClaims, matches_issuer, verify_bearer_token};
+use hub_crypto::jwt::{DelegationScope, JwtClaims, matches_issuer, verify_bearer_token};
 use identity::Did;
 
 use super::{HubError, HubModule, JWSTokenRecord, JWSTokenStatus, Result};
@@ -11,8 +11,12 @@ impl HubModule {
         context: &BlockExecCtx,
         caller: &Did,
         token: &str,
+        scope: DelegationScope,
     ) -> Result<JwtClaims> {
         let claims = verify_bearer_token(token).map_err(invalid)?;
+        if claims.scope != scope {
+            return Err(invalid("delegation does not authorize this operation"));
+        }
         claims
             .authorize(
                 caller.as_ref(),

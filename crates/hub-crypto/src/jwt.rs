@@ -13,6 +13,20 @@ use sha2::{Digest, Sha256};
 /// secp256k1 multicodec prefix (`0xe7`).
 const SECP256K1_PUB_MULTICODEC: u64 = 0xe7;
 
+/// Operations an actor authorizes a worker to submit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum DelegationScope {
+    /// Object registration, archival and relationship commands.
+    #[serde(rename = "acp:policy")]
+    PolicyCommands,
+    /// Create policies owned by the actor.
+    #[serde(rename = "acp:policy:create")]
+    CreatePolicy,
+    /// Edit policies owned by the actor.
+    #[serde(rename = "acp:policy:edit")]
+    EditPolicy,
+}
+
 /// Verified claims extracted from a JWT bearer token.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -26,7 +40,7 @@ pub struct JwtClaims {
     /// Deployment audience, formatted as `vera:<deployment_id>`.
     pub aud: String,
     /// Delegated operation scope.
-    pub scope: String,
+    pub scope: DelegationScope,
     /// Issuance time in Unix seconds.
     pub iat: u64,
     /// Earliest execution time in Unix seconds.
@@ -131,9 +145,9 @@ pub fn verify_bearer_token(token: &str) -> Result<JwtClaims, JwtError> {
         .verify_prehash(&digest, &signature)
         .map_err(|_| JwtError::InvalidSignature)?;
 
-    if raw.scope != "acp:policy" || raw.sub.is_empty() || raw.nbf > raw.iat || raw.iat >= raw.exp {
+    if raw.sub.is_empty() || raw.nbf > raw.iat || raw.iat >= raw.exp {
         return Err(JwtError::InvalidClaims(
-            "invalid scope, subject or validity interval".into(),
+            "invalid subject or validity interval".into(),
         ));
     }
     Ok(raw)

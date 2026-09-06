@@ -3,6 +3,7 @@
 /// Solidity ABI interface for the ACP precompile.
 pub mod abi;
 pub mod decision;
+mod delegation;
 /// ACP error types.
 pub mod error;
 /// Key prefixes and builders for ACP KV storage.
@@ -110,6 +111,24 @@ impl AcpModule {
         policy: &str,
         marshal_type: PolicyMarshalingType,
     ) -> Result<PolicyRecord> {
+        self.create_policy_with_metadata(
+            policy,
+            marshal_type,
+            RecordMetadata {
+                creation_ts: Timestamp::default(),
+                tx_hash: Vec::new(),
+                tx_signer: String::new(),
+                owner_did: creator.to_string(),
+            },
+        )
+    }
+
+    fn create_policy_with_metadata(
+        &mut self,
+        policy: &str,
+        marshal_type: PolicyMarshalingType,
+        metadata: RecordMetadata,
+    ) -> Result<PolicyRecord> {
         match marshal_type {
             PolicyMarshalingType::ShortYaml => {}
             _ => {
@@ -128,13 +147,6 @@ impl AcpModule {
             policy_yaml::build_policy(&parsed, counter).map_err(|e| AcpError::InvalidPolicy {
                 reason: e.to_string(),
             })?;
-
-        let metadata = RecordMetadata {
-            creation_ts: Timestamp::default(),
-            tx_hash: Vec::new(),
-            tx_signer: String::new(),
-            owner_did: creator.to_string(),
-        };
 
         let record = PolicyRecord {
             policy: zanzibar_policy.clone(),
@@ -357,52 +369,6 @@ impl AcpModule {
         Err(AcpError::InvalidJws {
             reason: "JWS signature verification not yet implemented".into(),
         })
-    }
-
-    /// Execute a caller-bound delegation and record usage only on success.
-    pub fn bearer_policy_cmd(
-        &mut self,
-        hub: &mut crate::hub::HubModule,
-        block_ctx: &BlockExecCtx,
-        creator: &Did,
-        bearer_token: &str,
-        policy_id: &str,
-        cmd: PolicyCmd,
-    ) -> Result<PolicyCmdResult> {
-        let invalid = |error: crate::hub::error::HubError| AcpError::InvalidBearerToken {
-            reason: error.to_string(),
-        };
-        let claims = hub
-            .authorize_delegation(block_ctx, creator, bearer_token)
-            .map_err(invalid)?;
-        let actor = Did::new(&claims.iss).map_err(|e| AcpError::InvalidBearerToken {
-            reason: e.to_string(),
-        })?;
-        let before = self.clone();
-        let result = self
-            .direct_policy_cmd(&actor, policy_id, cmd)
-            .and_then(|result| {
-                hub.store_or_update_jws_token(
-                    block_ctx,
-                    bearer_token,
-                    &actor,
-                    &claims.sub,
-                    Timestamp {
-                        seconds: claims.iat,
-                        block_height: 0,
-                    },
-                    Timestamp {
-                        seconds: claims.exp,
-                        block_height: 0,
-                    },
-                )
-                .map_err(invalid)?;
-                Ok(result)
-            });
-        if result.is_err() {
-            *self = before;
-        }
-        result
     }
 
     /// Reject legacy parameter writes without operator approvals.

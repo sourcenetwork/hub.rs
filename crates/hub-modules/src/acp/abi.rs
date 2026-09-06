@@ -6,6 +6,7 @@ sol! {
         // ── Events ──────────────────────────────────────────────────────
 
         event PolicyCreated(string indexed policyId, string creator);
+        event DelegatedPolicyCreated(bytes32 indexed policyId, string creator);
         event PolicyEdited(string indexed policyId, string creator, uint256 relationshipsRemoved);
         event RelationshipSet(string indexed policyId, string resource, string objectId, string relation, string actor);
         event RelationshipDeleted(string indexed policyId, string resource, string objectId, string relation, string actor);
@@ -19,6 +20,8 @@ sol! {
         function batchCalls(bytes[] calldata calls) external returns (bytes[] results);
         function createPolicy(bytes calldata policy, uint8 marshalType) external returns (bytes);
         function editPolicy(bytes32 policyId, bytes calldata policy, uint8 marshalType) external returns (uint64 relationshipsRemoved, bytes record);
+        function bearerCreatePolicy(string bearerToken, bytes calldata policy, uint8 marshalType) external returns (bytes);
+        function bearerEditPolicy(string bearerToken, bytes32 policyId, bytes calldata policy, uint8 marshalType) external returns (uint64 relationshipsRemoved, bytes record);
 
         function setRelationship(
             bytes32 policyId,

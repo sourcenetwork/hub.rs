@@ -2,6 +2,7 @@
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use hub_crypto::jwt::DelegationScope;
 use k256::ecdsa::SigningKey;
 use sha2::{Digest, Sha256};
 
@@ -18,6 +19,25 @@ pub fn create_bearer_token(
     issued_at: u64,
     expires_at: u64,
 ) -> Result<String, ClientError> {
+    create_scoped_bearer_token(
+        signing_key,
+        subject,
+        deployment_id,
+        issued_at,
+        expires_at,
+        DelegationScope::PolicyCommands,
+    )
+}
+
+/// Sign a delegation limited to one operation scope, worker, deployment and lifetime.
+pub fn create_scoped_bearer_token(
+    signing_key: &SigningKey,
+    subject: &str,
+    deployment_id: u64,
+    issued_at: u64,
+    expires_at: u64,
+    scope: DelegationScope,
+) -> Result<String, ClientError> {
     if issued_at >= expires_at {
         return Err(ClientError::Signing("invalid delegation lifetime".into()));
     }
@@ -32,7 +52,7 @@ pub fn create_bearer_token(
     let header = r#"{"alg":"ES256K","typ":"vera-delegation-v1+jwt"}"#;
     let payload = serde_json::json!({
         "iss": iss, "sub": subject, "aud": format!("vera:{deployment_id}"),
-        "scope": "acp:policy", "iat": issued_at,
+        "scope": scope, "iat": issued_at,
         "nbf": issued_at.saturating_sub(30), "exp": expires_at,
     })
     .to_string();
@@ -67,7 +87,7 @@ mod tests {
 
         let claims = hub_crypto::jwt::verify_bearer_token(&token).unwrap();
         assert_eq!(claims.sub, subject);
-        assert_eq!(claims.scope, "acp:policy");
+        assert_eq!(claims.scope, DelegationScope::PolicyCommands);
         assert_eq!(claims.exp, 100);
         claims.authorize(subject, 9001, 50).unwrap();
         assert!(claims.iss.starts_with("did:key:"));
