@@ -37,6 +37,7 @@ pub use validation::{
 mod executor;
 #[cfg(feature = "fault-injection")]
 mod faults;
+mod relation_index;
 pub use executor::{HubExecutor, ModuleTrees};
 pub use hub_modules::module_state::{ModuleState, SharedModuleState};
 

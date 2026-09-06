@@ -492,7 +492,10 @@ impl HubExecutor {
                 .as_mut()
                 .ok_or_else(|| ExecutionError::ModuleTree("missing parent tree views".into()))?;
             for (i, tree_lock) in trees.iter().enumerate() {
-                let dirty = stores[i].diff_from(base_stores[i]);
+                let mut dirty = stores[i].diff_from(base_stores[i]);
+                if i == 0 {
+                    crate::relation_index::index_relationships(&parents[i], stores[i], &mut dirty)?;
+                }
                 parents[i] = tree_lock
                     .lock()
                     .unwrap()

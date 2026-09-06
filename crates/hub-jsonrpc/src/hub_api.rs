@@ -6,7 +6,9 @@ use alloy_primitives::{B256, Bytes, U64};
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 
 use commonware_cryptography::Hasher as _;
-use hub_domain::{LightBlock, ModuleId, ModuleStateProof};
+use hub_domain::{LightBlock, ModuleId, ModuleStateProof, RelationPrefixProof};
+
+mod relation;
 use hub_executor::{ModuleTrees, SharedModuleState};
 use hub_indexer::{BlockIndex, LightBlockIndex};
 
@@ -56,6 +58,15 @@ pub trait HubApi {
         key: String,
         height: U64,
     ) -> RpcResult<ModuleStateProof>;
+
+    /// Prove a complete ACP relationship prefix at a retained finalized height.
+    /// Returns unavailable if the current record index cannot enumerate that revision.
+    #[method(name = "getRelationProof")]
+    async fn get_relation_proof(
+        &self,
+        prefix: Bytes,
+        height: U64,
+    ) -> RpcResult<RelationPrefixProof>;
 
     /// Returns a light block at the given height.
     ///
@@ -289,6 +300,14 @@ impl HubApiServer for HubApiImpl {
         );
 
         Ok(proof)
+    }
+
+    async fn get_relation_proof(
+        &self,
+        prefix: Bytes,
+        height: U64,
+    ) -> RpcResult<RelationPrefixProof> {
+        self.relation_proof(&prefix, height.to()).await
     }
 
     async fn get_light_block(&self, height: U64) -> RpcResult<LightBlock> {

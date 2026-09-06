@@ -239,6 +239,28 @@ async fn light_client_proof_verification() {
     verify_module_state_proof(module_state_root, &proof_1)
         .expect("module state proof should verify against module_state_root");
 
+    let reader_prefix = format!("relationship/{policy_id_str}//rel/document/doc1/reader/");
+    let prefix_hex = format!("0x{}", hex::encode(reader_prefix.as_bytes()));
+    let empty_readers: hub_domain::RelationPrefixProof = client
+        .rpc_call_typed("hub_getRelationProof", serde_json::json!([prefix_hex, h1]))
+        .await
+        .expect("empty relation proof");
+    let relation_limits = hub_domain::RelationProofLimits {
+        records: 1024,
+        bytes: 4 * 1024 * 1024,
+    };
+    assert!(
+        hub_domain::verify_relation_prefix_proof(
+            module_state_root,
+            h1,
+            reader_prefix.as_bytes(),
+            &empty_readers,
+            relation_limits
+        )
+        .unwrap()
+        .is_empty()
+    );
+
     // ── Phase 6: Mutate — add a reader relationship ──────────────────
     let set_rel_calldata = IAcp::setRelationshipCall {
         policyId: policy_id,
@@ -307,6 +329,55 @@ async fn light_client_proof_verification() {
 
     verify_module_state_proof(module_state_root_2, &proof_2)
         .expect("fresh proof should verify at invalidation height");
+
+    let readers: hub_domain::RelationPrefixProof = client
+        .rpc_call_typed(
+            "hub_getRelationProof",
+            serde_json::json!([prefix_hex, h_invalidated]),
+        )
+        .await
+        .expect("complete reader proof");
+    let records = hub_domain::verify_relation_prefix_proof(
+        module_state_root_2,
+        h_invalidated,
+        reader_prefix.as_bytes(),
+        &readers,
+        relation_limits,
+    )
+    .unwrap();
+    assert_eq!(records.len(), 1);
+    assert!(
+        hub_domain::verify_relation_prefix_proof(
+            module_state_root_2,
+            h_invalidated,
+            reader_prefix.as_bytes(),
+            &empty_readers,
+            relation_limits
+        )
+        .is_err()
+    );
+    let mut omitted = readers.clone();
+    omitted.records.clear();
+    assert!(
+        hub_domain::verify_relation_prefix_proof(
+            module_state_root_2,
+            h_invalidated,
+            reader_prefix.as_bytes(),
+            &omitted,
+            relation_limits
+        )
+        .is_err()
+    );
+    let historical = client
+        .rpc_call_typed::<hub_domain::RelationPrefixProof>(
+            "hub_getRelationProof",
+            serde_json::json!([prefix_hex, h1]),
+        )
+        .await;
+    assert!(
+        historical.is_err(),
+        "changed membership must not yield an incomplete historical scan"
+    );
 
     assert_ne!(
         proof_2.module_root, proof_1.module_root,
