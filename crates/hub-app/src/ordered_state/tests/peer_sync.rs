@@ -1,7 +1,7 @@
 use super::*;
 
 use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
-use commonware_glue::stateful::db::{AttachableResolverSet as _, p2p};
+use commonware_glue::stateful::db::p2p;
 use commonware_p2p::{Address, AddressableManager as _, authenticated::lookup};
 use commonware_runtime::{Handle, Quota};
 use commonware_utils::{NZU32, ordered::Map};
@@ -98,6 +98,7 @@ fn all_partitions_sync_over_authenticated_peers_and_reopen() {
                             channel!(4, NativeDb),
                             channel!(5, NativeDb),
                             channel!(6, NativeDb),
+                            (),
                         ));
                         drop(listener);
                         tasks.0.push(network.start());

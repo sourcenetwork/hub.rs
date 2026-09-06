@@ -57,7 +57,7 @@ fn competing_proposals_preserve_receipts() {
             .await
             .unwrap();
         let set: VeraStateSet = (set.0, set.1, set.2, Shared::new("native", native));
-        let mut app = StatefulHubApp::new(
+        let mut app = StatefulHubApp::<NoopSink>::new(
             executor,
             genesis.clone(),
             mempool.clone(),

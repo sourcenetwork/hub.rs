@@ -60,6 +60,35 @@ async fn certified_height(
     .expect("certified revision deadline")
 }
 
+async fn current_access(
+    client: &HubClient,
+    policy: &str,
+    request: &AccessRequest,
+    minimum: u64,
+    trusted_key: &ConsensusPublicKey,
+) -> (LightBlock, bool) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let revision = certified_height(client, minimum, trusted_key).await;
+            match client
+                .verify_access_at(policy, request, &revision, trusted_key, PERMISSION_LIMITS)
+                .await
+            {
+                Ok(allowed) => return (revision, allowed),
+                Err(hub_client::ClientError::Rpc {
+                    code: -32002,
+                    message,
+                }) if message == "invalid permission evidence: selected module root changed" => {
+                    tokio::time::sleep(POLL).await;
+                }
+                Err(error) => panic!("current permission verification: {error}"),
+            }
+        }
+    })
+    .await
+    .expect("current permission deadline")
+}
+
 #[tokio::test]
 async fn cold_replica_replays_across_epochs() {
     let deployment = 9041;
@@ -136,20 +165,15 @@ async fn cold_replica_replays_across_epochs() {
             permission: "read".into(),
         }],
     };
-    let allowed =
-        certified_height(&origin, receipts.last().unwrap().block_number, &trusted_key).await;
-    assert!(
-        origin
-            .verify_access_at(
-                &policies[0],
-                &request,
-                &allowed,
-                &trusted_key,
-                PERMISSION_LIMITS
-            )
-            .await
-            .unwrap()
-    );
+    let (_, allowed) = current_access(
+        &origin,
+        &policies[0],
+        &request,
+        receipts.last().unwrap().block_number,
+        &trusted_key,
+    )
+    .await;
+    assert!(allowed);
     receipts.push(
         origin
             .native_delete_relationship(&signer, policy, "file", "doc", "reader", READER)
@@ -157,25 +181,16 @@ async fn cold_replica_replays_across_epochs() {
             .unwrap(),
     );
     assert!(receipts.iter().all(|receipt| receipt.status == 1));
-    let target = certified_height(
+    let (target, allowed) = current_access(
         &origin,
+        &policies[0],
+        &request,
         42.max(receipts.last().unwrap().block_number),
         &trusted_key,
     )
     .await;
     assert!(target.epoch >= 2);
-    assert!(
-        !origin
-            .verify_access_at(
-                &policies[0],
-                &request,
-                &target,
-                &trusted_key,
-                PERMISSION_LIMITS
-            )
-            .await
-            .unwrap()
-    );
+    assert!(!allowed);
     eprintln!("cold replica starts at origin height {}", target.height);
 
     cluster.restart_node(3).unwrap();
@@ -194,7 +209,15 @@ async fn cold_replica_replays_across_epochs() {
             serde_json::to_value(receipt).unwrap()
         );
     }
-    let caught_up = certified_height(&replica, target.height, &trusted_key).await;
+    let (caught_up, allowed) = current_access(
+        &replica,
+        &policies[0],
+        &request,
+        target.height,
+        &trusted_key,
+    )
+    .await;
+    assert!(!allowed);
     let restored: LightBlock = replica
         .rpc_call_typed(
             "hub_getLightBlock",
@@ -206,19 +229,6 @@ async fn cold_replica_replays_across_epochs() {
     assert_eq!(restored, target);
     assert_eq!(replica.get_policy_ids().await.unwrap(), policies);
     assert_eq!(replica.get_native_nonce(signer.did()).await.unwrap(), 4);
-    assert!(
-        !replica
-            .verify_access_at(
-                &policies[0],
-                &request,
-                &caught_up,
-                &trusted_key,
-                PERMISSION_LIMITS
-            )
-            .await
-            .unwrap()
-    );
-
     // Allow a complete resharing ceremony after replay, then require this
     // replica's vote: only three of the four participants remain online.
     let ready = certified_height(&replica, (caught_up.epoch + 2) * 20 + 2, &trusted_key).await;
@@ -238,20 +248,16 @@ async fn cold_replica_replays_across_epochs() {
         .await
         .unwrap();
     assert_eq!(origin.get_native_nonce(signer.did()).await.unwrap(), 5);
-    let active = certified_height(&replica, (ready.epoch + 1) * 20 + 2, &trusted_key).await;
+    let (active, allowed) = current_access(
+        &replica,
+        &policies[0],
+        &request,
+        (ready.epoch + 1) * 20 + 2,
+        &trusted_key,
+    )
+    .await;
     assert!(active.height >= subsequent.block_number);
-    assert!(
-        !replica
-            .verify_access_at(
-                &policies[0],
-                &request,
-                &active,
-                &trusted_key,
-                PERMISSION_LIMITS
-            )
-            .await
-            .unwrap()
-    );
+    assert!(!allowed);
     eprintln!(
         "recovered replica required for quorum through height {}",
         active.height

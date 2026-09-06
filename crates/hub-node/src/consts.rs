@@ -48,8 +48,8 @@ pub const RESOLVER_CHANNEL: u64 = 2;
 pub const BACKFILL_CHANNEL: u64 = 3;
 /// P2P channel for proposed block broadcast.
 pub const BROADCAST_CHANNEL: u64 = 4;
-/// P2P channel for QMDB state sync.
-pub const QMDB_CHANNEL: u64 = 5;
+/// State-transfer channels in accounts, storage, code, ACP, bulletin, hub and sequence order.
+pub const QMDB_CHANNELS: [u64; 7] = [9, 10, 11, 12, 13, 14, 15];
 /// P2P channel for private reshare dealings and acks.
 pub const DKG_CHANNEL: u64 = 6;
 /// P2P channel for the DKG probe.

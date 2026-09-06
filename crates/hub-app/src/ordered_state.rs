@@ -2,7 +2,8 @@
 
 use commonware_cryptography::sha256::Digest;
 use commonware_glue::stateful::db::{
-    Anchor, Barrier, DatabaseSet, Shared, StateSyncSet, SyncEngineConfig, TipUpdate,
+    Anchor, AttachableResolverSet, Barrier, DatabaseSet, Shared, StateSyncSet, SyncEngineConfig,
+    TipUpdate,
 };
 use commonware_storage::qmdb::sync::Target;
 use commonware_utils::channel::ring;
@@ -25,6 +26,7 @@ pub type OrderedDatabases = (
     Shared<NativeDb>,
     Shared<NativeDb>,
     Shared<NativeDb>,
+    Shared<commitment::Commitment>,
 );
 type Pending = <OrderedDatabases as DatabaseSet<Ctx>>::Unmerkleized;
 type Sealed = <OrderedDatabases as DatabaseSet<Ctx>>::Merkleized;
@@ -32,6 +34,10 @@ type Config = <OrderedDatabases as DatabaseSet<Ctx>>::Config;
 /// Seven operation-log targets selected by one authenticated revision.
 pub type OrderedTargets = <OrderedDatabases as DatabaseSet<Ctx>>::SyncTargets;
 
+mod commitment;
+#[cfg(feature = "fault-injection")]
+mod faults;
+pub use commitment::Commitment;
 mod checkpoint;
 pub use checkpoint::OrderedCheckpoint;
 
@@ -39,7 +45,8 @@ pub use checkpoint::OrderedCheckpoint;
 pub struct OrderedConfig {
     databases: Config,
     executor: HubExecutor,
-    recovery: Option<(OrderedTargets, Option<alloy_primitives::B256>)>,
+    recovery: Option<OrderedTargets>,
+    marshal_recovery: bool,
 }
 
 impl std::fmt::Debug for OrderedConfig {
@@ -51,11 +58,21 @@ impl std::fmt::Debug for OrderedConfig {
 }
 
 impl OrderedConfig {
+    /// Let the stateful actor align journals to marshal's durable anchor before publication.
+    /// The in-memory commitment starts unset, forcing its startup target comparison to rewind.
+    #[must_use]
+    pub const fn recover_from_marshal(mut self) -> Self {
+        self.recovery = None;
+        self.marshal_recovery = true;
+        self
+    }
+
     /// Recover existing journals to targets authenticated by the caller before publication.
     /// Sync uses the targets supplied to `StateSyncSet::sync` instead of this startup selection.
     #[must_use]
     pub const fn recover_to(mut self, targets: OrderedTargets) -> Self {
-        self.recovery = Some((targets, None));
+        self.recovery = Some(targets);
+        self.marshal_recovery = false;
         self
     }
 }
@@ -78,7 +95,6 @@ pub struct OrderedSealed {
 ///
 /// Database mutations must not overlap, as required by `DatabaseSet`. Queries over
 /// logical modules keep the previous snapshot until all partition mutations finish.
-/// This set is not yet used by the node's application or query-proof protocol.
 #[derive(Clone)]
 pub struct OrderedState {
     databases: OrderedDatabases,
@@ -131,6 +147,7 @@ impl OrderedSealed {
             native(&db.4),
             native(&db.5),
             native(&db.6),
+            db.7.0,
         )
     }
 }
@@ -153,18 +170,44 @@ pub fn ordered_config(
             native.1,
             native.2,
             native.3,
+            (),
         ),
         executor,
         recovery: None,
+        marshal_recovery: false,
     }
 }
 
 impl OrderedState {
+    /// Shared execution partitions for admission, indexing and peer serving.
+    pub fn execution_databases(&self) -> hub_backend::HubStateSet {
+        (
+            self.databases.0.clone(),
+            self.databases.1.clone(),
+            self.databases.2.clone(),
+        )
+    }
+
+    /// Shared ordered module partitions for verified reads and peer serving.
+    pub fn native_databases(&self) -> NativeStateSet {
+        (
+            self.databases.3.clone(),
+            self.databases.4.clone(),
+            self.databases.5.clone(),
+            self.databases.6.clone(),
+        )
+    }
+
     /// Open fresh storage, or rewind existing journals before publishing query state.
     ///
     /// Unanchored existing state is rejected. A failed partition rewind is fatal,
     /// matching Commonware's `DatabaseSet` recovery contract.
     pub async fn open(context: Ctx, config: OrderedConfig) -> Result<Self, AppError> {
+        if config.marshal_recovery {
+            return Err(AppError::Execution(
+                "marshal recovery requires the stateful actor".into(),
+            ));
+        }
         if config.executor.module_trees().is_some() {
             return Err(AppError::Execution(
                 "ordered storage cannot attach JMT trees".into(),
@@ -172,15 +215,10 @@ impl OrderedState {
         }
         let databases = Box::pin(OrderedDatabases::init(context, config.databases)).await;
         match config.recovery {
-            Some((targets, module_root)) => {
+            Some(targets) => {
                 databases.rewind_to_targets(targets.clone()).await;
                 if databases.committed_targets().await != targets {
                     return Err(AppError::RootMismatch("ordered recovery targets"));
-                }
-                if let Some(expected) = module_root
-                    && Self::module_root(&databases).await != expected
-                {
-                    return Err(AppError::RootMismatch("ordered recovery module root"));
                 }
             }
             None if databases.committed_targets().await
@@ -196,12 +234,26 @@ impl OrderedState {
     }
 
     async fn restore(databases: OrderedDatabases, executor: HubExecutor) -> Result<Self, AppError> {
+        Self::check_module_root(&databases).await?;
         let set = Self {
             databases,
             executor,
         };
         set.reload().await?;
         Ok(set)
+    }
+
+    async fn check_module_root(databases: &OrderedDatabases) -> Result<(), AppError> {
+        let expected = databases.7.read().await.0;
+        match expected {
+            Some(root) if Self::module_root(databases).await.0 == root.0 => Ok(()),
+            None if databases.committed_targets().await
+                == OrderedDatabases::initial_sync_targets() =>
+            {
+                Ok(())
+            }
+            _ => Err(AppError::RootMismatch("ordered recovery module root")),
+        }
     }
 
     async fn module_root(databases: &OrderedDatabases) -> alloy_primitives::B256 {
@@ -228,11 +280,20 @@ impl OrderedState {
         context: &BlockContext,
         txs: &[Tx],
     ) -> Result<(OrderedSealed, ExecutionOutcome), AppError> {
-        let (accounts, storage, code, acp, bulletin, hub, nonces) = parent.databases;
+        Self::execute_on(&self.executor, parent, context, txs).await
+    }
+
+    pub(crate) async fn execute_on(
+        executor: &HubExecutor,
+        parent: OrderedPending,
+        context: &BlockContext,
+        txs: &[Tx],
+    ) -> Result<(OrderedSealed, ExecutionOutcome), AppError> {
+        let (accounts, storage, code, acp, bulletin, hub, nonces, _) = parent.databases;
         // Ordered storage supplies the module commitment after execution.
         let execution_context = context.clone().with_receipt_only();
         let mut executed = execute_block(
-            &self.executor,
+            executor,
             (accounts, storage, code),
             &execution_context,
             txs,
@@ -262,6 +323,9 @@ impl OrderedState {
                     native.1,
                     native.2,
                     native.3,
+                    commitment::Commitment(Some(Digest::from(
+                        executed.outcome.module_state_root.0,
+                    ))),
                 ),
                 modules: executed.modules,
                 height: context.header.number,
@@ -279,7 +343,17 @@ impl DatabaseSet<Ctx> for OrderedState {
     type SyncTargets = OrderedTargets;
 
     async fn init(context: Ctx, config: Self::Config) -> Self {
-        Self::open(context, config)
+        if config.marshal_recovery {
+            assert!(
+                config.executor.module_trees().is_none(),
+                "ordered storage cannot attach JMT trees"
+            );
+            return Self {
+                databases: Box::pin(OrderedDatabases::init(context, config.databases)).await,
+                executor: config.executor,
+            };
+        }
+        Box::pin(Self::open(context, config))
             .await
             .expect("recover ordered module state")
     }
@@ -314,14 +388,23 @@ impl DatabaseSet<Ctx> for OrderedState {
     }
 
     async fn apply(&self, batches: OrderedSealed) {
-        self.databases.apply(batches.databases).await;
+        #[cfg(feature = "fault-injection")]
+        let changed = batches
+            .modules
+            .changes_from(&self.executor.snapshot().expect("capture committed modules"))
+            .iter()
+            .any(|changes| !changes.is_empty());
+        #[cfg(feature = "fault-injection")]
+        Box::pin(self.apply_with_faults(batches.databases, batches.height, changed)).await;
+        #[cfg(not(feature = "fault-injection"))]
+        Box::pin(self.databases.apply(batches.databases)).await;
         self.executor
             .commit_snapshot(batches.height, batches.modules)
             .expect("publish applied module state");
     }
 
     async fn finalize(&self) -> Barrier {
-        self.databases.finalize().await
+        Box::pin(self.databases.finalize()).await
     }
 
     async fn prune(&self, targets: &Self::SyncTargets) {
@@ -333,7 +416,10 @@ impl DatabaseSet<Ctx> for OrderedState {
     }
 
     async fn rewind_to_targets(&self, targets: Self::SyncTargets) {
-        self.databases.rewind_to_targets(targets).await;
+        Box::pin(self.databases.rewind_to_targets(targets)).await;
+        Self::check_module_root(&self.databases)
+            .await
+            .expect("validate rewound module root");
         self.reload().await.expect("reload rewound module state");
     }
 }
@@ -370,5 +456,16 @@ where
             .await
             .map_err(|e| e.to_string())?;
         Ok((state, anchor))
+    }
+}
+
+impl<R0, R1, R2, R3, R4, R5, R6> AttachableResolverSet<OrderedState>
+    for (R0, R1, R2, R3, R4, R5, R6, ())
+where
+    Self: AttachableResolverSet<OrderedDatabases>,
+{
+    async fn attach_databases(&self, state: OrderedState) {
+        <Self as AttachableResolverSet<OrderedDatabases>>::attach_databases(self, state.databases)
+            .await;
     }
 }

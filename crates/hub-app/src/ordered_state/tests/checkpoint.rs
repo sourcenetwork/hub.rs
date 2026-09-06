@@ -42,6 +42,11 @@ pub(super) async fn block(source: &OrderedState, height: u64) -> Block {
         module_state_root,
         txs: Vec::new(),
         payload: None,
+        native_targets: Some(
+            [target.3, target.4, target.5, target.6]
+                .each_ref()
+                .map(crate::targets::target_from_sync),
+        ),
         db_targets,
     }
 }
@@ -147,7 +152,7 @@ fn checkpoint_rejects_bad_evidence_and_checks_rebuilt_state_before_publication()
                 let result = OrderedState::sync_checkpoint(
                     context.child("replica"),
                     config(&context, "replica", executor.clone()),
-                    source.databases.clone(),
+                    sources(&source),
                     checkpoint.clone(),
                     SyncEngineConfig {
                         fetch_batch_size: NZU64!(16),

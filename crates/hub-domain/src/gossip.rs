@@ -170,6 +170,7 @@ mod tests {
             module_state_root: B256::repeat_byte(0xef),
             txs: vec![Tx::new(Bytes::from_static(&[0xde, 0xad]))],
             payload: None,
+            native_targets: None,
             db_targets: crate::DbTargets::default(),
         }
     }

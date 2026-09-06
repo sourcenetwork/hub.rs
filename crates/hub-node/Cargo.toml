@@ -6,7 +6,7 @@ rust-version.workspace = true
 description = "Hub validator node assembly on commonware glue"
 
 [features]
-fault-injection = ["hub-executor/fault-injection"]
+fault-injection = ["hub-app/fault-injection"]
 
 [lints]
 workspace = true
@@ -24,7 +24,6 @@ hub-indexer.workspace = true
 hub-jsonrpc.workspace = true
 hub-modules.workspace = true
 hub-qmdb.workspace = true
-hub-state.workspace = true
 hub-traits.workspace = true
 
 commonware-broadcast.workspace = true

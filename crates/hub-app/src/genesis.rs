@@ -62,7 +62,9 @@ pub async fn apply_genesis(
     let root = StateRoot(combined_root(&merkleized));
     let targets = db_targets_from_merkleized(&merkleized);
     set.apply(merkleized).await;
-    set.finalize().await.durable().await;
+    if !set.finalize().await.durable().await {
+        return Err(AppError::Execution("genesis did not become durable".into()));
+    }
     Ok((root, targets))
 }
 
@@ -82,6 +84,7 @@ pub fn genesis_block(
         module_state_root,
         txs: Vec::new(),
         payload: None,
+        native_targets: None,
         db_targets,
     }
 }

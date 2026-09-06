@@ -1,25 +1,6 @@
 # hub.rs
 
-Rust rewrite of SourceHub on Commonware consensus with EVM execution. Trust layer for Source Network: ACP policies, bulletin board, and identity management with native BLS12-381 signing.
-
-## Plan
-
-The implementation plan lives in GitHub issues. **#23 is the master tracking issue.**
-
-**Current phase: Phase 10** — Production hardening (#22). Phases 1-9 complete.
-
-| Phase | What | Tracking |
-|-------|------|----------|
-| 1 | Copy bankd, strip to skeleton | #1 |
-| 2 | API surface stubs + transaction types | #5 |
-| 3 | State model deep dive | #9 |
-| 4 | Annotate stubs with implementation specs | #10 |
-| 5 | Wire precompile shims | #14 |
-| 6 | Wire native BLS tx path (HubExecutor) | #18 |
-| 7 | hub-client crate | #19 |
-| 8 | Integration test framework | #20 |
-| 9 | Implement stubs | #21 |
-| 10 | Production hardening | #22 |
+Native Rust implementation of Vera's access control, bulletin, identity and transparency services, using Commonware consensus and storage. Native requests use BLS12-381 signing; optional EVM execution reaches the same module logic.
 
 ## Related Repos
 
@@ -115,101 +96,59 @@ Each module is a plain Rust struct. Two thin shims sit on top:
 
 Business logic lives once.
 
-### State (QMDB)
+### State and recovery
 
-`hub-backend` provides `HubStateSet`, the three QMDB partitions (accounts,
-storage, code) over Commonware storage; `BatchState` is the executor's
-`StateDb` over pending batches. Per-partition `DbTargets` are committed in each
-block for glue's state-sync bookkeeping; the peer QMDB resolver remains stubbed
-pending issue #99. Module state (ACP, Bulletin, Hub, native nonces) lives in
-JMT-backed `ModuleStateTree`s (`hub-state`, RocksDB) and is combined into the
-block header. `hub-app::VeraStateSet` adds these modules as a fourth managed
-database beside the execution partitions. Module snapshots follow pending
-batches, and their height/root participate in target matching and recovery.
-Database apply persists module state before the application publishes receipts.
-Peer snapshot synchronization is still disabled for both execution and modules.
-`hub-state::ModuleCheckpoint` restores complete native store generations under
-`state/snapshots`; publication replaces the `state/CURRENT` selection file.
-Startup opens that generation as one set, rejecting missing or invalid selections.
-Without a selection file it uses the original `state/{acp,bulletin,hub,nonces}` layout.
+The node uses `hub-app::OrderedState`: three execution partitions (accounts,
+storage, code) and four ordered Commonware current-QMDB partitions (ACP, bulletin,
+hub, native sequences). `StatefulHubApp` seals all seven targets into each proposal
+and verifies them by re-execution. An in-memory commitment participates in the same
+Commonware coordinator generation, binding the native current-state root to the
+selected operation-log targets. It is reconstructed from the durable recovery
+anchor, not persisted as an independent journal.
 
-`hub-backend::native` provides a separate ordered current-QMDB adapter for the
-four module namespaces. It seals logical `ModuleState` differences into pending
-batches and rebuilds query maps from the retained operation log and activity bitmap,
-reading at most 32 operations at a time under each partition's read lock. This
-avoids materializing index-collision buckets, retains owned value buffers and
-publishes no partial map on a read error. Commonware's public log reader also
-generates proofs, adding startup work; all live query maps remain in memory.
-Current-state roots and
-operation-log sync targets are distinct. Its configuration accepts keys up to
-64 KiB and values up to 1 MiB; keys sharing their first 256 bytes scan one index
-bucket. This adapter is covered by storage lifecycle tests and is not wired into
-the node's execution path. RPC builders can attach its databases and module query
-snapshot through `with_hub_native_modules` to serve Commonware permission evidence.
-Generation holds all four namespace read locks, checks the selected finalized
-module root and walks bounded successor chains for complete prefixes. The shared
-permission verifier checks membership, absence and completeness before replaying
-ACP evaluation. A checkpoint synchronization test exercises signed native writes,
-query publication, HTTP proof serving and client verification across a later deny
-relationship. The node still attaches JMT trees; standalone point/relation queries
-remain JMT-based, and historical native activity proofs are not retained.
+Pending alternatives retain isolated module snapshots. Database transitions finish
+before query maps are published. Startup aligns all journals to marshal's durable
+anchor, checks the combined native root, and then enables admission and RPC.
+Finalized receipts and certificates are recovered through `FinalizedHistory`.
 
-`hub-backend::p2p` adapts execution and ordered native partitions to Commonware's
-peer resolver without changing operation bytes or proofs. Native codecs share
-journal key/value limits; the code partition's peer codec caps values and commit
-metadata at 1 MiB. Oversized local records are rejected by serving; existing code
-journals retain their original decoding limits. Native type aliases remain under
-`hub-backend::native::p2p`. Fetches allow up to 64 operations; serving inspects eight at a
-time and selects a prefix within the response byte budget before obtaining its
-range proof. Responses leave framing space within the 4 MiB transport limit.
-Inspection also generates proofs through Commonware's public API, adding storage
-work in exchange for bounded read-ahead and fewer network responses. The resolver
-retains Commonware cancellation and verification feedback, including peer blocking.
-Authenticated loopback tests cover fresh transfer, pruned-history recovery after
-cancellation, convergence on a newer target, and rejection of a mismatched root.
-An authenticated two-peer test transfers nonempty records in all seven partitions,
-resynchronizes to a second revision and reopens from certificate-verified targets.
-The adapter is not connected to node synchronization; execution partitions and
-the existing JMT module proofs still use the previous paths.
+First boot records a durable initialization intent before changing journals, then
+publishes `native-genesis.bin` after all seven partitions are durable. Interrupted
+initialization can rewind and retry only with the same genesis configuration.
+Existing JMT directories or a legacy genesis record require an explicit migration;
+this node does not convert them. Missing genesis records alongside finalized
+history are rejected instead of resetting state.
 
-`hub-app::ordered_state::OrderedState` joins the three execution and four ordered
-module partitions under Commonware's database-set lifecycle. It executes native
-changes from pending parents, seals their ordered commitments, and publishes query
-maps after apply, rewind, startup loading or full-set sync. Sync delegates target
-convergence to Commonware and reloads query maps before returning the selected
-anchor. Startup rejects existing state unless `OrderedConfig::recover_to` supplies
-caller-authenticated targets, and rewinds every partition before publishing maps.
-It rejects executors with JMT trees. This lifecycle is tested separately;
-the node still uses `VeraStateSet` and the existing module-proof format.
+Seven authenticated peer resolvers serve bounded operation-log ranges. Fetches
+allow up to 64 operations, with eight-operation inspection batches and responses
+below the 4 MiB transport limit. Native keys are limited to 64 KiB; values and
+commit metadata to 1 MiB. Code-partition peer messages cap values at 1 MiB even
+though the older local journal codec permits larger records.
 
-`native::SyncProof` authenticates the four native operation-log roots against a
-selected combined current-state root using Commonware's `OpsRootWitness`. A proof
-of each terminal commit binds log size and inactivity floor; the MMR synchronization
-boundary is derived by rounding that floor down to a bitmap chunk. Capture holds
-all four partition read locks and rejects a changed selected root. Decoding fixes
-the namespace count at four and bounds proof digests and operation fields.
+Fresh checkpoint catch-up remains disabled in node startup: finalized history and
+receipts must be supplied along with current state. Existing retained-history
+replay remains the catch-up path. `OrderedCheckpoint` separately verifies direct
+or descendant finality against caller-provisioned trust and authenticates native
+log targets through `SyncProof`. Synchronization and recovery check reconstructed
+current-state roots before publishing query maps. Operation-log proofs do not
+provide historical activity or absence proofs.
 
-`OrderedCheckpoint::verify` checks direct or descendant finality against a supplied
-trusted consensus key, validates execution targets and derives native targets from
-`SyncProof`. `OrderedState::sync_checkpoint` synchronizes that fixed revision and
-checks reconstructed native current-state roots before publishing query maps.
-`OrderedConfig::recover_checkpoint` repeats the root check after startup rewind.
-An inconsistent certified root is rejected during both handoffs. Checkpoint
-freshness, evidence transport and actual node integration remain caller concerns;
-these helpers do not provide historical current-state proof generation.
+`hub-backend::native` rebuilds query maps from the retained operation log and
+activity bitmap, reading at most 32 operations at a time under partition read
+locks. This bounds temporary hydration buffers; all live query maps remain in
+memory. Keys sharing their first 256 bytes scan one index bucket.
 
-The block commitments are:
+The permission RPC serves Commonware membership, absence and complete-prefix
+witnesses at a matching finalized current-state root. Generation holds all four
+native partition read locks and applies aggregate record and byte limits. The
+client authenticates the evidence before running the shared ACP evaluator.
+Standalone `hub_getStateProof` and `hub_getRelationProof` remain JMT-only and are
+unavailable on the native node. Historical native activity proofs are not retained.
+See `docs/permission-proofs.md` for formats and limits.
 
-```
-Block header:
-    state_root:             QMDB root (EVM accounts + storage + code)
-    module_state_root:      Combined root of the four module JMTs
-        acp_root:           Policies, relationships, objects (zanzi engine)
-        bulletin_root:      Namespaces, collaborators, posts
-        hub_root:           JWS tokens, invalidation records
-        nonces_root:        BLS identity nonces
-    db_targets:             Per-partition QMDB targets for state sync
-```
+Legacy `VeraStateSet` and JMT proof support remain available to explicit library
+callers. Native blocks select a tagged commitment encoding and carry four
+additional module log targets; blocks without those targets retain their original
+encoding. Native and legacy application layouts cannot share one consensus group.
 
 ### RPC surfaces
 
@@ -300,5 +239,4 @@ The e2e test (`hub_e2e_canonical`) is the baseline gate. It exercises both EVM a
 ## Git Conventions
 
 - Present tense commit messages
-- AI attribution: `Co-Authored-By: Claude <model> <noreply@anthropic.com>`
 - Worktree workflow: `git worktree add ../hub.rs-foo -b feat/foo`

@@ -11,7 +11,7 @@ use hub_domain::{ConsensusDigest, DbTarget, DbTargets};
 
 type SyncTarget = Target<mmr::Family, ConsensusDigest>;
 
-fn target_from_sync(target: &SyncTarget) -> DbTarget {
+pub(crate) fn target_from_sync(target: &SyncTarget) -> DbTarget {
     DbTarget {
         root: target.root,
         floor: *target.range.start(),
@@ -19,7 +19,7 @@ fn target_from_sync(target: &SyncTarget) -> DbTarget {
     }
 }
 
-fn sync_from_target(target: &DbTarget) -> SyncTarget {
+pub(crate) fn sync_from_target(target: &DbTarget) -> SyncTarget {
     Target::new(
         target.root,
         non_empty_range!(Location::new(target.floor), Location::new(target.tip)),

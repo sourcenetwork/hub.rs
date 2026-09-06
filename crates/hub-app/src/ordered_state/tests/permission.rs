@@ -113,7 +113,7 @@ fn synchronized_permission_rpc_verifies_native_evidence_and_subsequent_denial() 
                     let (replica, reached) = OrderedState::sync_checkpoint(
                         context.child("replica"),
                         config(&context, "replica", HubExecutor::new(DEPLOYMENT)),
-                        source.databases.clone(),
+                        sources(&source),
                         checkpoint.clone(),
                         SyncEngineConfig {
                             fetch_batch_size: NZU64!(64),

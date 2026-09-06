@@ -4110,7 +4110,6 @@ dependencies = [
  "hub-jsonrpc",
  "hub-modules",
  "hub-qmdb",
- "hub-state",
  "hub-traits",
  "parking_lot",
  "rocksdb",

@@ -14,6 +14,7 @@ use hub_backend::state_set_config;
 use hub_client::{ACP_ADDRESS, BlsSigner};
 use hub_modules::acp::abi::IAcp;
 
+mod application;
 mod checkpoint;
 mod peer_sync;
 mod permission;
@@ -31,6 +32,31 @@ fn config(
         state_set_config(prefix, cache.clone()),
         native::state_config(prefix, cache),
         executor,
+    )
+}
+
+type Sources = (
+    Shared<AccountsDb>,
+    Shared<StorageDb>,
+    Shared<CodeDb>,
+    Shared<NativeDb>,
+    Shared<NativeDb>,
+    Shared<NativeDb>,
+    Shared<NativeDb>,
+    (),
+);
+
+fn sources(state: &OrderedState) -> Sources {
+    let db = &state.databases;
+    (
+        db.0.clone(),
+        db.1.clone(),
+        db.2.clone(),
+        db.3.clone(),
+        db.4.clone(),
+        db.5.clone(),
+        db.6.clone(),
+        (),
     )
 }
 
@@ -169,6 +195,7 @@ fn sync_publishes_latest_modules_before_suffix_execution() {
                 db.4.clone(),
                 db.5.clone(),
                 paused.clone(),
+                (),
             );
             let (mut tip_tx, tip_rx) = ring::channel(NZUsize!(4));
             let sync = OrderedState::sync(

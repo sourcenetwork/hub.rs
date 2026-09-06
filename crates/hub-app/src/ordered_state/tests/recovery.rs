@@ -19,7 +19,8 @@ fn modules(version: u8) -> ModuleState {
 }
 
 pub(super) async fn revision(set: &OrderedState, version: u8) -> OrderedSealed {
-    let (accounts, storage, code, acp, bulletin, hub, nonces) = set.databases.new_batches().await;
+    let (accounts, storage, code, acp, bulletin, hub, nonces, _) =
+        set.databases.new_batches().await;
     let accounts = accounts
         .write(
             AccountKey::new([1; 20]),
@@ -50,9 +51,17 @@ pub(super) async fn revision(set: &OrderedState, version: u8) -> OrderedSealed {
     .unwrap();
     let snapshot = HubExecutor::new(DEPLOYMENT);
     snapshot.set_base_modules(modules);
+    let module_root = native::state_root(&native);
     OrderedSealed {
         databases: (
-            accounts, storage, code, native.0, native.1, native.2, native.3,
+            accounts,
+            storage,
+            code,
+            native.0,
+            native.1,
+            native.2,
+            native.3,
+            commitment::Commitment(Some(Digest::from(module_root.0))),
         ),
         modules: snapshot.snapshot().unwrap(),
         height: u64::from(version),

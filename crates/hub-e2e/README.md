@@ -53,10 +53,22 @@ All targets live in `crates/hub-e2e/tests/`:
 | `cross_object_acp` | `cross_object_grant_replicates_across_nodes` | Seeds a cross-object parent edge (subject is another object's userset) plus a child grant on node 0, then asserts on every other node that both replicate and that access resolves across the edge via `TupleToUserset`. |
 | `gossip_headers` | `gossip_headers_subscription` | Verifies `eth_subscribe("headers")` delivers signed `GossipHeader` events (chain id, height, hashes, roots, signature) as blocks finalize. |
 | `light_client` | `light_client_proof_verification` | Full light-client pipeline: gossip headers, `verify_light_block` on the BLS threshold certificate + epoch group key, module state proofs against `module_state_root`, and state-change detection across block boundaries. |
+| `native_permission` | `native_permission_reads_follow_finalized_grants_and_denials` | Signed native grants and denial, independently authenticated current permission evidence on all four nodes, owner access, and rejection of old grant evidence at the later root. Selects fresh finalized revisions with a ten-second deadline for live-root changes. |
 | `node_restart` | `node_restart_preserves_state` | Starts 4 nodes, submits EVM + BLS txs, kills node 3, verifies the 3-node cluster continues, restarts it, and verifies pre-kill state survived (QMDB persistence), catch-up, post-restart txs on both paths, and tx submission *through* the restarted node. |
 | `cold_replay` | `cold_replica_replays_across_epochs` | Starts a replica from bootstrap files after two epochs offline; checks recovered receipts, certified roots, native sequences and access revocation, then requires its vote for continued quorum after another member stops. Uses retained peer history, not snapshot transfer or a new membership identity. |
 | `validator_bootstrap` | `validator_bootstrap`, `validator_registry_adversarial` | Validators configured in genesis are readable via the ValidatorRegistry precompile; add/remove/status-change/self-update writes work through EVM txs, and adversarial inputs are rejected. Tests serialize on the global lock above. |
 | `validator_epoch_transition` | `validator_epoch_transition` | Verifies ValidatorRegistry membership feeds resharing and that the engine actually enters the next epoch whose key material includes a newly registered validator. |
+
+The native node uses ordered Commonware module storage. `light_client` still
+exercises standalone JMT point/relation proofs and requires migration; those
+endpoints are unavailable on a native node. `native_permission` covers the native
+permission endpoint, without claiming historical proof availability or load qualification.
+
+With both the binary and test built using `--features fault-injection`,
+`module_commit_crash` aborts after each of the four native module journals becomes
+durable, restarts the node, and verifies receipts, sequences, module records and
+continued submission. Fault builds apply module journals sequentially to expose
+these boundaries. This checks process recovery, not power-loss durability.
 
 ## Harness environment and file contracts
 

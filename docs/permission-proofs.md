@@ -1,6 +1,8 @@
-# Verified relationship reads
+# Verified permission and relationship reads
 
-`hub_getRelationProof(prefix, height)` returns every ACP relationship record under a raw prefix, with evidence for completeness at the requested finalized height. `prefix` is a hex byte string beginning with `relationship/` and ending with `/`. For example, a relation prefix has the form `relationship/<policy-id>//rel/<resource>/<object>/<relation>/`.
+The native node serves Commonware permission evidence through `hub_getPermissionProof`. Standalone point and relationship proofs require an explicitly configured legacy JMT server; those endpoints are unavailable on the native node.
+
+On a JMT server, `hub_getRelationProof(prefix, height)` returns every ACP relationship record under a raw prefix, with evidence for completeness at the requested finalized height. `prefix` is a hex byte string beginning with `relationship/` and ending with `/`. For example, a relation prefix has the form `relationship/<policy-id>//rel/<resource>/<object>/<relation>/`.
 
 The response contains `version`, `count`, and `records`. Each uses the existing `ModuleStateProof` encoding. The version proof establishes the relationship-index format. The count proof establishes the number of records under the exact prefix, including archived records. Records must have distinct, ordered keys under that prefix, with an inclusion proof for each value. A missing count means zero only when the format marker is authenticated at the same revision.
 
@@ -33,8 +35,8 @@ The server captures reads from one immutable current module snapshot, generates 
 ## Ordered Commonware evidence
 
 The same permission endpoint supports ordered Commonware module storage when the
-server is constructed with `with_hub_native_modules`. The node does not yet select
-this storage path. The standalone point and relation endpoints remain JMT-based.
+server is constructed with `with_hub_native_modules`, as in the native node.
+The standalone point and relation endpoints remain JMT-based.
 
 This format adds `roots`, the four namespace roots in ACP, bulletin, hub and
 sequence order. Their combined commitment must match the caller's verified
@@ -66,3 +68,10 @@ requested finalized module root. A changed root returns an error instead of
 substituting newer state. This path does not provide retained historical activity
 proofs; operation-log history proofs cannot establish historical membership or
 absence.
+
+The current-state root can advance during revisions that do not change the
+requested relationship. A caller selecting a header and then fetching evidence
+must handle `RESOURCE_UNAVAILABLE` by selecting a newer independently verified
+revision and restarting the read within its deadline. It must still enforce its
+minimum revision and freshness requirements. The endpoint does not atomically
+return a selected revision together with its evidence.

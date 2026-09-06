@@ -138,6 +138,7 @@ where
             module_state_root,
             txs,
             payload: None,
+            native_targets: None,
             db_targets: hub_domain::DbTargets::default(),
         };
         let tx_ids = self.tx_ids_from_block(&block);
@@ -198,6 +199,7 @@ where
             module_state_root,
             txs,
             payload: None,
+            native_targets: None,
             db_targets: hub_domain::DbTargets::default(),
         };
         let tx_ids = self.tx_ids_from_block(&block);
@@ -459,6 +461,7 @@ mod tests {
             module_state_root: B256::ZERO,
             txs: Vec::new(),
             payload: None,
+            native_targets: None,
             db_targets: hub_domain::DbTargets::default(),
         }
     }
@@ -687,6 +690,7 @@ mod tests {
             module_state_root: B256::ZERO,
             txs: vec![tx.clone()],
             payload: None,
+            native_targets: None,
             db_targets: hub_domain::DbTargets::default(),
         };
         let parent_digest = parent.commitment();

@@ -25,6 +25,7 @@ pub use finalize::{index_finalized_block, subscription_data};
 mod history;
 pub use history::FinalizedHistory;
 
+mod native_genesis;
 mod node;
 pub use node::run_node;
 
@@ -33,9 +34,6 @@ pub use participants::{RegistryParticipants, validator_address};
 
 mod provider;
 pub use provider::{DynamicProvider, Registrar};
-
-mod resolver;
-pub use resolver::NoSync;
 
 mod secret_store;
 pub use secret_store::FileSecretStore;

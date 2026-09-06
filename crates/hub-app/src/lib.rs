@@ -8,6 +8,9 @@
 
 #![recursion_limit = "256"]
 
+mod app_state;
+pub use app_state::{ApplicationState, StateExecution};
+
 mod app;
 pub use app::{StatefulHubApp, VrfSeedCache};
 

@@ -3,13 +3,12 @@
 
 use std::{
     marker::PhantomData,
-    path::Path,
     sync::{Arc, OnceLock},
     time::Duration,
 };
 
 use commonware_broadcast::buffered;
-use commonware_codec::{Decode as _, Encode as _};
+use commonware_codec::Encode as _;
 use commonware_consensus::{
     Reporters,
     marshal::{
@@ -33,7 +32,7 @@ use commonware_glue::{
     },
     stateful::{
         Config as StatefulConfig, Stateful, SyncPlan,
-        db::{DatabaseSet as _, SyncEngineConfig},
+        db::{Shared, SyncEngineConfig, p2p as state_p2p},
     },
 };
 use commonware_p2p::{Ingress, authenticated::discovery};
@@ -42,31 +41,35 @@ use commonware_runtime::{Handle, Spawner as _, Supervisor as _, buffer::paged::C
 use commonware_storage::{archive::prunable, translator::TwoCap};
 use commonware_utils::{NZDuration, NZU64, NZUsize, sequence::Unit};
 use hub_app::{
-    ConsensusScheme, DisabledModuleSync, StatefulHubApp, apply_genesis, genesis_block,
-    vera_state_config,
+    ConsensusScheme, StatefulHubApp,
+    ordered_state::{OrderedState, ordered_config},
 };
-use hub_backend::{HubStateSet, state_set_config};
+use hub_backend::{
+    AccountsDb, CodeDb, StorageDb,
+    native::{self, NativeDb},
+    p2p::{MAX_FETCH_OPS, Resolver as StateResolver, WireDatabase},
+    state_set_config,
+};
 use hub_consensus::components::InMemoryMempool;
-use hub_domain::{Block, EpochMaterial};
-use hub_executor::{ExecutionConfig, HubExecutor, MempoolValidator, ModuleTrees};
+use hub_domain::EpochMaterial;
+use hub_executor::{ExecutionConfig, HubExecutor, MempoolValidator};
 use hub_indexer::{BlockIndex, LightBlockIndex, StoredEpochMaterial};
 use hub_jsonrpc::{IndexedStateProvider, NodeState, RpcServer, TxSubmitCallback};
-use hub_modules::{ModuleState, kv_store::InMemoryKvStore};
 use tracing::{error, info};
 
 use crate::{
     BACKFILL_CHANNEL, BROADCAST_CHANNEL, CERTIFICATE_CHANNEL, CommittedState, DKG_CHANNEL,
     DKG_PROBE_CHANNEL, DynamicProvider, FileSecretStore, IO_BUFFER_SIZE, MAILBOX_SIZE,
     MAX_BLOCK_TXS, MAX_MESSAGE_SIZE, MAX_PARTICIPANTS, MAX_SUPPORTED_MODE, MAX_TX_BYTES,
-    MEMPOOL_CHANNEL, MESSAGE_RATE, NAMESPACE, NoSync, NodeSettings, P2P_SUFFIX, PAGE_CACHE_SIZE,
-    PAGE_SIZE, RESOLVER_CHANNEL, REVEAL, Registrar, RegistryParticipants, SHARING_MODE, TxGossip,
+    MEMPOOL_CHANNEL, MESSAGE_RATE, NAMESPACE, NodeSettings, P2P_SUFFIX, PAGE_CACHE_SIZE, PAGE_SIZE,
+    RESOLVER_CHANNEL, REVEAL, Registrar, RegistryParticipants, SHARING_MODE, TxGossip,
     VOTE_CHANNEL, VrfElectorConfig,
     sink::{FinalizationArtifacts, FinalizationLookup, NodeSink, SinkParts},
     spawn_tx_receiver,
     tx_gossip::SharedValidator,
 };
 
-const PARTITION_PREFIX: &str = "hub";
+pub(super) const PARTITION_PREFIX: &str = "hub";
 
 /// Run a validator until one of its actors stops.
 pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow::Result<()> {
@@ -129,6 +132,39 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     let dkg_network = p2p.register(DKG_CHANNEL, MESSAGE_RATE);
     let dkg_probe_network = p2p.register(DKG_PROBE_CHANNEL, MESSAGE_RATE);
     let (mempool_sender, mempool_receiver) = p2p.register(MEMPOOL_CHANNEL, MESSAGE_RATE);
+    let mut state_resolver_handles = Vec::new();
+    macro_rules! state_channel {
+        ($id:literal, $db:ty) => {{
+            let (actor, mailbox) = state_p2p::Actor::new(
+                context.child(concat!("state_resolver_", stringify!($id))),
+                state_p2p::Config {
+                    peer_provider: oracle.clone(),
+                    blocker: oracle.clone(),
+                    database: None::<Shared<WireDatabase<$db>>>,
+                    mailbox_size: NZUsize!(16),
+                    me: Some(local.clone()),
+                    timeout: Duration::from_secs(2),
+                    fetch_retry_timeout: Duration::from_millis(100),
+                    max_serve_ops: MAX_FETCH_OPS,
+                    priority_requests: false,
+                    priority_responses: false,
+                },
+            );
+            state_resolver_handles
+                .push(actor.start(p2p.register(crate::QMDB_CHANNELS[$id], MESSAGE_RATE)));
+            StateResolver::<$db>::new(mailbox)
+        }};
+    }
+    let state_resolvers = (
+        state_channel!(0, AccountsDb),
+        state_channel!(1, StorageDb),
+        state_channel!(2, CodeDb),
+        state_channel!(3, NativeDb),
+        state_channel!(4, NativeDb),
+        state_channel!(5, NativeDb),
+        state_channel!(6, NativeDb),
+        (),
+    );
     let p2p_handle = p2p.start();
 
     // Epoch-0 certificate scheme.
@@ -148,30 +184,14 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         ),
     }
 
-    // Module state trees and executor.
-    let (module_trees, mut persisted_modules) = open_module_trees(&config.data_dir)?;
-    let module_root = initialize_genesis_modules(
-        &config.data_dir,
-        &genesis,
-        &module_trees,
-        &mut persisted_modules,
-    )?;
-    let executor = HubExecutor::new(chain_id).with_module_trees(module_trees.clone());
+    let executor = HubExecutor::new(chain_id);
     #[cfg(feature = "fault-injection")]
     let executor = executor.with_crash_marker(config.data_dir.join("module-commit-crash"));
-    executor.set_base_modules(persisted_modules);
     let modules = executor.modules().clone();
-
-    // Genesis: apply EVM genesis state once, then persist the resulting block.
-    let genesis_block = load_or_create_genesis(
-        &context,
-        &config.data_dir,
-        &genesis,
-        module_root,
-        &page_cache,
-    )
-    .await?
-    .with_payload(Payload::EpochInfo(epoch_info.clone()));
+    let genesis_block =
+        crate::native_genesis::load_or_create(&context, &config.data_dir, &genesis, &page_cache)
+            .await?
+            .with_payload(Payload::EpochInfo(epoch_info.clone()));
     let executor = executor.with_genesis_id(genesis_block.id().0.0);
 
     // Marshal, broadcast, archives.
@@ -392,7 +412,7 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         .cloned()
         .zip(genesis.to_genesis_state()?.participant_addresses)
         .collect();
-    let application = StatefulHubApp::new(
+    let application = StatefulHubApp::<_, OrderedState>::new(
         executor.clone(),
         genesis_block.clone(),
         mempool.clone(),
@@ -407,20 +427,17 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         context.child("stateful"),
         StatefulConfig {
             application,
-            db_config: vera_state_config(
+            db_config: ordered_config(
                 state_set_config(PARTITION_PREFIX, page_cache.clone()),
+                native::state_config(PARTITION_PREFIX, page_cache.clone()),
                 executor.clone(),
-            ),
+            )
+            .recover_from_marshal(),
             provider: mempool.clone(),
             marshal: (marshal.clone(), floor),
             mailbox_size: MAILBOX_SIZE,
             plan,
-            resolvers: (
-                NoSync::new(),
-                NoSync::new(),
-                NoSync::new(),
-                DisabledModuleSync,
-            ),
+            resolvers: state_resolvers,
             sync_config: sync_config(),
             prune_config: None,
         },
@@ -501,7 +518,6 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
             .ok_or_else(|| anyhow::anyhow!("missing recovered module anchor"))?,
         None => anyhow::bail!("missing recovered module anchor"),
     };
-    executor.recover_modules(recovered.height, recovered.module_state_root)?;
     history
         .recover(
             &genesis_block,
@@ -515,7 +531,8 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
 
     // Transaction gossip and RPC over the live committed state.
     let databases = stateful_mailbox.subscribe_databases().await;
-    let state_set = (databases.0, databases.1, databases.2);
+    let native_databases = databases.native_databases();
+    let state_set = databases.execution_databases();
     let committed_state = CommittedState::new(state_set.clone());
     participants_provider.attach_state(committed_state.clone());
     let reshare_handle = reshare_actor.start(dkg_network);
@@ -552,8 +569,8 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         .with_tx_submit(tx_submit)
         .with_subscriptions(heads_tx, logs_tx)
         .with_headers_subscription(headers_tx)
-        .with_hub_index_and_modules(block_index, modules)
-        .with_hub_module_trees(module_trees)
+        .with_hub_index_and_modules(block_index, modules.clone())
+        .with_hub_native_modules(native_databases, modules)
         .with_hub_light_block_lookup({
             let epochs = light_block_index.clone();
             Arc::new(move |height| {
@@ -570,106 +587,19 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     });
     info!(validator_index, %rpc_addr, "hub validator started");
 
+    state_resolver_handles.extend([
+        p2p_handle,
+        broadcast_handle,
+        probe_handle,
+        reshare_handle,
+        orchestrator_handle,
+        marshal_handle,
+        stateful_handle,
+    ]);
     ::tokio::select! {
         failure = history_failure_rx.recv() => Err(failure.unwrap_or_else(|| anyhow::anyhow!("history failure channel closed"))),
-        result = Handle::select([
-            p2p_handle,
-            broadcast_handle,
-            probe_handle,
-            reshare_handle,
-            orchestrator_handle,
-            marshal_handle,
-            stateful_handle,
-        ]) => result.map_err(|e| anyhow::anyhow!("validator actor failed: {e:?}")),
+        result = Handle::select(state_resolver_handles) => result.map_err(|e| anyhow::anyhow!("validator actor failed: {e:?}")),
     }
-}
-
-fn open_module_trees(data_dir: &Path) -> anyhow::Result<(ModuleTrees, ModuleState)> {
-    let mut stores: [InMemoryKvStore; 4] = Default::default();
-    let mut trees = Vec::with_capacity(4);
-    for (store, tree) in stores
-        .iter_mut()
-        .zip(hub_state::open_module_trees(data_dir.join("state"))?)
-    {
-        *store = InMemoryKvStore::from_pairs(tree.load_all()?);
-        trees.push(Arc::new(std::sync::Mutex::new(tree)));
-    }
-    let trees: ModuleTrees = trees
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("expected four module trees"))?;
-    Ok((trees, ModuleState::from_stores(stores)))
-}
-
-fn initialize_genesis_modules(
-    data_dir: &Path,
-    genesis: &hub_genesis::HubGenesis,
-    trees: &ModuleTrees,
-    persisted: &mut ModuleState,
-) -> anyhow::Result<alloy_primitives::B256> {
-    let mut initial = ModuleState::default();
-    if let Some(policy) = &genesis.operators {
-        initial.hub.initialize_administration(policy.clone())?;
-    }
-    let root = initial.state_root();
-    if data_dir.join("genesis_block.bin").exists() {
-        return Ok(root);
-    }
-    for tree in trees {
-        anyhow::ensure!(
-            tree.lock().unwrap().canonical_height() == 0,
-            "module history exists without a genesis record"
-        );
-    }
-    let empty = ModuleState::default();
-    anyhow::ensure!(
-        persisted.state_root() == empty.state_root() || persisted.state_root() == root,
-        "unexpected module state before genesis initialization"
-    );
-    if persisted.state_root() != root {
-        use hub_modules::kv_store::ModuleKvStore as _;
-        let entries = initial
-            .hub
-            .store()
-            .prefix_scan(b"")
-            .into_iter()
-            .map(|(key, value)| (key, Some(value)))
-            .collect();
-        trees[2].lock().unwrap().commit(entries)?;
-    }
-    *persisted = initial;
-    Ok(root)
-}
-
-/// Apply the genesis state on first boot and persist the genesis block so
-/// every later boot starts marshal from the identical block.
-async fn load_or_create_genesis(
-    context: &tokio::Context,
-    data_dir: &Path,
-    genesis: &hub_genesis::HubGenesis,
-    module_root: alloy_primitives::B256,
-    page_cache: &CacheRef,
-) -> anyhow::Result<Block> {
-    let path = data_dir.join("genesis_block.bin");
-    if path.exists() {
-        let bytes = std::fs::read(&path)?;
-        let block = Block::decode_cfg(bytes.as_slice(), &block_cfg())?;
-        anyhow::ensure!(
-            block.module_state_root == module_root,
-            "configured initial module state differs from persisted genesis"
-        );
-        return Ok(block);
-    }
-    let set = HubStateSet::init(
-        context.child("genesis"),
-        state_set_config(PARTITION_PREFIX, page_cache.clone()),
-    )
-    .await;
-    let (state_root, db_targets) = apply_genesis(&set, &genesis.to_genesis_state()?).await?;
-    drop(set);
-    let block = genesis_block(state_root, db_targets, module_root);
-    std::fs::create_dir_all(data_dir)?;
-    std::fs::write(&path, block.encode())?;
-    Ok(block)
 }
 
 pub(crate) const fn block_cfg() -> hub_domain::BlockCfg {
@@ -683,7 +613,7 @@ pub(crate) const fn block_cfg() -> hub_domain::BlockCfg {
 
 const fn sync_config() -> SyncEngineConfig {
     SyncEngineConfig {
-        fetch_batch_size: NZU64!(16),
+        fetch_batch_size: MAX_FETCH_OPS,
         apply_batch_size: NZU64!(64),
         max_outstanding_requests: 8,
         update_channel_size: NZUsize!(256),
@@ -710,7 +640,3 @@ fn archive_config<C>(
         replay_buffer: IO_BUFFER_SIZE,
     }
 }
-
-#[cfg(test)]
-#[path = "node/genesis_tests.rs"]
-mod genesis_tests;

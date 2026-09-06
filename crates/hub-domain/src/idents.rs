@@ -139,6 +139,7 @@ mod tests {
             module_state_root: B256::ZERO,
             txs,
             payload: None,
+            native_targets: None,
             db_targets: crate::DbTargets::default(),
         };
         let encoded = block.encode();

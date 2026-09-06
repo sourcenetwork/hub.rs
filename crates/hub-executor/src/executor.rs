@@ -66,6 +66,14 @@ impl HubExecutor {
         self.crash_marker = Some(path);
         self
     }
+
+    /// Abort at a selected module boundary in fault-injection builds.
+    #[cfg(feature = "fault-injection")]
+    pub fn after_module_commit(&self, height: u64, index: usize) {
+        if let Some(marker) = &self.crash_marker {
+            crate::faults::after_module_commit(marker, height, index);
+        }
+    }
     /// Create a new hub executor.
     pub fn new(chain_id: u64) -> Self {
         Self {

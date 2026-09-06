@@ -16,6 +16,7 @@ fn block(height: u64, parent: BlockId) -> Block {
         module_state_root: B256::ZERO,
         txs: Vec::new(),
         payload: None,
+        native_targets: None,
         db_targets: DbTargets::default(),
     }
 }

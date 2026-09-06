@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 description = "Glue stateful application around the hub block executor"
 
+[features]
+fault-injection = ["hub-executor/fault-injection"]
+
 [lints]
 workspace = true
 

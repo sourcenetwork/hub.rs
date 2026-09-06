@@ -1,8 +1,10 @@
 use super::*;
+use commonware_runtime::Runner as _;
+use commonware_utils::{NZU16, NZUsize};
 use hub_modules::hub::administration::OperatorPolicy;
 
-fn configured_genesis() -> hub_genesis::HubGenesis {
-    let mut genesis = hub_genesis::HubGenesis::devnet();
+fn configured_genesis() -> HubGenesis {
+    let mut genesis = HubGenesis::devnet();
     genesis.operators = Some(OperatorPolicy {
         threshold: 1,
         keys: vec!["0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798".into()],
@@ -11,96 +13,185 @@ fn configured_genesis() -> hub_genesis::HubGenesis {
 }
 
 #[test]
-fn initial_authority_recovers_after_interrupted_genesis_creation() {
-    let dir = tempfile::tempdir().unwrap();
-    let genesis = configured_genesis();
-    let (trees, mut state) = open_module_trees(dir.path()).unwrap();
-    let root = initialize_genesis_modules(dir.path(), &genesis, &trees, &mut state).unwrap();
-    let policy = state.hub.administration().unwrap().unwrap().policy;
-    assert_eq!(Some(policy), genesis.operators);
-    let version = trees[2].lock().unwrap().version();
-    drop(trees);
-
-    let (trees, mut state) = open_module_trees(dir.path()).unwrap();
-    assert_eq!(
-        initialize_genesis_modules(dir.path(), &genesis, &trees, &mut state).unwrap(),
-        root
-    );
-    assert_eq!(trees[2].lock().unwrap().version(), version);
-    let executor = HubExecutor::new(genesis.chain_id).with_module_trees(trees.clone());
-    let anchor = genesis_block(
-        hub_domain::StateRoot(alloy_primitives::B256::ZERO),
-        Default::default(),
-        root,
-    );
-    executor
-        .recover_modules(anchor.height, anchor.module_state_root)
-        .unwrap();
-    assert_eq!(executor.modules().read().unwrap().state_root(), root);
-
-    let mut different = configured_genesis();
-    different.operators = None;
-    assert!(initialize_genesis_modules(dir.path(), &different, &trees, &mut state).is_err());
-}
-
-#[test]
-fn existing_history_cannot_be_reinitialized_without_genesis() {
-    let dir = tempfile::tempdir().unwrap();
-    let (trees, mut state) = open_module_trees(dir.path()).unwrap();
-    {
-        let mut tree = trees[0].lock().unwrap();
-        let snapshot = tree.snapshot().unwrap();
-        tree.commit_prepared(1, &snapshot).unwrap();
-    }
-    assert!(
-        initialize_genesis_modules(dir.path(), &configured_genesis(), &trees, &mut state).is_err()
-    );
-    assert!(state.hub.administration().unwrap().is_none());
-}
-
-#[test]
-fn startup_loads_the_selected_native_checkpoint() {
-    use hub_state::{ModuleCheckpoint, ModuleStateTree};
-    let source = tempfile::tempdir().unwrap();
-    let target = tempfile::tempdir().unwrap();
-    let mut trees: [ModuleStateTree; 4] =
-        std::array::from_fn(|i| ModuleStateTree::open(source.path().join(i.to_string())).unwrap());
-    for (i, tree) in trees.iter_mut().enumerate() {
-        let next = tree
-            .prepare(
-                &tree.snapshot().unwrap(),
-                vec![(b"checkpoint/data".to_vec(), Some(vec![i as u8]))],
+fn native_genesis_recovers_partial_initialization_and_binds_configuration() {
+    let mut expected = None;
+    for stage in 0..=2 {
+        let directory = tempfile::tempdir().unwrap();
+        let directory = directory.path();
+        let runtime = tokio::Config::new().with_storage_directory(directory.join("commonware"));
+        let genesis = configured_genesis();
+        let genesis = &genesis;
+        if stage > 0 {
+            tokio::Runner::new(runtime.clone()).start(|context| async move {
+                persist(
+                    &directory.join("native-genesis.intent"),
+                    keccak256(serde_json::to_vec(&genesis).unwrap()).as_slice(),
+                )
+                .unwrap();
+                let cache = CacheRef::from_pooler(&context, NZU16!(4084), NZUsize!(64));
+                let execution = HubStateSet::init(
+                    context.child("partial_execution"),
+                    state_set_config(crate::node::PARTITION_PREFIX, cache.clone()),
+                )
+                .await;
+                hub_app::apply_genesis(&execution, &genesis.to_genesis_state().unwrap())
+                    .await
+                    .unwrap();
+                if stage == 2 {
+                    let modules = NativeStateSet::init(
+                        context.child("partial_modules"),
+                        native::state_config(crate::node::PARTITION_PREFIX, cache),
+                    )
+                    .await;
+                    let changes = [
+                        vec![(b"partial".to_vec(), Some(vec![9]))],
+                        vec![],
+                        vec![],
+                        vec![],
+                    ];
+                    modules
+                        .apply(
+                            native::prepare(modules.new_batches().await, changes)
+                                .await
+                                .unwrap(),
+                        )
+                        .await;
+                    assert!(modules.finalize().await.durable().await);
+                }
+            });
+        }
+        let block = tokio::Runner::new(runtime.clone()).start(|context| async move {
+            let cache = CacheRef::from_pooler(&context, NZU16!(4084), NZUsize!(64));
+            let block = load_or_create(&context, directory, genesis, &cache)
+                .await
+                .unwrap();
+            assert!(block.native_targets.is_some());
+            assert!(!directory.join("native-genesis.intent").exists());
+            let modules = NativeStateSet::init(
+                context.child("check_modules"),
+                native::state_config(crate::node::PARTITION_PREFIX, cache.clone()),
             )
-            .unwrap();
-        tree.commit_prepared(42, &next).unwrap();
-    }
-    let roots = std::array::from_fn(|i| trees[i].root().unwrap().0);
-    let mut checkpoint = ModuleCheckpoint::create(target.path().join("state"), 42, roots).unwrap();
-    for (i, tree) in trees.iter().enumerate() {
-        checkpoint
-            .add_chunk(
-                i,
-                tree.snapshot()
-                    .unwrap()
-                    .export_chunk(None)
-                    .unwrap()
+            .await;
+            let state = native::load_modules(&modules).await.unwrap();
+            assert_eq!(
+                Some(state.hub.administration().unwrap().unwrap().policy),
+                genesis.operators
+            );
+            assert!(state.acp.store().is_empty());
+            assert!(
+                native::SyncProof::capture(&modules, block.module_state_root)
+                    .await
+                    .is_ok()
+            );
+            block
+        });
+        if let Some(expected) = &expected {
+            assert_eq!(&block, expected);
+        } else {
+            expected = Some(block.clone());
+        }
+        tokio::Runner::new(runtime).start(|context| async move {
+            let cache = CacheRef::from_pooler(&context, NZU16!(4084), NZUsize!(64));
+            assert_eq!(
+                load_or_create(&context, directory, genesis, &cache)
+                    .await
                     .unwrap(),
+                block
+            );
+            let mut changed = (*genesis).clone();
+            changed.operators = None;
+            assert!(
+                load_or_create(&context, directory, &changed, &cache)
+                    .await
+                    .is_err()
+            );
+            changed = (*genesis).clone();
+            changed.allocations[0].balance = "1".into();
+            assert!(
+                load_or_create(&context, directory, &changed, &cache)
+                    .await
+                    .is_err()
+            );
+        });
+    }
+}
+
+#[test]
+fn journals_without_initialization_intent_are_preserved() {
+    let directory = tempfile::tempdir().unwrap();
+    let directory = directory.path();
+    let runtime = tokio::Config::new().with_storage_directory(directory.join("commonware"));
+    let expected = tokio::Runner::new(runtime.clone()).start(|context| async move {
+        let cache = CacheRef::from_pooler(&context, NZU16!(4084), NZUsize!(64));
+        let modules = NativeStateSet::init(
+            context.child("existing"),
+            native::state_config(crate::node::PARTITION_PREFIX, cache),
+        )
+        .await;
+        modules
+            .apply(
+                native::prepare(
+                    modules.new_batches().await,
+                    [
+                        vec![(b"existing".to_vec(), Some(vec![1]))],
+                        vec![],
+                        vec![],
+                        vec![],
+                    ],
+                )
+                .await
+                .unwrap(),
             )
-            .unwrap();
-    }
-    drop(checkpoint.finish().unwrap().install().unwrap());
-    let (restored, modules) = open_module_trees(target.path()).unwrap();
-    let executor = HubExecutor::new(9001).with_module_trees(restored.clone());
-    executor.set_base_modules(modules);
-    let root = hub_modules::module_state::state_root_from_jmt(&roots);
-    executor.recover_modules(42, root).unwrap();
-    assert_eq!(executor.module_height().unwrap(), 42);
-    assert_eq!(executor.snapshot().unwrap().state_root(42), root);
-    for (i, tree) in restored.iter().enumerate() {
-        assert_eq!(
-            tree.lock().unwrap().get(b"checkpoint/data").unwrap(),
-            Some(vec![i as u8])
+            .await;
+        assert!(modules.finalize().await.durable().await);
+        modules.committed_targets().await
+    });
+    tokio::Runner::new(runtime).start(|context| async move {
+        let cache = CacheRef::from_pooler(&context, NZU16!(4084), NZUsize!(64));
+        assert!(
+            load_or_create(&context, directory, &configured_genesis(), &cache)
+                .await
+                .is_err()
         );
+        let modules = NativeStateSet::init(
+            context.child("check_existing"),
+            native::state_config(crate::node::PARTITION_PREFIX, cache),
+        )
+        .await;
+        assert_eq!(modules.committed_targets().await, expected);
+        assert!(!directory.join("native-genesis.bin").exists());
+    });
+}
+
+#[test]
+fn legacy_state_and_missing_genesis_with_history_require_recovery() {
+    for marker in ["genesis_block.bin", "state", "history"] {
+        let directory = tempfile::tempdir().unwrap();
+        let directory = directory.path();
+        if marker.ends_with(".bin") {
+            fs::write(directory.join(marker), b"preserve").unwrap();
+        } else {
+            fs::create_dir(directory.join(marker)).unwrap();
+        }
+        let genesis = configured_genesis();
+        let genesis = &genesis;
+        persist(
+            &directory.join("native-genesis.intent"),
+            keccak256(serde_json::to_vec(&genesis).unwrap()).as_slice(),
+        )
+        .unwrap();
+        tokio::Runner::new(
+            tokio::Config::new().with_storage_directory(directory.join("commonware")),
+        )
+        .start(|context| async move {
+            let cache = CacheRef::from_pooler(&context, NZU16!(4084), NZUsize!(64));
+            assert!(
+                load_or_create(&context, directory, genesis, &cache)
+                    .await
+                    .is_err()
+            );
+            assert!(directory.join(marker).exists());
+            assert!(!directory.join("native-genesis.bin").exists());
+        });
     }
-    assert!(!target.path().join("state/acp").exists());
 }

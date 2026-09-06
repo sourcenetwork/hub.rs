@@ -25,6 +25,13 @@ impl OrderedCheckpoint {
         let block = verify_finalized_block(light, trusted_key)
             .map_err(|e| AppError::Execution(e.to_string()))?;
         let native = proof.verify(block.module_state_root)?;
+        if let Some(targets) = &block.native_targets
+            && *targets
+                != [&native.0, &native.1, &native.2, &native.3]
+                    .map(crate::targets::target_from_sync)
+        {
+            return Err(AppError::RootMismatch("native checkpoint targets"));
+        }
         let db = &block.db_targets;
         for target in [&db.accounts, &db.storage, &db.code] {
             if target.floor >= target.tip || !Location::<mmr::Family>::new(target.tip).is_valid() {
@@ -54,6 +61,7 @@ impl OrderedCheckpoint {
                 native.1,
                 native.2,
                 native.3,
+                Some(Digest::from(block.module_state_root.0)),
             ),
             module_root: block.module_state_root,
         })
@@ -107,7 +115,8 @@ impl OrderedConfig {
     /// Rewind to verified targets and validate their native current-state root before publication.
     #[must_use]
     pub const fn recover_checkpoint(mut self, checkpoint: OrderedCheckpoint) -> Self {
-        self.recovery = Some((checkpoint.targets, Some(checkpoint.module_root)));
+        self.recovery = Some(checkpoint.targets);
+        self.marshal_recovery = false;
         self
     }
 }

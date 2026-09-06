@@ -1,0 +1,121 @@
+use commonware_glue::stateful::db::DatabaseSet;
+use hub_backend::Ctx;
+use hub_domain::{Block, DbTarget, DbTargets, StateRoot, Tx};
+use hub_executor::{BlockContext, ExecutionOutcome, HubExecutor};
+
+use crate::{AppError, VeraStateSet, execute_block, module_db, ordered_state::OrderedState};
+
+/// Executed commitments and receipts carried into the application callback.
+pub struct StateExecution<D: ApplicationState> {
+    pub(crate) batches: D::Merkleized,
+    pub(crate) state_root: StateRoot,
+    pub(crate) db_targets: DbTargets,
+    pub(crate) native_targets: Option<[DbTarget; 4]>,
+    pub(crate) outcome: ExecutionOutcome,
+}
+
+impl<D: ApplicationState> std::fmt::Debug for StateExecution<D> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StateExecution")
+            .field("state_root", &self.state_root)
+            .field("db_targets", &self.db_targets)
+            .field("native_targets", &self.native_targets)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Storage-specific execution used by the shared proposal and verification path.
+pub trait ApplicationState: DatabaseSet<Ctx> + Clone + Send + Sync + 'static {
+    /// Whether the block carries commitments for this storage layout.
+    fn accepts(block: &Block) -> bool;
+    /// Targets from a block whose storage layout has already been checked.
+    fn targets(block: &Block) -> Self::SyncTargets;
+    /// Execute and seal one proposal against its parent's isolated batches.
+    fn execute(
+        executor: &HubExecutor,
+        batches: Self::Unmerkleized,
+        context: &BlockContext,
+        txs: &[Tx],
+    ) -> impl Future<Output = Result<StateExecution<Self>, AppError>> + Send;
+}
+
+impl ApplicationState for VeraStateSet {
+    fn accepts(block: &Block) -> bool {
+        block.native_targets.is_none()
+    }
+    fn targets(block: &Block) -> Self::SyncTargets {
+        module_db::module_targets(
+            crate::sync_targets(&block.db_targets),
+            block.height,
+            block.module_state_root,
+        )
+    }
+    async fn execute(
+        executor: &HubExecutor,
+        batches: Self::Unmerkleized,
+        context: &BlockContext,
+        txs: &[Tx],
+    ) -> Result<StateExecution<Self>, AppError> {
+        let (batches, modules) = module_db::split_batches(batches);
+        let executed = execute_block(executor, batches, context, txs, modules).await?;
+        Ok(StateExecution {
+            batches: module_db::seal_batches(
+                executed.merkleized,
+                context.header.number,
+                executed.modules,
+            ),
+            state_root: executed.state_root,
+            db_targets: executed.db_targets,
+            native_targets: None,
+            outcome: executed.outcome,
+        })
+    }
+}
+
+impl ApplicationState for OrderedState {
+    fn accepts(block: &Block) -> bool {
+        block.native_targets.is_some()
+    }
+    fn targets(block: &Block) -> Self::SyncTargets {
+        let execution = crate::sync_targets(&block.db_targets);
+        let native = block
+            .native_targets
+            .as_ref()
+            .expect("ordered block commitments")
+            .map(|target| crate::targets::sync_from_target(&target));
+        (
+            execution.0,
+            execution.1,
+            execution.2,
+            native[0].clone(),
+            native[1].clone(),
+            native[2].clone(),
+            native[3].clone(),
+            Some(block.module_state_root.0.into()),
+        )
+    }
+    async fn execute(
+        executor: &HubExecutor,
+        batches: Self::Unmerkleized,
+        context: &BlockContext,
+        txs: &[Tx],
+    ) -> Result<StateExecution<Self>, AppError> {
+        let (batches, outcome) = Self::execute_on(executor, batches, context, txs).await?;
+        let targets = batches.sync_targets();
+        let db_targets = crate::db_targets_from_sync(&(targets.0, targets.1, targets.2));
+        let native_targets = [targets.3, targets.4, targets.5, targets.6]
+            .each_ref()
+            .map(crate::targets::target_from_sync);
+        Ok(StateExecution {
+            batches,
+            state_root: StateRoot(hub_qmdb::StateRoot::compute(
+                db_targets.accounts.root.0.into(),
+                db_targets.storage.root.0.into(),
+                db_targets.code.root.0.into(),
+            )),
+            db_targets,
+            native_targets: Some(native_targets),
+            outcome,
+        })
+    }
+}
