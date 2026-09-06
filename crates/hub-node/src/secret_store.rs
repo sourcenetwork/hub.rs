@@ -1,6 +1,11 @@
 //! File-backed secret store for DKG/reshare private material.
 
-use std::{collections::BTreeMap, fs, path::PathBuf, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use commonware_codec::{DecodeExt as _, Encode as _};
 use commonware_consensus::types::Epoch;
@@ -15,18 +20,27 @@ use serde::{Deserialize, Serialize};
 
 /// JSON-file-backed [`dkg::SecretStore`] holding shares, dealer seeds, and dealings.
 ///
-/// Material is stored as plaintext JSON, which is suitable for this example only.
-#[derive(Clone, Debug)]
+/// Updates replace the file atomically after syncing its contents. On Unix, new
+/// files are readable and writable only by the owner.
+#[derive(Clone)]
 pub struct FileSecretStore {
     path: PathBuf,
     inner: Arc<Mutex<SecretData>>,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 struct SecretData {
     shares: BTreeMap<u64, String>,
     seeds: BTreeMap<u64, String>,
     dealings: BTreeMap<String, String>,
+}
+
+impl std::fmt::Debug for FileSecretStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FileSecretStore")
+            .field("path", &self.path)
+            .finish_non_exhaustive()
+    }
 }
 
 impl FileSecretStore {
@@ -47,19 +61,27 @@ impl FileSecretStore {
 
     /// Seed the store with a trusted-setup share for `epoch`.
     pub fn put_initial_share(&self, epoch: Epoch, share: Share) -> anyhow::Result<()> {
-        self.inner
-            .lock()
-            .shares
-            .insert(epoch.get(), hex::encode(share.encode()));
-        self.flush()
+        self.update(|data| {
+            data.shares.insert(epoch.get(), hex::encode(share.encode()));
+        })
     }
 
-    fn flush(&self) -> anyhow::Result<()> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let contents = serde_json::to_string_pretty(&*self.inner.lock())?;
-        fs::write(&self.path, contents)?;
+    fn update(&self, change: impl FnOnce(&mut SecretData)) -> anyhow::Result<()> {
+        let mut inner = self.inner.lock();
+        let mut next = inner.clone();
+        change(&mut next);
+        let parent = self
+            .path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        fs::create_dir_all(parent)?;
+        let mut file = tempfile::NamedTempFile::new_in(parent)?;
+        serde_json::to_writer_pretty(file.as_file_mut(), &next)?;
+        file.as_file().sync_all()?;
+        file.persist(&self.path)?;
+        fs::File::open(parent)?.sync_all()?;
+        *inner = next;
         Ok(())
     }
 
@@ -70,11 +92,8 @@ impl FileSecretStore {
 
 impl dkg::SecretStore for FileSecretStore {
     async fn put_share(&mut self, epoch: Epoch, share: Share) {
-        self.inner
-            .lock()
-            .shares
-            .insert(epoch.get(), hex::encode(share.encode()));
-        self.flush().expect("failed to flush share");
+        self.put_initial_share(epoch, share)
+            .expect("failed to persist share");
     }
 
     async fn get_share(&mut self, epoch: Epoch) -> Option<Share> {
@@ -84,11 +103,10 @@ impl dkg::SecretStore for FileSecretStore {
     }
 
     async fn put_seed(&mut self, epoch: Epoch, seed: Summary) {
-        self.inner
-            .lock()
-            .seeds
-            .insert(epoch.get(), hex::encode(seed.encode()));
-        self.flush().expect("failed to flush seed");
+        self.update(|data| {
+            data.seeds.insert(epoch.get(), hex::encode(seed.encode()));
+        })
+        .expect("failed to persist seed");
     }
 
     async fn get_seed(&mut self, epoch: Epoch) -> Option<Summary> {
@@ -99,11 +117,10 @@ impl dkg::SecretStore for FileSecretStore {
 
     async fn put_dealing<P: PublicKey>(&mut self, epoch: Epoch, dealer: P, private: DealerPrivMsg) {
         let key = Self::dealing_key(epoch, &dealer);
-        self.inner
-            .lock()
-            .dealings
-            .insert(key, hex::encode(private.encode()));
-        self.flush().expect("failed to flush dealing");
+        self.update(|data| {
+            data.dealings.insert(key, hex::encode(private.encode()));
+        })
+        .expect("failed to persist dealing");
     }
 
     async fn get_dealing<P: PublicKey>(
@@ -118,15 +135,18 @@ impl dkg::SecretStore for FileSecretStore {
     }
 
     async fn prune(&mut self, min: Epoch) {
-        let mut inner = self.inner.lock();
-        inner.shares.retain(|epoch, _| *epoch >= min.get());
-        inner.seeds.retain(|epoch, _| *epoch >= min.get());
-        inner.dealings.retain(|key, _| {
-            key.split_once(':')
-                .and_then(|(epoch, _)| epoch.parse::<u64>().ok())
-                .is_some_and(|epoch| epoch >= min.get())
-        });
-        drop(inner);
-        self.flush().expect("failed to flush prune");
+        self.update(|inner| {
+            inner.shares.retain(|epoch, _| *epoch >= min.get());
+            inner.seeds.retain(|epoch, _| *epoch >= min.get());
+            inner.dealings.retain(|key, _| {
+                key.split_once(':')
+                    .and_then(|(epoch, _)| epoch.parse::<u64>().ok())
+                    .is_some_and(|epoch| epoch >= min.get())
+            });
+        })
+        .expect("failed to persist prune");
     }
 }
+
+#[cfg(test)]
+mod tests;
