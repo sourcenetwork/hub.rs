@@ -21,7 +21,7 @@ use crate::{
         Web3ApiServer,
     },
     eth_subscribe::{EthSubscriptionApiImpl, EthSubscriptionApiServer},
-    hub_api::{HubApiImpl, HubApiServer},
+    hub_api::{HubApiImpl, HubApiServer, LightBlockLookup},
     state::NodeState,
     state_provider::{NoopStateProvider, StateProvider},
     types::{RpcBlock, RpcLog},
@@ -102,6 +102,7 @@ pub struct RpcServer<S: StateProvider = NoopStateProvider> {
     hub_modules: Option<SharedModuleState>,
     hub_module_trees: Option<ModuleTrees>,
     hub_light_block_index: Option<Arc<LightBlockIndex>>,
+    hub_light_block_lookup: Option<LightBlockLookup>,
 }
 
 impl<S: StateProvider> std::fmt::Debug for RpcServer<S> {
@@ -135,6 +136,7 @@ impl RpcServer<NoopStateProvider> {
             hub_modules: None,
             hub_module_trees: None,
             hub_light_block_index: None,
+            hub_light_block_lookup: None,
         }
     }
 
@@ -156,6 +158,7 @@ impl RpcServer<NoopStateProvider> {
             hub_modules: None,
             hub_module_trees: None,
             hub_light_block_index: None,
+            hub_light_block_lookup: None,
         }
     }
 }
@@ -184,6 +187,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             hub_modules: None,
             hub_module_trees: None,
             hub_light_block_index: None,
+            hub_light_block_lookup: None,
         }
     }
 
@@ -256,6 +260,13 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
         self
     }
 
+    /// Serve light blocks from durable history, including descendant certificates.
+    #[must_use]
+    pub fn with_hub_light_block_lookup(mut self, lookup: LightBlockLookup) -> Self {
+        self.hub_light_block_lookup = Some(lookup);
+        self
+    }
+
     /// Set the light block index for `hub_getLightBlock` queries.
     #[must_use]
     pub fn with_hub_light_block_index(mut self, index: Arc<LightBlockIndex>) -> Self {
@@ -281,6 +292,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             hub_modules: None,
             hub_module_trees: None,
             hub_light_block_index: None,
+            hub_light_block_lookup: None,
         }
     }
 
@@ -303,6 +315,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
         let hub_modules = self.hub_modules;
         let hub_module_trees = self.hub_module_trees;
         let hub_light_block_index = self.hub_light_block_index;
+        let hub_light_block_lookup = self.hub_light_block_lookup;
 
         // Signal from the JSON-RPC task to the HTTP task indicating whether it
         // successfully bound the port. The HTTP status server waits for this
@@ -315,6 +328,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
 
         let jsonrpc_handle = tokio::spawn(async move {
             let server = match Server::builder()
+                .max_response_body_size(hub_domain::LIGHT_BLOCK_RESPONSE_BYTES as u32)
                 .max_connections(max_connections)
                 .build(addr)
                 .await
@@ -345,6 +359,9 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
                 }
                 if let Some(trees) = hub_module_trees {
                     api = api.with_module_trees(trees);
+                }
+                if let Some(lookup) = hub_light_block_lookup {
+                    api = api.with_light_block_lookup(lookup);
                 }
                 if let Some(lbi) = hub_light_block_index {
                     api = api.with_light_block_index(lbi);
@@ -496,6 +513,7 @@ pub struct JsonRpcServer<S: StateProvider = NoopStateProvider> {
     hub_modules: Option<SharedModuleState>,
     hub_module_trees: Option<ModuleTrees>,
     hub_light_block_index: Option<Arc<LightBlockIndex>>,
+    hub_light_block_lookup: Option<LightBlockLookup>,
 }
 
 impl<S: StateProvider> std::fmt::Debug for JsonRpcServer<S> {
@@ -526,6 +544,7 @@ impl JsonRpcServer<NoopStateProvider> {
             hub_modules: None,
             hub_module_trees: None,
             hub_light_block_index: None,
+            hub_light_block_lookup: None,
         }
     }
 }
@@ -548,6 +567,7 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
             hub_modules: None,
             hub_module_trees: None,
             hub_light_block_index: None,
+            hub_light_block_lookup: None,
         }
     }
 
@@ -620,6 +640,13 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
         self
     }
 
+    /// Serve light blocks from durable history, including descendant certificates.
+    #[must_use]
+    pub fn with_hub_light_block_lookup(mut self, lookup: LightBlockLookup) -> Self {
+        self.hub_light_block_lookup = Some(lookup);
+        self
+    }
+
     /// Set the light block index for `hub_getLightBlock` queries.
     #[must_use]
     pub fn with_hub_light_block_index(mut self, index: Arc<LightBlockIndex>) -> Self {
@@ -632,6 +659,7 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
     /// Returns the server handle and the actual bound address (useful when binding to port 0).
     pub async fn start(self) -> Result<(ServerHandle, SocketAddr), ServerError> {
         let server = Server::builder()
+            .max_response_body_size(hub_domain::LIGHT_BLOCK_RESPONSE_BYTES as u32)
             .max_connections(self.max_connections)
             .build(self.addr)
             .await
@@ -673,6 +701,9 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
                 }
                 if let Some(trees) = self.hub_module_trees {
                     api = api.with_module_trees(trees);
+                }
+                if let Some(lookup) = self.hub_light_block_lookup {
+                    api = api.with_light_block_lookup(lookup);
                 }
                 if let Some(lbi) = self.hub_light_block_index {
                     api = api.with_light_block_index(lbi);

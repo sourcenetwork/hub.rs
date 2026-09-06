@@ -545,6 +545,14 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         .with_headers_subscription(headers_tx)
         .with_hub_index_and_modules(block_index, modules)
         .with_hub_module_trees(module_trees)
+        .with_hub_light_block_lookup({
+            let epochs = light_block_index.clone();
+            Arc::new(move |height| {
+                history
+                    .light_block(height, &epochs)
+                    .map_err(|error| error.to_string())
+            })
+        })
         .with_hub_light_block_index(light_block_index)
         .start();
     context.child("rpc").spawn(move |_| async move {

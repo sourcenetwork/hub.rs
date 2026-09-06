@@ -21,6 +21,9 @@ use crate::{
     types::{RpcLog, RpcNativeReceipt},
 };
 
+/// Durable light-block lookup, executed outside the asynchronous RPC worker.
+pub type LightBlockLookup = Arc<dyn Fn(u64) -> Result<LightBlock, String> + Send + Sync>;
+
 /// Hub-specific JSON-RPC API trait.
 ///
 /// Provides methods specific to hub node operations.
@@ -95,6 +98,7 @@ pub struct HubApiImpl {
     modules: Option<SharedModuleState>,
     module_trees: Option<ModuleTrees>,
     light_block_index: Option<Arc<LightBlockIndex>>,
+    light_block_lookup: Option<LightBlockLookup>,
 }
 
 impl std::fmt::Debug for HubApiImpl {
@@ -106,6 +110,7 @@ impl std::fmt::Debug for HubApiImpl {
             .field("modules", &self.modules.is_some())
             .field("module_trees", &self.module_trees.is_some())
             .field("light_block_index", &self.light_block_index.is_some())
+            .field("light_block_lookup", &self.light_block_lookup.is_some())
             .finish()
     }
 }
@@ -121,6 +126,7 @@ impl HubApiImpl {
             modules: None,
             module_trees: None,
             light_block_index: None,
+            light_block_lookup: None,
         }
     }
 
@@ -147,6 +153,13 @@ impl HubApiImpl {
     #[must_use]
     pub fn with_light_block_index(mut self, index: Arc<LightBlockIndex>) -> Self {
         self.light_block_index = Some(index);
+        self
+    }
+
+    /// Serve direct and indirect finality proofs from durable history.
+    #[must_use]
+    pub fn with_light_block_lookup(mut self, lookup: LightBlockLookup) -> Self {
+        self.light_block_lookup = Some(lookup);
         self
     }
 }
@@ -331,38 +344,46 @@ impl HubApiServer for HubApiImpl {
     }
 
     async fn get_light_block(&self, height: U64) -> RpcResult<LightBlock> {
-        let Some(ref block_index) = self.index else {
-            return Err(RpcError::Internal("block index not available".into()).into());
-        };
-        let Some(ref light_index) = self.light_block_index else {
-            return Err(RpcError::Internal("light block index not available".into()).into());
-        };
-
-        let height_val: u64 = height.to();
-        let block = block_index
-            .get_block_by_number(height_val)
-            .ok_or_else(|| RpcError::Internal(format!("block not found at height {height_val}")))?;
-
-        let digest = commonware_cryptography::Sha256::hash(&[block.hash.as_slice()]).0;
-        let finalization = light_index.get_finalization(&digest).ok_or_else(|| {
-            RpcError::Internal(format!(
-                "finalization certificate not found for height {height_val}"
-            ))
-        })?;
-
-        let material = light_index
-            .get_epoch_material(finalization.epoch)
-            .ok_or_else(|| {
-                RpcError::Internal(format!(
-                    "epoch material not found for epoch {}",
-                    finalization.epoch
-                ))
-            })?;
-
-        LightBlock::from_encoded_block(&finalization.block, &finalization.bytes, &material.bytes)
-            .map_err(|error| {
-                RpcError::Internal(format!("light block assembly failed: {error}")).into()
-            })
+        let height: u64 = height.to();
+        if let Some(light_index) = &self.light_block_index {
+            let finalization = self
+                .index
+                .as_ref()
+                .and_then(|index| index.get_block_by_number(height))
+                .and_then(|block| {
+                    let digest = commonware_cryptography::Sha256::hash(&[block.hash.as_slice()]).0;
+                    light_index.get_finalization(&digest)
+                });
+            if let Some(finalization) = finalization {
+                let material = light_index
+                    .get_epoch_material(finalization.epoch)
+                    .ok_or_else(|| {
+                        RpcError::Internal(format!(
+                            "epoch material not found for epoch {}",
+                            finalization.epoch
+                        ))
+                    })?;
+                return LightBlock::from_encoded_block(
+                    &finalization.block,
+                    &finalization.bytes,
+                    &material.bytes,
+                )
+                .map_err(|error| {
+                    RpcError::Internal(format!("light block assembly failed: {error}")).into()
+                });
+            }
+        }
+        if let Some(lookup) = &self.light_block_lookup {
+            let lookup = lookup.clone();
+            return tokio::task::spawn_blocking(move || lookup(height))
+                .await
+                .map_err(|error| RpcError::Internal(format!("light block lookup failed: {error}")))?
+                .map_err(|error| RpcError::Internal(error).into());
+        }
+        Err(RpcError::Internal(format!(
+            "finalization certificate not found for height {height}"
+        ))
+        .into())
     }
 }
 

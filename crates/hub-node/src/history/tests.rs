@@ -192,3 +192,187 @@ async fn ancestor_without_a_direct_certificate_remains_queryable() {
     assert_eq!(index.get_block_by_number(1).unwrap().hash, first.id().0);
     assert!(light.get_finalization(&first.digest().0).is_none());
 }
+
+#[tokio::test]
+async fn indirect_proof_survives_reopen_and_uses_the_rpc_history_lookup() {
+    use commonware_consensus::simplex::types::{Finalization, Finalize, Proposal};
+    use commonware_cryptography::{Signer as _, ed25519};
+    use commonware_parallel::Sequential;
+    use commonware_utils::non_empty;
+    use hub_app::ConsensusScheme;
+    use hub_domain::{ConsensusDigest, verify_light_block};
+    use hub_jsonrpc::{HubApiImpl, HubApiServer, NodeState};
+
+    let public = ed25519::PrivateKey::from_seed(7).public_key();
+    let (info, shares) = crate::trusted_setup(7, [public.clone()]).unwrap();
+    let material = EpochMaterial::new(info.output.players().clone(), info.output.public().clone());
+    let trusted = *material.sharing.public();
+    let signer = ConsensusScheme::signer(
+        crate::NAMESPACE,
+        material.participants.clone(),
+        material.sharing.clone(),
+        shares.get_value(&public).unwrap().clone(),
+    )
+    .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let genesis = block(0, BlockId(B256::ZERO));
+    let first = block(1, genesis.id());
+    let second = block(2, first.id());
+    let third = block(3, second.id());
+    let proposal = Proposal::new(third.context.round, third.context.parent.0, third.digest());
+    let vote = Finalize::sign(&signer, proposal).unwrap();
+    let finalization: Finalization<ConsensusScheme, ConsensusDigest> =
+        Finalization::from_finalizes(&signer, non_empty![&vote], &Sequential).unwrap();
+    let certificate = FinalizationArtifacts {
+        epoch: 0,
+        finalization: finalization.encode().to_vec(),
+        certificate: finalization.certificate.encode().to_vec(),
+    };
+    let epochs = Arc::new(LightBlockIndex::new());
+    epochs.insert_epoch_material(
+        0,
+        StoredEpochMaterial {
+            bytes: material.encode().to_vec(),
+        },
+    );
+    let expected;
+    {
+        let history = FinalizedHistory::open(dir.path(), &genesis).unwrap();
+        for block in [&first, &second, &third] {
+            history.append(block, &[], 100).unwrap();
+            history.store_finalization(block.height, None).unwrap();
+        }
+        assert!(history.light_block(1, &epochs).is_err());
+        history.store_finalization(3, Some(&certificate)).unwrap();
+        expected = history.light_block(1, &epochs).unwrap();
+        assert_eq!(expected.height, 1);
+        assert_eq!(expected.descendants.len(), 2);
+        verify_light_block(&expected, &trusted).unwrap();
+        assert!(
+            history
+                .light_block(3, &epochs)
+                .unwrap()
+                .descendants
+                .is_empty()
+        );
+        assert!(history.light_block(0, &epochs).is_err());
+        assert!(history.light_block(4, &epochs).is_err());
+    }
+    let history = Arc::new(FinalizedHistory::open(dir.path(), &genesis).unwrap());
+    let lookup: FinalizationLookup = Arc::new(|_| panic!("persisted artifacts must be reused"));
+    let index = Arc::new(BlockIndex::new());
+    history
+        .recover(&genesis, &third, &index, &epochs, &lookup)
+        .await
+        .unwrap();
+    assert!(epochs.get_finalization(&first.digest().0).is_none());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let api = HubApiImpl::new(Arc::new(NodeState::new(1, 0, 1)), None)
+        .with_index_and_modules(
+            index,
+            Arc::new(std::sync::RwLock::new(hub_modules::ModuleState::default())),
+        )
+        .with_light_block_index(epochs.clone())
+        .with_light_block_lookup({
+            let history = history.clone();
+            let epochs = epochs.clone();
+            let calls = calls.clone();
+            Arc::new(move |height| {
+                calls.fetch_add(1, Ordering::Relaxed);
+                history
+                    .light_block(height, &epochs)
+                    .map_err(|error| error.to_string())
+            })
+        });
+    let restored = api
+        .get_light_block(alloy_primitives::U64::from(1))
+        .await
+        .unwrap();
+    assert_eq!(restored, expected);
+    verify_light_block(&restored, &trusted).unwrap();
+    let direct = api
+        .get_light_block(alloy_primitives::U64::from(3))
+        .await
+        .unwrap();
+    assert!(direct.descendants.is_empty());
+    verify_light_block(&direct, &trusted).unwrap();
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        1,
+        "direct proofs must use the existing index"
+    );
+    assert!(
+        api.get_light_block(alloy_primitives::U64::from(4))
+            .await
+            .is_err()
+    );
+    history.db.delete(key(RECORD, 2)).unwrap();
+    assert!(
+        api.get_light_block(alloy_primitives::U64::from(1))
+            .await
+            .is_err()
+    );
+}
+
+#[test]
+fn history_proofs_reject_gaps_corruption_and_excessive_work() {
+    use hub_domain::{LIGHT_BLOCK_MAX_ARTIFACT_BYTES, LIGHT_BLOCK_MAX_DESCENDANTS};
+    let dir = tempfile::tempdir().unwrap();
+    let genesis = block(0, BlockId(B256::ZERO));
+    let history = FinalizedHistory::open(dir.path(), &genesis).unwrap();
+    let epochs = LightBlockIndex::new();
+    epochs.insert_epoch_material(0, StoredEpochMaterial { bytes: vec![1] });
+    let mut parent = genesis.id();
+    for height in 1..=LIGHT_BLOCK_MAX_DESCENDANTS as u64 + 2 {
+        let next = block(height, parent);
+        history.append(&next, &[], 100).unwrap();
+        parent = next.id();
+    }
+    let last = LIGHT_BLOCK_MAX_DESCENDANTS as u64 + 2;
+    history
+        .store_finalization(last, Some(&artifacts(last)))
+        .unwrap();
+    assert!(history.light_block(1, &epochs).is_err());
+    assert_eq!(
+        history.light_block(2, &epochs).unwrap().descendants.len(),
+        LIGHT_BLOCK_MAX_DESCENDANTS
+    );
+    let bytes = history.db.get(key(RECORD, 3)).unwrap().unwrap();
+    let mut record: Record = borsh::from_slice(&bytes).unwrap();
+    let mut disconnected = block(3, BlockId(B256::repeat_byte(99)));
+    record.block = disconnected.encode().to_vec();
+    history
+        .db
+        .put(key(RECORD, 3), borsh::to_vec(&record).unwrap())
+        .unwrap();
+    assert!(history.light_block(2, &epochs).is_err());
+    disconnected.height = 4;
+    record.block = disconnected.encode().to_vec();
+    history
+        .db
+        .put(key(RECORD, 3), borsh::to_vec(&record).unwrap())
+        .unwrap();
+    assert!(history.light_block(3, &epochs).is_err());
+    history
+        .db
+        .put(
+            key(RECORD, 3),
+            ((LIGHT_BLOCK_MAX_ARTIFACT_BYTES + 1) as u32).to_le_bytes(),
+        )
+        .unwrap();
+    assert!(
+        history
+            .light_block(3, &epochs)
+            .unwrap_err()
+            .to_string()
+            .contains("artifact limits")
+    );
+    history.db.put(key(RECORD, 3), [1, 0, 0, 0]).unwrap();
+    assert!(
+        history
+            .light_block(3, &epochs)
+            .unwrap_err()
+            .to_string()
+            .contains("truncated")
+    );
+}

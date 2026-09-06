@@ -29,8 +29,9 @@ pub use native_tx::{NATIVE_TX_TYPE, NativeTx, NativeTxPayload};
 
 mod light_block;
 pub use light_block::{
-    ConsensusPublicKey, EpochMaterial, LIGHT_BLOCK_MAX_PARTICIPANTS, LIGHT_BLOCK_NAMESPACE,
-    LightBlock, LightBlockError, LightConsensusScheme, verify_light_block,
+    ConsensusPublicKey, EpochMaterial, LIGHT_BLOCK_MAX_ARTIFACT_BYTES, LIGHT_BLOCK_MAX_DESCENDANTS,
+    LIGHT_BLOCK_MAX_PARTICIPANTS, LIGHT_BLOCK_NAMESPACE, LIGHT_BLOCK_RESPONSE_BYTES, LightBlock,
+    LightBlockError, LightConsensusScheme, verify_light_block,
 };
 
 pub mod relation_index;

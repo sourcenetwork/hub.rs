@@ -23,6 +23,8 @@ const FORMAT: &[u8] = b"format";
 const GENESIS: &[u8] = b"genesis";
 const HEAD: &[u8] = b"head";
 
+mod proof;
+
 #[derive(BorshSerialize, BorshDeserialize)]
 struct StoredReceipt {
     hash: [u8; 32],

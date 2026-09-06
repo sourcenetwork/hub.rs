@@ -59,14 +59,11 @@ pub(super) async fn check_decisions(
         let revision: LightBlock =
             tokio::time::timeout(std::time::Duration::from_secs(10), async {
                 loop {
-                    let latest: String = client
-                        .rpc_call_typed("eth_blockNumber", serde_json::json!([]))
-                        .await
-                        .unwrap();
-                    let height = u64::from_str_radix(latest.trim_start_matches("0x"), 16).unwrap();
-                    assert!(height >= receipt.block_number);
                     match client
-                        .rpc_call_typed("hub_getLightBlock", serde_json::json!([height]))
+                        .rpc_call_typed(
+                            "hub_getLightBlock",
+                            serde_json::json!([receipt.block_number]),
+                        )
                         .await
                     {
                         Ok(light) => break light,
@@ -81,6 +78,7 @@ pub(super) async fn check_decisions(
             })
             .await
             .unwrap();
+        assert_eq!(revision.height, receipt.block_number);
         let (_, root) = verify_light_block(&revision, trusted).unwrap();
         let key = format!("0x{}", hex::encode(format!("access_decision/{id}")));
         let proof: ModuleStateProof = client
