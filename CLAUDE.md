@@ -123,7 +123,13 @@ storage, code) over Commonware storage; `BatchState` is the executor's
 block for glue's state-sync bookkeeping; the peer QMDB resolver remains stubbed
 pending issue #99. Module state (ACP, Bulletin, Hub, native nonces) lives in
 JMT-backed `ModuleStateTree`s (`hub-state`, RocksDB) and is combined into the
-block header:
+block header. `hub-app::VeraStateSet` adds these modules as a fourth managed
+database beside the execution partitions. Module snapshots follow pending
+batches, and their height/root participate in target matching and recovery.
+Database apply persists module state before the application publishes receipts.
+Peer snapshot synchronization is still disabled for both execution and modules.
+
+The block commitments are:
 
 ```
 Block header:

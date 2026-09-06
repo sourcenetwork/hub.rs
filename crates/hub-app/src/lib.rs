@@ -28,3 +28,9 @@ pub use sink::{FinalizedSink, NoopSink};
 
 mod targets;
 pub use targets::{db_targets_from_merkleized, db_targets_from_sync, sync_targets};
+
+mod module_db;
+pub use module_db::{
+    DisabledModuleSync, ModuleBatch, ModuleDb, ModuleTarget, VeraMerkleized, VeraStateSet,
+    VeraSyncTargets, VeraUnmerkleized, vera_state_config,
+};

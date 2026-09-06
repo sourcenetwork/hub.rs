@@ -6,6 +6,8 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
+use crate::module_db::{module_targets, seal_batches, split_batches};
+use crate::{VeraMerkleized, VeraStateSet, VeraSyncTargets, VeraUnmerkleized};
 use alloy_consensus::Header;
 use alloy_primitives::{Address, B256};
 use commonware_consensus::marshal::ancestry::Ancestry;
@@ -13,10 +15,10 @@ use commonware_consensus::types::Round;
 use commonware_cryptography::Digestible as _;
 use commonware_glue::stateful::{Application, Input, Proposed, db::DatabaseSet};
 use futures::StreamExt as _;
-use hub_backend::{Ctx, HubMerkleized, HubStateSet, HubSyncTargets, HubUnmerkleized};
+use hub_backend::Ctx;
 use hub_consensus::{Mempool as _, TxId, components::InMemoryMempool};
 use hub_domain::{Block, BlockId, ConsensusContext, PublicKey};
-use hub_executor::{BlockContext, ExecutionReceipt, HubExecutor, ModuleSnapshot};
+use hub_executor::{BlockContext, ExecutionReceipt, HubExecutor};
 use parking_lot::Mutex;
 use tracing::{info, warn};
 
@@ -27,7 +29,6 @@ const MAX_PENDING_ANCESTORS: usize = 64;
 
 struct PendingExecution {
     height: u64,
-    modules: ModuleSnapshot,
     receipts: Vec<ExecutionReceipt>,
 }
 
@@ -151,24 +152,12 @@ impl<S: FinalizedSink> StatefulHubApp<S> {
         BlockContext::new(header, B256::ZERO, prevrandao)
     }
 
-    fn modules_for(&self, parent: BlockId) -> ModuleSnapshot {
-        self.pending
-            .lock()
-            .get(&parent)
-            .map(|execution| execution.modules.clone())
-            .unwrap_or_else(|| {
-                self.executor
-                    .snapshot()
-                    .expect("read committed module snapshot")
-            })
-    }
-
     async fn re_execute(
         &self,
         block: &Block,
-        batches: HubUnmerkleized,
-    ) -> Result<HubMerkleized, AppError> {
-        let modules = self.modules_for(block.parent);
+        batches: VeraUnmerkleized,
+    ) -> Result<VeraMerkleized, AppError> {
+        let (batches, modules) = split_batches(batches);
         let context = self
             .block_context(
                 block.height,
@@ -189,21 +178,19 @@ impl<S: FinalizedSink> StatefulHubApp<S> {
         if executed.db_targets != block.db_targets {
             return Err(AppError::RootMismatch("db targets"));
         }
-        self.cache_execution(block, executed.modules, executed.outcome.receipts);
-        Ok(executed.merkleized)
+        self.cache_execution(block, executed.outcome.receipts);
+        Ok(seal_batches(
+            executed.merkleized,
+            block.height,
+            executed.modules,
+        ))
     }
 
-    fn cache_execution(
-        &self,
-        block: &Block,
-        modules: ModuleSnapshot,
-        receipts: Vec<ExecutionReceipt>,
-    ) {
+    fn cache_execution(&self, block: &Block, receipts: Vec<ExecutionReceipt>) {
         self.pending.lock().insert(
             block.id(),
             PendingExecution {
                 height: block.height,
-                modules,
                 receipts,
             },
         );
@@ -228,13 +215,17 @@ impl<S: FinalizedSink> Application<Ctx> for StatefulHubApp<S> {
     type SigningScheme = ConsensusScheme;
     type Context = ConsensusContext;
     type Block = Block;
-    type Databases = HubStateSet;
-    type Captured = (ModuleSnapshot, Vec<ExecutionReceipt>);
+    type Databases = VeraStateSet;
+    type Captured = Vec<ExecutionReceipt>;
     type Provider = InMemoryMempool;
     type Input = ReshareInput;
 
-    fn sync_targets(block: &Self::Block) -> HubSyncTargets {
-        sync_targets(&block.db_targets)
+    fn sync_targets(block: &Self::Block) -> VeraSyncTargets {
+        module_targets(
+            sync_targets(&block.db_targets),
+            block.height,
+            block.module_state_root,
+        )
     }
 
     async fn genesis(&mut self) -> Self::Block {
@@ -245,7 +236,7 @@ impl<S: FinalizedSink> Application<Ctx> for StatefulHubApp<S> {
         &mut self,
         context: (Ctx, Self::Context),
         mut ancestry: impl Ancestry<Self::Block>,
-        batches: HubUnmerkleized,
+        batches: VeraUnmerkleized,
         input: Input<Self::Input, Self::Provider>,
     ) -> Option<Proposed<Self, Ctx>> {
         let start = Instant::now();
@@ -261,7 +252,7 @@ impl<S: FinalizedSink> Application<Ctx> for StatefulHubApp<S> {
         let excluded = Self::pending_tx_ids(&pending);
         let txs = input.provider.build(self.max_txs, &excluded);
 
-        let modules = self.modules_for(parent.id());
+        let (batches, modules) = split_batches(batches);
         let height = parent.height + 1;
         let timestamp = now_secs().max(parent.timestamp);
         let prevrandao = match self.round_prevrandao(consensus_context.round) {
@@ -299,7 +290,7 @@ impl<S: FinalizedSink> Application<Ctx> for StatefulHubApp<S> {
             payload: input.upstream.payload,
             db_targets: executed.db_targets,
         };
-        self.cache_execution(&block, executed.modules, executed.outcome.receipts);
+        self.cache_execution(&block, executed.outcome.receipts);
         info!(
             block_digest = ?block.digest(),
             height,
@@ -313,7 +304,7 @@ impl<S: FinalizedSink> Application<Ctx> for StatefulHubApp<S> {
         self.sink.proposed(&block);
         Some(Proposed {
             block,
-            merkleized: executed.merkleized,
+            merkleized: seal_batches(executed.merkleized, height, executed.modules),
         })
     }
 
@@ -321,8 +312,8 @@ impl<S: FinalizedSink> Application<Ctx> for StatefulHubApp<S> {
         &mut self,
         context: (Ctx, Self::Context),
         mut ancestry: impl Ancestry<Self::Block>,
-        batches: HubUnmerkleized,
-    ) -> Option<HubMerkleized> {
+        batches: VeraUnmerkleized,
+    ) -> Option<VeraMerkleized> {
         let start = Instant::now();
         let block = ancestry.next().await?;
         let parent = ancestry.next().await?;
@@ -389,8 +380,8 @@ impl<S: FinalizedSink> Application<Ctx> for StatefulHubApp<S> {
         &mut self,
         _context: (Ctx, Self::Context),
         block: &Self::Block,
-        batches: HubUnmerkleized,
-    ) -> Option<HubMerkleized> {
+        batches: VeraUnmerkleized,
+    ) -> Option<VeraMerkleized> {
         match self.re_execute(block, batches).await {
             Ok(merkleized) => Some(merkleized),
             Err(e) => {
@@ -404,14 +395,14 @@ impl<S: FinalizedSink> Application<Ctx> for StatefulHubApp<S> {
         &mut self,
         _context: (Ctx, Self::Context),
         block: &Self::Block,
-        _batches: &HubMerkleized,
-        _readers: <HubStateSet as DatabaseSet<Ctx>>::Readers,
+        _batches: &VeraMerkleized,
+        _readers: <VeraStateSet as DatabaseSet<Ctx>>::Readers,
     ) -> Self::Captured {
         let pending = self.pending.lock();
         let execution = pending
             .get(&block.id())
             .expect("finalized block must have its execution result");
-        (execution.modules.clone(), execution.receipts.clone())
+        execution.receipts.clone()
     }
 
     async fn finalized(
@@ -419,15 +410,11 @@ impl<S: FinalizedSink> Application<Ctx> for StatefulHubApp<S> {
         _context: (Ctx, Self::Context),
         block: &Self::Block,
         captured: Self::Captured,
-        _readers: <HubStateSet as DatabaseSet<Ctx>>::Readers,
+        _readers: <VeraStateSet as DatabaseSet<Ctx>>::Readers,
     ) {
         let ids: Vec<TxId> = block.txs.iter().map(hub_domain::Tx::id).collect();
         self.mempool.prune(&ids);
-        let (modules, receipts) = captured;
-        self.executor
-            .commit_snapshot(block.height, modules)
-            .expect("persist finalized modules");
-        self.sink.finalized(block, receipts).await;
+        self.sink.finalized(block, captured).await;
         self.pending
             .lock()
             .retain(|_, execution| execution.height >= block.height);

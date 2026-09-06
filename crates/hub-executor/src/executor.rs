@@ -35,6 +35,8 @@ use crate::precompiles::{
 /// Gas budget for native BLS transactions dispatched to modules.
 const NATIVE_TX_GAS_LIMIT: u64 = 1_000_000;
 
+mod recovery;
+
 /// Per-module JMT-backed state trees: [acp, bulletin, hub, nonces].
 pub type ModuleTrees = [Arc<Mutex<ModuleStateTree>>; 4];
 

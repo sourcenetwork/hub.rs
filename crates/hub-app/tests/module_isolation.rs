@@ -6,11 +6,15 @@ use std::sync::Arc;
 
 use alloy_sol_types::SolCall;
 use commonware_consensus::marshal::ancestry;
-use commonware_glue::stateful::{Application, Input, Proposed, db::DatabaseSet as _};
+use commonware_glue::stateful::{
+    Application, Input, Proposed,
+    db::{DatabaseSet as _, ManagedDb as _, Shared},
+};
 use commonware_runtime::{Runner as _, Supervisor as _, buffer::paged::CacheRef, tokio};
 use commonware_utils::{NZU16, NZUsize};
+use hub_app::{ModuleDb, VeraStateSet, VeraUnmerkleized};
 use hub_app::{NoopSink, ReshareInput, StatefulHubApp, apply_genesis, genesis_block};
-use hub_backend::{Ctx, HubStateSet, HubUnmerkleized, state_set_config};
+use hub_backend::{Ctx, HubStateSet, state_set_config};
 use hub_client::{ACP_ADDRESS, BlsSigner};
 use hub_consensus::{Mempool as _, components::InMemoryMempool};
 use hub_domain::{Block, Tx};
@@ -45,7 +49,7 @@ async fn propose(
     app: &mut StatefulHubApp<NoopSink>,
     context: Ctx,
     parent: &Block,
-    batches: HubUnmerkleized,
+    batches: VeraUnmerkleized,
     tx: Option<Tx>,
 ) -> Proposed<StatefulHubApp<NoopSink>, Ctx> {
     let provider = InMemoryMempool::new();
@@ -101,6 +105,10 @@ fn check_pending_branches(persistent: bool) {
         if let Some(trees) = &trees {
             executor = executor.with_module_trees(trees.clone());
         }
+        let native = ModuleDb::init(context.child("native"), executor.clone())
+            .await
+            .unwrap();
+        let set: VeraStateSet = (set.0, set.1, set.2, Shared::new("native", native));
         let mut app = StatefulHubApp::new(
             executor.clone(),
             genesis.clone(),
@@ -132,20 +140,35 @@ fn check_pending_branches(persistent: bool) {
         assert_eq!(a.block.txs.len(), 1);
         assert_eq!(b.block.txs.len(), 1);
 
+        let target = StatefulHubApp::<NoopSink>::sync_targets(&a.block);
+        assert!(VeraStateSet::matches_sync_targets(&a.merkleized, &target));
+        let mut wrong_height = target.clone();
+        wrong_height.3.height += 1;
+        assert!(!VeraStateSet::matches_sync_targets(
+            &a.merkleized,
+            &wrong_height
+        ));
+        let mut wrong_root = target;
+        wrong_root.3.root = b.block.module_state_root;
+        assert!(!VeraStateSet::matches_sync_targets(
+            &a.merkleized,
+            &wrong_root
+        ));
+
         let mut sibling = app.clone();
         let (child_a, child_b) = ::tokio::join!(
             propose(
                 &mut app,
                 context.child("child_a"),
                 &a.block,
-                HubStateSet::fork_batches(&a.merkleized),
+                VeraStateSet::fork_batches(&a.merkleized),
                 None
             ),
             propose(
                 &mut sibling,
                 context.child("child_b"),
                 &b.block,
-                HubStateSet::fork_batches(&b.merkleized),
+                VeraStateSet::fork_batches(&b.merkleized),
                 None
             ),
         );
@@ -185,6 +208,7 @@ fn check_pending_branches(persistent: bool) {
             assert!(visible.acp.query_policy_ids().unwrap().is_empty());
         }
 
+        let first_target = StatefulHubApp::<NoopSink>::sync_targets(&a.block);
         for winner in [a, child_a] {
             let captured = app
                 .capture(
@@ -195,6 +219,17 @@ fn check_pending_branches(persistent: bool) {
                 )
                 .await;
             set.apply(winner.merkleized).await;
+            assert_eq!(set.committed_targets().await.3.height, winner.block.height);
+            assert_eq!(
+                executor
+                    .modules()
+                    .read()
+                    .unwrap()
+                    .nonces
+                    .get_nonce(alice.did()),
+                1,
+                "database apply must publish native state before the application callback"
+            );
             app.finalized(
                 (context.child("finalized"), winner.block.context.clone()),
                 &winner.block,
@@ -220,5 +255,42 @@ fn check_pending_branches(persistent: bool) {
             }
         }
         assert!(set.finalize().await.durable().await);
+        if persistent {
+            drop(b);
+            drop(child_b);
+            set.rewind_to_targets(first_target).await;
+            assert_eq!(executor.module_height().unwrap(), 1);
+            assert_eq!(
+                executor
+                    .modules()
+                    .read()
+                    .unwrap()
+                    .nonces
+                    .get_nonce(alice.did()),
+                1
+            );
+            set.rewind_to_targets(StatefulHubApp::<NoopSink>::sync_targets(&genesis))
+                .await;
+            assert_eq!(executor.module_height().unwrap(), 0);
+            assert!(
+                executor
+                    .modules()
+                    .read()
+                    .unwrap()
+                    .acp
+                    .query_policy_ids()
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_eq!(
+                executor
+                    .modules()
+                    .read()
+                    .unwrap()
+                    .nonces
+                    .get_nonce(alice.did()),
+                0
+            );
+        }
     });
 }

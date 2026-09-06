@@ -41,14 +41,16 @@ use commonware_parallel::Sequential;
 use commonware_runtime::{Handle, Spawner as _, Supervisor as _, buffer::paged::CacheRef, tokio};
 use commonware_storage::{archive::prunable, translator::TwoCap};
 use commonware_utils::{NZDuration, NZU64, NZUsize, sequence::Unit};
-use hub_app::{ConsensusScheme, StatefulHubApp, apply_genesis, genesis_block};
+use hub_app::{
+    ConsensusScheme, DisabledModuleSync, StatefulHubApp, apply_genesis, genesis_block,
+    vera_state_config,
+};
 use hub_backend::{HubStateSet, state_set_config};
 use hub_consensus::components::InMemoryMempool;
 use hub_domain::{Block, EpochMaterial};
 use hub_executor::{ExecutionConfig, HubExecutor, MempoolValidator, ModuleTrees};
 use hub_indexer::{BlockIndex, LightBlockIndex, StoredEpochMaterial};
 use hub_jsonrpc::{IndexedStateProvider, NodeState, RpcServer, TxSubmitCallback};
-use hub_modules::module_state::state_root_from_jmt;
 use hub_modules::{ModuleState, kv_store::InMemoryKvStore};
 use hub_state::ModuleStateTree;
 use tracing::{error, info};
@@ -407,12 +409,20 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         context.child("stateful"),
         StatefulConfig {
             application,
-            db_config: state_set_config(PARTITION_PREFIX, page_cache.clone()),
+            db_config: vera_state_config(
+                state_set_config(PARTITION_PREFIX, page_cache.clone()),
+                executor.clone(),
+            ),
             provider: mempool.clone(),
             marshal: (marshal.clone(), floor),
             mailbox_size: MAILBOX_SIZE,
             plan,
-            resolvers: (NoSync::new(), NoSync::new(), NoSync::new()),
+            resolvers: (
+                NoSync::new(),
+                NoSync::new(),
+                NoSync::new(),
+                DisabledModuleSync,
+            ),
             sync_config: sync_config(),
             prune_config: None,
         },
@@ -493,7 +503,7 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
             .ok_or_else(|| anyhow::anyhow!("missing recovered module anchor"))?,
         None => anyhow::bail!("missing recovered module anchor"),
     };
-    recover_modules(&executor, &module_trees, &recovered)?;
+    executor.recover_modules(recovered.height, recovered.module_state_root)?;
     history
         .recover(
             &genesis_block,
@@ -506,7 +516,8 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     let stateful_handle = stateful_actor.start();
 
     // Transaction gossip and RPC over the live committed state.
-    let state_set = stateful_mailbox.subscribe_databases().await;
+    let databases = stateful_mailbox.subscribe_databases().await;
+    let state_set = (databases.0, databases.1, databases.2);
     let committed_state = CommittedState::new(state_set.clone());
     participants_provider.attach_state(committed_state.clone());
     let reshare_handle = reshare_actor.start(dkg_network);
@@ -627,33 +638,6 @@ fn initialize_genesis_modules(
     }
     *persisted = initial;
     Ok(root)
-}
-
-fn recover_modules(
-    executor: &HubExecutor,
-    trees: &ModuleTrees,
-    anchor: &Block,
-) -> anyhow::Result<()> {
-    let mut stores: [InMemoryKvStore; 4] = Default::default();
-    let mut roots = [[0; 32]; 4];
-    for (i, tree) in trees.iter().enumerate() {
-        let mut tree = tree.lock().unwrap();
-        tree.rewind_to_height(anchor.height)?;
-        roots[i] = tree.root()?.0;
-        stores[i] = InMemoryKvStore::from_pairs(tree.load_all()?);
-    }
-    let modules = ModuleState::from_stores(stores);
-    let root = if anchor.height == 0 {
-        modules.state_root()
-    } else {
-        state_root_from_jmt(&roots)
-    };
-    anyhow::ensure!(
-        root == anchor.module_state_root,
-        "recovered module root does not match the durable anchor"
-    );
-    executor.set_base_modules(modules);
-    Ok(())
 }
 
 /// Apply the genesis state on first boot and persist the genesis block so

@@ -6,9 +6,13 @@ use std::sync::Arc;
 
 use alloy_primitives::{Address, U256, keccak256};
 use commonware_consensus::marshal::ancestry;
-use commonware_glue::stateful::{Application, Input, db::DatabaseSet as _};
+use commonware_glue::stateful::{
+    Application, Input,
+    db::{DatabaseSet as _, ManagedDb as _, Merkleized as _, Shared},
+};
 use commonware_runtime::{Runner as _, Supervisor as _, buffer::paged::CacheRef, tokio};
 use commonware_utils::{NZU16, NZUsize};
+use hub_app::{ModuleDb, VeraStateSet};
 use hub_app::{NoopSink, ReshareInput, StatefulHubApp, apply_genesis, genesis_block};
 use hub_backend::{HubStateSet, state_set_config};
 use hub_consensus::{Mempool as _, components::InMemoryMempool};
@@ -48,8 +52,13 @@ fn competing_proposals_preserve_receipts() {
         let tx = Evm::sign_eip1559_transfer(&key, CHAIN_ID, to, U256::from(1000u64), 0, 21_000);
         assert!(mempool.insert(tx));
 
+        let executor = HubExecutor::new(CHAIN_ID);
+        let native = ModuleDb::init(context.child("native"), executor.clone())
+            .await
+            .unwrap();
+        let set: VeraStateSet = (set.0, set.1, set.2, Shared::new("native", native));
         let mut app = StatefulHubApp::new(
-            HubExecutor::new(CHAIN_ID),
+            executor,
             genesis.clone(),
             mempool.clone(),
             NoopSink,
@@ -87,7 +96,14 @@ fn competing_proposals_preserve_receipts() {
             )
             .await
             .expect("verification");
-        assert_eq!(hub_backend::combined_root(&verified), block.state_root.0);
+        assert_eq!(
+            hub_qmdb::StateRoot::compute(
+                alloy_primitives::B256::from_slice(verified.0.root().as_ref()),
+                alloy_primitives::B256::from_slice(verified.1.root().as_ref()),
+                alloy_primitives::B256::from_slice(verified.2.root().as_ref())
+            ),
+            block.state_root.0
+        );
 
         mempool.prune(&[block.txs[0].id()]);
         let competing_tx = Evm::sign_eip1559_transfer(
@@ -122,7 +138,7 @@ fn competing_proposals_preserve_receipts() {
             (&block, &verified),
             (&competing.block, &competing.merkleized),
         ] {
-            let (_, receipts) = app
+            let receipts = app
                 .capture(
                     (context.child("capture"), candidate.context.clone()),
                     candidate,
@@ -139,6 +155,9 @@ fn competing_proposals_preserve_receipts() {
         set.apply(verified).await;
         assert!(set.finalize().await.durable().await);
         let committed = set.committed_targets().await;
-        assert_eq!(hub_app::db_targets_from_sync(&committed), block.db_targets);
+        assert_eq!(
+            hub_app::db_targets_from_sync(&(committed.0, committed.1, committed.2)),
+            block.db_targets
+        );
     });
 }
