@@ -23,7 +23,8 @@ pub struct BlockContext {
     pub is_verification: bool,
     /// Expected module state root from the block being verified.
     pub expected_module_state_root: Option<B256>,
-    /// When true, skip JMT tree writes (receipt-only re-execution).
+    /// Skip executor-owned module commitments when reconstructing receipts or
+    /// sealing the logical changes in external authenticated storage.
     pub receipt_only: bool,
 }
 
@@ -56,7 +57,7 @@ impl BlockContext {
         self
     }
 
-    /// Mark this execution as receipt-only (skips JMT tree writes).
+    /// Skip module commitment work, including JMT preparation and full-store hashing.
     #[must_use]
     pub const fn with_receipt_only(mut self) -> Self {
         self.receipt_only = true;

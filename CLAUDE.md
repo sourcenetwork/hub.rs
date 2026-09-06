@@ -141,6 +141,14 @@ operation-log sync targets are distinct. Its configuration accepts keys up to
 bucket. This adapter is covered by storage lifecycle tests and is not wired into
 the node's execution or query-proof path.
 
+`hub-app::ordered_state::OrderedState` joins the three execution and four ordered
+module partitions under Commonware's database-set lifecycle. It executes native
+changes from pending parents, seals their ordered commitments, and publishes query
+maps after apply, rewind, startup loading or full-set sync. Sync delegates target
+convergence to Commonware and reloads query maps before returning the selected
+anchor. It rejects executors with JMT trees. This lifecycle is tested separately;
+the node still uses `VeraStateSet` and the existing module-proof format.
+
 The block commitments are:
 
 ```

@@ -34,3 +34,6 @@ pub use module_db::{
     DisabledModuleSync, ModuleBatch, ModuleDb, ModuleTarget, VeraMerkleized, VeraStateSet,
     VeraSyncTargets, VeraUnmerkleized, vera_state_config,
 };
+
+/// Ordered native storage integrated with execution and synchronized query-state publication.
+pub mod ordered_state;
