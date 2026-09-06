@@ -137,7 +137,7 @@ Without a selection file it uses the original `state/{acp,bulletin,hub,nonces}` 
 four module namespaces. It seals logical `ModuleState` differences into pending
 batches and reloads query maps from active records. Current-state roots and
 operation-log sync targets are distinct. Its configuration accepts keys up to
-64 KiB and values up to 1 MiB; keys sharing their first 64 bytes scan one index
+64 KiB and values up to 1 MiB; keys sharing their first 256 bytes scan one index
 bucket. This adapter is covered by storage lifecycle tests and is not wired into
 the node's execution or query-proof path.
 

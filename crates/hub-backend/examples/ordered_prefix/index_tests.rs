@@ -1,5 +1,6 @@
 use super::*;
 use commonware_storage::{mmr, qmdb::current::ordered::variable::Db, translator::EightCap};
+use hub_backend::native::INDEX_PREFIX_BYTES;
 use index::KeyPrefix;
 
 type NarrowStore =
@@ -9,13 +10,13 @@ fn keys() -> Vec<Vec<u8>> {
     vec![
         vec![],
         vec![0],
-        vec![0; 64],
-        vec![0; 65],
-        [vec![0; 64], vec![1]].concat(),
-        [vec![0; 64], vec![1, 0]].concat(),
-        [vec![0; 64], vec![255]].concat(),
-        vec![255; 64],
-        vec![255; 65],
+        vec![0; INDEX_PREFIX_BYTES],
+        vec![0; INDEX_PREFIX_BYTES + 1],
+        [vec![0; INDEX_PREFIX_BYTES], vec![1]].concat(),
+        [vec![0; INDEX_PREFIX_BYTES], vec![1, 0]].concat(),
+        [vec![0; INDEX_PREFIX_BYTES], vec![255]].concat(),
+        vec![255; INDEX_PREFIX_BYTES],
+        vec![255; INDEX_PREFIX_BYTES + 1],
     ]
 }
 
@@ -88,8 +89,8 @@ fn reopening_with_a_wider_index_preserves_committed_state() {
                 Some(Bytes::from_static(b"record"))
             );
         }
-        let witness = proof::prove(&db, &[0; 64]).await.unwrap();
-        assert!(witness.verify(&[0; 64], &root));
+        let witness = proof::prove(&db, &[0; INDEX_PREFIX_BYTES]).await.unwrap();
+        assert!(witness.verify(&[0; INDEX_PREFIX_BYTES], &root));
         assert_eq!(witness.entries.len(), 5);
     });
 }

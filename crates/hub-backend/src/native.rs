@@ -29,14 +29,17 @@ pub const MAX_KEY_BYTES: usize = 65_536;
 /// Maximum native record value accepted by this storage configuration.
 pub const MAX_VALUE_BYTES: usize = 1 << 20;
 
-/// Ordered index prefix. Keys sharing the first 64 bytes remain distinct but scan one bucket.
+/// Prefix bytes retained by the index; 64-byte prefixes end inside ACP policy IDs.
+pub const INDEX_PREFIX_BYTES: usize = 256;
+
+/// Ordered index prefix. Longer shared prefixes remain distinct but scan one bucket.
 #[derive(Clone, Debug, Default)]
 pub struct KeyPrefix(RandomState);
 
 impl Translator for KeyPrefix {
-    type Key = [u8; 64];
+    type Key = [u8; INDEX_PREFIX_BYTES];
     fn transform(&self, key: &[u8]) -> Self::Key {
-        let mut prefix = [0; 64];
+        let mut prefix = [0; INDEX_PREFIX_BYTES];
         let len = key.len().min(prefix.len());
         prefix[..len].copy_from_slice(&key[..len]);
         prefix

@@ -250,8 +250,8 @@ fn record_limits_and_colliding_prefixes_survive_reopen() {
             for key in [
                 vec![],
                 vec![0],
-                vec![1; 64],
-                vec![1; 65],
+                vec![1; native::INDEX_PREFIX_BYTES],
+                vec![1; native::INDEX_PREFIX_BYTES + 1],
                 vec![1; native::MAX_KEY_BYTES],
             ] {
                 store.put(&key, vec![u8::try_from(module).unwrap(); 8]);

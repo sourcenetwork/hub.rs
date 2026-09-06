@@ -1,5 +1,7 @@
 //! Ordered Commonware proof, sync and recovery qualification with local component timings.
 //! Timings exclude consensus and transport.
+//! The native layout uses canonical ACP key builders and a generated policy ID;
+//! object IDs are eight-digit counters and record values are synthetic 256-byte payloads.
 
 mod index {
     pub(super) use hub_backend::native::KeyPrefix;
@@ -32,8 +34,10 @@ use commonware_storage::{
     translator::Translator,
 };
 use commonware_utils::{NZU16, NZU64, NZUsize};
+use hub_modules::acp::{AcpModule, keys, types::PolicyMarshalingType};
 use proof::Store;
-use std::{hint::black_box, time::Instant};
+use std::{collections::BTreeMap, hint::black_box, time::Instant};
+use zanzibar::{Relationship, Subject};
 
 type LogCodec = ((RangeCfg<usize>, ()), RangeCfg<usize>);
 
@@ -77,17 +81,29 @@ where
     tokio::Runner::new(tokio::Config::new().with_storage_directory(dir.path())).start(f)
 }
 
-fn prefix(object: usize, grouped: bool) -> Vec<u8> {
+fn prefix(object: usize, layout: &str, policy: &str) -> Vec<u8> {
     let text = format!("relationship/policy/rel/document/{object:08}/blocked/");
-    if grouped {
-        Sha256::hash(&[text.as_bytes()]).to_vec()
-    } else {
-        text.into_bytes()
+    match layout {
+        "grouped" => Sha256::hash(&[text.as_bytes()]).to_vec(),
+        "native" => keys::relationship_storage_prefix(
+            policy,
+            &Relationship::relation_prefix("document", &format!("{object:08}"), "blocked"),
+        ),
+        _ => text.into_bytes(),
     }
 }
 
-fn key(object: usize, subject: usize, grouped: bool) -> Vec<u8> {
-    let mut key = prefix(object, grouped);
+fn key(object: usize, subject: usize, layout: &str, policy: &str) -> Vec<u8> {
+    if layout == "native" {
+        let relation = Relationship::new(
+            "document",
+            format!("{object:08}"),
+            "blocked",
+            Subject::entity_set("group", format!("{subject:08}"), "member"),
+        );
+        return keys::relationship_key(policy, &relation.storage_key());
+    }
+    let mut key = prefix(object, layout, policy);
     key.extend_from_slice(format!("{subject:08}").as_bytes());
     key
 }
@@ -96,38 +112,47 @@ fn main() {
     let args: Vec<_> = std::env::args().skip(1).collect();
     assert!(
         args.len() <= 3,
-        "usage: ordered_prefix_baseline [other_objects] [samples] [text|grouped]"
+        "usage: ordered_prefix_baseline [other_objects] [samples] [text|grouped|native]"
     );
     let parse = |i: usize, default| args.get(i).map_or(default, |v| v.parse::<usize>().unwrap());
     let objects = parse(0, 1000);
     let samples = parse(1, 100);
     let layout = args.get(2).map_or("grouped", String::as_str);
-    assert!(matches!(layout, "text" | "grouped"));
-    let grouped = layout == "grouped";
+    assert!(matches!(layout, "text" | "grouped" | "native"));
+    let owner = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+        .parse()
+        .unwrap();
+    let policy = AcpModule::new().create_policy(&owner, "name: documents\nresources:\n  - name: document\n    relations:\n      - name: blocked\n", PolicyMarshalingType::ShortYaml).unwrap().policy.id;
     assert!((1..=100_000).contains(&objects) && (1..=10_000).contains(&samples));
     run(|context| async move {
         let cfg = config(&context);
         let mut db = Store::init(context, cfg).await.unwrap();
         let value = Bytes::from(vec![7; 256]);
+        let translator = index::KeyPrefix::default();
+        let mut buckets = BTreeMap::<_, usize>::new();
         for start in (1..=objects).step_by(128) {
             let mut batch = db.new_batch();
             for object in start..=(start + 127).min(objects) {
-                batch = batch.write(key(object, 0, grouped), Some(value.clone()));
+                let key = key(object, 0, layout, &policy);
+                *buckets.entry(translator.transform(&key)).or_default() += 1;
+                batch = batch.write(key, Some(value.clone()));
             }
             let batch = batch.merkleize(&db, None).await.unwrap();
             (db, _) = db.apply_batch(batch).await.unwrap();
             db = db.commit().await.unwrap();
         }
-        let prefix = prefix(0, grouped);
+        let prefix = prefix(0, layout, &policy);
         println!(
-            "layout,other_objects,samples,subjects,proof_component_bytes,generate_p50_ns,generate_p95_ns,verify_p50_ns,verify_p95_ns"
+            "layout,other_objects,samples,subjects,proof_component_bytes,generate_p50_ns,generate_p95_ns,verify_p50_ns,verify_p95_ns,index_buckets,max_bucket_records"
         );
         let mut previous = 0;
         for subjects in [0, 1, 8, 64, 256] {
             if subjects > previous {
                 let mut batch = db.new_batch();
                 for subject in previous..subjects {
-                    batch = batch.write(key(0, subject, grouped), Some(value.clone()));
+                    let key = key(0, subject, layout, &policy);
+                    *buckets.entry(translator.transform(&key)).or_default() += 1;
+                    batch = batch.write(key, Some(value.clone()));
                 }
                 let batch = batch.merkleize(&db, None).await.unwrap();
                 (db, _) = db.apply_batch(batch).await.unwrap();
@@ -152,8 +177,13 @@ fn main() {
             let p50 = (samples * 50).div_ceil(100) - 1;
             let p95 = (samples * 95).div_ceil(100) - 1;
             println!(
-                "{layout},{objects},{samples},{subjects},{proof_bytes},{},{},{},{}",
-                generate[p50], generate[p95], verify[p50], verify[p95]
+                "{layout},{objects},{samples},{subjects},{proof_bytes},{},{},{},{},{},{}",
+                generate[p50],
+                generate[p95],
+                verify[p50],
+                verify[p95],
+                buckets.len(),
+                buckets.values().max().unwrap()
             );
         }
     });
