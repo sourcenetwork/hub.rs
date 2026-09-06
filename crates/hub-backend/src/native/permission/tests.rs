@@ -1,0 +1,429 @@
+use super::*;
+use bytes::Bytes;
+use commonware_codec::Decode as _;
+use commonware_glue::stateful::db::DatabaseSet as _;
+use commonware_runtime::{Runner as _, Supervisor as _, buffer::paged::CacheRef, tokio};
+use commonware_utils::{NZU16, NZUsize};
+use hub_modules::{
+    ModuleState,
+    acp::{
+        keys,
+        types::{PolicyCmd, PolicyMarshalingType},
+        zanzibar_store::evaluate_access_request,
+    },
+    module_state::ModuleChanges,
+};
+use hub_permission::current::{MAX_KEY_BYTES, MAX_VALUE_BYTES, exclusion, membership};
+use hub_permission::{Actor, Object, Operation, PERMISSION_LIMITS, ReadCapture};
+use zanzibar::{Relationship, Subject};
+
+const POLICY: &str = "\
+name: documents
+resources:
+  - name: document
+    relations:
+      - name: reader
+        types: [actor]
+      - name: blocked
+    permissions:
+      - name: read
+        expr: reader - blocked
+";
+
+#[test]
+fn native_proof_decoders_bound_keys_values_and_merkle_paths() {
+    let directory = tempfile::tempdir().unwrap();
+    tokio::Runner::new(tokio::Config::new().with_storage_directory(directory.path())).start(
+        |context| async move {
+            let set = init(&context).await;
+            let mut empty = set
+                .0
+                .read()
+                .await
+                .exclusion_proof(&b"missing".to_vec())
+                .await
+                .unwrap();
+            assert!(exclusion(&empty.encode()).is_ok());
+            let Exclusion::Commit(_, metadata) = &mut empty else {
+                panic!("empty database")
+            };
+            *metadata = Some(Bytes::from(vec![0; MAX_VALUE_BYTES + 1]));
+            assert!(exclusion(&empty.encode()).is_err());
+            apply(
+                &set,
+                [
+                    vec![(b"p/a".to_vec(), Some(vec![1]))],
+                    vec![],
+                    vec![],
+                    vec![],
+                ],
+            )
+            .await;
+            let db = set.0.read().await;
+            let proof = db.key_value_proof(b"p/a".to_vec()).await.unwrap();
+            let encoded = proof.encode();
+            assert!(membership(&encoded).is_ok());
+            assert!(membership(&encoded[..encoded.len() - 1]).is_err());
+            let mut trailing = encoded.to_vec();
+            trailing.push(0);
+            assert!(membership(&trailing).is_err());
+            let mut changed = proof.clone();
+            changed.next_key = vec![0; MAX_KEY_BYTES + 1];
+            assert!(membership(&changed.encode()).is_err());
+            let mut changed = proof;
+            changed.proof.range_proof.proof.digests = vec![
+                commonware_cryptography::sha256::Digest::from([0; 32]);
+                commonware_storage::merkle::MAX_PROOF_DIGESTS_PER_ELEMENT + 1
+            ];
+            assert!(membership(&changed.encode()).is_err());
+            let mut absent = db.exclusion_proof(&b"missing".to_vec()).await.unwrap();
+            let Exclusion::KeyValue(_, record) = &mut absent else {
+                panic!("nonempty database")
+            };
+            record.value = Bytes::from(vec![0; MAX_VALUE_BYTES + 1]);
+            assert!(exclusion(&absent.encode()).is_err());
+            let mut remaining = PERMISSION_LIMITS.reads;
+            let mut prefix =
+                prefix_proof(&db, b"p/", &mut remaining, PERMISSION_LIMITS.proof_bytes)
+                    .await
+                    .unwrap();
+            prefix.entries[0].value = Bytes::from(vec![0; MAX_VALUE_BYTES + 1]);
+            assert!(PrefixEvidence::decode_cfg(prefix.encode(), &1).is_err());
+        },
+    );
+}
+
+async fn init(context: &crate::Ctx) -> NativeStateSet {
+    let cache = CacheRef::from_pooler(context, NZU16!(4084), NZUsize!(64));
+    NativeStateSet::init(
+        context.child("proof"),
+        super::super::state_config("proof", cache),
+    )
+    .await
+}
+
+async fn apply(set: &NativeStateSet, changes: ModuleChanges) -> B256 {
+    set.apply(
+        super::super::prepare(set.new_batches().await, changes)
+            .await
+            .unwrap(),
+    )
+    .await;
+    combine_module_roots(&[
+        set.0.read().await.root().0,
+        set.1.read().await.root().0,
+        set.2.read().await.root().0,
+        set.3.read().await.root().0,
+    ])
+}
+
+#[test]
+fn permission_evidence_replays_deny_and_revocation_at_one_revision() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = tokio::Runner::new(tokio::Config::new().with_storage_directory(directory.path()));
+    runtime.start(|context| async move {
+        let set = init(&context).await;
+        let owner = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+            .parse()
+            .unwrap();
+        let actor = Actor(
+            "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH"
+                .parse()
+                .unwrap(),
+        );
+        let mut state = ModuleState::default();
+        let policy = state
+            .acp
+            .create_policy(&owner, POLICY, PolicyMarshalingType::ShortYaml)
+            .unwrap()
+            .policy
+            .id;
+        let blocked = Relationship::new(
+            "document",
+            "report",
+            "blocked",
+            Subject::typed_wildcard("document"),
+        );
+        let reader = Relationship::with_entity("document", "report", "reader", actor.0.clone());
+        for relationship in [reader.clone(), blocked.clone()] {
+            state
+                .acp
+                .direct_policy_cmd(&owner, &policy, PolicyCmd::SetRelationship(relationship))
+                .unwrap();
+        }
+        let request = AccessRequest {
+            actor,
+            operations: vec![Operation {
+                object: Object {
+                    resource: "document".into(),
+                    id: "report".into(),
+                },
+                permission: "read".into(),
+            }],
+        };
+        let root = apply(&set, state.diff_from(&ModuleState::default())).await;
+        let proof = permission_proof(
+            &set,
+            root,
+            state.acp.store().clone(),
+            &policy,
+            &request,
+            PERMISSION_LIMITS,
+        )
+        .await
+        .unwrap();
+        let verify = |proof: &PermissionProof, root, limits| {
+            verify_permission_proof(root, 7, &policy, &request, proof, limits)
+        };
+        assert!(!verify(&proof, root, PERMISSION_LIMITS).unwrap());
+        assert!(
+            !evaluate_access_request(
+                ReadCapture::new(state.acp.store().clone(), PERMISSION_LIMITS.reads),
+                &policy,
+                &request
+            )
+            .unwrap()
+        );
+        for i in 0..proof.reads.len() {
+            let mut changed = proof.clone();
+            changed.reads.remove(i);
+            assert!(verify(&changed, root, PERMISSION_LIMITS).is_err());
+            let mut duplicate = proof.clone();
+            duplicate.reads.push(proof.reads[i].clone());
+            assert!(verify(&duplicate, root, PERMISSION_LIMITS).is_err());
+        }
+        let blocked_prefix = keys::relationship_storage_prefix(
+            &policy,
+            &Relationship::relation_prefix("document", "report", "blocked"),
+        );
+        let mut omitted = proof.clone();
+        let deny_read = omitted
+            .reads
+            .iter_mut()
+            .find(|r| {
+                matches!(
+                    r,
+                    PermissionRead::CurrentPrefix { prefix, .. }
+                        if prefix.as_ref() == blocked_prefix
+                )
+            })
+            .unwrap();
+        let PermissionRead::CurrentPrefix { proof: encoded, .. } = deny_read else {
+            panic!("missing deny proof")
+        };
+        let mut evidence =
+            PrefixEvidence::decode_cfg(encoded.as_ref(), &PERMISSION_LIMITS.reads.records).unwrap();
+        assert_eq!(evidence.entries.len(), 1);
+        evidence.entries.clear();
+        *encoded = evidence.encode().into();
+        assert!(verify(&omitted, root, PERMISSION_LIMITS).is_err());
+
+        let mut wrong_value = proof.clone();
+        let present = wrong_value
+            .reads
+            .iter_mut()
+            .find(|r| matches!(r, PermissionRead::CurrentPoint { value: Some(_), .. }))
+            .unwrap();
+        let PermissionRead::CurrentPoint {
+            value: Some(value), ..
+        } = present
+        else {
+            unreachable!()
+        };
+        *value = vec![0].into();
+        assert!(verify(&wrong_value, root, PERMISSION_LIMITS).is_err());
+        let mut wrong_roots = proof.clone();
+        wrong_roots.roots.as_mut().unwrap().swap(0, 1);
+        assert!(verify(&wrong_roots, root, PERMISSION_LIMITS).is_err());
+        wrong_roots.roots = None;
+        assert!(verify(&wrong_roots, root, PERMISSION_LIMITS).is_err());
+
+        let size = encoded_size(&proof, usize::MAX).unwrap();
+        assert!(
+            !verify(
+                &proof,
+                root,
+                PermissionLimits {
+                    proof_bytes: size,
+                    ..PERMISSION_LIMITS
+                }
+            )
+            .unwrap()
+        );
+        assert!(
+            verify(
+                &proof,
+                root,
+                PermissionLimits {
+                    proof_bytes: size - 1,
+                    ..PERMISSION_LIMITS
+                }
+            )
+            .is_err()
+        );
+        for limits in [
+            PermissionLimits {
+                proof_bytes: size - 1,
+                ..PERMISSION_LIMITS
+            },
+            PermissionLimits {
+                reads: ReadLimits {
+                    records: 0,
+                    ..PERMISSION_LIMITS.reads
+                },
+                ..PERMISSION_LIMITS
+            },
+            PermissionLimits {
+                reads: ReadLimits {
+                    bytes: 1,
+                    ..PERMISSION_LIMITS.reads
+                },
+                ..PERMISSION_LIMITS
+            },
+        ] {
+            assert!(
+                permission_proof(
+                    &set,
+                    root,
+                    state.acp.store().clone(),
+                    &policy,
+                    &request,
+                    limits
+                )
+                .await
+                .is_err()
+            );
+        }
+        assert!(
+            permission_proof(
+                &set,
+                root,
+                InMemoryKvStore::default(),
+                &policy,
+                &request,
+                PERMISSION_LIMITS
+            )
+            .await
+            .is_err()
+        );
+        let before = state.clone();
+        state
+            .acp
+            .direct_policy_cmd(&owner, &policy, PolicyCmd::DeleteRelationship(blocked))
+            .unwrap();
+        let next_root = apply(&set, state.diff_from(&before)).await;
+        assert!(verify(&proof, next_root, PERMISSION_LIMITS).is_err());
+        assert!(
+            permission_proof(
+                &set,
+                root,
+                state.acp.store().clone(),
+                &policy,
+                &request,
+                PERMISSION_LIMITS
+            )
+            .await
+            .is_err()
+        );
+        let allowed = permission_proof(
+            &set,
+            next_root,
+            before.acp.store().clone(),
+            &policy,
+            &request,
+            PERMISSION_LIMITS,
+        )
+        .await
+        .unwrap();
+        assert!(verify(&allowed, next_root, PERMISSION_LIMITS).unwrap());
+        assert!(verify(&allowed, root, PERMISSION_LIMITS).is_err());
+        let before = state.clone();
+        state
+            .acp
+            .direct_policy_cmd(&owner, &policy, PolicyCmd::DeleteRelationship(reader))
+            .unwrap();
+        let revoked_root = apply(&set, state.diff_from(&before)).await;
+        let revoked = permission_proof(
+            &set,
+            revoked_root,
+            state.acp.store().clone(),
+            &policy,
+            &request,
+            PERMISSION_LIMITS,
+        )
+        .await
+        .unwrap();
+        assert!(!verify(&revoked, revoked_root, PERMISSION_LIMITS).unwrap());
+        assert!(verify(&allowed, revoked_root, PERMISSION_LIMITS).is_err());
+    });
+}
+
+#[test]
+fn prefix_evidence_handles_boundaries_and_rejects_noncanonical_or_excessive_data() {
+    let directory = tempfile::tempdir().unwrap();
+    tokio::Runner::new(tokio::Config::new().with_storage_directory(directory.path())).start(
+        |context| async move {
+            let set = init(&context).await;
+            for keys in [
+                vec![],
+                vec![b"p".to_vec()],
+                vec![b"p/a".to_vec(), b"p/b".to_vec(), b"q".to_vec()],
+            ] {
+                apply(
+                    &set,
+                    [
+                        keys.into_iter().map(|key| (key, Some(vec![1]))).collect(),
+                        vec![],
+                        vec![],
+                        vec![],
+                    ],
+                )
+                .await;
+                let db = set.0.read().await;
+                for prefix in [
+                    b"".as_slice(),
+                    b"a",
+                    b"p",
+                    b"p/",
+                    b"p/a",
+                    b"p/aa",
+                    b"q",
+                    b"z",
+                ] {
+                    let mut remaining = PERMISSION_LIMITS.reads;
+                    let evidence =
+                        prefix_proof(&db, prefix, &mut remaining, PERMISSION_LIMITS.proof_bytes)
+                            .await
+                            .unwrap();
+                    evidence.verify(prefix, &db.root()).unwrap();
+                    let encoded = evidence.encode();
+                    assert_eq!(encoded.len(), evidence.encode_size());
+                    let decoded =
+                        PrefixEvidence::decode_cfg(encoded.clone(), &evidence.entries.len())
+                            .unwrap();
+                    decoded.verify(prefix, &db.root()).unwrap();
+                    assert!(
+                        PrefixEvidence::decode_cfg(encoded.slice(..encoded.len() - 1), &4096)
+                            .is_err()
+                    );
+                    let mut trailing = encoded.to_vec();
+                    trailing.push(0);
+                    assert!(PrefixEvidence::decode_cfg(trailing.as_slice(), &4096).is_err());
+                    if !evidence.entries.is_empty() {
+                        assert!(
+                            PrefixEvidence::decode_cfg(encoded, &(evidence.entries.len() - 1))
+                                .is_err()
+                        );
+                        let mut omitted = evidence.clone();
+                        omitted.entries.pop();
+                        assert!(omitted.verify(prefix, &db.root()).is_err());
+                        let mut changed = evidence.clone();
+                        changed.entries[0].value = Bytes::from_static(b"wrong");
+                        assert!(changed.verify(prefix, &db.root()).is_err());
+                    }
+                    assert!(prefix_proof(&db, prefix, &mut remaining, 0).await.is_err());
+                }
+            }
+        },
+    );
+}

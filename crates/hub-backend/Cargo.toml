@@ -14,6 +14,7 @@ workspace = true
 hub-qmdb.workspace = true
 hub-traits.workspace = true
 hub-modules.workspace = true
+hub-permission.workspace = true
 
 alloy-primitives.workspace = true
 bytes.workspace = true

@@ -30,10 +30,10 @@ pub mod p2p;
 mod sync_proof;
 pub use sync_proof::SyncProof;
 
-/// Maximum native record key length accepted by this storage configuration.
-pub const MAX_KEY_BYTES: usize = 65_536;
-/// Maximum native record value accepted by this storage configuration.
-pub const MAX_VALUE_BYTES: usize = 1 << 20;
+pub use hub_permission::current::{MAX_KEY_BYTES, MAX_VALUE_BYTES};
+
+mod permission;
+pub use permission::permission_proof;
 
 /// Prefix bytes retained by the index; 64-byte prefixes end inside ACP policy IDs.
 pub const INDEX_PREFIX_BYTES: usize = 256;

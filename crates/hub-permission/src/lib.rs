@@ -18,6 +18,9 @@ pub use hub_modules::acp::{
 };
 pub use hub_modules::types::Timestamp;
 
+/// Current-state point and complete-prefix evidence over Commonware storage.
+pub mod current;
+
 /// Shared service limits; consumers may impose tighter limits.
 pub const PERMISSION_LIMITS: PermissionLimits = PermissionLimits {
     reads: ReadLimits {
@@ -47,6 +50,22 @@ pub struct PermissionLimits {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PermissionRead {
+    /// Current-state record membership or absence.
+    CurrentPoint {
+        /// Raw record key.
+        key: Bytes,
+        /// A value selects membership; absence selects an exclusion proof.
+        value: Option<Bytes>,
+        /// Bounded canonical Commonware proof bytes.
+        proof: Bytes,
+    },
+    /// Current-state complete ordered prefix.
+    CurrentPrefix {
+        /// Exact raw prefix.
+        prefix: Bytes,
+        /// Bounded canonical complete-prefix evidence.
+        proof: Bytes,
+    },
     /// Proven record value or absence.
     Point {
         /// Record evidence at the selected revision.
@@ -64,6 +83,10 @@ pub enum PermissionRead {
 /// Read evidence; the consumer computes its own permission result.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PermissionProof {
+    /// Current-state namespace roots in ACP, bulletin, hub and sequence order.
+    /// Omitted for the original proof format.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roots: Option<[B256; 4]>,
     /// Distinct point and prefix reads used by the evaluator.
     pub reads: Vec<PermissionRead>,
 }
@@ -142,6 +165,9 @@ pub fn verify_permission_proof(
         return Err(PermissionError::Limit);
     }
     encoded_size(proof, limits.proof_bytes)?;
+    if let Some(roots) = proof.roots {
+        return current::verify(root, roots, policy, request, proof, limits);
+    }
     let mut store = VerifiedRecords {
         points: BTreeMap::new(),
         prefixes: BTreeMap::new(),
@@ -150,6 +176,9 @@ pub fn verify_permission_proof(
     let mut records = limits.reads.records;
     for read in &proof.reads {
         match read {
+            PermissionRead::CurrentPoint { .. } | PermissionRead::CurrentPrefix { .. } => {
+                return Err(PermissionError::Invalid("current-state roots missing"));
+            }
             PermissionRead::Point { proof } => {
                 records = records
                     .checked_sub(usize::from(proof.value.is_some()))
@@ -287,6 +316,16 @@ mod tests {
 
     #[test]
     fn encoded_limits_match_wire_bytes_and_reject_empty_requests() {
+        assert_eq!(
+            serde_json::to_string(&PermissionProof::default()).unwrap(),
+            r#"{"reads":[]}"#
+        );
+        assert!(
+            serde_json::from_str::<PermissionProof>(r#"{"reads":[]}"#)
+                .unwrap()
+                .roots
+                .is_none()
+        );
         let request = request();
         let bytes = serde_json::to_vec(&("policy", &request)).unwrap();
         assert_eq!(

@@ -26,6 +26,43 @@ Activation changes consensus execution and the next module commitment. Existing 
 
 `HubClient::verify_access_at` verifies a supplied finalized revision against an independently configured consensus key, fetches bounded evidence and evaluates it locally. It checks the HTTP response size before deserialization, including chunked responses, checks the JSON-RPC request ID, and applies a ten-second request timeout. The caller controls revision freshness. The method does not fall back to an older revision or interpret unavailable evidence as a denial or grant.
 
-Service limits are 64 operations, 64 KiB of serialized policy ID and request, 256 evaluation reads, 4,096 returned records across those reads, 1 MiB of request-key and returned-record bytes, and 4 MiB of serialized evidence. Complete-prefix reads also obey the relation endpoint's limits. Client transport permits the proof limit plus 1 KiB for the RPC envelope. Clients may impose tighter limits. These read limits do not bound pure expression work or establish a sustained-throughput guarantee.
+Service limits are 64 operations, 64 KiB of serialized policy ID and request, 256 evaluation reads, 4,096 returned records across those reads, 1 MiB of request-key and returned-record bytes, and 4 MiB of serialized evidence. JMT complete-prefix reads also obey the relation endpoint's limits. Client transport permits the proof limit plus 1 KiB for the RPC envelope. Clients may impose tighter limits. These read limits do not bound pure expression work or establish a sustained-throughput guarantee.
 
 The server captures reads from one immutable current module snapshot, generates evidence at the requested revision and verifies the resulting request before returning it. Changes in membership or policy can make historical evidence unavailable. Every successful response nevertheless evaluates entirely against the requested revision. Client verification is independent of the server's capture decisions.
+
+## Ordered Commonware evidence
+
+The same permission endpoint supports ordered Commonware module storage when the
+server is constructed with `with_hub_native_modules`. The node does not yet select
+this storage path. The standalone point and relation endpoints remain JMT-based.
+
+This format adds `roots`, the four namespace roots in ACP, bulletin, hub and
+sequence order. Their combined commitment must match the caller's verified
+revision. Reads use `kind: "current_point"` or `kind: "current_prefix"`, with
+canonical Commonware evidence encoded as hex bytes. A point carries its key and
+optional value; absence requires an exclusion proof. A prefix carries an
+authenticated boundary followed by the complete ordered successor chain. A
+missing successor, reordered record or substituted value invalidates the proof.
+The verifier rejects mixed formats and replays the same ACP evaluator for both.
+Existing JMT responses omit `roots` and retain their original encoding.
+
+Generation holds read locks on all four namespaces and checks the selected root
+before reading evidence. Prefix generation walks successors with aggregate record
+and byte limits; it does not materialize a complete index bucket. The immutable
+query snapshot selects candidate reads only. The server verifies the resulting
+evidence before returning it, so a stale snapshot can cause unavailability but
+cannot supply unauthenticated permission results.
+
+Binary decoding bounds keys to 64 KiB, values and commit metadata to 1 MiB, Merkle
+paths to Commonware's proof limit, and prefix entries to the remaining record
+budget. These field limits match native storage. The full serialized response
+limit is checked before binary decoding. Transport bounds still apply before JSON
+deserialization. Storage may allocate an individual record before generation can
+charge it; index collisions, evaluator work and concurrent-request resource use
+have not been qualified by sustained-load testing.
+
+Current-state evidence is available only when the live databases match the
+requested finalized module root. A changed root returns an error instead of
+substituting newer state. This path does not provide retained historical activity
+proofs; operation-log history proofs cannot establish historical membership or
+absence.

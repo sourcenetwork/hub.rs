@@ -97,6 +97,7 @@ pub struct HubApiImpl {
     index: Option<Arc<BlockIndex>>,
     modules: Option<SharedModuleState>,
     module_trees: Option<ModuleTrees>,
+    native_modules: Option<hub_backend::native::NativeStateSet>,
     light_block_index: Option<Arc<LightBlockIndex>>,
     light_block_lookup: Option<LightBlockLookup>,
 }
@@ -109,6 +110,7 @@ impl std::fmt::Debug for HubApiImpl {
             .field("index", &self.index.is_some())
             .field("modules", &self.modules.is_some())
             .field("module_trees", &self.module_trees.is_some())
+            .field("native_modules", &self.native_modules.is_some())
             .field("light_block_index", &self.light_block_index.is_some())
             .field("light_block_lookup", &self.light_block_lookup.is_some())
             .finish()
@@ -125,6 +127,7 @@ impl HubApiImpl {
             index: None,
             modules: None,
             module_trees: None,
+            native_modules: None,
             light_block_index: None,
             light_block_lookup: None,
         }
@@ -146,6 +149,18 @@ impl HubApiImpl {
     #[must_use]
     pub fn with_module_trees(mut self, trees: ModuleTrees) -> Self {
         self.module_trees = Some(trees);
+        self
+    }
+
+    /// Serve permission evidence from the selected ordered module databases.
+    #[must_use]
+    pub fn with_native_modules(
+        mut self,
+        databases: hub_backend::native::NativeStateSet,
+        modules: SharedModuleState,
+    ) -> Self {
+        self.native_modules = Some(databases);
+        self.modules = Some(modules);
         self
     }
 

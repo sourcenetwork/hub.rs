@@ -101,6 +101,7 @@ pub struct RpcServer<S: StateProvider = NoopStateProvider> {
     hub_index: Option<Arc<BlockIndex>>,
     hub_modules: Option<SharedModuleState>,
     hub_module_trees: Option<ModuleTrees>,
+    hub_native_modules: Option<(hub_backend::native::NativeStateSet, SharedModuleState)>,
     hub_light_block_index: Option<Arc<LightBlockIndex>>,
     hub_light_block_lookup: Option<LightBlockLookup>,
 }
@@ -135,6 +136,7 @@ impl RpcServer<NoopStateProvider> {
             hub_index: None,
             hub_modules: None,
             hub_module_trees: None,
+            hub_native_modules: None,
             hub_light_block_index: None,
             hub_light_block_lookup: None,
         }
@@ -157,6 +159,7 @@ impl RpcServer<NoopStateProvider> {
             hub_index: None,
             hub_modules: None,
             hub_module_trees: None,
+            hub_native_modules: None,
             hub_light_block_index: None,
             hub_light_block_lookup: None,
         }
@@ -186,6 +189,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             hub_index: None,
             hub_modules: None,
             hub_module_trees: None,
+            hub_native_modules: None,
             hub_light_block_index: None,
             hub_light_block_lookup: None,
         }
@@ -260,6 +264,17 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
         self
     }
 
+    /// Serve native permission proofs from the ordered module databases and query snapshot.
+    #[must_use]
+    pub fn with_hub_native_modules(
+        mut self,
+        databases: hub_backend::native::NativeStateSet,
+        modules: SharedModuleState,
+    ) -> Self {
+        self.hub_native_modules = Some((databases, modules));
+        self
+    }
+
     /// Serve light blocks from durable history, including descendant certificates.
     #[must_use]
     pub fn with_hub_light_block_lookup(mut self, lookup: LightBlockLookup) -> Self {
@@ -291,6 +306,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             hub_index: None,
             hub_modules: None,
             hub_module_trees: None,
+            hub_native_modules: None,
             hub_light_block_index: None,
             hub_light_block_lookup: None,
         }
@@ -314,6 +330,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
         let hub_index = self.hub_index;
         let hub_modules = self.hub_modules;
         let hub_module_trees = self.hub_module_trees;
+        let hub_native_modules = self.hub_native_modules;
         let hub_light_block_index = self.hub_light_block_index;
         let hub_light_block_lookup = self.hub_light_block_lookup;
 
@@ -359,6 +376,9 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
                 }
                 if let Some(trees) = hub_module_trees {
                     api = api.with_module_trees(trees);
+                }
+                if let Some((databases, modules)) = hub_native_modules {
+                    api = api.with_native_modules(databases, modules);
                 }
                 if let Some(lookup) = hub_light_block_lookup {
                     api = api.with_light_block_lookup(lookup);
@@ -512,6 +532,7 @@ pub struct JsonRpcServer<S: StateProvider = NoopStateProvider> {
     hub_index: Option<Arc<BlockIndex>>,
     hub_modules: Option<SharedModuleState>,
     hub_module_trees: Option<ModuleTrees>,
+    hub_native_modules: Option<(hub_backend::native::NativeStateSet, SharedModuleState)>,
     hub_light_block_index: Option<Arc<LightBlockIndex>>,
     hub_light_block_lookup: Option<LightBlockLookup>,
 }
@@ -543,6 +564,7 @@ impl JsonRpcServer<NoopStateProvider> {
             hub_index: None,
             hub_modules: None,
             hub_module_trees: None,
+            hub_native_modules: None,
             hub_light_block_index: None,
             hub_light_block_lookup: None,
         }
@@ -566,6 +588,7 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
             hub_index: None,
             hub_modules: None,
             hub_module_trees: None,
+            hub_native_modules: None,
             hub_light_block_index: None,
             hub_light_block_lookup: None,
         }
@@ -640,6 +663,17 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
         self
     }
 
+    /// Serve native permission proofs from the ordered module databases and query snapshot.
+    #[must_use]
+    pub fn with_hub_native_modules(
+        mut self,
+        databases: hub_backend::native::NativeStateSet,
+        modules: SharedModuleState,
+    ) -> Self {
+        self.hub_native_modules = Some((databases, modules));
+        self
+    }
+
     /// Serve light blocks from durable history, including descendant certificates.
     #[must_use]
     pub fn with_hub_light_block_lookup(mut self, lookup: LightBlockLookup) -> Self {
@@ -701,6 +735,9 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
                 }
                 if let Some(trees) = self.hub_module_trees {
                     api = api.with_module_trees(trees);
+                }
+                if let Some((databases, modules)) = self.hub_native_modules {
+                    api = api.with_native_modules(databases, modules);
                 }
                 if let Some(lookup) = self.hub_light_block_lookup {
                     api = api.with_light_block_lookup(lookup);

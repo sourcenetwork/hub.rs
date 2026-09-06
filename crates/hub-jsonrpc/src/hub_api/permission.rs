@@ -40,6 +40,18 @@ impl HubApiImpl {
             .acp
             .store()
             .clone();
+        if let Some(databases) = &self.native_modules {
+            return hub_backend::native::permission_proof(
+                databases,
+                root,
+                snapshot,
+                policy,
+                request,
+                PERMISSION_LIMITS,
+            )
+            .await
+            .map_err(error);
+        }
         let reads =
             capture_reads(snapshot.clone(), policy, request, PERMISSION_LIMITS).map_err(error)?;
         let mut proof = PermissionProof::default();

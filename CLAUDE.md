@@ -144,7 +144,15 @@ Current-state roots and
 operation-log sync targets are distinct. Its configuration accepts keys up to
 64 KiB and values up to 1 MiB; keys sharing their first 256 bytes scan one index
 bucket. This adapter is covered by storage lifecycle tests and is not wired into
-the node's execution or query-proof path.
+the node's execution path. RPC builders can attach its databases and module query
+snapshot through `with_hub_native_modules` to serve Commonware permission evidence.
+Generation holds all four namespace read locks, checks the selected finalized
+module root and walks bounded successor chains for complete prefixes. The shared
+permission verifier checks membership, absence and completeness before replaying
+ACP evaluation. A checkpoint synchronization test exercises signed native writes,
+query publication, HTTP proof serving and client verification across a later deny
+relationship. The node still attaches JMT trees; standalone point/relation queries
+remain JMT-based, and historical native activity proofs are not retained.
 
 `hub-backend::p2p` adapts execution and ordered native partitions to Commonware's
 peer resolver without changing operation bytes or proofs. Native codecs share

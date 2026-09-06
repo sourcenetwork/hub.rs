@@ -5,6 +5,9 @@ use thiserror::Error;
 /// Error type for backend operations.
 #[derive(Debug, Error)]
 pub enum BackendError {
+    /// Permission evidence is invalid, unavailable or exceeds request limits.
+    #[error(transparent)]
+    Permission(#[from] hub_permission::PermissionError),
     /// Native synchronization evidence does not match its trusted state root.
     #[error("invalid sync proof: {0}")]
     InvalidSyncProof(&'static str),

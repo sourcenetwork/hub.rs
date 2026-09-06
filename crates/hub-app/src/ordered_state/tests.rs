@@ -16,6 +16,7 @@ use hub_modules::acp::abi::IAcp;
 
 mod checkpoint;
 mod peer_sync;
+mod permission;
 mod recovery;
 
 const DEPLOYMENT: u64 = 9001;

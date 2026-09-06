@@ -47,6 +47,7 @@ commonware-cryptography.workspace = true
 
 # Hub crates
 hub-domain.workspace = true
+hub-backend.workspace = true
 hub-permission.workspace = true
 hub-executor.workspace = true
 hub-indexer.workspace = true
