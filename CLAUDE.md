@@ -146,7 +146,8 @@ resolver without changing operation bytes or proofs. Its codec shares journal
 key/value limits, and both fetch and serving adapters cap requests at two
 operations so maximum-size responses fit the 4 MiB transport limit. The resolver
 retains Commonware cancellation and verification feedback, including peer blocking.
-An authenticated loopback test covers transfer into a fresh native partition.
+Authenticated loopback tests cover fresh transfer, pruned-history recovery after
+cancellation, convergence on a newer target, and rejection of a mismatched root.
 This adapter is not connected to node synchronization; execution partitions and
 the existing JMT module proofs still use the previous paths.
 

@@ -2,18 +2,19 @@ use super::*;
 use crate::native::{MAX_KEY_BYTES, MAX_VALUE_BYTES, state_config};
 use bytes::Bytes;
 use commonware_codec::{Decode as _, DecodeExt as _, Encode as _};
-use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
 use commonware_glue::stateful::db::{
     DatabaseSet as _, StateSyncDb as _, SyncEngineConfig, Unmerkleized as _,
 };
-use commonware_p2p::{Address, AddressableManager as _, Blocker as _, authenticated::lookup};
-use commonware_runtime::{Quota, Runner as _, Supervisor as _, buffer::paged::CacheRef, tokio};
+use commonware_runtime::{Runner as _, Supervisor as _, buffer::paged::CacheRef, tokio};
 use commonware_storage::{
     merkle::{Location, MAX_PROOF_DIGESTS_PER_ELEMENT, Proof},
     qmdb::any::ordered::variable::Update,
 };
-use commonware_utils::{NZU16, NZU32, NZUsize, channel::mpsc, ordered::Map};
+use commonware_utils::{NZU16, NZUsize, channel::mpsc};
 use std::time::Duration;
+
+mod network;
+mod recovery;
 
 fn update(key: usize, value: usize, next_key: usize) -> Operation {
     Operation::Update(Update {
@@ -121,68 +122,13 @@ fn peer_sync_preserves_roots_and_reports_rejected_responses() {
             let target = source.committed_targets().await;
             let root = source.read().await.root();
 
-            let keys = [PrivateKey::from_seed(1), PrivateKey::from_seed(2)];
-            let listeners = keys
-                .each_ref()
-                .map(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap());
-            let addresses = listeners
-                .each_ref()
-                .map(|listener| listener.local_addr().unwrap());
-            let peers = keys.each_ref().map(|key| key.public_key());
-            let membership: Map<_, Address> = peers
-                .iter()
-                .cloned()
-                .zip(addresses.map(Into::into))
-                .collect::<Vec<_>>()
-                .try_into()
-                .unwrap();
-            let mut resolvers = Vec::new();
-            let mut actors = Vec::new();
-            let mut networks = Vec::new();
-            let mut blocked = Vec::new();
-            for (i, (key, listener)) in keys.into_iter().zip(listeners).enumerate() {
-                let mut cfg = lookup::Config::local(
-                    key,
-                    b"vera-native-sync-test",
-                    addresses[i],
-                    NZUsize!(2),
-                    4 * 1024 * 1024,
-                );
-                cfg.dial_frequency = Duration::from_millis(10);
-                cfg.peer_connection_cooldown = Duration::from_millis(10);
-                let (mut network, mut oracle) = lookup::Network::new(
-                    context.child(["network_source", "network_replica"][i]),
-                    cfg,
-                );
-                oracle.track(0, membership.clone());
-                blocked.push(oracle.blocked());
-                let (actor, mailbox) = p2p::Actor::new(
-                    context.child(["resolver_source", "resolver_replica"][i]),
-                    p2p::Config {
-                        peer_provider: oracle.clone(),
-                        blocker: oracle,
-                        database: None::<Shared<WireDatabase>>,
-                        mailbox_size: NZUsize!(4),
-                        me: Some(peers[i].clone()),
-                        timeout: Duration::from_secs(2),
-                        fetch_retry_timeout: Duration::from_millis(10),
-                        max_serve_ops: MAX_FETCH_OPS,
-                        priority_requests: false,
-                        priority_responses: false,
-                    },
-                );
-                let net = network.register(0, Quota::per_second(NZU32!(100)));
-                drop(listener);
-                networks.push(network.start());
-                actors.push(actor.start(net));
-                resolvers.push(Resolver::new(mailbox));
-            }
-            resolvers[0].attach_database(source.clone()).await;
+            let mut peers = network::Peers::start(&context);
+            peers.resolvers[0].attach_database(source.clone()).await;
             let (_updates, updates_rx) = mpsc::channel(1);
             let replica = NativeDb::sync_db(
                 context.child("replica"),
                 state_config("replica", cache).0,
-                resolvers[1].clone(),
+                peers.resolvers[1].clone(),
                 target.clone(),
                 updates_rx,
                 None,
@@ -205,7 +151,7 @@ fn peer_sync_preserves_roots_and_reports_rejected_responses() {
             );
             assert!(replica.get(&b"removed".to_vec()).await.unwrap().is_none());
 
-            let (response, feedback) = resolvers[1]
+            let (response, feedback) = peers.resolvers[1]
                 .serve(Request::Boundary {
                     size: target.range.end(),
                     start: target.range.start(),
@@ -215,21 +161,15 @@ fn peer_sync_preserves_roots_and_reports_rejected_responses() {
             assert!(matches!(response, Response::Boundary { .. }));
             feedback.unwrap().send(false).unwrap();
             loop {
-                if blocked[1]
+                if peers.blocked[1]
                     .recv()
                     .await
                     .unwrap()
                     .iter()
-                    .any(|peer| peer == &peers[0])
+                    .any(|peer| peer == &peers.identities[0])
                 {
                     break;
                 }
-            }
-            for actor in actors {
-                actor.abort();
-            }
-            for network in networks {
-                network.abort();
             }
         })
         .await
