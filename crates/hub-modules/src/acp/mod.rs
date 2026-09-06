@@ -1432,7 +1432,7 @@ impl AcpModule {
     ///
     /// Uses [`PermissionEngine::check_blocking`], whose determinism contract
     /// (all-Ready, side-effect-free, order-stable store) is satisfied by the
-    /// `BTreeMap`-backed module store: identical inputs yield the identical
+    /// ordered module store: identical inputs yield the identical
     /// decision on every validator.
     fn check_permission(
         &self,

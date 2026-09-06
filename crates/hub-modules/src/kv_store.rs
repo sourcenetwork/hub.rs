@@ -1,16 +1,14 @@
 //! Module-level KV store trait and in-memory implementation.
 
-use std::{
-    collections::{BTreeMap, HashSet},
-    sync::Arc,
-};
+use std::collections::{BTreeMap, HashSet};
+
+use bytes::Bytes;
+use imbl::{OrdMap, ordmap::DiffItem};
 
 /// Key-value store abstraction for module state.
 ///
 /// Each module holds a single `impl ModuleKvStore` instead of raw `HashMap`s.
-/// The `InMemoryKvStore` implementation wraps a `BTreeMap` so that
-/// `prefix_scan` returns keys in sorted order (enabling efficient
-/// sub-prefix iteration).
+/// `prefix_scan` returns keys in sorted order, enabling sub-prefix iteration.
 pub trait ModuleKvStore: Clone + std::fmt::Debug + Default + Send + Sync {
     /// Read a value by key.
     fn get(&self, key: &[u8]) -> Option<Vec<u8>>;
@@ -30,14 +28,14 @@ pub trait ModuleKvStore: Clone + std::fmt::Debug + Default + Send + Sync {
     }
 }
 
-/// `BTreeMap`-backed in-memory KV store.
+/// Ordered in-memory KV store with shared snapshots.
 ///
 /// Tracks dirty keys modified since the last `reset_dirty()` call (or clone).
-/// Clones share immutable values until a write. Each clone starts with an empty
-/// dirty set so only that execution's mutations are captured.
+/// Writes copy the affected tree path and share unchanged values. Each clone
+/// starts with an empty dirty set so only that execution's mutations are captured.
 #[derive(Debug, Default)]
 pub struct InMemoryKvStore {
-    data: Arc<BTreeMap<Vec<u8>, Vec<u8>>>,
+    data: OrdMap<Vec<u8>, Bytes>,
     dirty: HashSet<Vec<u8>>,
 }
 
@@ -54,28 +52,33 @@ impl InMemoryKvStore {
     /// Construct a store from raw key-value pairs (e.g. loaded from RocksDB raw_kv CF).
     pub fn from_pairs(pairs: Vec<(Vec<u8>, Vec<u8>)>) -> Self {
         Self {
-            data: Arc::new(pairs.into_iter().collect()),
+            data: pairs
+                .into_iter()
+                .map(|(key, value)| (key, Bytes::from(value)))
+                .collect(),
             dirty: HashSet::new(),
         }
     }
 
     /// Serialize the entire store contents to a Borsh byte vector.
     pub fn serialize(&self) -> Vec<u8> {
-        borsh::to_vec(self.data.as_ref()).expect("BTreeMap serialization cannot fail")
+        let entries: BTreeMap<_, _> = self
+            .data
+            .iter()
+            .map(|(key, value)| (key, value.as_ref()))
+            .collect();
+        borsh::to_vec(&entries).expect("BTreeMap serialization cannot fail")
     }
 
     /// Reconstruct a store from Borsh-serialized bytes.
     pub fn deserialize(bytes: &[u8]) -> Result<Self, borsh::io::Error> {
         let data: BTreeMap<Vec<u8>, Vec<u8>> = borsh::from_slice(bytes)?;
-        Ok(Self {
-            data: Arc::new(data),
-            dirty: HashSet::new(),
-        })
+        Ok(Self::from_pairs(data.into_iter().collect()))
     }
 
-    /// Whether two snapshots still share the same unchanged values.
+    /// Whether two snapshots share the same map root.
     pub fn shares_values_with(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.data, &other.data)
+        self.data.ptr_eq(&other.data)
     }
 
     /// Check whether the store contains any entries.
@@ -88,7 +91,7 @@ impl InMemoryKvStore {
         self.dirty
             .iter()
             .map(|k| {
-                let val = self.data.get(k).cloned();
+                let val = self.data.get(k).map(|value| value.to_vec());
                 (k.clone(), val)
             })
             .collect()
@@ -105,44 +108,43 @@ impl InMemoryKvStore {
     /// This captures ALL mutations regardless of clone boundaries, making it safe to use
     /// when intermediate clones reset the dirty set (e.g. the precompile clone path).
     pub fn diff_from(&self, base: &Self) -> Vec<(Vec<u8>, Option<Vec<u8>>)> {
-        if self.shares_values_with(base) {
-            return Vec::new();
-        }
-        let mut changes = Vec::new();
-        for (k, v) in self.data.iter() {
-            if base.data.get(k) != Some(v) {
-                changes.push((k.clone(), Some(v.clone())));
-            }
-        }
-        for k in base.data.keys() {
-            if !self.data.contains_key(k) {
-                changes.push((k.clone(), None));
-            }
-        }
-        changes
+        base.data
+            .diff(&self.data)
+            .map(|change| match change {
+                DiffItem::Add(key, value)
+                | DiffItem::Update {
+                    new: (key, value), ..
+                } => (key.clone(), Some(value.to_vec())),
+                DiffItem::Remove(key, _) => (key.clone(), None),
+            })
+            .collect()
     }
 }
 
 impl ModuleKvStore for InMemoryKvStore {
     fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.data.get(key).cloned()
+        self.data.get(key).map(|value| value.to_vec())
+    }
+
+    fn has(&self, key: &[u8]) -> bool {
+        self.data.contains_key(key)
     }
 
     fn put(&mut self, key: &[u8], value: Vec<u8>) {
         self.dirty.insert(key.to_vec());
-        Arc::make_mut(&mut self.data).insert(key.to_vec(), value);
+        self.data.insert(key.to_vec(), Bytes::from(value));
     }
 
     fn delete(&mut self, key: &[u8]) {
         self.dirty.insert(key.to_vec());
-        Arc::make_mut(&mut self.data).remove(key);
+        self.data.remove(key);
     }
 
     fn prefix_scan(&self, prefix: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
         self.data
             .range(prefix.to_vec()..)
             .take_while(|(k, _)| k.starts_with(prefix))
-            .map(|(k, v)| (k.clone(), v.clone()))
+            .map(|(k, v)| (k.clone(), v.to_vec()))
             .collect()
     }
 }

@@ -15,7 +15,10 @@ alloy-sol-types.workspace = true
 alloy-primitives.workspace = true
 async-trait.workspace = true
 borsh.workspace = true
+bytes.workspace = true
 hex.workspace = true
+# Versions 6 and 7 skip changed keys in ordered diffs across shared leaves.
+imbl = "5.0.0"
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
