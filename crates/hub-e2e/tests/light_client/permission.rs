@@ -1,10 +1,11 @@
 use super::{broadcast_evm_tx, parse_policy_id};
 use alloy_sol_types::SolCall;
+use commonware_codec::{Decode as _, Encode as _};
 use hub_client::{
     ACP_ADDRESS, AccessRequest, Actor, EvmSigner, HubClient, Object, Operation, PERMISSION_LIMITS,
-    PermissionProof, PermissionRead, verify_permission_proof,
+    PermissionProof, PermissionRead, PermissionResponse, verify_permission_proof,
 };
-use hub_domain::{ConsensusPublicKey, LightBlock, verify_light_block};
+use hub_domain::{ConsensusPublicKey, verify_light_block};
 use hub_e2e::cluster::TestCluster;
 use hub_modules::acp::abi::IAcp;
 
@@ -15,44 +16,19 @@ pub(super) async fn check_permissions(
     client: &HubClient,
     signer: &EvmSigner,
     policy: &str,
-    revision: &LightBlock,
+    minimum_height: u64,
     trusted: &ConsensusPublicKey,
 ) {
-    let request = AccessRequest {
-        actor: Actor(READER_DID.parse().unwrap()),
-        operations: vec![Operation {
-            object: Object {
-                resource: "document".into(),
-                id: "doc1".into(),
-            },
-            permission: "read".into(),
-        }],
-    };
+    let request = request();
+    let response = evidence(client, policy, &request, minimum_height).await;
     assert!(
-        client
-            .verify_access_at(policy, &request, revision, trusted, PERMISSION_LIMITS)
-            .await
+        response
+            .verify(policy, &request, minimum_height, trusted, PERMISSION_LIMITS)
             .unwrap()
     );
+    let revision = &response.revision;
     let (_, root) = verify_light_block(revision, trusted).unwrap();
-    let proof: PermissionProof = client
-        .rpc_call_typed(
-            "hub_getPermissionProof",
-            serde_json::json!([policy, request, revision.height]),
-        )
-        .await
-        .unwrap();
-    assert!(
-        verify_permission_proof(
-            root,
-            revision.height,
-            policy,
-            &request,
-            &proof,
-            PERMISSION_LIMITS
-        )
-        .unwrap()
-    );
+    let proof = response.proof;
     for index in 0..proof.reads.len() {
         let mut missing = proof.clone();
         missing.reads.remove(index);
@@ -136,54 +112,36 @@ pub(super) async fn check_permissions(
     .abi_encode();
     let receipt = broadcast_evm_tx(cluster, client, signer, ACP_ADDRESS, block).await;
     assert_eq!(receipt.status, 1);
-    let denied_revision = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        loop {
-            match client
-                .rpc_call_typed::<LightBlock>(
-                    "hub_getLightBlock",
-                    serde_json::json!([receipt.block_number]),
-                )
-                .await
-            {
-                Ok(revision) => break revision,
-                Err(hub_client::ClientError::Rpc { message, .. })
-                    if message.contains("finalization certificate not found") =>
-                {
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                }
-                Err(error) => panic!("finalized revision: {error}"),
-            }
-        }
-    })
-    .await
-    .expect("certificate must become available for the included operation");
+    let response = evidence(client, policy, &request, receipt.block_number).await;
     assert!(
-        !client
-            .verify_access_at(
+        !response
+            .verify(
                 policy,
                 &request,
-                &denied_revision,
+                receipt.block_number,
                 trusted,
                 PERMISSION_LIMITS
             )
-            .await
             .unwrap()
     );
+    let denied_revision = response.revision;
+    let (_, denied_root) = verify_light_block(&denied_revision, trusted).unwrap();
+    let mut denied = response.proof;
     let mut owner_request = request.clone();
     owner_request.actor = Actor(signer.did().parse().unwrap());
     assert!(
         client
-            .verify_access_at(
+            .verify_current_access(
                 policy,
                 &owner_request,
-                &denied_revision,
+                receipt.block_number,
                 trusted,
                 PERMISSION_LIMITS
             )
             .await
             .unwrap()
+            .1
     );
-    let (_, denied_root) = verify_light_block(&denied_revision, trusted).unwrap();
     assert!(
         verify_permission_proof(
             denied_root,
@@ -195,39 +153,9 @@ pub(super) async fn check_permissions(
         )
         .is_err()
     );
-    let mut denied: PermissionProof = client
-        .rpc_call_typed(
-            "hub_getPermissionProof",
-            serde_json::json!([policy, request, denied_revision.height]),
-        )
-        .await
-        .unwrap();
-    assert!(
-        !verify_permission_proof(
-            denied_root,
-            denied_revision.height,
-            policy,
-            &request,
-            &denied,
-            PERMISSION_LIMITS
-        )
-        .unwrap()
-    );
     let blocked_prefix = format!("relationship/{policy}//rel/document/doc1/blocked/");
-    let relation = denied
-        .reads
-        .iter_mut()
-        .find_map(|read| match read {
-            PermissionRead::Prefix { prefix, proof }
-                if prefix.as_ref() == blocked_prefix.as_bytes() =>
-            {
-                Some(proof)
-            }
-            _ => None,
-        })
-        .expect("cross-object exclusion must prove the complete blocked relation");
-    assert_eq!(relation.records.len(), 1);
-    relation.records.clear();
+    assert_eq!(prefix(&denied, &blocked_prefix).entries.len(), 1);
+    remove_prefix_records(&mut denied, &blocked_prefix);
     assert!(
         verify_permission_proof(
             denied_root,
@@ -239,4 +167,69 @@ pub(super) async fn check_permissions(
         )
         .is_err()
     );
+}
+
+pub(super) fn request() -> AccessRequest {
+    AccessRequest {
+        actor: Actor(READER_DID.parse().unwrap()),
+        operations: vec![Operation {
+            object: Object {
+                resource: "document".into(),
+                id: "doc1".into(),
+            },
+            permission: "read".into(),
+        }],
+    }
+}
+
+pub(super) async fn evidence(
+    client: &HubClient,
+    policy: &str,
+    request: &AccessRequest,
+    minimum: u64,
+) -> PermissionResponse {
+    client
+        .rpc_call_typed(
+            "hub_getCurrentPermissionProof",
+            serde_json::json!([policy, request, minimum]),
+        )
+        .await
+        .unwrap()
+}
+
+pub(super) fn prefix(
+    proof: &PermissionProof,
+    expected: &str,
+) -> hub_permission::current::PrefixEvidence {
+    let bytes = proof
+        .reads
+        .iter()
+        .find_map(|read| match read {
+            PermissionRead::CurrentPrefix { prefix, proof }
+                if prefix.as_ref() == expected.as_bytes() =>
+            {
+                Some(proof)
+            }
+            _ => None,
+        })
+        .expect("complete native relation evidence");
+    hub_permission::current::PrefixEvidence::decode_cfg(
+        bytes.as_ref(),
+        &PERMISSION_LIMITS.reads.records,
+    )
+    .unwrap()
+}
+
+pub(super) fn remove_prefix_records(proof: &mut PermissionProof, expected: &str) {
+    let mut evidence = prefix(proof, expected);
+    evidence.entries.clear();
+    for read in &mut proof.reads {
+        if let PermissionRead::CurrentPrefix { prefix, proof } = read
+            && prefix.as_ref() == expected.as_bytes()
+        {
+            *proof = evidence.encode().into();
+            return;
+        }
+    }
+    panic!("missing native relation evidence");
 }

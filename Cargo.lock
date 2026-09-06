@@ -3923,6 +3923,7 @@ dependencies = [
  "hub-domain",
  "hub-harness",
  "hub-modules",
+ "hub-permission",
  "identity",
  "jsonrpsee",
  "k256",

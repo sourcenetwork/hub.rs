@@ -11,8 +11,11 @@ use std::time::Duration;
 use alloy_primitives::{Address, Bytes, FixedBytes};
 use alloy_sol_types::SolCall;
 
-use hub_client::{ACP_ADDRESS, EvmSigner, HubClient, TransactionReceipt};
-use hub_domain::{LightBlock, ModuleStateProof, verify_light_block, verify_module_state_proof};
+use hub_client::{
+    ACP_ADDRESS, EvmSigner, HubClient, ModuleId, PERMISSION_LIMITS, RECORD_PROOF_BYTES,
+    TransactionReceipt,
+};
+use hub_domain::{LightBlock, verify_light_block};
 use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, KeySet, TestCluster};
 use hub_e2e::{RECEIPT_POLL_ATTEMPTS, RECEIPT_POLL_INTERVAL};
 use hub_modules::acp::abi::IAcp;
@@ -87,7 +90,6 @@ async fn broadcast_evm_tx(
 
 #[tokio::test]
 async fn light_client_proof_verification() {
-    // ── Phase 1: Setup ───────────────────────────────────────────────
     let chain_id = 9003;
     let trusted_key = *KeySet::builder()
         .seed(chain_id)
@@ -136,7 +138,6 @@ async fn light_client_proof_verification() {
     );
     let evm_signer = EvmSigner::from_hex(HARDHAT_KEY_0, chain_id).expect("valid signer");
 
-    // ── Phase 2: Create ACP policy + register document ───────────────
     let create_calldata = IAcp::createPolicyCall {
         policy: TEST_POLICY_YAML.as_bytes().to_vec().into(),
         marshalType: 1,
@@ -170,7 +171,6 @@ async fn light_client_proof_verification() {
     assert_eq!(register_receipt.status, 1, "register_object should succeed");
     let h_register = register_receipt.block_number;
 
-    // ── Phase 3: Subscribe to gossip headers ─────────────────────────
     let ws_client = WsClientBuilder::default()
         .build(&cluster.node(0).ws_url())
         .await
@@ -211,7 +211,6 @@ async fn light_client_proof_verification() {
         .as_str()
         .expect("module_state_root should be a string");
 
-    // ── Phase 4: Verify light block at H₁ ────────────────────────────
     let light_block: LightBlock = client
         .rpc_call_typed("hub_getLightBlock", serde_json::json!([h1]))
         .await
@@ -226,46 +225,34 @@ async fn light_client_proof_verification() {
         "light block module_state_root should match gossip header"
     );
 
-    // ── Phase 5: Verify module state proof at H₁ ─────────────────────
     let policy_id_str = &policy_ids[0];
     let acp_key = format!("policy/objs/{policy_id_str}");
-    let key_hex = format!("0x{}", hex::encode(acp_key.as_bytes()));
-
-    let proof_1: ModuleStateProof = client
-        .rpc_call_typed("hub_getStateProof", serde_json::json!(["acp", key_hex, h1]))
-        .await
-        .expect("hub_getStateProof should succeed");
-
-    assert!(
-        proof_1.value.is_some(),
-        "policy record should exist (proof.value should be Some)"
-    );
-    verify_module_state_proof(module_state_root, &proof_1)
-        .expect("module state proof should verify against module_state_root");
-
-    let reader_prefix = format!("relationship/{policy_id_str}//rel/document/doc1/reader/");
-    let prefix_hex = format!("0x{}", hex::encode(reader_prefix.as_bytes()));
-    let empty_readers: hub_domain::RelationPrefixProof = client
-        .rpc_call_typed("hub_getRelationProof", serde_json::json!([prefix_hex, h1]))
-        .await
-        .expect("empty relation proof");
-    let relation_limits = hub_domain::RelationProofLimits {
-        records: 1024,
-        bytes: 4 * 1024 * 1024,
-    };
-    assert!(
-        hub_domain::verify_relation_prefix_proof(
-            module_state_root,
+    let response = client
+        .read_current_record(
+            ModuleId::Acp,
+            acp_key.as_bytes(),
             h1,
-            reader_prefix.as_bytes(),
-            &empty_readers,
-            relation_limits
+            &trusted_key,
+            RECORD_PROOF_BYTES,
         )
-        .unwrap()
-        .is_empty()
+        .await
+        .unwrap();
+    let proof_1 = response.record;
+    assert!(proof_1.value.is_some());
+    let reader_prefix = format!("relationship/{policy_id_str}//rel/document/doc1/reader/");
+    let request = permission::request();
+    let empty_readers = permission::evidence(&client, policy_id_str, &request, h1).await;
+    assert!(
+        !empty_readers
+            .verify(policy_id_str, &request, h1, &trusted_key, PERMISSION_LIMITS)
+            .unwrap()
+    );
+    assert!(
+        permission::prefix(&empty_readers.proof, &reader_prefix)
+            .entries
+            .is_empty()
     );
 
-    // ── Phase 6: Mutate — add a reader relationship ──────────────────
     let set_rel_calldata = IAcp::setRelationshipCall {
         policyId: policy_id,
         resource: "document".into(),
@@ -285,12 +272,7 @@ async fn light_client_proof_verification() {
     assert_eq!(mutate_receipt.status, 1, "set_relationship should succeed");
     let h_mutate = mutate_receipt.block_number;
 
-    // ── Phase 7: Detect state change by re-verifying old proof ─────
-    //
-    // A light client holds proof_1 (valid at h1). For each new gossip
-    // header it verifies the light block, then checks whether proof_1
-    // still verifies against that block's module_state_root. The first
-    // block where verification fails is where the ACP tree changed.
+    // Native proof roots may advance on empty revisions; require the confirmed mutation.
     let invalidation_height = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let h = headers_sub
@@ -299,6 +281,9 @@ async fn light_client_proof_verification() {
                 .expect("subscription should not close")
                 .expect("header should deserialize");
             let height = h["height"].as_u64().expect("height should be u64");
+            if height < h_mutate {
+                continue;
+            }
 
             let lb: LightBlock = client
                 .rpc_call_typed("hub_getLightBlock", serde_json::json!([height]))
@@ -307,7 +292,10 @@ async fn light_client_proof_verification() {
             let (_, msr) =
                 verify_light_block(&lb, &trusted_key).expect("light block should verify");
 
-            if verify_module_state_proof(msr, &proof_1).is_err() {
+            if proof_1
+                .verify(msr, ModuleId::Acp, acp_key.as_bytes(), RECORD_PROOF_BYTES)
+                .is_err()
+            {
                 return (height, msr);
             }
         }
@@ -322,81 +310,98 @@ async fn light_client_proof_verification() {
          (invalidated at {h_invalidated}, mutation at {h_mutate})"
     );
 
-    // ── Phase 8: Verify fresh proof at the invalidation height ───────
-    let proof_2: ModuleStateProof = client
-        .rpc_call_typed(
-            "hub_getStateProof",
-            serde_json::json!(["acp", key_hex, h_invalidated]),
-        )
-        .await
-        .expect("hub_getStateProof at invalidation height should succeed");
-
-    verify_module_state_proof(module_state_root_2, &proof_2)
-        .expect("fresh proof should verify at invalidation height");
-
-    let readers: hub_domain::RelationPrefixProof = client
-        .rpc_call_typed(
-            "hub_getRelationProof",
-            serde_json::json!([prefix_hex, h_invalidated]),
-        )
-        .await
-        .expect("complete reader proof");
-    let records = hub_domain::verify_relation_prefix_proof(
-        module_state_root_2,
-        h_invalidated,
-        reader_prefix.as_bytes(),
-        &readers,
-        relation_limits,
-    )
-    .unwrap();
-    assert_eq!(records.len(), 1);
-    assert!(
-        hub_domain::verify_relation_prefix_proof(
-            module_state_root_2,
+    let response = client
+        .read_current_record(
+            ModuleId::Acp,
+            acp_key.as_bytes(),
             h_invalidated,
-            reader_prefix.as_bytes(),
-            &empty_readers,
-            relation_limits
+            &trusted_key,
+            RECORD_PROOF_BYTES,
         )
-        .is_err()
+        .await
+        .unwrap();
+    let proof_2 = response.record;
+    assert_ne!(proof_2.roots[0], proof_1.roots[0]);
+    assert!(
+        proof_1
+            .verify(
+                module_state_root_2,
+                ModuleId::Acp,
+                acp_key.as_bytes(),
+                RECORD_PROOF_BYTES
+            )
+            .is_err()
+    );
+    // A direct grant needs only a point; an unrelated actor requires complete enumeration.
+    let mut outsider = request.clone();
+    outsider.actor = hub_client::Actor(
+        "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+            .parse()
+            .unwrap(),
+    );
+    let readers = permission::evidence(&client, policy_id_str, &outsider, h_invalidated).await;
+    assert!(
+        !readers
+            .verify(
+                policy_id_str,
+                &outsider,
+                h_invalidated,
+                &trusted_key,
+                PERMISSION_LIMITS
+            )
+            .unwrap()
+    );
+    assert_eq!(
+        permission::prefix(&readers.proof, &reader_prefix)
+            .entries
+            .len(),
+        1
     );
     let mut omitted = readers.clone();
-    omitted.records.clear();
+    permission::remove_prefix_records(&mut omitted.proof, &reader_prefix);
     assert!(
-        hub_domain::verify_relation_prefix_proof(
-            module_state_root_2,
-            h_invalidated,
-            reader_prefix.as_bytes(),
-            &omitted,
-            relation_limits
-        )
-        .is_err()
+        omitted
+            .verify(
+                policy_id_str,
+                &outsider,
+                h_invalidated,
+                &trusted_key,
+                PERMISSION_LIMITS
+            )
+            .is_err()
     );
     let historical = client
-        .rpc_call_typed::<hub_domain::RelationPrefixProof>(
-            "hub_getRelationProof",
-            serde_json::json!([prefix_hex, h1]),
+        .verify_access_at(
+            policy_id_str,
+            &request,
+            &empty_readers.revision,
+            &trusted_key,
+            PERMISSION_LIMITS,
         )
         .await;
     assert!(
         historical.is_err(),
-        "changed membership must not yield an incomplete historical scan"
+        "changed native state cannot provide historical activity evidence"
     );
-
-    assert_ne!(
-        proof_2.module_root, proof_1.module_root,
-        "ACP module root should differ after set_relationship"
+    let mut mixed = empty_readers;
+    mixed.revision = readers.revision;
+    assert!(
+        mixed
+            .verify(
+                policy_id_str,
+                &request,
+                h_invalidated,
+                &trusted_key,
+                PERMISSION_LIMITS
+            )
+            .is_err()
     );
-    let revision: LightBlock = client
-        .rpc_call_typed("hub_getLightBlock", serde_json::json!([h_invalidated]))
-        .await
-        .unwrap();
     permission::check_permissions(
         &cluster,
         &client,
         &evm_signer,
         policy_id_str,
-        &revision,
+        h_invalidated,
         &trusted_key,
     )
     .await;

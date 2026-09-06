@@ -30,6 +30,7 @@ hub-client.workspace = true
 hub-domain.workspace = true
 hub-crypto.workspace = true
 hub-modules.workspace = true
+hub-permission.workspace = true
 identity.workspace = true
 k256.workspace = true
 jsonrpsee.workspace = true
