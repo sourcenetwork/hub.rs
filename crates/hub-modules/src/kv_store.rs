@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use bytes::Bytes;
+use futures::{TryStream, TryStreamExt as _};
 use imbl::{OrdMap, ordmap::DiffItem};
 
 /// Key-value store abstraction for module state.
@@ -74,6 +75,18 @@ impl InMemoryKvStore {
                 .collect(),
             dirty: HashSet::new(),
         }
+    }
+
+    /// Load owned records incrementally, without recording execution changes.
+    /// Returns no store if the stream fails; duplicate keys keep the last value.
+    pub async fn try_from_stream<S>(records: S) -> Result<Self, S::Error>
+    where
+        S: TryStream<Ok = (Vec<u8>, Bytes)>,
+    {
+        Ok(Self {
+            data: records.try_collect().await?,
+            dirty: HashSet::new(),
+        })
     }
 
     /// Serialize the entire store contents to a Borsh byte vector.
@@ -336,5 +349,58 @@ mod tests {
         assert!(store.dirty_entries().is_empty());
         assert_eq!(store.get(b"k1").unwrap(), b"v1");
         assert_eq!(store.get(b"k2").unwrap(), b"v2");
+    }
+
+    #[test]
+    fn streamed_load_keeps_owned_values_and_stops_on_error() {
+        futures::executor::block_on(async {
+            let value = Bytes::from(vec![7; 4096]);
+            let mut store = InMemoryKvStore::try_from_stream(futures::stream::iter([
+                Ok::<_, &str>((b"shared".to_vec(), value.clone())),
+                Ok((b"replace".to_vec(), Bytes::from_static(b"old"))),
+                Ok((b"replace".to_vec(), Bytes::from_static(b"new"))),
+            ]))
+            .await
+            .unwrap();
+            assert_eq!(store.get_ref(b"shared").unwrap().as_ptr(), value.as_ptr());
+            assert_eq!(store.get_ref(b"replace"), Some(b"new".as_slice()));
+            assert!(store.dirty_entries().is_empty());
+            assert_eq!(
+                store.serialize(),
+                InMemoryKvStore::from_pairs(vec![
+                    (b"shared".to_vec(), value.to_vec()),
+                    (b"replace".to_vec(), b"new".to_vec()),
+                ])
+                .serialize()
+            );
+            let snapshot = store.clone();
+            store.put(b"replace", b"changed".to_vec());
+            assert_eq!(snapshot.get_ref(b"replace"), Some(b"new".as_slice()));
+            assert_eq!(
+                store.dirty_entries(),
+                vec![(b"replace".to_vec(), Some(b"changed".to_vec()))]
+            );
+
+            let mut consumed = 0;
+            let records = futures::stream::iter([
+                Ok((b"valid".to_vec(), value)),
+                Err("damaged record"),
+                Ok((b"unread".to_vec(), Bytes::new())),
+            ])
+            .inspect_ok(|_| consumed += 1);
+            assert_eq!(
+                InMemoryKvStore::try_from_stream(records).await.unwrap_err(),
+                "damaged record"
+            );
+            assert_eq!(consumed, 1);
+            assert_eq!(snapshot.get_ref(b"replace"), Some(b"new".as_slice()));
+            let empty = InMemoryKvStore::try_from_stream(futures::stream::empty::<
+                Result<(Vec<u8>, Bytes), &str>,
+            >())
+            .await
+            .unwrap();
+            assert!(empty.is_empty());
+            assert!(empty.dirty_entries().is_empty());
+        });
     }
 }

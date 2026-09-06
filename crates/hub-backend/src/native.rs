@@ -15,7 +15,7 @@ use commonware_storage::{
     translator::Translator,
 };
 use commonware_utils::{NZU64, NZUsize};
-use futures::{StreamExt as _, pin_mut};
+use futures::TryStreamExt as _;
 use hub_modules::{
     ModuleState,
     kv_store::InMemoryKvStore,
@@ -185,11 +185,6 @@ async fn load(db: &Shared<NativeDb>) -> Result<InMemoryKvStore, BackendError> {
         .stream_range(Vec::new())
         .await
         .map_err(|e| BackendError::Storage(e.to_string()))?;
-    pin_mut!(records);
-    let mut values = Vec::new();
-    while let Some(record) = records.next().await {
-        let (key, value) = record.map_err(|e| BackendError::Storage(e.to_string()))?;
-        values.push((key, value.to_vec()));
-    }
-    Ok(InMemoryKvStore::from_pairs(values))
+    InMemoryKvStore::try_from_stream(records.map_err(|e| BackendError::Storage(e.to_string())))
+        .await
 }

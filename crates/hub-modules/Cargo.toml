@@ -16,6 +16,7 @@ alloy-primitives.workspace = true
 async-trait.workspace = true
 borsh.workspace = true
 bytes.workspace = true
+futures.workspace = true
 hex.workspace = true
 # Versions 6 and 7 skip changed keys in ordered diffs across shared leaves.
 imbl = "5.0.0"
@@ -26,7 +27,6 @@ thiserror.workspace = true
 
 [dev-dependencies]
 base64.workspace = true
-futures.workspace = true
 k256.workspace = true
 
 [lints]
