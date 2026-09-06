@@ -29,6 +29,33 @@ pub type OrderedDatabases = (
 type Pending = <OrderedDatabases as DatabaseSet<Ctx>>::Unmerkleized;
 type Sealed = <OrderedDatabases as DatabaseSet<Ctx>>::Merkleized;
 type Config = <OrderedDatabases as DatabaseSet<Ctx>>::Config;
+/// Seven operation-log targets selected by one authenticated revision.
+pub type OrderedTargets = <OrderedDatabases as DatabaseSet<Ctx>>::SyncTargets;
+
+/// Storage configuration and the trusted startup recovery selection.
+pub struct OrderedConfig {
+    databases: Config,
+    executor: HubExecutor,
+    recovery: Option<OrderedTargets>,
+}
+
+impl std::fmt::Debug for OrderedConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OrderedConfig")
+            .field("recovery", &self.recovery)
+            .finish_non_exhaustive()
+    }
+}
+
+impl OrderedConfig {
+    /// Recover existing journals to targets authenticated by the caller before publication.
+    /// Sync uses the targets supplied to `StateSyncSet::sync` instead of this startup selection.
+    #[must_use]
+    pub const fn recover_to(mut self, targets: OrderedTargets) -> Self {
+        self.recovery = Some(targets);
+        self
+    }
+}
 
 /// Pending storage and logical module state from the same parent.
 pub struct OrderedPending {
@@ -113,9 +140,9 @@ pub fn ordered_config(
     execution: HubConfig,
     native: NativeConfig,
     executor: HubExecutor,
-) -> (Config, HubExecutor) {
-    (
-        (
+) -> OrderedConfig {
+    OrderedConfig {
+        databases: (
             execution.0,
             execution.1,
             execution.2,
@@ -125,10 +152,41 @@ pub fn ordered_config(
             native.3,
         ),
         executor,
-    )
+        recovery: None,
+    }
 }
 
 impl OrderedState {
+    /// Open fresh storage, or rewind existing journals before publishing query state.
+    ///
+    /// Unanchored existing state is rejected. A failed partition rewind is fatal,
+    /// matching Commonware's `DatabaseSet` recovery contract.
+    pub async fn open(context: Ctx, config: OrderedConfig) -> Result<Self, AppError> {
+        if config.executor.module_trees().is_some() {
+            return Err(AppError::Execution(
+                "ordered storage cannot attach JMT trees".into(),
+            ));
+        }
+        let databases = Box::pin(OrderedDatabases::init(context, config.databases)).await;
+        match config.recovery {
+            Some(targets) => {
+                databases.rewind_to_targets(targets.clone()).await;
+                if databases.committed_targets().await != targets {
+                    return Err(AppError::RootMismatch("ordered recovery targets"));
+                }
+            }
+            None if databases.committed_targets().await
+                != OrderedDatabases::initial_sync_targets() =>
+            {
+                return Err(AppError::Execution(
+                    "existing ordered state requires an authenticated recovery target".into(),
+                ));
+            }
+            None => {}
+        }
+        Self::restore(databases, config.executor).await
+    }
+
     async fn restore(databases: OrderedDatabases, executor: HubExecutor) -> Result<Self, AppError> {
         let set = Self {
             databases,
@@ -200,18 +258,13 @@ impl DatabaseSet<Ctx> for OrderedState {
     type Unmerkleized = OrderedPending;
     type Merkleized = OrderedSealed;
     type Readers = <OrderedDatabases as DatabaseSet<Ctx>>::Readers;
-    type Config = (Config, HubExecutor);
-    type SyncTargets = <OrderedDatabases as DatabaseSet<Ctx>>::SyncTargets;
+    type Config = OrderedConfig;
+    type SyncTargets = OrderedTargets;
 
-    async fn init(context: Ctx, (config, executor): Self::Config) -> Self {
-        assert!(
-            executor.module_trees().is_none(),
-            "ordered storage cannot attach JMT trees"
-        );
-        let databases = Box::pin(OrderedDatabases::init(context, config)).await;
-        Self::restore(databases, executor)
+    async fn init(context: Ctx, config: Self::Config) -> Self {
+        Self::open(context, config)
             .await
-            .expect("load ordered module state")
+            .expect("recover ordered module state")
     }
 
     fn initial_sync_targets() -> Self::SyncTargets {
@@ -276,19 +329,19 @@ where
 
     async fn sync(
         context: Ctx,
-        (config, executor): Self::Config,
+        config: Self::Config,
         sources: R,
         anchor: Anchor<Digest>,
         targets: Self::SyncTargets,
         tip_updates: ring::Receiver<TipUpdate<Digest, Self::SyncTargets>>,
         sync_config: SyncEngineConfig,
     ) -> Result<(Self, Anchor<Digest>), String> {
-        if executor.module_trees().is_some() {
+        if config.executor.module_trees().is_some() {
             return Err("ordered storage cannot attach JMT trees".into());
         }
         let (databases, anchor) = Box::pin(OrderedDatabases::sync(
             context,
-            config,
+            config.databases,
             sources,
             anchor,
             targets,
@@ -296,7 +349,7 @@ where
             sync_config,
         ))
         .await?;
-        let state = Self::restore(databases, executor)
+        let state = Self::restore(databases, config.executor)
             .await
             .map_err(|e| e.to_string())?;
         Ok((state, anchor))

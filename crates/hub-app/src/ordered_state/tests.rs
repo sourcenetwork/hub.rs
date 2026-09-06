@@ -14,6 +14,8 @@ use hub_backend::state_set_config;
 use hub_client::{ACP_ADDRESS, BlsSigner};
 use hub_modules::acp::abi::IAcp;
 
+mod recovery;
+
 const DEPLOYMENT: u64 = 9001;
 
 fn config(
@@ -321,7 +323,7 @@ fn sync_publishes_latest_modules_before_suffix_execution() {
         let executor = HubExecutor::new(DEPLOYMENT);
         let state = OrderedState::init(
             context.child("reopen"),
-            config(&context, "destination", executor.clone()),
+            config(&context, "destination", executor.clone()).recover_to(target.clone()),
         )
         .await;
         assert_eq!(state.committed_targets().await, target);

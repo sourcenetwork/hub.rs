@@ -3727,6 +3727,7 @@ dependencies = [
  "alloy-consensus",
  "alloy-primitives",
  "alloy-sol-types",
+ "commonware-codec",
  "commonware-consensus",
  "commonware-cryptography",
  "commonware-glue",

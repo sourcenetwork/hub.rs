@@ -146,7 +146,9 @@ module partitions under Commonware's database-set lifecycle. It executes native
 changes from pending parents, seals their ordered commitments, and publishes query
 maps after apply, rewind, startup loading or full-set sync. Sync delegates target
 convergence to Commonware and reloads query maps before returning the selected
-anchor. It rejects executors with JMT trees. This lifecycle is tested separately;
+anchor. Startup rejects existing state unless `OrderedConfig::recover_to` supplies
+caller-authenticated targets, and rewinds every partition before publishing maps.
+It rejects executors with JMT trees. This lifecycle is tested separately;
 the node still uses `VeraStateSet` and the existing module-proof format.
 
 The block commitments are:
