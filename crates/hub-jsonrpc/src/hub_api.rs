@@ -9,10 +9,11 @@ use commonware_cryptography::Hasher as _;
 use hub_domain::{LightBlock, ModuleId, ModuleStateProof, RelationPrefixProof};
 
 mod permission;
+mod record;
 mod relation;
 use hub_executor::{ModuleTrees, SharedModuleState};
 use hub_indexer::{BlockIndex, LightBlockIndex};
-use hub_permission::{AccessRequest, PermissionProof, PermissionResponse};
+use hub_permission::{AccessRequest, PermissionProof, PermissionResponse, RecordResponse};
 
 use crate::{
     error::RpcError,
@@ -90,6 +91,15 @@ pub trait HubApi {
         request: AccessRequest,
         minimum_height: U64,
     ) -> RpcResult<PermissionResponse>;
+
+    /// Capture a native record and its finalized revision, including proven absence.
+    #[method(name = "getCurrentRecordProof")]
+    async fn get_current_record_proof(
+        &self,
+        module: ModuleId,
+        key: Bytes,
+        minimum_height: U64,
+    ) -> RpcResult<RecordResponse>;
 
     /// Returns a light block at the given height.
     ///
@@ -374,6 +384,16 @@ impl HubApiServer for HubApiImpl {
         minimum_height: U64,
     ) -> RpcResult<PermissionResponse> {
         self.current_permission_proof(&policy, &request, minimum_height.to())
+            .await
+    }
+
+    async fn get_current_record_proof(
+        &self,
+        module: ModuleId,
+        key: Bytes,
+        minimum_height: U64,
+    ) -> RpcResult<RecordResponse> {
+        self.current_record_proof(module, &key, minimum_height.to())
             .await
     }
 

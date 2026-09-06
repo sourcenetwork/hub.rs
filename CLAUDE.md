@@ -164,8 +164,11 @@ limits, then releases the locks before waiting for the revision's certificate.
 height and evidence before running the shared ACP evaluator. Callers supply any
 additional freshness policy. The separate `hub_getPermissionProof` endpoint
 requires the requested root to remain available.
-Standalone `hub_getStateProof` and `hub_getRelationProof` remain JMT-only and are
-unavailable on the native node. Historical native activity proofs are not retained.
+`hub_getCurrentRecordProof` captures a native record and its certified revision;
+`HubClient::read_current_record` verifies membership or absence against the requested
+module, key and minimum revision. Standalone `hub_getStateProof` and
+`hub_getRelationProof` remain JMT-only and are unavailable on the native node.
+Historical native activity proofs are not retained.
 See `docs/permission-proofs.md` for formats and limits.
 
 Legacy `VeraStateSet` and JMT proof support remain available to explicit library

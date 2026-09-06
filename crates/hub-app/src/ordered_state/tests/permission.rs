@@ -10,7 +10,7 @@ use hub_client::{
 use hub_indexer::{BlockIndex, IndexedBlock};
 use hub_jsonrpc::{JsonRpcServer, NodeState};
 
-const POLICY: &str = "\
+pub(super) const POLICY: &str = "\
 name: documents
 resources:
   - name: document
@@ -24,7 +24,7 @@ resources:
         expr: reader - blocked
 ";
 
-fn signed(signer: &BlsSigner, call: impl SolCall) -> Tx {
+pub(super) fn signed(signer: &BlsSigner, call: impl SolCall) -> Tx {
     Tx::new(
         signer
             .sign_native_tx(ACP_ADDRESS, call.abi_encode().into())
@@ -33,7 +33,7 @@ fn signed(signer: &BlsSigner, call: impl SolCall) -> Tx {
     )
 }
 
-async fn apply(set: &OrderedState, height: u64, tx: Tx) {
+pub(super) async fn apply(set: &OrderedState, height: u64, tx: Tx) {
     let (sealed, outcome) = set
         .execute(set.new_batches().await, &block(height), &[tx])
         .await
@@ -43,7 +43,7 @@ async fn apply(set: &OrderedState, height: u64, tx: Tx) {
     assert!(set.finalize().await.durable().await);
 }
 
-fn index_block(index: &BlockIndex, block: &hub_domain::Block) {
+pub(super) fn index_block(index: &BlockIndex, block: &hub_domain::Block) {
     index.insert_block(
         IndexedBlock {
             hash: block.id().0,

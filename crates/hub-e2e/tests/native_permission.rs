@@ -4,8 +4,9 @@ use std::time::Duration;
 
 use alloy_sol_types::SolCall;
 use hub_client::{
-    ACP_ADDRESS, AccessRequest, Actor, BlsSigner, ClientError, HubClient, Object, Operation,
-    PERMISSION_LIMITS, PermissionProof, PermissionRead, verify_permission_proof,
+    ACP_ADDRESS, AccessRequest, Actor, BlsSigner, ClientError, HubClient, ModuleId, Object,
+    Operation, PERMISSION_LIMITS, PermissionProof, PermissionRead, RECORD_PROOF_BYTES,
+    verify_permission_proof,
 };
 use hub_domain::{ConsensusPublicKey, LightBlock, verify_finalized_block};
 use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, KeySet, TestCluster};
@@ -143,6 +144,29 @@ async fn native_permission_reads_follow_finalized_grants_and_denials() {
         },
     )
     .await;
+    let policy_key = hub_modules::acp::keys::policy_key(&policy);
+    let policy_record = client
+        .read_current_record(
+            ModuleId::Acp,
+            &policy_key,
+            granted,
+            &trusted,
+            RECORD_PROOF_BYTES,
+        )
+        .await
+        .unwrap();
+    assert!(policy_record.record.value.is_some());
+    let missing = client
+        .read_current_record(
+            ModuleId::Acp,
+            b"missing",
+            granted,
+            &trusted,
+            RECORD_PROOF_BYTES,
+        )
+        .await
+        .unwrap();
+    assert!(missing.record.value.is_none());
     let request = AccessRequest {
         actor: Actor(READER.parse().unwrap()),
         operations: vec![Operation {
@@ -197,6 +221,30 @@ async fn native_permission_reads_follow_finalized_grants_and_denials() {
     ));
     for index in 0..cluster.node_count() {
         let replica = HubClient::new(cluster.node(index).rpc_url());
+        let current = replica
+            .read_current_record(
+                ModuleId::Acp,
+                &policy_key,
+                denied,
+                &trusted,
+                RECORD_PROOF_BYTES,
+            )
+            .await
+            .unwrap();
+        assert_eq!(current.record.value, policy_record.record.value);
+        let mut mixed = policy_record.clone();
+        mixed.revision = current.revision;
+        assert!(
+            mixed
+                .verify(
+                    ModuleId::Acp,
+                    &policy_key,
+                    denied,
+                    &trusted,
+                    RECORD_PROOF_BYTES
+                )
+                .is_err()
+        );
         let (denied_revision, denied_proof) =
             current_evidence(&replica, &policy, &request, denied, &trusted).await;
         assert!(
@@ -240,7 +288,18 @@ async fn native_permission_reads_follow_finalized_grants_and_denials() {
                 .await
                 .unwrap();
             assert!(allowed);
-            minimum = revision.height;
+            let record = client
+                .read_current_record(
+                    ModuleId::Acp,
+                    &policy_key,
+                    revision.height,
+                    &trusted,
+                    RECORD_PROOF_BYTES,
+                )
+                .await
+                .unwrap();
+            assert_eq!(record.record.value, policy_record.record.value);
+            minimum = record.revision.height;
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     };

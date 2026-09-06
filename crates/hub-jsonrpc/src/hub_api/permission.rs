@@ -9,11 +9,11 @@ use hub_permission::{
 use jsonrpsee::{core::RpcResult, types::ErrorObjectOwned};
 use std::time::Duration;
 
-fn error(error: impl std::fmt::Display) -> ErrorObjectOwned {
+pub(super) fn error(error: impl std::fmt::Display) -> ErrorObjectOwned {
     ErrorObjectOwned::owned(codes::RESOURCE_UNAVAILABLE, error.to_string(), None::<()>)
 }
 
-fn request_error(error: PermissionError) -> ErrorObjectOwned {
+pub(super) fn request_error(error: PermissionError) -> ErrorObjectOwned {
     let code = if matches!(error, PermissionError::Limit) {
         codes::LIMIT_EXCEEDED
     } else {
@@ -92,31 +92,7 @@ impl HubApiImpl {
                 // Release every read guard so an in-flight finalization can publish its index.
                 tokio::time::sleep(Duration::from_millis(5)).await;
             };
-            let revision = loop {
-                match self.get_light_block(U64::from(selected.number)).await {
-                    Ok(revision) => break revision,
-                    Err(cause)
-                        if cause
-                            .message()
-                            .contains("finalization certificate not found") =>
-                    {
-                        tokio::time::sleep(Duration::from_millis(5)).await;
-                    }
-                    Err(cause) => return Err(cause),
-                }
-            };
-            if revision.height != selected.number
-                || revision.block_hash.parse::<B256>().map_err(error)? != selected.hash
-                || revision.module_state_root.parse::<B256>().map_err(error)?
-                    != selected.module_state_root
-            {
-                return Err(error(
-                    "finalization differs from captured permission revision",
-                ));
-            }
-            revision.check_artifact_limits().map_err(error)?;
-            encoded_size(&revision, hub_domain::LIGHT_BLOCK_RESPONSE_BYTES)
-                .map_err(request_error)?;
+            let revision = self.captured_revision(&selected).await?;
             let response = PermissionResponse { revision, proof };
             encoded_size(&response, PERMISSION_RESPONSE_BYTES - 1024).map_err(request_error)?;
             Ok(response)

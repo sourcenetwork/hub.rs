@@ -104,6 +104,26 @@ fn excluded(key: &[u8], proof: &Exclusion, root: &Digest) -> bool {
     }
 }
 
+/// Verify bounded native membership or absence at an authenticated partition root.
+pub fn verify_point(
+    root: &Digest,
+    key: &[u8],
+    value: Option<&Bytes>,
+    proof: &[u8],
+) -> Result<(), PermissionError> {
+    if key.len() > MAX_KEY_BYTES || value.is_some_and(|v| v.len() > MAX_VALUE_BYTES) {
+        return Err(PermissionError::Limit);
+    }
+    let valid = match value {
+        Some(value) => included(key, value, &membership(proof)?, root),
+        None => excluded(key, &exclusion(proof)?, root),
+    };
+    if !valid {
+        return Err(PermissionError::Invalid("current-state point"));
+    }
+    Ok(())
+}
+
 /// Next in-prefix key; crossing the maximum key wraps and terminates enumeration.
 pub fn successor<'a>(key: &[u8], next: &'a [u8], prefix: &[u8]) -> Option<&'a [u8]> {
     (next > key && next.starts_with(prefix)).then_some(next)
@@ -160,21 +180,10 @@ pub(super) fn verify(
     for read in &proof.reads {
         match read {
             PermissionRead::CurrentPoint { key, value, proof } => {
-                if key.len() > MAX_KEY_BYTES
-                    || value.as_ref().is_some_and(|v| v.len() > MAX_VALUE_BYTES)
-                {
-                    return Err(PermissionError::Limit);
-                }
                 remaining = remaining
                     .checked_sub(usize::from(value.is_some()))
                     .ok_or(PermissionError::Limit)?;
-                let valid = match value {
-                    Some(value) => included(key, &value.0, &membership(proof)?, &root),
-                    None => excluded(key, &exclusion(proof)?, &root),
-                };
-                if !valid {
-                    return Err(PermissionError::Invalid("current-state point"));
-                }
+                verify_point(&root, key, value.as_ref().map(|v| &v.0), proof)?;
                 if store
                     .points
                     .insert(key.to_vec(), value.as_ref().map(|v| v.to_vec()))

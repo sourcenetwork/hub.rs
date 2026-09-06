@@ -427,3 +427,138 @@ fn prefix_evidence_handles_boundaries_and_rejects_noncanonical_or_excessive_data
         },
     );
 }
+
+#[test]
+fn native_records_bind_module_key_value_and_current_root() {
+    use super::super::record_proof_at;
+    use hub_permission::{ModuleId, RECORD_PROOF_BYTES};
+
+    let directory = tempfile::tempdir().unwrap();
+    tokio::Runner::new(tokio::Config::new().with_storage_directory(directory.path())).start(
+        |context| async move {
+            let set = init(&context).await;
+            let key = b"record";
+            let modules = [
+                ModuleId::Acp,
+                ModuleId::Bulletin,
+                ModuleId::Hub,
+                ModuleId::NativeNonce,
+            ];
+            let root = apply(&set, std::array::from_fn(|_| vec![])).await;
+            {
+                let (a, b, h, n) =
+                    futures::join!(set.0.read(), set.1.read(), set.2.read(), set.3.read());
+                for module in modules {
+                    let absent = record_proof_at([&a, &b, &h, &n], root, module, key)
+                        .await
+                        .unwrap();
+                    assert!(absent.value.is_none());
+                    absent
+                        .verify(root, module, key, RECORD_PROOF_BYTES)
+                        .unwrap();
+                }
+            }
+            let root = apply(
+                &set,
+                std::array::from_fn(|i| vec![(key.to_vec(), Some(vec![i as u8]))]),
+            )
+            .await;
+            let retained = {
+                let (a, b, h, n) =
+                    futures::join!(set.0.read(), set.1.read(), set.2.read(), set.3.read());
+                let mut retained = Vec::new();
+                for module in modules {
+                    let record = record_proof_at([&a, &b, &h, &n], root, module, key)
+                        .await
+                        .unwrap();
+                    assert_eq!(
+                        record.value.as_ref().unwrap().as_ref(),
+                        &[module.index() as u8]
+                    );
+                    record
+                        .verify(root, module, key, RECORD_PROOF_BYTES)
+                        .unwrap();
+                    assert!(
+                        record
+                            .verify(root, module, b"other", RECORD_PROOF_BYTES)
+                            .is_err()
+                    );
+                    assert!(record.verify(root, module, key, 1).is_err());
+                    let other = modules[(module.index() + 1) % 4];
+                    assert!(record.verify(root, other, key, RECORD_PROOF_BYTES).is_err());
+                    let mut changed = record.clone();
+                    changed.module = other;
+                    assert!(
+                        changed
+                            .verify(root, other, key, RECORD_PROOF_BYTES)
+                            .is_err()
+                    );
+                    let mut changed = record.clone();
+                    changed.value = Some(vec![42].into());
+                    assert!(
+                        changed
+                            .verify(root, module, key, RECORD_PROOF_BYTES)
+                            .is_err()
+                    );
+                    let mut changed = record.clone();
+                    changed.value = None;
+                    assert!(
+                        changed
+                            .verify(root, module, key, RECORD_PROOF_BYTES)
+                            .is_err()
+                    );
+                    let mut changed = record.clone();
+                    changed.roots[0].0[0] ^= 1;
+                    assert!(
+                        changed
+                            .verify(root, module, key, RECORD_PROOF_BYTES)
+                            .is_err()
+                    );
+                    let mut changed = record.clone();
+                    let mut bytes = changed.proof.to_vec();
+                    bytes.push(0);
+                    changed.proof = bytes.into();
+                    assert!(
+                        changed
+                            .verify(root, module, key, RECORD_PROOF_BYTES)
+                            .is_err()
+                    );
+                    retained.push(record);
+                }
+                assert!(
+                    record_proof_at(
+                        [&a, &b, &h, &n],
+                        root,
+                        ModuleId::Acp,
+                        &vec![0; MAX_KEY_BYTES + 1]
+                    )
+                    .await
+                    .is_err()
+                );
+                retained
+            };
+            let next = apply(&set, std::array::from_fn(|_| vec![(key.to_vec(), None)])).await;
+            let (a, b, h, n) =
+                futures::join!(set.0.read(), set.1.read(), set.2.read(), set.3.read());
+            for record in retained {
+                assert!(
+                    record
+                        .verify(next, record.module, key, RECORD_PROOF_BYTES)
+                        .is_err()
+                );
+                assert!(
+                    record_proof_at([&a, &b, &h, &n], root, record.module, key)
+                        .await
+                        .is_err()
+                );
+                let absent = record_proof_at([&a, &b, &h, &n], next, record.module, key)
+                    .await
+                    .unwrap();
+                assert!(absent.value.is_none());
+                absent
+                    .verify(next, record.module, key, RECORD_PROOF_BYTES)
+                    .unwrap();
+            }
+        },
+    );
+}

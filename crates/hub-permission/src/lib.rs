@@ -4,12 +4,14 @@ use std::{collections::BTreeMap, io::Write, sync::Mutex};
 
 use alloy_primitives::{B256, Bytes};
 use hub_domain::{
-    ModuleId, ModuleStateProof, RelationPrefixProof, RelationProofLimits,
-    verify_module_state_proof, verify_relation_prefix_proof,
+    ModuleStateProof, RelationPrefixProof, RelationProofLimits, verify_module_state_proof,
+    verify_relation_prefix_proof,
 };
 use hub_modules::acp::{record_store::RecordStore, zanzibar_store::evaluate_access_request};
 use serde::{Deserialize, Serialize};
 use zanzibar::error::{Error as EvaluationError, Result as EvaluationResult};
+
+pub use hub_domain::ModuleId;
 
 pub use hub_modules::acp::{
     decision::DecisionRequest,
@@ -20,6 +22,8 @@ pub use hub_modules::types::Timestamp;
 
 /// Current-state point and complete-prefix evidence over Commonware storage.
 pub mod current;
+mod record;
+pub use record::{RECORD_PROOF_BYTES, RECORD_RESPONSE_BYTES, RecordProof, RecordResponse};
 mod response;
 pub use response::{PERMISSION_RESPONSE_BYTES, PermissionResponse};
 

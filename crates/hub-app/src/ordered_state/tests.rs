@@ -18,6 +18,7 @@ mod application;
 mod checkpoint;
 mod peer_sync;
 mod permission;
+mod record;
 mod recovery;
 
 const DEPLOYMENT: u64 = 9001;

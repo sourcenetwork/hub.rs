@@ -1,6 +1,6 @@
-# Verified permission and relationship reads
+# Verified record and permission reads
 
-The native node serves a finalized revision and its Commonware permission evidence together through `hub_getCurrentPermissionProof`. `hub_getPermissionProof` accepts a caller-selected revision when its evidence is available. Standalone point and relationship proofs require an explicitly configured legacy JMT server; those endpoints are unavailable on the native node.
+The native node serves a finalized revision and its Commonware permission evidence together through `hub_getCurrentPermissionProof`. `hub_getPermissionProof` accepts a caller-selected revision when its evidence is available. `hub_getCurrentRecordProof` provides native record membership and absence. The older `hub_getStateProof` and `hub_getRelationProof` endpoints require an explicitly configured legacy JMT server.
 
 On a JMT server, `hub_getRelationProof(prefix, height)` returns every ACP relationship record under a raw prefix, with evidence for completeness at the requested finalized height. `prefix` is a hex byte string beginning with `relationship/` and ending with `/`. For example, a relation prefix has the form `relationship/<policy-id>//rel/<resource>/<object>/<relation>/`.
 
@@ -19,6 +19,37 @@ Execution initializes relationship-index format 1 in the first selected revision
 All slash-terminated relationship prefixes are counted, including delimiter ancestors. This preserves raw scan completeness even for legacy keys with extra separators. Counts and records enter the same branch-local tree update and durable revision. Pending alternatives do not change canonical counts, and revision rewind restores both together. Internal index entries are excluded from module record loading.
 
 Activation changes consensus execution and the next module commitment. Existing deployments require a coordinated operator upgrade. No disk rewrite changes a previously finalized root; pre-activation revisions remain readable but cannot provide this complete-prefix proof. This index does not replace the underlying storage engine or supply historical key enumeration.
+
+## Native record reads
+
+`hub_getCurrentRecordProof(module, key, minimum_height)` returns
+`{ "revision": LightBlock, "record": RecordProof }`. Modules are `acp`,
+`bulletin`, `hub` and `native_nonce`; `key` is a hex byte string. The record
+contains the exact module and key, an optional value, all four namespace roots
+and canonical Commonware membership or exclusion evidence. A missing value is
+accepted only with a valid exclusion proof.
+
+The server captures the record under all four partition read locks and releases
+those locks before obtaining its matching finalization certificate. Selection
+and certificate lookup share a two-second timeout. An unavailable revision or
+unmet minimum returns `RESOURCE_UNAVAILABLE`; it is not proven absence.
+
+`HubClient::read_current_record` bounds the response before deserialization and
+verifies the certificate with the caller's consensus key. `RecordResponse::verify`
+binds the requested module and key, minimum revision, combined module root and
+record evidence. Callers must provide any additional timestamp or age policy.
+An earlier captured record may finish after a later update; callers requiring
+that update must supply its finalized revision as the minimum.
+
+Keys are limited to 64 KiB and values to 1 MiB. Serialized record evidence is
+limited to 4 MiB; clients may impose a tighter bound. The transport budget adds
+`LIGHT_BLOCK_RESPONSE_BYTES` and 1 KiB for the RPC envelope. Merkle and record
+field bounds also apply during binary proof decoding. These limits do not
+establish aggregate concurrency or throughput guarantees.
+
+These are current-state reads. They do not provide arbitrary historical native
+record proofs. Record existence alone does not authorize an operation: consumers
+must validate record semantics or use verified permission evaluation.
 
 ## Permission requests
 
@@ -63,7 +94,7 @@ The server captures reads from one immutable current module snapshot, generates 
 
 The same permission endpoint supports ordered Commonware module storage when the
 server is constructed with `with_hub_native_modules`, as in the native node.
-The standalone point and relation endpoints remain JMT-based.
+The older `hub_getStateProof` and `hub_getRelationProof` endpoints remain JMT-based.
 
 This format adds `roots`, the four namespace roots in ACP, bulletin, hub and
 sequence order. Their combined commitment must match the caller's verified
