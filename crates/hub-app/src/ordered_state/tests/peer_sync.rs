@@ -21,7 +21,7 @@ impl Drop for Tasks {
 fn all_partitions_sync_over_authenticated_peers_and_reopen() {
     let directory = tempfile::tempdir().unwrap();
     let runtime = tokio::Config::new().with_storage_directory(directory.path());
-    let target =
+    let (target, checkpoint) =
         tokio::Runner::new(runtime.clone()).start(|context| {
             Box::pin(async move {
                 ::tokio::time::timeout(Duration::from_secs(30), async {
@@ -106,6 +106,7 @@ fn all_partitions_sync_over_authenticated_peers_and_reopen() {
                         .attach_databases(source.databases.clone())
                         .await;
                     let mut final_target = source.committed_targets().await;
+                    let mut final_checkpoint = None;
                     assert_ne!(final_target.0, OrderedDatabases::initial_sync_targets().0);
                     assert_ne!(final_target.1, OrderedDatabases::initial_sync_targets().1);
                     assert_ne!(final_target.2, OrderedDatabases::initial_sync_targets().2);
@@ -125,8 +126,24 @@ fn all_partitions_sync_over_authenticated_peers_and_reopen() {
                             .nonces
                             .check_and_increment("stale", 0)
                             .unwrap();
-                        let (_updates, updates_rx) = ring::channel(NZUsize!(2));
-                        let (replica, reached) = OrderedState::sync(
+                        let block = checkpoint::block(&source, u64::from(version)).await;
+                        let native = &source.databases;
+                        let proof = native::SyncProof::capture(
+                            &(
+                                native.3.clone(),
+                                native.4.clone(),
+                                native.5.clone(),
+                                native.6.clone(),
+                            ),
+                            block.module_state_root,
+                        )
+                        .await
+                        .unwrap();
+                        let (light, key) = checkpoint::certify(&block, 42);
+                        let checkpoint = OrderedCheckpoint::verify(&light, &key, &proof).unwrap();
+                        let expected_anchor = *checkpoint.anchor();
+                        final_checkpoint = Some(checkpoint.clone());
+                        let (replica, reached) = OrderedState::sync_checkpoint(
                             context.child(if version == 1 {
                                 "replica_first"
                             } else {
@@ -134,9 +151,7 @@ fn all_partitions_sync_over_authenticated_peers_and_reopen() {
                             }),
                             config(&context, "replica", executor),
                             resolvers[1].clone(),
-                            anchor(u64::from(version)),
-                            final_target.clone(),
-                            updates_rx,
+                            checkpoint,
                             SyncEngineConfig {
                                 fetch_batch_size: MAX_FETCH_OPS,
                                 apply_batch_size: NZU64!(64),
@@ -147,7 +162,7 @@ fn all_partitions_sync_over_authenticated_peers_and_reopen() {
                         )
                         .await
                         .unwrap();
-                        assert_eq!(reached, anchor(u64::from(version)));
+                        assert_eq!(reached, expected_anchor);
                         assert_eq!(replica.committed_targets().await, final_target);
                         recovery::assert_records(&replica, version).await;
                         for (source, destination) in [
@@ -160,7 +175,7 @@ fn all_partitions_sync_over_authenticated_peers_and_reopen() {
                         }
                         assert!(replica.finalize().await.durable().await);
                     }
-                    final_target
+                    (final_target, final_checkpoint.unwrap())
                 })
                 .await
                 .expect("partition synchronization deadline")
@@ -171,7 +186,7 @@ fn all_partitions_sync_over_authenticated_peers_and_reopen() {
             let replica = OrderedState::open(
                 context.child("reopen"),
                 config(&context, "replica", HubExecutor::new(DEPLOYMENT))
-                    .recover_to(target.clone()),
+                    .recover_checkpoint(checkpoint),
             )
             .await
             .unwrap();

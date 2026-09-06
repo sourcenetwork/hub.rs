@@ -3732,6 +3732,7 @@ dependencies = [
  "commonware-cryptography",
  "commonware-glue",
  "commonware-p2p",
+ "commonware-parallel",
  "commonware-runtime",
  "commonware-storage",
  "commonware-utils",

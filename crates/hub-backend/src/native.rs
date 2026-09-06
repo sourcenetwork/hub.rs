@@ -27,6 +27,9 @@ use crate::{BackendError, Ctx};
 /// Bounded peer transport for native operation-log synchronization.
 pub mod p2p;
 
+mod sync_proof;
+pub use sync_proof::SyncProof;
+
 /// Maximum native record key length accepted by this storage configuration.
 pub const MAX_KEY_BYTES: usize = 65_536;
 /// Maximum native record value accepted by this storage configuration.
@@ -73,6 +76,8 @@ pub type NativeStateSet = (
     Shared<NativeDb>,
     Shared<NativeDb>,
 );
+/// Operation-log targets for the four native namespaces.
+pub type NativeTargets = <NativeStateSet as DatabaseSet<Ctx>>::SyncTargets;
 /// Pending native records based on one parent revision.
 pub type NativeUnmerkleized = <NativeStateSet as DatabaseSet<Ctx>>::Unmerkleized;
 /// Sealed native records with authenticated current-state roots.

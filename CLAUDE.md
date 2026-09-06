@@ -160,8 +160,7 @@ retains Commonware cancellation and verification feedback, including peer blocki
 Authenticated loopback tests cover fresh transfer, pruned-history recovery after
 cancellation, convergence on a newer target, and rejection of a mismatched root.
 An authenticated two-peer test transfers nonempty records in all seven partitions,
-resynchronizes to a second revision and reopens from the selected targets. These
-targets are supplied directly by the test, without consensus certificate validation.
+resynchronizes to a second revision and reopens from certificate-verified targets.
 The adapter is not connected to node synchronization; execution partitions and
 the existing JMT module proofs still use the previous paths.
 
@@ -174,6 +173,22 @@ anchor. Startup rejects existing state unless `OrderedConfig::recover_to` suppli
 caller-authenticated targets, and rewinds every partition before publishing maps.
 It rejects executors with JMT trees. This lifecycle is tested separately;
 the node still uses `VeraStateSet` and the existing module-proof format.
+
+`native::SyncProof` authenticates the four native operation-log roots against a
+selected combined current-state root using Commonware's `OpsRootWitness`. A proof
+of each terminal commit binds log size and inactivity floor; the MMR synchronization
+boundary is derived by rounding that floor down to a bitmap chunk. Capture holds
+all four partition read locks and rejects a changed selected root. Decoding fixes
+the namespace count at four and bounds proof digests and operation fields.
+
+`OrderedCheckpoint::verify` checks direct or descendant finality against a supplied
+trusted consensus key, validates execution targets and derives native targets from
+`SyncProof`. `OrderedState::sync_checkpoint` synchronizes that fixed revision and
+checks reconstructed native current-state roots before publishing query maps.
+`OrderedConfig::recover_checkpoint` repeats the root check after startup rewind.
+An inconsistent certified root is rejected during both handoffs. Checkpoint
+freshness, evidence transport and actual node integration remain caller concerns;
+these helpers do not provide historical current-state proof generation.
 
 The block commitments are:
 

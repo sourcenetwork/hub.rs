@@ -222,6 +222,13 @@ fn signed_finalization(block: &Block, seed: u64) -> String {
 fn descendant_certificate_authenticates_the_requested_roots_across_epochs() {
     let light = indirect_fixture(3);
     assert_eq!(light.epoch, 3);
+    let requested = verify_finalized_block(&light, &trusted_key()).unwrap();
+    assert_eq!(requested.height, light.height);
+    assert_eq!(requested.context.round.epoch().get(), light.epoch);
+    assert_eq!(
+        requested,
+        decode_block(&decode_hex("block", &light.block).unwrap()).unwrap()
+    );
     assert_eq!(
         verify_light_block(&light, &trusted_key()).unwrap(),
         (B256::repeat_byte(1), B256::repeat_byte(2))

@@ -278,6 +278,16 @@ pub fn verify_light_block(
     light: &LightBlock,
     trusted_key: &ConsensusPublicKey,
 ) -> Result<(B256, B256), LightBlockError> {
+    let block = verify_finalized_block(light, trusted_key)?;
+    Ok((block.state_root.0, block.module_state_root))
+}
+
+/// Return the requested canonical revision after validating direct or descendant finality.
+/// The consensus key must come from independently provisioned trust.
+pub fn verify_finalized_block(
+    light: &LightBlock,
+    trusted_key: &ConsensusPublicKey,
+) -> Result<Block, LightBlockError> {
     light.check_artifact_limits()?;
     let block_hash = decode_b256("block_hash", &light.block_hash)?;
     let block_bytes = decode_hex("block", &light.block)?;
@@ -326,23 +336,24 @@ pub fn verify_light_block(
         return Err(LightBlockError::UntrustedConsensusKey);
     }
 
-    let roots = (block.state_root.0, block.module_state_root);
-    let mut certified = block;
+    let mut certified_context = block.context.clone();
+    let mut certified_height = block.height;
     let mut certified_hash = block_hash;
     for encoded in &light.descendants {
         let bytes = decode_hex("descendant", encoded)?;
         let descendant = decode_block(&bytes)?;
         if descendant.parent.0 != certified_hash
-            || certified.height.checked_add(1) != Some(descendant.height)
+            || certified_height.checked_add(1) != Some(descendant.height)
         {
             return Err(LightBlockError::AncestryMismatch);
         }
         certified_hash = keccak256(&bytes);
-        certified = descendant;
+        certified_height = descendant.height;
+        certified_context = descendant.context;
     }
     let expected = Proposal::new(
-        certified.context.round,
-        certified.context.parent.0,
+        certified_context.round,
+        certified_context.parent.0,
         Sha256::hash(&[certified_hash.as_slice()]),
     );
     let finalization_bytes = decode_hex("finalization", &light.finalization)?;
@@ -357,7 +368,7 @@ pub fn verify_light_block(
         return Err(LightBlockError::InvalidCertificate);
     }
 
-    Ok(roots)
+    Ok(block)
 }
 
 #[cfg(test)]

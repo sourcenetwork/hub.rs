@@ -32,11 +32,14 @@ type Config = <OrderedDatabases as DatabaseSet<Ctx>>::Config;
 /// Seven operation-log targets selected by one authenticated revision.
 pub type OrderedTargets = <OrderedDatabases as DatabaseSet<Ctx>>::SyncTargets;
 
+mod checkpoint;
+pub use checkpoint::OrderedCheckpoint;
+
 /// Storage configuration and the trusted startup recovery selection.
 pub struct OrderedConfig {
     databases: Config,
     executor: HubExecutor,
-    recovery: Option<OrderedTargets>,
+    recovery: Option<(OrderedTargets, Option<alloy_primitives::B256>)>,
 }
 
 impl std::fmt::Debug for OrderedConfig {
@@ -52,7 +55,7 @@ impl OrderedConfig {
     /// Sync uses the targets supplied to `StateSyncSet::sync` instead of this startup selection.
     #[must_use]
     pub const fn recover_to(mut self, targets: OrderedTargets) -> Self {
-        self.recovery = Some(targets);
+        self.recovery = Some((targets, None));
         self
     }
 }
@@ -169,10 +172,15 @@ impl OrderedState {
         }
         let databases = Box::pin(OrderedDatabases::init(context, config.databases)).await;
         match config.recovery {
-            Some(targets) => {
+            Some((targets, module_root)) => {
                 databases.rewind_to_targets(targets.clone()).await;
                 if databases.committed_targets().await != targets {
                     return Err(AppError::RootMismatch("ordered recovery targets"));
+                }
+                if let Some(expected) = module_root
+                    && Self::module_root(&databases).await != expected
+                {
+                    return Err(AppError::RootMismatch("ordered recovery module root"));
                 }
             }
             None if databases.committed_targets().await
@@ -194,6 +202,15 @@ impl OrderedState {
         };
         set.reload().await?;
         Ok(set)
+    }
+
+    async fn module_root(databases: &OrderedDatabases) -> alloy_primitives::B256 {
+        hub_modules::module_state::combine_module_roots(&[
+            databases.3.read().await.root().0,
+            databases.4.read().await.root().0,
+            databases.5.read().await.root().0,
+            databases.6.read().await.root().0,
+        ])
     }
 
     async fn reload(&self) -> Result<(), AppError> {

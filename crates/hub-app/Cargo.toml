@@ -32,6 +32,7 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+commonware-parallel.workspace = true
 commonware-p2p.workspace = true
 commonware-codec.workspace = true
 hub-state.workspace = true
