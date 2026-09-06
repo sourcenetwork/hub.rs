@@ -135,9 +135,12 @@ Without a selection file it uses the original `state/{acp,bulletin,hub,nonces}` 
 
 `hub-backend::native` provides a separate ordered current-QMDB adapter for the
 four module namespaces. It seals logical `ModuleState` differences into pending
-batches and streams active records directly into query maps, retaining owned value
-buffers and publishing no partial map on a read error. Commonware's range iterator
-still materializes each index-collision bucket. Current-state roots and
+batches and rebuilds query maps from the retained operation log and activity bitmap,
+reading at most 32 operations at a time under each partition's read lock. This
+avoids materializing index-collision buckets, retains owned value buffers and
+publishes no partial map on a read error. Commonware's public log reader also
+generates proofs, adding startup work; all live query maps remain in memory.
+Current-state roots and
 operation-log sync targets are distinct. Its configuration accepts keys up to
 64 KiB and values up to 1 MiB; keys sharing their first 256 bytes scan one index
 bucket. This adapter is covered by storage lifecycle tests and is not wired into

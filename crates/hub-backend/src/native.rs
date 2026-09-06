@@ -14,8 +14,8 @@ use commonware_storage::{
     qmdb::current::{VariableConfig, ordered::variable::Db},
     translator::Translator,
 };
-use commonware_utils::{NZU64, NZUsize};
-use futures::TryStreamExt as _;
+use commonware_utils::{NZU64, NZUsize, bitmap::Readable as _};
+use futures::StreamExt as _;
 use hub_modules::{
     ModuleState,
     kv_store::InMemoryKvStore,
@@ -181,10 +181,43 @@ pub async fn load_modules(set: &NativeStateSet) -> Result<ModuleState, BackendEr
 
 async fn load(db: &Shared<NativeDb>) -> Result<InMemoryKvStore, BackendError> {
     let db = db.read().await;
-    let records = db
-        .stream_range(Vec::new())
-        .await
-        .map_err(|e| BackendError::Storage(e.to_string()))?;
-    InMemoryKvStore::try_from_stream(records.map_err(|e| BackendError::Storage(e.to_string())))
-        .await
+    let end = db.bounds().end;
+    let db = &*db;
+    let records = futures::stream::try_unfold(
+        (db.sync_boundary(), Vec::new().into_iter()),
+        move |(mut next, mut pending)| async move {
+            loop {
+                if let Some(record) = pending.next() {
+                    return Ok(Some((record, (next, pending))));
+                }
+                if next >= end {
+                    return Ok(None);
+                }
+                // The public log reader also returns a proof; avoid materializing index buckets.
+                let (_, operations) = db
+                    .ops_historical_proof(end, next, NZU64!(32))
+                    .await
+                    .map_err(|e| BackendError::Storage(e.to_string()))?;
+                let mut active = Vec::new();
+                for operation in operations {
+                    let live = db.bitmap().get_bit(*next);
+                    next = next.saturating_add(1);
+                    if !live {
+                        continue;
+                    }
+                    match operation {
+                        Operation::Update(record) => active.push((record.key, record.value)),
+                        Operation::CommitFloor(_, _) => {}
+                        Operation::Delete(_) => {
+                            return Err(BackendError::Storage(
+                                "active deletion in native operation log".into(),
+                            ));
+                        }
+                    }
+                }
+                pending = active.into_iter();
+            }
+        },
+    );
+    InMemoryKvStore::try_from_stream(records.boxed()).await
 }

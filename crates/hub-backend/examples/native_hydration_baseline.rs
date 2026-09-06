@@ -1,22 +1,31 @@
-//! Compare buffered and streamed query-map loading in separate processes.
-//! Usage: native_hydration_baseline <init|buffered|streamed> <directory> <records> <value-bytes>
+//! Compare query-map loading strategies in separate processes.
+//! Usage: native_hydration_baseline <init|buffered|indexed|journal> <directory> <records> <value-bytes> [distinct|colliding]
 //! Run `init` once in an empty directory, then measure each loading mode externally.
 
 use commonware_cryptography::{Hasher as _, Sha256};
 use commonware_glue::stateful::db::{DatabaseSet as _, Shared};
 use commonware_runtime::{Runner as _, Supervisor as _, buffer::paged::CacheRef, tokio};
 use commonware_utils::{NZU16, NZUsize};
-use futures::{StreamExt as _, pin_mut};
+use futures::{StreamExt as _, TryStreamExt as _, pin_mut};
 use hub_backend::native::{self, NativeDb, NativeStateSet};
 use hub_modules::{ModuleState, kv_store::InMemoryKvStore};
 use std::{hint::black_box, path::PathBuf, time::Instant};
 
 fn main() {
-    let [_, mode, directory, records, value_bytes]: [String; 5] = std::env::args()
-        .collect::<Vec<_>>()
+    let mut args = std::env::args().collect::<Vec<_>>();
+    let layout = if args.len() == 6 {
+        args.pop().unwrap()
+    } else {
+        "distinct".into()
+    };
+    assert!(matches!(layout.as_str(), "distinct" | "colliding"));
+    let [_, mode, directory, records, value_bytes]: [String; 5] = args
         .try_into()
         .expect("expected mode, directory, records per namespace and value bytes");
-    assert!(matches!(mode.as_str(), "init" | "buffered" | "streamed"));
+    assert!(matches!(
+        mode.as_str(),
+        "init" | "buffered" | "indexed" | "journal"
+    ));
     let records: usize = records.parse().expect("invalid record count");
     let value_bytes: usize = value_bytes.parse().expect("invalid value size");
     assert!(records > 0 && value_bytes > 0 && value_bytes <= native::MAX_VALUE_BYTES);
@@ -37,7 +46,7 @@ fn main() {
             for start in (0..records).step_by(1024) {
                 let changes = std::array::from_fn(|module| {
                     (start..records.min(start + 1024)).map(|i| {
-                        (format!("record/{i:012}").into_bytes(), Some(vec![u8::try_from(module).unwrap(); value_bytes]))
+                        (key(i, &layout), Some(vec![u8::try_from(module).unwrap(); value_bytes]))
                     }).collect()
                 });
                 let batch = native::prepare(set.new_batches().await, changes).await.unwrap();
@@ -47,11 +56,12 @@ fn main() {
             return;
         }
         let start = Instant::now();
-        let modules = if mode == "streamed" {
+        let modules = if mode == "journal" {
             native::load_modules(&set).await.unwrap()
         } else {
             let (acp, bulletin, hub, nonces) = futures::join!(
-                buffered(&set.0), buffered(&set.1), buffered(&set.2), buffered(&set.3),
+                indexed_or_buffered(&set.0, &mode), indexed_or_buffered(&set.1, &mode),
+                indexed_or_buffered(&set.2, &mode), indexed_or_buffered(&set.3, &mode),
             );
             ModuleState::from_stores([acp, bulletin, hub, nonces])
         };
@@ -73,15 +83,20 @@ fn main() {
         }
         assert_eq!(total_records, records * 4);
         assert_eq!(total_value_bytes, records * value_bytes * 4);
-        println!("mode,records_per_namespace,value_bytes,load_ms,total_records,total_value_bytes,digest");
-        println!("{mode},{records},{value_bytes},{load_ms:.6},{total_records},{total_value_bytes},{}", hash.finalize().1);
+        println!("mode,layout,records_per_namespace,value_bytes,load_ms,total_records,total_value_bytes,digest");
+        println!("{mode},{layout},{records},{value_bytes},{load_ms:.6},{total_records},{total_value_bytes},{}", hash.finalize().1);
         black_box(&modules);
     });
 }
 
-async fn buffered(db: &Shared<NativeDb>) -> InMemoryKvStore {
+async fn indexed_or_buffered(db: &Shared<NativeDb>, mode: &str) -> InMemoryKvStore {
     let db = db.read().await;
     let records = db.stream_range(Vec::new()).await.unwrap();
+    if mode == "indexed" {
+        return InMemoryKvStore::try_from_stream(records.map_err(|e| e.to_string()))
+            .await
+            .unwrap();
+    }
     pin_mut!(records);
     let mut values = Vec::new();
     while let Some(record) = records.next().await {
@@ -89,4 +104,14 @@ async fn buffered(db: &Shared<NativeDb>) -> InMemoryKvStore {
         values.push((key, value.to_vec()));
     }
     InMemoryKvStore::from_pairs(values)
+}
+
+fn key(index: usize, layout: &str) -> Vec<u8> {
+    let mut key = if layout == "colliding" {
+        vec![b'x'; native::INDEX_PREFIX_BYTES]
+    } else {
+        Vec::new()
+    };
+    key.extend_from_slice(format!("record/{index:012}").as_bytes());
+    key
 }
