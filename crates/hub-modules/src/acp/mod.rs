@@ -6,6 +6,8 @@ pub mod abi;
 pub mod error;
 /// Key prefixes and builders for ACP KV storage.
 pub mod keys;
+pub mod read_capture;
+pub mod record_store;
 /// ACP domain types.
 pub mod types;
 /// `ZanzibarStore` adapter over hub's module KV store.

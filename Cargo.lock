@@ -3764,11 +3764,13 @@ dependencies = [
  "commonware-runtime",
  "commonware-storage",
  "commonware-utils",
+ "hub-modules",
  "hub-qmdb",
  "hub-traits",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "zanzibar",
 ]
 
 [[package]]

@@ -8,9 +8,46 @@ use zanzibar::error::Result;
 use zanzibar::{ObjectRef, Policy, Relationship, Subject, ZanzibarStore};
 
 use super::keys;
-use super::types::{PolicyMarshalingType, PolicyRecord, RecordMetadata, RelationshipRecord};
-use crate::kv_store::{InMemoryKvStore, ModuleKvStore};
+use super::record_store::RecordStore;
+use super::types::{
+    AccessRequest, PolicyMarshalingType, PolicyRecord, RecordMetadata, RelationshipRecord,
+};
+use crate::kv_store::InMemoryKvStore;
 use crate::types::Timestamp;
+
+/// Evaluate an access request from fallible policy and relationship records.
+/// Missing data and incomplete proof coverage remain errors, including on the
+/// subtracting side of an exclusion. Callers must authenticate proof-backed records.
+pub fn evaluate_access_request<S: RecordStore>(
+    store: S,
+    policy_id: &str,
+    request: &AccessRequest,
+) -> Result<bool> {
+    let Some(bytes) = store.read_record(&keys::policy_key(policy_id))? else {
+        return Ok(false);
+    };
+    let record: PolicyRecord = serde_json::from_slice(&bytes)?;
+    if record.policy.id != policy_id {
+        return Err(zanzibar::error::Error::InvalidPolicy(
+            "policy record ID does not match its key".into(),
+        ));
+    }
+    let mut engine =
+        zanzibar::PermissionEngine::new(std::sync::Arc::new(QmdbZanzibarStore::new(store)));
+    engine.add_policy(&record.policy);
+    for operation in &request.operations {
+        if !engine.check_blocking(
+            policy_id,
+            &operation.object.resource,
+            &operation.object.id,
+            &operation.permission,
+            &request.actor.0,
+        )? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
 
 /// A [`ZanzibarStore`] adapter over hub's module KV store.
 ///
@@ -23,11 +60,11 @@ use crate::types::Timestamp;
 /// Relationship reads honor the `archived` flag: an archived record is treated
 /// as absent, matching hub's access-check semantics.
 #[derive(Debug, Default)]
-pub struct QmdbZanzibarStore<S: ModuleKvStore = InMemoryKvStore> {
+pub struct QmdbZanzibarStore<S: RecordStore = InMemoryKvStore> {
     store: RwLock<S>,
 }
 
-impl<S: ModuleKvStore> QmdbZanzibarStore<S> {
+impl<S: RecordStore> QmdbZanzibarStore<S> {
     /// Wrap a module KV store.
     pub const fn new(store: S) -> Self {
         Self {
@@ -43,7 +80,7 @@ impl<S: ModuleKvStore> QmdbZanzibarStore<S> {
     ) -> Result<Vec<RelationshipRecord>> {
         let scan = keys::relationship_storage_prefix(policy_id, storage_prefix);
         let mut records = Vec::new();
-        for (_, bytes) in self.store.read().unwrap().prefix_scan(&scan) {
+        for (_, bytes) in self.store.read().unwrap().scan_records(&scan)? {
             let record: RelationshipRecord = serde_json::from_slice(&bytes)?;
             if !record.archived {
                 records.push(record);
@@ -58,7 +95,7 @@ impl<S: ModuleKvStore> QmdbZanzibarStore<S> {
             .store
             .read()
             .unwrap()
-            .get(&keys::relationship_key(policy_id, &rel.storage_key()))
+            .read_record(&keys::relationship_key(policy_id, &rel.storage_key()))?
             .map(|bytes| serde_json::from_slice::<RelationshipRecord>(&bytes))
             .transpose()?
             .is_some_and(|rec| !rec.archived))
@@ -75,7 +112,7 @@ fn default_metadata() -> RecordMetadata {
 }
 
 #[async_trait]
-impl<S: ModuleKvStore> ZanzibarStore for QmdbZanzibarStore<S> {
+impl<S: RecordStore> ZanzibarStore for QmdbZanzibarStore<S> {
     async fn store_policy(&self, policy: &Policy) -> Result<()> {
         let record = PolicyRecord {
             policy: policy.clone(),
@@ -87,7 +124,7 @@ impl<S: ModuleKvStore> ZanzibarStore for QmdbZanzibarStore<S> {
         self.store
             .write()
             .unwrap()
-            .put(&keys::policy_key(&policy.id), bytes);
+            .write_record(&keys::policy_key(&policy.id), bytes)?;
         Ok(())
     }
 
@@ -96,7 +133,7 @@ impl<S: ModuleKvStore> ZanzibarStore for QmdbZanzibarStore<S> {
             .store
             .read()
             .unwrap()
-            .get(&keys::policy_key(policy_id))
+            .read_record(&keys::policy_key(policy_id))?
             .map(|bytes| serde_json::from_slice::<PolicyRecord>(&bytes))
             .transpose()?
             .map(|record| record.policy))
@@ -106,7 +143,7 @@ impl<S: ModuleKvStore> ZanzibarStore for QmdbZanzibarStore<S> {
         self.store
             .read()
             .unwrap()
-            .prefix_scan(keys::POLICY_PREFIX)
+            .scan_records(keys::POLICY_PREFIX)?
             .into_iter()
             .map(|(_, bytes)| {
                 let record: PolicyRecord = serde_json::from_slice(&bytes)?;
@@ -118,17 +155,17 @@ impl<S: ModuleKvStore> ZanzibarStore for QmdbZanzibarStore<S> {
     async fn delete_policy(&self, policy_id: &str) -> Result<bool> {
         let mut guard = self.store.write().unwrap();
         let policy_key = keys::policy_key(policy_id);
-        if !guard.has(&policy_key) {
+        if guard.read_record(&policy_key)?.is_none() {
             return Ok(false);
         }
-        guard.delete(&policy_key);
         let rel_keys: Vec<_> = guard
-            .prefix_scan(&keys::relationship_policy_prefix(policy_id))
+            .scan_records(&keys::relationship_policy_prefix(policy_id))?
             .into_iter()
             .map(|(k, _)| k)
             .collect();
+        guard.remove_record(&policy_key)?;
         for key in rel_keys {
-            guard.delete(&key);
+            guard.remove_record(&key)?;
         }
         Ok(true)
     }
@@ -141,18 +178,18 @@ impl<S: ModuleKvStore> ZanzibarStore for QmdbZanzibarStore<S> {
             metadata: default_metadata(),
         };
         let bytes = serde_json::to_vec(&record).expect("serialize RelationshipRecord");
-        self.store.write().unwrap().put(
+        self.store.write().unwrap().write_record(
             &keys::relationship_key(policy_id, &rel.storage_key()),
             bytes,
-        );
+        )?;
         Ok(())
     }
 
     async fn delete_relationship(&self, policy_id: &str, rel: &Relationship) -> Result<bool> {
         let key = keys::relationship_key(policy_id, &rel.storage_key());
         let mut guard = self.store.write().unwrap();
-        if guard.has(&key) {
-            guard.delete(&key);
+        if guard.read_record(&key)?.is_some() {
+            guard.remove_record(&key)?;
             Ok(true)
         } else {
             Ok(false)
@@ -244,12 +281,12 @@ impl<S: ModuleKvStore> ZanzibarStore for QmdbZanzibarStore<S> {
         );
         let mut guard = self.store.write().unwrap();
         let keys_to_delete: Vec<_> = guard
-            .prefix_scan(&prefix)
+            .scan_records(&prefix)?
             .into_iter()
             .map(|(k, _)| k)
             .collect();
         for key in keys_to_delete {
-            guard.delete(&key);
+            guard.remove_record(&key)?;
         }
         Ok(())
     }
@@ -263,6 +300,7 @@ mod tests {
     use zanzibar::{PermissionEngine, Relation, RelationExpression, Resource};
 
     use super::*;
+    use crate::kv_store::ModuleKvStore;
 
     const POLICY: &str = "policy-1";
 

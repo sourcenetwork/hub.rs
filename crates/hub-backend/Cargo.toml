@@ -27,4 +27,6 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
+hub-modules.workspace = true
 tempfile.workspace = true
+zanzibar.workspace = true

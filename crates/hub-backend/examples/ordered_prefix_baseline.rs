@@ -9,6 +9,9 @@ mod index_tests;
 #[cfg(test)]
 #[path = "ordered_prefix/lifecycle.rs"]
 mod lifecycle;
+#[cfg(test)]
+#[path = "ordered_prefix/permission.rs"]
+mod permission;
 #[path = "ordered_prefix/proof.rs"]
 mod proof;
 #[cfg(test)]

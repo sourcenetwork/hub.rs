@@ -49,6 +49,22 @@ impl Clone for InMemoryKvStore {
 }
 
 impl InMemoryKvStore {
+    /// Borrow a value from this immutable view.
+    pub fn get_ref(&self, key: &[u8]) -> Option<&[u8]> {
+        self.data.get(key).map(Bytes::as_ref)
+    }
+
+    /// Borrow ordered prefix entries without materializing the entire result.
+    pub fn prefix_iter<'a>(
+        &'a self,
+        prefix: &'a [u8],
+    ) -> impl Iterator<Item = (&'a [u8], &'a [u8])> {
+        self.data
+            .range(prefix.to_vec()..)
+            .take_while(move |(key, _)| key.starts_with(prefix))
+            .map(|(key, value)| (key.as_slice(), value.as_ref()))
+    }
+
     /// Construct a store from raw key-value pairs (e.g. loaded from RocksDB raw_kv CF).
     pub fn from_pairs(pairs: Vec<(Vec<u8>, Vec<u8>)>) -> Self {
         Self {
@@ -123,7 +139,7 @@ impl InMemoryKvStore {
 
 impl ModuleKvStore for InMemoryKvStore {
     fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.data.get(key).map(|value| value.to_vec())
+        self.get_ref(key).map(<[u8]>::to_vec)
     }
 
     fn has(&self, key: &[u8]) -> bool {
@@ -141,10 +157,8 @@ impl ModuleKvStore for InMemoryKvStore {
     }
 
     fn prefix_scan(&self, prefix: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
-        self.data
-            .range(prefix.to_vec()..)
-            .take_while(|(k, _)| k.starts_with(prefix))
-            .map(|(k, v)| (k.clone(), v.to_vec()))
+        self.prefix_iter(prefix)
+            .map(|(key, value)| (key.to_vec(), value.to_vec()))
             .collect()
     }
 }
