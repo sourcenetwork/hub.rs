@@ -143,8 +143,11 @@ the node's execution or query-proof path.
 
 `hub-backend::native::p2p` adapts ordered native operations to Commonware's peer
 resolver without changing operation bytes or proofs. Its codec shares journal
-key/value limits, and both fetch and serving adapters cap requests at two
-operations so maximum-size responses fit the 4 MiB transport limit. The resolver
+key/value limits. Fetches allow up to 64 operations; serving inspects eight at a
+time and selects a prefix within the response byte budget before obtaining its
+range proof. Responses leave framing space within the 4 MiB transport limit.
+Inspection also generates proofs through Commonware's public API, adding storage
+work in exchange for bounded read-ahead and fewer network responses. The resolver
 retains Commonware cancellation and verification feedback, including peer blocking.
 Authenticated loopback tests cover fresh transfer, pruned-history recovery after
 cancellation, convergence on a newer target, and rejection of a mismatched root.

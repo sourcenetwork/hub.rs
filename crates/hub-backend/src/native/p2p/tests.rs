@@ -13,6 +13,7 @@ use commonware_storage::{
 use commonware_utils::{NZU16, NZUsize, channel::mpsc};
 use std::time::Duration;
 
+mod batching;
 mod network;
 mod recovery;
 

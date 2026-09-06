@@ -43,7 +43,7 @@ impl Peers {
                 b"vera-native-sync-test",
                 addresses[i],
                 NZUsize!(2),
-                4 * 1024 * 1024,
+                MAX_MESSAGE_BYTES,
             );
             cfg.dial_frequency = Duration::from_millis(10);
             cfg.peer_connection_cooldown = Duration::from_millis(10);

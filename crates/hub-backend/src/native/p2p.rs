@@ -11,8 +11,14 @@ use std::num::NonZeroU64;
 
 use super::{NativeDb, Operation, operation_config};
 
-/// Two maximum-size records, their successor keys and proofs fit below 4 MiB.
-pub const MAX_FETCH_OPS: NonZeroU64 = NZU64!(2);
+mod serve;
+
+/// Maximum operation count requested or served by the native resolver.
+pub const MAX_FETCH_OPS: NonZeroU64 = NZU64!(64);
+/// Required network message limit, including the resolver's framing.
+pub const MAX_MESSAGE_BYTES: u32 = 4 * 1024 * 1024;
+/// Response payload budget, leaving room for the resolver's framing.
+pub const MAX_RESPONSE_BYTES: usize = MAX_MESSAGE_BYTES as usize - 1024;
 
 /// Native operation bytes with the same decoding limits as the storage journal.
 #[derive(Clone, Debug)]
@@ -64,8 +70,9 @@ impl Source for WireDatabase {
         &self,
         request: Request<Self::Family>,
     ) -> Result<(Response<Self::Family, Self::Op, Self::Digest>, FeedbackTx), Self::Error> {
-        let (response, feedback) = self.0.serve(bounded(request)).await?;
-        Ok((map(response, WireOperation), feedback))
+        let db = self.0.read().await;
+        let response = serve::response(&db, bounded(request)).await?;
+        Ok((map(response, WireOperation), None))
     }
 }
 
@@ -84,7 +91,7 @@ impl std::fmt::Debug for Resolver {
 
 impl Resolver {
     /// Use an actor configured to serve at least [`MAX_FETCH_OPS`] operations per response.
-    /// Its network must admit 4 MiB messages and enforce a bounded receive backlog.
+    /// Its network must enforce [`MAX_MESSAGE_BYTES`] and a bounded receive backlog.
     pub const fn new(mailbox: WireMailbox) -> Self {
         Self(mailbox)
     }
