@@ -33,7 +33,9 @@ fn initial_authority_recovers_after_interrupted_genesis_creation() {
         Default::default(),
         root,
     );
-    recover_modules(&executor, &trees, &anchor).unwrap();
+    executor
+        .recover_modules(anchor.height, anchor.module_state_root)
+        .unwrap();
     assert_eq!(executor.modules().read().unwrap().state_root(), root);
 
     let mut different = configured_genesis();
@@ -54,4 +56,51 @@ fn existing_history_cannot_be_reinitialized_without_genesis() {
         initialize_genesis_modules(dir.path(), &configured_genesis(), &trees, &mut state).is_err()
     );
     assert!(state.hub.administration().unwrap().is_none());
+}
+
+#[test]
+fn startup_loads_the_selected_native_checkpoint() {
+    use hub_state::{ModuleCheckpoint, ModuleStateTree};
+    let source = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    let mut trees: [ModuleStateTree; 4] =
+        std::array::from_fn(|i| ModuleStateTree::open(source.path().join(i.to_string())).unwrap());
+    for (i, tree) in trees.iter_mut().enumerate() {
+        let next = tree
+            .prepare(
+                &tree.snapshot().unwrap(),
+                vec![(b"checkpoint/data".to_vec(), Some(vec![i as u8]))],
+            )
+            .unwrap();
+        tree.commit_prepared(42, &next).unwrap();
+    }
+    let roots = std::array::from_fn(|i| trees[i].root().unwrap().0);
+    let mut checkpoint = ModuleCheckpoint::create(target.path().join("state"), 42, roots).unwrap();
+    for (i, tree) in trees.iter().enumerate() {
+        checkpoint
+            .add_chunk(
+                i,
+                tree.snapshot()
+                    .unwrap()
+                    .export_chunk(None)
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap();
+    }
+    drop(checkpoint.finish().unwrap().install().unwrap());
+    let (restored, modules) = open_module_trees(target.path()).unwrap();
+    let executor = HubExecutor::new(9001).with_module_trees(restored.clone());
+    executor.set_base_modules(modules);
+    let root = hub_modules::module_state::state_root_from_jmt(&roots);
+    executor.recover_modules(42, root).unwrap();
+    assert_eq!(executor.module_height().unwrap(), 42);
+    assert_eq!(executor.snapshot().unwrap().state_root(42), root);
+    for (i, tree) in restored.iter().enumerate() {
+        assert_eq!(
+            tree.lock().unwrap().get(b"checkpoint/data").unwrap(),
+            Some(vec![i as u8])
+        );
+    }
+    assert!(!target.path().join("state/acp").exists());
 }

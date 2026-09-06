@@ -52,7 +52,6 @@ use hub_executor::{ExecutionConfig, HubExecutor, MempoolValidator, ModuleTrees};
 use hub_indexer::{BlockIndex, LightBlockIndex, StoredEpochMaterial};
 use hub_jsonrpc::{IndexedStateProvider, NodeState, RpcServer, TxSubmitCallback};
 use hub_modules::{ModuleState, kv_store::InMemoryKvStore};
-use hub_state::ModuleStateTree;
 use tracing::{error, info};
 
 use crate::{
@@ -68,7 +67,6 @@ use crate::{
 };
 
 const PARTITION_PREFIX: &str = "hub";
-const MODULE_NAMES: [&str; 4] = ["acp", "bulletin", "hub", "nonces"];
 
 /// Run a validator until one of its actors stops.
 pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow::Result<()> {
@@ -589,8 +587,10 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
 fn open_module_trees(data_dir: &Path) -> anyhow::Result<(ModuleTrees, ModuleState)> {
     let mut stores: [InMemoryKvStore; 4] = Default::default();
     let mut trees = Vec::with_capacity(4);
-    for (store, name) in stores.iter_mut().zip(MODULE_NAMES) {
-        let tree = ModuleStateTree::open(data_dir.join("state").join(name))?;
+    for (store, tree) in stores
+        .iter_mut()
+        .zip(hub_state::open_module_trees(data_dir.join("state"))?)
+    {
         *store = InMemoryKvStore::from_pairs(tree.load_all()?);
         trees.push(Arc::new(std::sync::Mutex::new(tree)));
     }

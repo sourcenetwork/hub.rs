@@ -76,11 +76,17 @@ impl ModuleStateTree {
 
     /// Take a read-only view of the current canonical state.
     pub fn snapshot(&self) -> Result<TreeSnapshot> {
+        self.snapshot_at_height(self.canonical_height)
+    }
+
+    /// Pin a retained revision for transfer while later revisions are committed.
+    pub fn snapshot_at_height(&self, height: u64) -> Result<TreeSnapshot> {
+        let version = self.version_at_height(height)?;
         Ok(TreeSnapshot {
             store: self.store.clone(),
-            base_version: self.canonical_version,
-            version: self.canonical_version,
-            root: self.root()?,
+            base_version: version,
+            version,
+            root: self.root_at_version(version)?,
             pending: Vec::new(),
         })
     }

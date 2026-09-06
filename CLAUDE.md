@@ -128,6 +128,10 @@ database beside the execution partitions. Module snapshots follow pending
 batches, and their height/root participate in target matching and recovery.
 Database apply persists module state before the application publishes receipts.
 Peer snapshot synchronization is still disabled for both execution and modules.
+`hub-state::ModuleCheckpoint` restores complete native store generations under
+`state/snapshots`; publication replaces the `state/CURRENT` selection file.
+Startup opens that generation as one set, rejecting missing or invalid selections.
+Without a selection file it uses the original `state/{acp,bulletin,hub,nonces}` layout.
 
 The block commitments are:
 

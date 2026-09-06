@@ -14,3 +14,6 @@ pub use tree::ModuleStateTree;
 
 mod transfer;
 pub use transfer::{ModuleRestore, SnapshotChunk};
+
+mod checkpoint;
+pub use checkpoint::{ModuleCheckpoint, PreparedCheckpoint, open_module_trees};
