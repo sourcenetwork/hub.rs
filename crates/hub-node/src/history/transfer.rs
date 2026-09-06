@@ -226,4 +226,4 @@ fn decode_record(mut input: &[u8], limits: HistoryLimits) -> Result<Block> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

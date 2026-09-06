@@ -23,7 +23,9 @@ const FORMAT: &[u8] = b"format";
 const GENESIS: &[u8] = b"genesis";
 const HEAD: &[u8] = b"head";
 
+mod peer;
 mod proof;
+pub use peer::{HistoryPeer, start_history_peer};
 mod transfer;
 pub use transfer::{HISTORY_CHUNK_BYTES, HistoryChunk, HistoryLimits};
 

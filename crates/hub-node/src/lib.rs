@@ -23,7 +23,10 @@ mod finalize;
 pub use finalize::{index_finalized_block, subscription_data};
 
 mod history;
-pub use history::{FinalizedHistory, HISTORY_CHUNK_BYTES, HistoryChunk, HistoryLimits};
+pub use history::{
+    FinalizedHistory, HISTORY_CHUNK_BYTES, HistoryChunk, HistoryLimits, HistoryPeer,
+    start_history_peer,
+};
 
 mod native_genesis;
 mod node;

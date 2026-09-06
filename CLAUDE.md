@@ -141,8 +141,11 @@ provide historical activity or absence proofs.
 import API. The import selection and cursor are durable, and imported history
 remains unavailable until recovery at the matching state anchor completes.
 Starting an import selects metadata format 2 to prevent older binaries from
-discarding its unfinished records. The API is not yet attached to peer transport
-or snapshot startup; certificate material still requires separate handoff.
+discarding its unfinished records. The node serves chunks through Commonware's
+resolver on authenticated channel 16. `HistoryPeer::import_next_from` bounds
+record assembly, verifies it before persistence and cancels pending fetches when
+dropped. Snapshot startup remains disabled; certificate material still requires
+separate handoff.
 
 `hub-backend::native` rebuilds query maps from the retained operation log and
 activity bitmap, reading at most 32 operations at a time under partition read

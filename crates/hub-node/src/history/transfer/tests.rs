@@ -7,7 +7,7 @@ use hub_app::ConsensusScheme;
 use hub_domain::{DbTarget, Tx};
 use std::sync::Arc;
 
-fn certify(block: &Block, seed: u64) -> (LightBlock, ConsensusPublicKey) {
+pub(in crate::history) fn certify(block: &Block, seed: u64) -> (LightBlock, ConsensusPublicKey) {
     let public = ed25519::PrivateKey::from_seed(seed).public_key();
     let (info, shares) = crate::trusted_setup(seed, [public.clone()]).unwrap();
     let material = EpochMaterial::new(info.output.players().clone(), info.output.public().clone());
@@ -31,7 +31,7 @@ fn certify(block: &Block, seed: u64) -> (LightBlock, ConsensusPublicKey) {
     )
 }
 
-fn revision(height: u64, parent: BlockId) -> (Block, Vec<ExecutionReceipt>) {
+pub(in crate::history) fn revision(height: u64, parent: BlockId) -> (Block, Vec<ExecutionReceipt>) {
     let mut block = super::super::tests::block(height, parent);
     let receipts = if height == 0 {
         vec![]

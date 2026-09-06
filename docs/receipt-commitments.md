@@ -46,7 +46,8 @@ peer history transport; snapshot startup remains disabled.
 `FinalizedHistory::record_chunk` copies at most 64 KiB from a pinned RocksDB
 snapshot into a response and reports the full record length and offset. The
 caller must bound record assembly before allocating for the advertised length.
-This API does not register a network endpoint. Pinned reads avoid copying the
+The native node serves these chunks on authenticated peer channel 16 using
+Commonware's resolver. Pinned reads avoid copying the
 entire stored value into a Rust buffer; RocksDB's own resource use still applies.
 
 `begin_import` verifies the selected revision against the caller's independent
@@ -58,6 +59,22 @@ aggregate log count before decoding their fields. Operation counts obey the
 existing revision codec bounds. Limits are caller-selected; no default import
 workload or capacity is implied.
 
+`HistoryPeer::import_next_from` fetches one required record from a caller-selected
+current group member. It checks chunk framing, offsets, advertised size, stable
+record length and the assembly budget, then passes the complete record through
+the ancestry and receipt verifier. A bad record leaves the durable cursor
+unchanged; the caller can try another peer. Commonware supplies request IDs,
+targeted retries and cancellation. Dropping the import future cancels its active
+fetch. The caller's timeout covers the asynchronous transfer; synchronous decode
+and storage work can outlast it.
+
+The client issues one chunk request at a time and holds at most one assembled
+record. Individual chunks receive no positive authenticity score because only
+the completed record can establish receipt integrity. Malformed framing is
+reported to the resolver as invalid. The underlying network limits messages to
+4 MiB; the history response payload is at most 64 KiB plus 16 bytes for length
+and offset. Aggregate peer traffic and storage work still require load testing.
+
 Each accepted record and the next expected ancestor are persisted in one synced
 write batch. `import_anchor` and `import_next` expose restart progress. Replayed,
 out-of-order, incomplete and altered records fail without advancing that cursor.
@@ -68,7 +85,8 @@ The caller must keep admission and query publication stopped, recover applicatio
 state at the selected revision, and call `recover` with that same anchor. Recovery
 rejects unfinished imports and other anchors before indexing records. Its final
 durable batch removes the marker. This is the history-side handoff; the running
-node does not yet start snapshot import or transfer peer certificate material.
+node serves chunks but does not yet start snapshot import or transfer peer
+certificate material.
 
 Starting an import upgrades the history metadata format to 2 in the same batch
 as the import marker. Older binaries reject that format rather than treating an

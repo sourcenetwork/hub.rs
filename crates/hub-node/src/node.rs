@@ -132,6 +132,7 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     let dkg_network = p2p.register(DKG_CHANNEL, MESSAGE_RATE);
     let dkg_probe_network = p2p.register(DKG_PROBE_CHANNEL, MESSAGE_RATE);
     let (mempool_sender, mempool_receiver) = p2p.register(MEMPOOL_CHANNEL, MESSAGE_RATE);
+    let history_network = p2p.register(crate::HISTORY_CHANNEL, MESSAGE_RATE);
     let mut state_resolver_handles = Vec::new();
     macro_rules! state_channel {
         ($id:literal, $db:ty) => {{
@@ -350,6 +351,14 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         config.data_dir.join("history"),
         &genesis_block,
     )?);
+    let (_history_peer, history_peer_handle) = crate::start_history_peer(
+        context.child("history_peer"),
+        history.clone(),
+        oracle.clone(),
+        oracle.clone(),
+        local.clone(),
+        history_network,
+    );
     let (history_failures, mut history_failure_rx) = ::tokio::sync::mpsc::channel(1);
     let block_index = Arc::new(BlockIndex::new());
     let light_block_index = Arc::new(LightBlockIndex::new());
@@ -595,6 +604,7 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         orchestrator_handle,
         marshal_handle,
         stateful_handle,
+        history_peer_handle,
     ]);
     ::tokio::select! {
         failure = history_failure_rx.recv() => Err(failure.unwrap_or_else(|| anyhow::anyhow!("history failure channel closed"))),

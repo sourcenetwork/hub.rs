@@ -50,6 +50,8 @@ pub const BACKFILL_CHANNEL: u64 = 3;
 pub const BROADCAST_CHANNEL: u64 = 4;
 /// State-transfer channels in accounts, storage, code, ACP, bulletin, hub and sequence order.
 pub const QMDB_CHANNELS: [u64; 7] = [9, 10, 11, 12, 13, 14, 15];
+/// P2P channel for retained execution-history chunks.
+pub const HISTORY_CHANNEL: u64 = 16;
 /// P2P channel for private reshare dealings and acks.
 pub const DKG_CHANNEL: u64 = 6;
 /// P2P channel for the DKG probe.
