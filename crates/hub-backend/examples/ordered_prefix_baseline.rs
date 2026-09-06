@@ -1,4 +1,4 @@
-//! Ordered Commonware proof and recovery qualification with local component timings.
+//! Ordered Commonware proof, sync and recovery qualification with local component timings.
 //! Timings exclude consensus and transport.
 
 #[path = "ordered_prefix/index.rs"]
@@ -14,6 +14,9 @@ mod lifecycle;
 mod permission;
 #[path = "ordered_prefix/proof.rs"]
 mod proof;
+#[cfg(test)]
+#[path = "ordered_prefix/sync.rs"]
+mod sync;
 #[cfg(test)]
 #[path = "ordered_prefix/tests.rs"]
 mod tests;

@@ -13,19 +13,19 @@ use hub_backend::{
 };
 use hub_qmdb::AccountEncoding;
 
-fn account_key(seed: u8) -> AccountKey {
+const fn account_key(seed: u8) -> AccountKey {
     AccountKey::new([seed; 20])
 }
 
-fn storage_key(seed: u8) -> StorageKey {
+const fn storage_key(seed: u8) -> StorageKey {
     StorageKey::new([seed; 60])
 }
 
-fn code_key(seed: u8) -> CodeKey {
+const fn code_key(seed: u8) -> CodeKey {
     CodeKey::new([seed; 32])
 }
 
-fn account(seed: u8) -> AccountValue {
+const fn account(seed: u8) -> AccountValue {
     AccountValue([seed; AccountEncoding::SIZE])
 }
 
