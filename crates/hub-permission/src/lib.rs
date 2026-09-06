@@ -12,9 +12,11 @@ use serde::{Deserialize, Serialize};
 use zanzibar::error::{Error as EvaluationError, Result as EvaluationResult};
 
 pub use hub_modules::acp::{
+    decision::DecisionRequest,
     read_capture::{ReadCapture, ReadLimits, RecordRead},
-    types::{AccessRequest, Actor, Object, Operation},
+    types::{AccessDecision, AccessRequest, Actor, Object, Operation},
 };
+pub use hub_modules::types::Timestamp;
 
 /// Shared service limits; consumers may impose tighter limits.
 pub const PERMISSION_LIMITS: PermissionLimits = PermissionLimits {

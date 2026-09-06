@@ -20,6 +20,8 @@ use jsonrpsee::core::client::SubscriptionClientT;
 use jsonrpsee::rpc_params;
 use jsonrpsee::ws_client::WsClientBuilder;
 
+#[path = "light_client/decision.rs"]
+mod decision;
 #[path = "light_client/permission.rs"]
 mod permission;
 
@@ -398,4 +400,5 @@ async fn light_client_proof_verification() {
         &trusted_key,
     )
     .await;
+    decision::check_decisions(&cluster, &client, &evm_signer, policy_id_str, &trusted_key).await;
 }

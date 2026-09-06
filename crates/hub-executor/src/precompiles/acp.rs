@@ -700,10 +700,12 @@ pub(super) fn dispatch(
                 actor: Actor(actor_did),
             };
 
-            let decision = match module.check_access(&creator, &policy_id, &access_request) {
-                Ok(d) => d,
-                Err(e) => return Ok(err_dispatch(e)),
-            };
+            let decision =
+                match module.check_access(&creator, &policy_id, &access_request, block_ctx, tx_ctx)
+                {
+                    Ok(d) => d,
+                    Err(e) => return Ok(err_dispatch(e)),
+                };
 
             let ret = IAcp::checkAccessCall::abi_encode_returns(&json_bytes(&decision));
             Ok(ok_dispatch(WRITE_GAS, ret, vec![]))
@@ -1120,6 +1122,7 @@ resources:
             },
         };
         let tx_ctx = TxExecCtx {
+            sequence: 0,
             tx_hash: vec![1; 32],
             signer: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK".to_string(),
         };
@@ -1174,6 +1177,7 @@ resources:
             },
         };
         let tx_ctx = TxExecCtx {
+            sequence: 0,
             tx_hash: vec![1; 32],
             signer: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK".to_string(),
         };
@@ -1203,6 +1207,7 @@ resources:
             },
         };
         let tx_ctx = TxExecCtx {
+            sequence: 0,
             tx_hash: vec![1; 32],
             signer: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK".to_string(),
         };
@@ -1379,6 +1384,7 @@ resources:
             },
         };
         let tx_ctx = TxExecCtx {
+            sequence: 0,
             tx_hash: vec![1; 32],
             signer: ALICE_DID.to_string(),
         };

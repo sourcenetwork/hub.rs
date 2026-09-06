@@ -240,6 +240,7 @@ impl HubExecutor {
 
         let tx_hash = native_tx.tx_id().0;
         let tx_ctx = TxExecCtx {
+            sequence: native_tx.nonce,
             tx_hash: tx_hash.to_vec(),
             signer: signer_did,
         };
@@ -930,6 +931,83 @@ mod tests {
         let mut pk_bytes = Vec::with_capacity(48);
         pk.serialize_compressed(&mut pk_bytes).unwrap();
         (sk, pk_bytes)
+    }
+
+    #[test]
+    fn native_decisions_bind_authenticated_sequence_and_revision() {
+        use alloy_sol_types::SolCall;
+        use hub_modules::acp::{
+            abi::IAcp,
+            decision::DecisionRequest,
+            types::{AccessRequest, Actor, Object, Operation, PolicyCmd, PolicyMarshalingType},
+        };
+        let (sk, pk_bytes) = test_bls_keypair();
+        let pubkey = bls::deserialize_pubkey(&pk_bytes).unwrap();
+        let creator = bls::did_from_bls_pubkey(&pubkey).unwrap();
+        let actor = creator.parse().unwrap();
+        let mut acp = AcpModule::new();
+        let policy = acp.create_policy(&actor, "name: decisions\nresources:\n  - name: file\n    permissions:\n      - name: read\n", PolicyMarshalingType::ShortYaml).unwrap().policy.id;
+        let object = Object {
+            resource: "file".into(),
+            id: "report".into(),
+        };
+        acp.direct_policy_cmd(&actor, &policy, PolicyCmd::RegisterObject(object.clone()))
+            .unwrap();
+        let request = AccessRequest {
+            actor: Actor(actor),
+            operations: vec![Operation {
+                object,
+                permission: "read".into(),
+            }],
+        };
+        let call = IAcp::checkAccessCall {
+            policyId: FixedBytes::from_slice(&hex::decode(&policy).unwrap()),
+            resources: vec!["file".into()],
+            objectIds: vec!["report".into()],
+            permissions: vec!["read".into()],
+            actor: creator.clone(),
+        };
+        let executor = test_executor();
+        let block = test_block_ctx();
+        let mut bulletin = BulletinModule::new();
+        let mut hub = HubModule::new();
+        let mut nonces = NativeNonceStore::default();
+        for sequence in 0..2 {
+            let mut tx = NativeTx {
+                chain_id: 9001,
+                nonce: sequence,
+                bls_pubkey: FixedBytes::from_slice(&pk_bytes),
+                target: ACP_ADDRESS,
+                calldata: call.abi_encode().into(),
+                signature: FixedBytes::ZERO,
+            };
+            tx.signature = FixedBytes::from_slice(&bls::sign(&sk, &tx.signing_data()).unwrap());
+            let result = executor
+                .execute_native_tx(
+                    &tx.encode_wire(),
+                    &block,
+                    &mut acp,
+                    &mut bulletin,
+                    &mut hub,
+                    &mut nonces,
+                )
+                .unwrap();
+            assert!(result.success());
+            let expected = DecisionRequest {
+                deployment_id: block.deployment_id,
+                policy_id: policy.clone(),
+                creator: creator.clone(),
+                creator_sequence: sequence,
+                request: request.clone(),
+            };
+            let decision = acp
+                .query_access_decision(&expected.id().unwrap())
+                .unwrap()
+                .unwrap();
+            assert_eq!(decision.creator_acc_sequence, sequence);
+            assert_eq!(decision.creation_time, block.timestamp);
+            assert_eq!(decision.issued_height, block.timestamp.block_height);
+        }
     }
 
     #[test]

@@ -286,6 +286,7 @@ impl<CTX: ContextTr> PrecompileProvider<CTX> for HubPrecompiles {
             };
             let direct_caller = inputs.caller == context.tx().caller();
             let tx_ctx = TxExecCtx {
+                sequence: context.tx().nonce(),
                 tx_hash: self.current_tx_hash.to_vec(),
                 // A contract cannot inherit the submitting key's module authority.
                 signer: if direct_caller {

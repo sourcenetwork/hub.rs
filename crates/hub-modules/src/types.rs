@@ -38,6 +38,8 @@ pub struct BlockExecCtx {
 /// precompile or native BLS) populates this — module methods are path-agnostic.
 #[derive(Clone, Debug)]
 pub struct TxExecCtx {
+    /// Sequence authenticated by the submitting operation.
+    pub sequence: u64,
     pub tx_hash: Vec<u8>,
     pub signer: String,
 }

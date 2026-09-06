@@ -2,6 +2,7 @@
 
 /// Solidity ABI interface for the ACP precompile.
 pub mod abi;
+pub mod decision;
 /// ACP error types.
 pub mod error;
 /// Key prefixes and builders for ACP KV storage.
@@ -25,7 +26,7 @@ use zanzibar::PermissionEngine;
 use zanzibar_store::QmdbZanzibarStore;
 
 use crate::kv_store::{InMemoryKvStore, ModuleKvStore};
-use crate::types::{BlockExecCtx, Duration, Timestamp};
+use crate::types::{BlockExecCtx, Duration, Timestamp, TxExecCtx};
 use types::{
     AccessDecision, AccessRequest, AcpParams, Actor, AmendmentEvent, ContentType, DecisionParams,
     GenerateCommitmentResult, Object, ObjectSelector, PolicyCmd, PolicyCmdResult,
@@ -244,7 +245,25 @@ impl AcpModule {
         creator: &Did,
         policy_id: &str,
         access_request: &AccessRequest,
+        block: &BlockExecCtx,
+        tx: &TxExecCtx,
     ) -> Result<AccessDecision> {
+        if tx.signer != creator.as_str()
+            || block.timestamp.block_height == 0
+            || block.timestamp.seconds == 0
+        {
+            return Err(AcpError::InvalidAccessRequest {
+                reason: "invalid decision execution context".into(),
+            });
+        }
+        let expected = decision::DecisionRequest {
+            deployment_id: block.deployment_id,
+            policy_id: policy_id.into(),
+            creator: creator.to_string(),
+            creator_sequence: tx.sequence,
+            request: access_request.clone(),
+        };
+        let decision_id = expected.id()?;
         let policy = self
             .zanzibar_policies
             .get(policy_id)
@@ -274,14 +293,11 @@ impl AcpModule {
             }
         }
 
-        let decision_id =
-            self.compute_decision_id(policy_id, creator, actor_did, &access_request.operations);
-
         let decision = AccessDecision {
             id: decision_id,
             policy_id: policy_id.to_string(),
             creator: creator.to_string(),
-            creator_acc_sequence: 0,
+            creator_acc_sequence: tx.sequence,
             operations: access_request.operations.clone(),
             actor: actor_did.to_string(),
             params: DecisionParams {
@@ -289,8 +305,8 @@ impl AcpModule {
                 ticket_expiration_delta: 100,
                 proof_expiration_delta: 50,
             },
-            creation_time: Timestamp::default(),
-            issued_height: 0,
+            creation_time: block.timestamp.clone(),
+            issued_height: block.timestamp.block_height,
         };
 
         self.set_access_decision(&decision)?;
@@ -1542,27 +1558,6 @@ impl AcpModule {
         true
     }
 
-    // ── Access decision ID ───────────────────────────────────────────────
-
-    fn compute_decision_id(
-        &self,
-        policy_id: &str,
-        creator: &Did,
-        actor: &Did,
-        operations: &[types::Operation],
-    ) -> String {
-        let mut h = Sha256::new();
-        h.update(policy_id.as_bytes());
-        h.update(creator.to_string().as_bytes());
-        h.update(actor.to_string().as_bytes());
-        for op in operations {
-            h.update(op.object.resource.as_bytes());
-            h.update(op.object.id.as_bytes());
-            h.update(op.permission.as_bytes());
-        }
-        hex::encode(h.finalize())
-    }
-
     // ── RFC 6962 Merkle tree helpers ─────────────────────────────────────
 
     fn compute_leaf_hash(data: &[u8]) -> [u8; 32] {
@@ -1818,6 +1813,25 @@ resources:
         assert!(matches!(err, AcpError::ObjectAlreadyRegistered { .. }));
     }
 
+    fn decision_block() -> BlockExecCtx {
+        BlockExecCtx {
+            deployment_id: 9001,
+            timestamp: Timestamp {
+                seconds: 1000,
+                block_height: 5,
+            },
+            ..Default::default()
+        }
+    }
+
+    fn decision_tx(creator: &Did) -> TxExecCtx {
+        TxExecCtx {
+            sequence: 7,
+            tx_hash: vec![1; 32],
+            signer: creator.to_string(),
+        }
+    }
+
     #[test]
     fn check_access_owner_granted() {
         let mut module = AcpModule::new();
@@ -1845,10 +1859,46 @@ resources:
         };
 
         let decision = module
-            .check_access(&creator, policy_id, &access_request)
+            .check_access(
+                &creator,
+                policy_id,
+                &access_request,
+                &decision_block(),
+                &decision_tx(&creator),
+            )
             .unwrap();
         assert_eq!(decision.policy_id, *policy_id);
         assert_eq!(decision.actor, creator.to_string());
+        assert_eq!(decision.creator_acc_sequence, 7);
+        assert_eq!(decision.issued_height, 5);
+        assert_eq!(decision.creation_time, decision_block().timestamp);
+        let mut next = decision_tx(&creator);
+        next.sequence += 1;
+        let renewed = module
+            .check_access(
+                &creator,
+                policy_id,
+                &access_request,
+                &decision_block(),
+                &next,
+            )
+            .unwrap();
+        assert_ne!(renewed.id, decision.id);
+        assert_eq!(
+            module.query_access_decision(&decision.id).unwrap(),
+            Some(decision)
+        );
+        let before = module.store().clone();
+        let empty = AccessRequest {
+            actor: access_request.actor.clone(),
+            operations: vec![],
+        };
+        assert!(
+            module
+                .check_access(&creator, policy_id, &empty, &decision_block(), &next)
+                .is_err()
+        );
+        assert_eq!(module.store().prefix_scan(b""), before.prefix_scan(b""));
     }
 
     #[test]
@@ -1918,7 +1968,13 @@ resources:
         };
 
         let err = module
-            .check_access(&creator, policy_id, &access_request)
+            .check_access(
+                &creator,
+                policy_id,
+                &access_request,
+                &decision_block(),
+                &decision_tx(&creator),
+            )
             .unwrap_err();
         assert!(matches!(err, AcpError::Unauthorized { .. }));
     }
@@ -2243,7 +2299,15 @@ resources:
             actor: Actor(grantee),
         };
         assert!(
-            module.check_access(&creator, &policy_id, &req).is_err(),
+            module
+                .check_access(
+                    &creator,
+                    &policy_id,
+                    &req,
+                    &decision_block(),
+                    &decision_tx(&creator)
+                )
+                .is_err(),
             "undeclared-relation grant must not authorize"
         );
     }

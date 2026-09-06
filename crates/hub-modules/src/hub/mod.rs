@@ -1077,6 +1077,7 @@ mod tests {
 
     fn tx_ctx(signer: &str) -> TxExecCtx {
         TxExecCtx {
+            sequence: 0,
             tx_hash: vec![0xAA],
             signer: signer.to_string(),
         }

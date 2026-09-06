@@ -190,6 +190,7 @@ fn main() {
         },
     };
     let caller = TxExecCtx {
+        sequence: 0,
         tx_hash: vec![1; 32],
         signer: owner.to_string(),
     };
