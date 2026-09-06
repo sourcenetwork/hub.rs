@@ -5,6 +5,9 @@ use thiserror::Error;
 /// Error type for backend operations.
 #[derive(Debug, Error)]
 pub enum BackendError {
+    /// Logical native records cannot be encoded safely by this storage configuration.
+    #[error("invalid module change: {0}")]
+    InvalidModuleChange(&'static str),
     /// Storage I/O error.
     #[error("storage error: {0}")]
     Storage(String),

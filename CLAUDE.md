@@ -133,6 +133,14 @@ Peer snapshot synchronization is still disabled for both execution and modules.
 Startup opens that generation as one set, rejecting missing or invalid selections.
 Without a selection file it uses the original `state/{acp,bulletin,hub,nonces}` layout.
 
+`hub-backend::native` provides a separate ordered current-QMDB adapter for the
+four module namespaces. It seals logical `ModuleState` differences into pending
+batches and reloads query maps from active records. Current-state roots and
+operation-log sync targets are distinct. Its configuration accepts keys up to
+64 KiB and values up to 1 MiB; keys sharing their first 64 bytes scan one index
+bucket. This adapter is covered by storage lifecycle tests and is not wired into
+the node's execution or query-proof path.
+
 The block commitments are:
 
 ```

@@ -11,6 +11,10 @@ use crate::{
 
 const MODULE_ROOT_NAMESPACE: &[u8] = b"_HUB_MODULE_ROOT";
 
+/// Logical record changes in ACP, bulletin, identity and native sequence order.
+/// Each module's keys are unique and sorted; `None` deletes a record.
+pub type ModuleChanges = [Vec<(Vec<u8>, Option<Vec<u8>>)>; 4];
+
 /// All four mutable module instances for a single block execution.
 #[derive(Clone, Debug, Default)]
 pub struct ModuleState {
@@ -25,6 +29,23 @@ pub struct ModuleState {
 }
 
 impl ModuleState {
+    /// Compare logical records across snapshots, including mutations before intermediate clones.
+    pub fn diff_from(&self, parent: &Self) -> ModuleChanges {
+        let stores = [
+            self.acp.store(),
+            self.bulletin.store(),
+            self.hub.store(),
+            self.nonces.store(),
+        ];
+        let parents = [
+            parent.acp.store(),
+            parent.bulletin.store(),
+            parent.hub.store(),
+            parent.nonces.store(),
+        ];
+        std::array::from_fn(|i| stores[i].diff_from(parents[i]))
+    }
+
     /// Compute a deterministic state root from all module stores.
     ///
     /// Uses keccak256-based hashing of serialized stores. Production code
@@ -66,12 +87,12 @@ impl ModuleState {
     }
 }
 
-/// Compute the combined module state root from pre-computed per-module JMT roots.
+/// Compute the combined module state root from pre-computed per-module roots.
 ///
 /// `keccak256(namespace || roots[0] || roots[1] || roots[2] || roots[3])`
 ///
 /// Root order: `[acp, bulletin, hub, nonces]`.
-pub fn state_root_from_jmt(roots: &[[u8; 32]; 4]) -> B256 {
+pub fn combine_module_roots(roots: &[[u8; 32]; 4]) -> B256 {
     let mut buf = Vec::with_capacity(MODULE_ROOT_NAMESPACE.len() + 128);
     buf.extend_from_slice(MODULE_ROOT_NAMESPACE);
     for root in roots {
@@ -79,6 +100,9 @@ pub fn state_root_from_jmt(roots: &[[u8; 32]; 4]) -> B256 {
     }
     keccak256(buf)
 }
+
+/// Combined root of the four JMT module partitions.
+pub use combine_module_roots as state_root_from_jmt;
 
 /// Thread-safe shared module state for use across block executions.
 pub type SharedModuleState = Arc<RwLock<ModuleState>>;

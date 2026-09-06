@@ -1,8 +1,9 @@
 //! Ordered Commonware proof, sync and recovery qualification with local component timings.
 //! Timings exclude consensus and transport.
 
-#[path = "ordered_prefix/index.rs"]
-mod index;
+mod index {
+    pub(super) use hub_backend::native::KeyPrefix;
+}
 #[cfg(test)]
 #[path = "ordered_prefix/index_tests.rs"]
 mod index_tests;

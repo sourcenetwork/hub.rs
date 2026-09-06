@@ -484,18 +484,12 @@ impl HubExecutor {
                 modules.hub.store(),
                 modules.nonces.store(),
             ];
-            let base_stores = [
-                base_modules.acp.store(),
-                base_modules.bulletin.store(),
-                base_modules.hub.store(),
-                base_modules.nonces.store(),
-            ];
+            let changes = modules.diff_from(&base_modules);
 
             let parents = snapshots
                 .as_mut()
                 .ok_or_else(|| ExecutionError::ModuleTree("missing parent tree views".into()))?;
-            for (i, tree_lock) in trees.iter().enumerate() {
-                let mut dirty = stores[i].diff_from(base_stores[i]);
+            for (i, (tree_lock, mut dirty)) in trees.iter().zip(changes).enumerate() {
                 if i == 0 {
                     crate::relation_index::index_relationships(&parents[i], stores[i], &mut dirty)?;
                 }

@@ -14,6 +14,11 @@ pub struct ModuleSnapshot {
 }
 
 impl ModuleSnapshot {
+    /// Logical changes from the supplied execution parent, excluding storage-specific indexes.
+    pub fn changes_from(&self, parent: &Self) -> hub_modules::module_state::ModuleChanges {
+        self.modules.diff_from(&parent.modules)
+    }
+
     /// Root for this revision, preserving the genesis store commitment format.
     pub fn state_root(&self, height: u64) -> B256 {
         match &self.trees {

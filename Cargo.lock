@@ -3764,6 +3764,7 @@ dependencies = [
  "commonware-runtime",
  "commonware-storage",
  "commonware-utils",
+ "futures",
  "hub-modules",
  "hub-qmdb",
  "hub-traits",
