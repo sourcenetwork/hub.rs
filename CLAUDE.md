@@ -140,12 +140,14 @@ provide historical activity or absence proofs.
 `FinalizedHistory` provides 64 KiB record chunks and a bounded reverse-ancestry
 import API. The import selection and cursor are durable, and imported history
 remains unavailable until recovery at the matching state anchor completes.
-Starting an import selects metadata format 2 to prevent older binaries from
+Starting an import selects metadata format 3 to prevent older binaries from
 discarding its unfinished records. The node serves chunks through Commonware's
 resolver on authenticated channel 16. `HistoryPeer::import_next_from` bounds
-record assembly, verifies it before persistence and cancels pending fetches when
-dropped. Snapshot startup remains disabled; certificate material still requires
-separate handoff.
+record and finality-proof assembly, verifies both before persistence and cancels
+pending fetches when dropped. Imported certificates retain their verifier material
+and any descendants beyond the recovery anchor without advancing execution.
+Snapshot startup remains disabled pending coordinated state/history recovery.
+See `docs/receipt-commitments.md` for protocol and upgrade details.
 
 `hub-backend::native` rebuilds query maps from the retained operation log and
 activity bitmap, reading at most 32 operations at a time under partition read

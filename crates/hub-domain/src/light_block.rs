@@ -127,12 +127,47 @@ pub struct LightBlock {
     pub block: String,
     /// Canonical descendants in ascending height order, ending at the certified block.
     /// Empty when the requested block has a direct certificate.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "read_descendants"
+    )]
     pub descendants: Vec<String>,
     /// Canonical encoded `Finalization<LightConsensusScheme, ConsensusDigest>`.
     pub finalization: String,
     /// Canonical encoded [`EpochMaterial`].
     pub epoch_material: String,
+}
+
+fn read_descendants<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<String>, D::Error> {
+    struct Descendants;
+    impl<'de> serde::de::Visitor<'de> for Descendants {
+        type Value = Vec<String>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "at most {LIGHT_BLOCK_MAX_DESCENDANTS} descendants")
+        }
+
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(
+            self,
+            mut seq: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut values = Vec::new();
+            while values.len() < LIGHT_BLOCK_MAX_DESCENDANTS {
+                let Some(value) = seq.next_element()? else {
+                    return Ok(values);
+                };
+                values.push(value);
+            }
+            if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                return Err(serde::de::Error::custom("too many light block descendants"));
+            }
+            Ok(values)
+        }
+    }
+    deserializer.deserialize_seq(Descendants)
 }
 
 impl LightBlock {

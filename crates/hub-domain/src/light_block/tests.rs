@@ -308,7 +308,14 @@ fn signed_height_gaps_and_untrusted_descendant_certificates_are_rejected() {
 fn proof_limits_apply_before_decoding() {
     let mut light = indirect_fixture(LIGHT_BLOCK_MAX_DESCENDANTS);
     verify_light_block(&light, &trusted_key()).unwrap();
+    serde_json::from_str::<LightBlock>(&serde_json::to_string(&light).unwrap()).unwrap();
     light.descendants.push("invalid hex".into());
+    assert!(
+        serde_json::from_str::<LightBlock>(&serde_json::to_string(&light).unwrap())
+            .unwrap_err()
+            .to_string()
+            .contains("too many light block descendants")
+    );
     assert_eq!(
         verify_light_block(&light, &trusted_key()),
         Err(LightBlockError::LimitExceeded)

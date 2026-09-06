@@ -26,9 +26,16 @@ does not copy canonical history into an additional memory index. History
 reads run outside the asynchronous RPC worker. Missing history, inconsistent
 ancestry, unavailable epoch material and excessive proofs return errors.
 
+Imported history retains verified certificates with their verifier material.
+These artifacts can serve proofs without the destination's previous consensus
+archive. A descendant beyond the recovered execution head may complete a proof,
+but cannot be queried as an executed revision until execution reaches it. Peer
+verifier material does not establish consensus membership.
+
 The shared limits are 64 descendants and 8 MiB of combined decoded block,
 certificate and epoch-material bytes. The JSON response limit is 16 MiB plus
-64 KiB for hex encoding and metadata. These are per-proof limits; they do not
+64 KiB for hex encoding and metadata. JSON decoding enforces the descendant
+count while reading the list. These are per-proof limits; they do not
 establish aggregate server memory or sustainable serving capacity.
 
 Direct proof responses retain their existing JSON shape. Consumers must use

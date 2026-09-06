@@ -6,12 +6,13 @@ use commonware_p2p::{Blocker, Provider, Receiver, Sender};
 use commonware_resolver::{Consumer, Delivery, Outcome, Resolver as _, TargetedResolver as _, p2p};
 use commonware_runtime::{Handle, tokio::Context};
 use commonware_utils::{NZUsize, channel::oneshot, non_empty_vec, sequence::FixedBytes};
-use hub_domain::PublicKey;
+use hub_domain::{LIGHT_BLOCK_RESPONSE_BYTES, LightBlock, PublicKey};
+use hub_indexer::LightBlockIndex;
 use parking_lot::Mutex;
 
 use super::{FinalizedHistory, HISTORY_CHUNK_BYTES, HistoryChunk, HistoryLimits};
 
-type Key = FixedBytes<16>;
+type Key = FixedBytes<17>;
 type Mailbox = p2p::Mailbox<Key, PublicKey>;
 
 struct Waiting {
@@ -36,7 +37,7 @@ impl Consumer for DeliverySlot {
             let _ = verdict.send(Outcome::Ignored);
             return receiver;
         };
-        let offset = u64::from_be_bytes(delivery.key[8..].try_into().expect("fixed key"));
+        let offset = u64::from_be_bytes(delivery.key[9..].try_into().expect("fixed key"));
         let Ok(chunk) = decode_chunk(&value, offset) else {
             let _ = verdict.send(Outcome::Invalid);
             return receiver;
@@ -55,16 +56,58 @@ impl Consumer for DeliverySlot {
 }
 
 #[derive(Clone)]
-struct HistoryProducer(Arc<FinalizedHistory>);
+struct HistoryProducer {
+    history: Arc<FinalizedHistory>,
+    epochs: Arc<LightBlockIndex>,
+    // One bounded response avoids rebuilding and hex-encoding a proof for every chunk.
+    proof: Arc<Mutex<Option<CachedProof>>>,
+}
+
+struct CachedProof {
+    height: u64,
+    bytes: Vec<u8>,
+}
+
+impl HistoryProducer {
+    fn chunk(&mut self, kind: u8, height: u64, offset: u64) -> Result<HistoryChunk> {
+        if kind == 0 {
+            return self
+                .history
+                .record_chunk(height, offset, HISTORY_CHUNK_BYTES);
+        }
+        ensure!(kind == 1, "unknown history resource");
+        // A cached proof must not bypass the import publication barrier.
+        self.history.record_chunk(height, 0, 1)?;
+        let mut cached = self.proof.lock();
+        if cached.as_ref().is_none_or(|cached| cached.height != height) {
+            let proof = self.history.light_block(height, &self.epochs)?;
+            let bytes = serde_json::to_vec(&proof)?;
+            ensure!(
+                bytes.len() <= LIGHT_BLOCK_RESPONSE_BYTES,
+                "history finality response limit"
+            );
+            *cached = Some(CachedProof { height, bytes });
+        }
+        let bytes = &cached.as_ref().expect("proof was populated").bytes;
+        let start = usize::try_from(offset)?;
+        ensure!(start <= bytes.len(), "history offset exceeds proof");
+        let end = start.saturating_add(HISTORY_CHUNK_BYTES).min(bytes.len());
+        Ok(HistoryChunk {
+            total: bytes.len() as u64,
+            offset,
+            bytes: bytes[start..end].to_vec(),
+        })
+    }
+}
 
 impl p2p::Producer for HistoryProducer {
     type Key = Key;
 
     fn produce(&mut self, key: Key) -> oneshot::Receiver<Bytes> {
         let (answer, receiver) = oneshot::channel();
-        let height = u64::from_be_bytes(key[..8].try_into().expect("fixed key"));
-        let offset = u64::from_be_bytes(key[8..].try_into().expect("fixed key"));
-        if let Ok(chunk) = self.0.record_chunk(height, offset, HISTORY_CHUNK_BYTES) {
+        let height = u64::from_be_bytes(key[1..9].try_into().expect("fixed key"));
+        let offset = u64::from_be_bytes(key[9..].try_into().expect("fixed key"));
+        if let Ok(chunk) = self.chunk(key[0], height, offset) {
             let mut response = Vec::with_capacity(16 + chunk.bytes.len());
             response.extend_from_slice(&chunk.total.to_be_bytes());
             response.extend_from_slice(&chunk.offset.to_be_bytes());
@@ -115,52 +158,67 @@ impl HistoryPeer {
             return Ok(None);
         };
         tokio::time::timeout(deadline, async {
-            let mut record = Vec::new();
-            let mut total = None;
-            loop {
-                let mut key = [0; 16];
-                key[..8].copy_from_slice(&height.to_be_bytes());
-                key[8..].copy_from_slice(&(record.len() as u64).to_be_bytes());
-                let key = Key::new(key);
-                let (answer, receiver) = oneshot::channel();
-                *self.delivery.0.lock() = Some(Waiting {
-                    key: key.clone(),
-                    maximum: limits.record_bytes,
-                    answer,
-                });
-                let pending = Pending {
-                    mailbox: self.mailbox.clone(),
-                    delivery: self.delivery.clone(),
-                };
-                ensure!(
-                    self.mailbox
-                        .fetch_targeted(key, non_empty_vec![peer.clone()])
-                        .accepted(),
-                    "history resolver unavailable"
-                );
-                let chunk = receiver.await.context("history response dropped")??;
-                drop(pending);
-                ensure!(
-                    total.is_none_or(|length| length == chunk.total),
-                    "history record length changed during transfer"
-                );
-                let length = usize::try_from(chunk.total)?;
-                if total.is_none() {
-                    record
-                        .try_reserve_exact(length)
-                        .context("allocate bounded history record")?;
-                    total = Some(chunk.total);
-                }
-                record.extend_from_slice(&chunk.bytes);
-                if record.len() == length {
-                    break;
-                }
-            }
-            destination.import_record(&record, limits)?;
+            let record = self.fetch(&peer, height, 0, limits.record_bytes).await?;
+            let bytes = self
+                .fetch(&peer, height, 1, LIGHT_BLOCK_RESPONSE_BYTES)
+                .await?;
+            let proof: LightBlock = serde_json::from_slice(&bytes)?;
+            destination.import_record(&record, limits, &proof)?;
             Ok(Some(height))
         })
         .await
         .context("history transfer deadline exceeded")?
+    }
+
+    async fn fetch(
+        &mut self,
+        peer: &PublicKey,
+        height: u64,
+        kind: u8,
+        maximum: usize,
+    ) -> Result<Vec<u8>> {
+        let mut record = Vec::new();
+        let mut total = None;
+        loop {
+            let mut key = [0; 17];
+            key[0] = kind;
+            key[1..9].copy_from_slice(&height.to_be_bytes());
+            key[9..].copy_from_slice(&(record.len() as u64).to_be_bytes());
+            let key = Key::new(key);
+            let (answer, receiver) = oneshot::channel();
+            *self.delivery.0.lock() = Some(Waiting {
+                key: key.clone(),
+                maximum,
+                answer,
+            });
+            let pending = Pending {
+                mailbox: self.mailbox.clone(),
+                delivery: self.delivery.clone(),
+            };
+            ensure!(
+                self.mailbox
+                    .fetch_targeted(key, non_empty_vec![peer.clone()])
+                    .accepted(),
+                "history resolver unavailable"
+            );
+            let chunk = receiver.await.context("history response dropped")??;
+            drop(pending);
+            ensure!(
+                total.is_none_or(|length| length == chunk.total),
+                "history record length changed during transfer"
+            );
+            let length = usize::try_from(chunk.total)?;
+            if total.is_none() {
+                record
+                    .try_reserve_exact(length)
+                    .context("allocate bounded history record")?;
+                total = Some(chunk.total);
+            }
+            record.extend_from_slice(&chunk.bytes);
+            if record.len() == length {
+                return Ok(record);
+            }
+        }
     }
 }
 
@@ -169,6 +227,7 @@ impl HistoryPeer {
 pub fn start_history_peer<D, B, S, R>(
     context: Context,
     history: Arc<FinalizedHistory>,
+    epochs: Arc<LightBlockIndex>,
     peer_provider: D,
     blocker: B,
     me: PublicKey,
@@ -188,7 +247,11 @@ where
             blocker,
             me: Some(me),
             consumer: delivery.clone(),
-            producer: HistoryProducer(history),
+            producer: HistoryProducer {
+                history,
+                epochs,
+                proof: Arc::default(),
+            },
             mailbox_size: NZUsize!(16),
             timeout: Duration::from_secs(2),
             fetch_retry_timeout: Duration::from_millis(100),

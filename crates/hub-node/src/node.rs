@@ -351,14 +351,6 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         config.data_dir.join("history"),
         &genesis_block,
     )?);
-    let (_history_peer, history_peer_handle) = crate::start_history_peer(
-        context.child("history_peer"),
-        history.clone(),
-        oracle.clone(),
-        oracle.clone(),
-        local.clone(),
-        history_network,
-    );
     let (history_failures, mut history_failure_rx) = ::tokio::sync::mpsc::channel(1);
     let block_index = Arc::new(BlockIndex::new());
     let light_block_index = Arc::new(LightBlockIndex::new());
@@ -371,6 +363,15 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         StoredEpochMaterial {
             bytes: initial_material.encode().into(),
         },
+    );
+    let (_history_peer, history_peer_handle) = crate::start_history_peer(
+        context.child("history_peer"),
+        history.clone(),
+        light_block_index.clone(),
+        oracle.clone(),
+        oracle.clone(),
+        local.clone(),
+        history_network,
     );
     let node_state = NodeState::new(
         chain_id,

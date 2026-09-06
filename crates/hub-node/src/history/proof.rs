@@ -1,7 +1,86 @@
 use super::*;
 use hub_domain::{LIGHT_BLOCK_MAX_ARTIFACT_BYTES, LIGHT_BLOCK_MAX_DESCENDANTS, LightBlock};
 
+#[derive(BorshSerialize, BorshDeserialize)]
+struct ImportedFinality {
+    block: [u8; 32],
+    certificate: Vec<u8>,
+    material: Vec<u8>,
+}
+
 impl FinalizedHistory {
+    pub(super) fn retain_proof_suffix(
+        &self,
+        anchor: u64,
+        head: u64,
+        batch: &mut WriteBatch,
+    ) -> Result<()> {
+        if self.db.get(FORMAT)?.as_deref() != Some(&[3]) {
+            return Ok(());
+        }
+        let mut remaining = LIGHT_BLOCK_MAX_ARTIFACT_BYTES;
+        let Some(first) = anchor.checked_add(1) else {
+            return Ok(());
+        };
+        for height in first..=head.min(anchor.saturating_add(LIGHT_BLOCK_MAX_DESCENDANTS as u64)) {
+            let record = self
+                .db
+                .get_pinned(key(RECORD, height))?
+                .context("missing finalized history suffix")?;
+            let mut encoded = record.as_ref();
+            let length = u32::deserialize(&mut encoded)? as usize;
+            let Some(budget) = remaining.checked_sub(length) else {
+                break;
+            };
+            remaining = budget;
+            let bytes = encoded
+                .get(..length)
+                .context("truncated finalized history suffix")?;
+            batch.put(key(PROOF_BLOCK, height), bytes);
+        }
+        Ok(())
+    }
+
+    pub(super) fn stage_finality(
+        &self,
+        proof: &LightBlock,
+        block: &Block,
+        anchor: u64,
+        batch: &mut WriteBatch,
+    ) -> Result<()> {
+        // The caller verifies the entire proof against persisted import trust first.
+        let mut certified = (block.height, block.id().0.0);
+        for encoded in &proof.descendants {
+            let bytes = unhex(encoded)?;
+            let descendant = Block::decode_cfg(bytes.as_slice(), &crate::node::block_cfg())?;
+            certified = (descendant.height, descendant.id().0.0);
+            if certified.0 > anchor {
+                let key = key(PROOF_BLOCK, certified.0);
+                if let Some(existing) = self.db.get(key)? {
+                    ensure!(existing == bytes, "conflicting finalized proof block");
+                }
+                batch.put(key, bytes);
+            }
+        }
+        let finality = ImportedFinality {
+            block: certified.1,
+            certificate: unhex(&proof.finalization)?,
+            material: unhex(&proof.epoch_material)?,
+        };
+        if let Some(bytes) = self.db.get(key(IMPORTED_FINALITY, certified.0))? {
+            let previous: ImportedFinality = borsh::from_slice(&bytes)?;
+            ensure!(
+                previous.block == finality.block,
+                "conflicting imported finalization"
+            );
+        }
+        batch.put(
+            key(IMPORTED_FINALITY, certified.0),
+            borsh::to_vec(&finality)?,
+        );
+        Ok(())
+    }
+
     /// Assemble a bounded ancestry proof from one durable history snapshot.
     pub fn light_block(&self, height: u64, epochs: &LightBlockIndex) -> Result<LightBlock> {
         let snapshot = self.db.snapshot();
@@ -15,16 +94,28 @@ impl FinalizedHistory {
             height > 0 && height <= head,
             "block not found at height {height}"
         );
-        let last = head.min(height.saturating_add(LIGHT_BLOCK_MAX_DESCENDANTS as u64));
+        let last = height.saturating_add(LIGHT_BLOCK_MAX_DESCENDANTS as u64);
         let mut blocks = Vec::new();
         let mut previous = None;
         let mut remaining = LIGHT_BLOCK_MAX_ARTIFACT_BYTES;
         for current in height..=last {
-            let record = snapshot
-                .get(key(RECORD, current))?
-                .context("missing finalized history block")?;
-            let mut encoded = record.as_slice();
-            let length = u32::deserialize(&mut encoded)? as usize;
+            let record;
+            let mut encoded;
+            let length;
+            if current <= head {
+                record = snapshot
+                    .get_pinned(key(RECORD, current))?
+                    .context("missing finalized history block")?;
+                encoded = record.as_ref();
+                length = u32::deserialize(&mut encoded)? as usize;
+            } else {
+                let Some(bytes) = snapshot.get_pinned(key(PROOF_BLOCK, current))? else {
+                    break;
+                };
+                record = bytes;
+                encoded = record.as_ref();
+                length = encoded.len();
+            }
             remaining = remaining
                 .checked_sub(length)
                 .context("light block proof exceeds artifact limits")?;
@@ -41,12 +132,22 @@ impl FinalizedHistory {
             }
             previous = Some(block.id());
             blocks.push(encoded.to_vec());
+            let imported = snapshot
+                .get(key(IMPORTED_FINALITY, current))?
+                .map(|bytes| borsh::from_slice::<ImportedFinality>(&bytes))
+                .transpose()?;
             let certificate = snapshot
                 .get(key(CERTIFICATE, current))?
                 .map(|bytes| borsh::from_slice::<Option<(u64, Vec<u8>)>>(&bytes))
                 .transpose()?
                 .flatten();
-            if let Some((epoch, certificate)) = certificate {
+            let artifacts = if let Some(imported) = imported {
+                ensure!(
+                    imported.block == block.id().0.0,
+                    "imported finalization block mismatch"
+                );
+                Some((imported.certificate, imported.material))
+            } else if let Some((epoch, certificate)) = certificate {
                 ensure!(
                     epoch == block.context.round.epoch().get(),
                     "finalized history epoch mismatch"
@@ -54,10 +155,15 @@ impl FinalizedHistory {
                 let material = epochs
                     .get_epoch_material(epoch)
                     .context("epoch material not found for finalized history")?;
+                Some((certificate, material.bytes))
+            } else {
+                None
+            };
+            if let Some((certificate, material)) = artifacts {
                 ensure!(
                     certificate
                         .len()
-                        .checked_add(material.bytes.len())
+                        .checked_add(material.len())
                         .is_some_and(|length| length <= remaining),
                     "light block proof exceeds artifact limits"
                 );
@@ -65,7 +171,7 @@ impl FinalizedHistory {
                 let mut light = LightBlock::from_encoded_block(
                     &blocks.next().expect("requested block is retained"),
                     &certificate,
-                    &material.bytes,
+                    &material,
                 )?;
                 light.descendants = blocks
                     .map(|bytes| format!("0x{}", hex::encode(bytes)))
@@ -78,4 +184,8 @@ impl FinalizedHistory {
             "finalization certificate not found for height {height} within retained proof limits"
         )
     }
+}
+
+fn unhex(value: &str) -> Result<Vec<u8>> {
+    Ok(hex::decode(value.strip_prefix("0x").unwrap_or(value))?)
 }

@@ -19,6 +19,8 @@ use crate::{FinalizationArtifacts, FinalizationLookup, index_finalized_block};
 
 const RECORD: u8 = 1;
 const CERTIFICATE: u8 = 2;
+const IMPORTED_FINALITY: u8 = 3;
+const PROOF_BLOCK: u8 = 4;
 const FORMAT: &[u8] = b"format";
 const GENESIS: &[u8] = b"genesis";
 const HEAD: &[u8] = b"head";
@@ -99,8 +101,12 @@ impl FinalizedHistory {
         match db.get(FORMAT)? {
             Some(version) => {
                 ensure!(
-                    matches!(version.as_slice(), [1] | [2]),
+                    matches!(version.as_slice(), [1] | [2] | [3]),
                     "unsupported finalized history format"
+                );
+                ensure!(
+                    version.as_slice() != [2] || db.get(transfer::IMPORT)?.is_none(),
+                    "unfinished format 2 history import requires the previous binary"
                 );
                 ensure!(
                     db.get(GENESIS)?.as_deref() == Some(genesis.id().0.as_slice()),
@@ -171,8 +177,15 @@ impl FinalizedHistory {
             block.height == head.0 + 1 && block.parent == head.1,
             "finalized history is not contiguous"
         );
+        if let Some(proof) = self.db.get(key(PROOF_BLOCK, block.height))? {
+            ensure!(
+                proof == record.block,
+                "execution conflicts with finalized proof block"
+            );
+        }
         let mut batch = WriteBatch::default();
         batch.put(key(RECORD, block.height), bytes);
+        batch.delete(key(PROOF_BLOCK, block.height));
         batch.put(HEAD, borsh::to_vec(&(block.height, block.id().0.0))?);
         write(&self.db, batch)?;
         *head = (block.height, block.id());
@@ -252,6 +265,7 @@ impl FinalizedHistory {
             "finalized history is behind application state"
         );
         let mut batch = WriteBatch::default();
+        self.retain_proof_suffix(anchor.height, head.0, &mut batch)?;
         for prefix in [RECORD, CERTIFICATE] {
             if let Some(next) = anchor.height.checked_add(1) {
                 batch.delete_range(key(prefix, next).as_slice(), &[prefix + 1]);

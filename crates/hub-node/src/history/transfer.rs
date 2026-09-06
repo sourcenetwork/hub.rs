@@ -1,4 +1,5 @@
 use super::*;
+use commonware_codec::DecodeExt as _;
 use hub_domain::{ConsensusPublicKey, LightBlock, verify_finalized_block};
 
 pub(super) const IMPORT: &[u8] = b"import";
@@ -30,6 +31,7 @@ pub(super) struct Import {
     anchor: Vec<u8>,
     base: (u64, [u8; 32]),
     next: (u64, [u8; 32]),
+    trusted: Vec<u8>,
 }
 
 impl FinalizedHistory {
@@ -76,6 +78,10 @@ impl FinalizedHistory {
                 import.anchor == anchor.encode().as_ref(),
                 "another history import is pending"
             );
+            ensure!(
+                import.trusted == trusted.encode().as_ref(),
+                "history import trust changed"
+            );
             return Ok(());
         }
         ensure!(
@@ -86,10 +92,11 @@ impl FinalizedHistory {
             anchor: anchor.encode().to_vec(),
             base: (head.0, head.1.0.0),
             next: (anchor.height, anchor.id().0.0),
+            trusted: trusted.encode().to_vec(),
         };
         let mut batch = WriteBatch::default();
         // Older binaries must reject the store rather than trim an unfinished import.
-        batch.put(FORMAT, [2]);
+        batch.put(FORMAT, [3]);
         batch.put(IMPORT, borsh::to_vec(&import)?);
         write(&self.db, batch)
     }
@@ -119,7 +126,12 @@ impl FinalizedHistory {
 
     /// Verify and durably stage the next ancestor. Limits apply before field allocation.
     /// A complete import remains unpublished until matching state recovery succeeds.
-    pub fn import_record(&self, bytes: &[u8], limits: HistoryLimits) -> Result<()> {
+    pub fn import_record(
+        &self,
+        bytes: &[u8],
+        limits: HistoryLimits,
+        proof: &LightBlock,
+    ) -> Result<()> {
         let mut head = self.head.lock();
         let mut import: Import =
             borsh::from_slice(&self.db.get(IMPORT)?.context("no history import")?)?;
@@ -132,6 +144,11 @@ impl FinalizedHistory {
             (block.height, block.id().0.0) == import.next,
             "history import ancestry mismatch"
         );
+        let trusted = ConsensusPublicKey::decode(import.trusted.as_slice())?;
+        ensure!(
+            verify_finalized_block(proof, &trusted)? == block,
+            "history finality does not match record"
+        );
         import.next = (block.height - 1, block.parent.0.0);
         if import.next.0 == import.base.0 {
             ensure!(
@@ -140,10 +157,16 @@ impl FinalizedHistory {
             );
         }
         let mut batch = WriteBatch::default();
+        let anchor = Block::decode_cfg(import.anchor.as_slice(), &crate::node::block_cfg())?;
+        self.stage_finality(proof, &block, anchor.height, &mut batch)?;
         batch.put(key(RECORD, block.height), bytes);
+        // Imported proofs supply finality without consulting the local marshal archive.
+        batch.put(
+            key(CERTIFICATE, block.height),
+            borsh::to_vec(&None::<(u64, Vec<u8>)>)?,
+        );
         batch.put(IMPORT, borsh::to_vec(&import)?);
         let completed = if import.next == import.base {
-            let anchor = Block::decode_cfg(import.anchor.as_slice(), &crate::node::block_cfg())?;
             batch.put(HEAD, borsh::to_vec(&(anchor.height, anchor.id().0.0))?);
             Some((anchor.height, anchor.id()))
         } else {

@@ -38,8 +38,9 @@ revision; existing receipt RPC responses do not perform that verification.
 History checks the commitment before appending a record and again before
 publishing that record to query indexes during recovery. A changed receipt or
 execution limit fails recovery. Record decoding also checks receipt count and
-rejects malformed or trailing log bytes. These checks do not provide a bounded
-peer history transport; snapshot startup remains disabled.
+rejects malformed or trailing log bytes. The bounded peer transport below applies
+the same checks. Snapshot startup remains disabled until state and history
+recovery are coordinated.
 
 ## Staging retained history
 
@@ -53,30 +54,43 @@ entire stored value into a Rust buffer; RocksDB's own resource use still applies
 `begin_import` verifies the selected revision against the caller's independent
 consensus key and persists that selection. Records arrive in descending height
 order. `import_record` checks each canonical revision against the expected parent
-hash, verifies its receipt commitment and requires the chain to connect to the
-destination's committed prefix. `HistoryLimits` bounds assembled bytes and the
-aggregate log count before decoding their fields. Operation counts obey the
+hash, verifies its receipt commitment and finality proof, and requires the chain
+to connect to the destination's committed prefix. Finality uses the consensus key
+persisted by `begin_import`; proof-supplied keys cannot replace that trust.
+`HistoryLimits` bounds assembled bytes and the aggregate log count before decoding their fields. Operation counts obey the
 existing revision codec bounds. Limits are caller-selected; no default import
 workload or capacity is implied.
 
 `HistoryPeer::import_next_from` fetches one required record from a caller-selected
 current group member. It checks chunk framing, offsets, advertised size, stable
 record length and the assembly budget, then passes the complete record through
-the ancestry and receipt verifier. A bad record leaves the durable cursor
-unchanged; the caller can try another peer. Commonware supplies request IDs,
+the ancestry, receipt and finality verifier. It also transfers the existing
+`LightBlock` JSON proof under its 16 MiB plus 64 KiB response bound. Invalid
+records or proofs leave the durable cursor unchanged; the caller can try another peer. Commonware supplies request IDs,
 targeted retries and cancellation. Dropping the import future cancels its active
 fetch. The caller's timeout covers the asynchronous transfer; synchronous decode
 and storage work can outlast it.
 
 The client issues one chunk request at a time and holds at most one assembled
-record. Individual chunks receive no positive authenticity score because only
-the completed record can establish receipt integrity. Malformed framing is
+record and one bounded finality response. The producer shares one cached proof
+across resolver requests to avoid rebuilding it per chunk. The 17-byte request
+key contains a resource kind (0 for execution record, 1 for finality proof),
+height and offset; the latter two are big-endian u64 values. This replaces the
+previous 16-byte record-only protocol. Individual chunks receive no positive
+authenticity score because only the completed record can establish receipt
+integrity. Malformed framing is
 reported to the resolver as invalid. The underlying network limits messages to
 4 MiB; the history response payload is at most 64 KiB plus 16 bytes for length
 and offset. Aggregate peer traffic and storage work still require load testing.
 
-Each accepted record and the next expected ancestor are persisted in one synced
-write batch. `import_anchor` and `import_next` expose restart progress. Replayed,
+Each accepted record, its verified finalization evidence and the next expected
+ancestor are persisted in one synced write batch. Evidence is deduplicated by
+certified height. Canonical descendants beyond the import anchor are retained
+only for proofs; they do not advance the execution head or expose their receipts.
+Appending execution at those heights must match the retained canonical bytes.
+Proof material is stored with its certificate, independently of the membership
+index; membership still comes from authenticated configuration and history.
+`import_anchor` and `import_next` expose restart progress. Replayed,
 out-of-order, incomplete and altered records fail without advancing that cursor.
 The final record advances the durable history head, but the import marker still
 blocks normal appends, chunk serving and light-client proof serving.
@@ -85,13 +99,15 @@ The caller must keep admission and query publication stopped, recover applicatio
 state at the selected revision, and call `recover` with that same anchor. Recovery
 rejects unfinished imports and other anchors before indexing records. Its final
 durable batch removes the marker. This is the history-side handoff; the running
-node serves chunks but does not yet start snapshot import or transfer peer
-certificate material.
+node serves record and finality chunks but does not yet start snapshot import.
 
-Starting an import upgrades the history metadata format to 2 in the same batch
+Starting an import upgrades the history metadata format to 3 in the same batch
 as the import marker. Older binaries reject that format rather than treating an
 unfinished import as an execution suffix to discard. Record bytes remain
-unchanged, and this implementation also opens format 1 histories.
+unchanged. Format 1 and completed format 2 histories remain readable; unfinished
+format 2 imports require the previous binary to complete recovery before upgrade.
+The new importer cannot resume them without the missing persisted trust and
+finality evidence.
 
 ## Canonical encoding and existing data
 

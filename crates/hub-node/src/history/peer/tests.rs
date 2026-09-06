@@ -72,6 +72,28 @@ fn peer_import_rejects_bad_records_and_resumes_after_cancellation() {
                 .db
                 .put(key(RECORD, 2), borsh::to_vec(&altered).unwrap())
                 .unwrap();
+            let epochs = Arc::new(LightBlockIndex::new());
+            let (second_proof, _) = certify(&second, 77);
+            epochs.insert_epoch_material(
+                0,
+                hub_indexer::StoredEpochMaterial {
+                    bytes: hex::decode(second_proof.epoch_material.trim_start_matches("0x"))
+                        .unwrap(),
+                },
+            );
+            for (i, history) in histories[..2].iter().enumerate() {
+                let proof = if i == 0 {
+                    second_proof.clone()
+                } else {
+                    certify(&second, 78).0
+                };
+                let certificate = crate::FinalizationArtifacts {
+                    epoch: 0,
+                    finalization: hex::decode(proof.finalization.trim_start_matches("0x")).unwrap(),
+                    certificate: vec![],
+                };
+                history.store_finalization(2, Some(&certificate)).unwrap();
+            }
             let (light, trusted) = certify(&second, 77);
             histories[2].begin_import(&light, &trusted).unwrap();
             let keys = [
@@ -110,6 +132,7 @@ fn peer_import_rejects_bad_records_and_resumes_after_cancellation() {
                 let (client, handle) = start_history_peer(
                     peer_context.child("history"),
                     histories[i].clone(),
+                    epochs.clone(),
                     oracle.clone(),
                     oracle,
                     identities[i].clone(),
@@ -160,6 +183,22 @@ fn peer_import_rejects_bad_records_and_resumes_after_cancellation() {
                 .unwrap_err();
             assert!(error.to_string().contains("receipt commitment mismatch"));
             assert_eq!(histories[2].import_next().unwrap(), Some((2, second.id())));
+            histories[1].db.put(key(RECORD, 2), &bytes).unwrap();
+            let error = client
+                .import_next_from(
+                    identities[1].clone(),
+                    &histories[2],
+                    limits,
+                    Duration::from_secs(10),
+                )
+                .await
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("certificate verification failed")
+            );
+            assert_eq!(histories[2].import_next().unwrap(), Some((2, second.id())));
             for expected in [2, 1] {
                 assert_eq!(
                     client
@@ -175,7 +214,8 @@ fn peer_import_rejects_bad_records_and_resumes_after_cancellation() {
                 );
             }
             assert_eq!(histories[2].import_next().unwrap(), None);
-            let lookup: crate::FinalizationLookup = Arc::new(|_| Box::pin(async { None }));
+            let lookup: crate::FinalizationLookup =
+                Arc::new(|_| panic!("imported history must not use local certificate lookup"));
             let index = BlockIndex::new();
             histories[2]
                 .recover(&genesis, &second, &index, &LightBlockIndex::new(), &lookup)
@@ -185,6 +225,14 @@ fn peer_import_rejects_bad_records_and_resumes_after_cancellation() {
             assert_eq!(
                 histories[2].db.get(key(RECORD, 2)).unwrap(),
                 histories[0].db.get(key(RECORD, 2)).unwrap()
+            );
+            let proof = histories[2]
+                .light_block(1, &LightBlockIndex::new())
+                .unwrap();
+            assert_eq!(proof.descendants.len(), 1);
+            assert_eq!(
+                hub_domain::verify_finalized_block(&proof, &trusted).unwrap(),
+                first
             );
             for handle in handles {
                 handle.abort();
