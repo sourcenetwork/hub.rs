@@ -24,6 +24,9 @@ use hub_modules::{
 
 use crate::{BackendError, Ctx};
 
+/// Bounded peer transport for native operation-log synchronization.
+pub mod p2p;
+
 /// Maximum native record key length accepted by this storage configuration.
 pub const MAX_KEY_BYTES: usize = 65_536;
 /// Maximum native record value accepted by this storage configuration.
@@ -55,6 +58,14 @@ impl BuildHasher for KeyPrefix {
 
 /// One ordered module partition with current-state and operation-log commitments.
 pub type NativeDb = Db<mmr::Family, Ctx, Vec<u8>, Bytes, Sha256, KeyPrefix, 32, Sequential>;
+type Operation = <NativeDb as commonware_storage::qmdb::sync::Database>::Op;
+
+fn operation_config() -> <Operation as commonware_codec::Read>::Cfg {
+    (
+        (RangeCfg::new(0..=MAX_KEY_BYTES), ()),
+        RangeCfg::new(0..=MAX_VALUE_BYTES),
+    )
+}
 /// ACP, bulletin, identity and native sequence partitions.
 pub type NativeStateSet = (
     Shared<NativeDb>,
@@ -97,10 +108,7 @@ fn config(prefix: &str, module: &str, cache: CacheRef) -> <NativeDb as ManagedDb
             partition: format!("{prefix}-log"),
             items_per_section: NZU64!(1024),
             compression: None,
-            codec_config: (
-                (RangeCfg::new(0..=MAX_KEY_BYTES), ()),
-                RangeCfg::new(0..=MAX_VALUE_BYTES),
-            ),
+            codec_config: operation_config(),
             page_cache: cache,
             write_buffer: NZUsize!(1 << 20),
             replay_buffer: NZUsize!(1 << 20),

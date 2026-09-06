@@ -141,6 +141,15 @@ operation-log sync targets are distinct. Its configuration accepts keys up to
 bucket. This adapter is covered by storage lifecycle tests and is not wired into
 the node's execution or query-proof path.
 
+`hub-backend::native::p2p` adapts ordered native operations to Commonware's peer
+resolver without changing operation bytes or proofs. Its codec shares journal
+key/value limits, and both fetch and serving adapters cap requests at two
+operations so maximum-size responses fit the 4 MiB transport limit. The resolver
+retains Commonware cancellation and verification feedback, including peer blocking.
+An authenticated loopback test covers transfer into a fresh native partition.
+This adapter is not connected to node synchronization; execution partitions and
+the existing JMT module proofs still use the previous paths.
+
 `hub-app::ordered_state::OrderedState` joins the three execution and four ordered
 module partitions under Commonware's database-set lifecycle. It executes native
 changes from pending parents, seals their ordered commitments, and publishes query
