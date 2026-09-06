@@ -24,6 +24,8 @@ const GENESIS: &[u8] = b"genesis";
 const HEAD: &[u8] = b"head";
 
 mod proof;
+mod transfer;
+pub use transfer::{HISTORY_CHUNK_BYTES, HistoryChunk, HistoryLimits};
 
 #[derive(BorshSerialize, BorshDeserialize)]
 struct StoredReceipt {
@@ -94,7 +96,10 @@ impl FinalizedHistory {
         let db = DB::open_default(path)?;
         match db.get(FORMAT)? {
             Some(version) => {
-                ensure!(version == [1], "unsupported finalized history format");
+                ensure!(
+                    matches!(version.as_slice(), [1] | [2]),
+                    "unsupported finalized history format"
+                );
                 ensure!(
                     db.get(GENESIS)?.as_deref() == Some(genesis.id().0.as_slice()),
                     "finalized history belongs to another genesis"
@@ -149,6 +154,10 @@ impl FinalizedHistory {
         };
         let bytes = borsh::to_vec(&record)?;
         let mut head = self.head.lock();
+        ensure!(
+            self.db.get(transfer::IMPORT)?.is_none(),
+            "history import is pending"
+        );
         if block.height <= head.0 {
             ensure!(
                 self.db.get(key(RECORD, block.height))?.as_deref() == Some(bytes.as_slice()),
@@ -193,6 +202,7 @@ impl FinalizedHistory {
         light: &LightBlockIndex,
         lookup: &FinalizationLookup,
     ) -> Result<()> {
+        self.check_import_recovery(anchor)?;
         let mut previous = genesis.id();
         for height in 1..=anchor.height {
             let bytes = self
@@ -246,6 +256,7 @@ impl FinalizedHistory {
             }
         }
         batch.put(HEAD, borsh::to_vec(&(anchor.height, anchor.id().0.0))?);
+        batch.delete(transfer::IMPORT);
         write(&self.db, batch)?;
         *head = (anchor.height, anchor.id());
         Ok(())

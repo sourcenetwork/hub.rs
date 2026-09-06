@@ -41,6 +41,40 @@ execution limit fails recovery. Record decoding also checks receipt count and
 rejects malformed or trailing log bytes. These checks do not provide a bounded
 peer history transport; snapshot startup remains disabled.
 
+## Staging retained history
+
+`FinalizedHistory::record_chunk` copies at most 64 KiB from a pinned RocksDB
+snapshot into a response and reports the full record length and offset. The
+caller must bound record assembly before allocating for the advertised length.
+This API does not register a network endpoint. Pinned reads avoid copying the
+entire stored value into a Rust buffer; RocksDB's own resource use still applies.
+
+`begin_import` verifies the selected revision against the caller's independent
+consensus key and persists that selection. Records arrive in descending height
+order. `import_record` checks each canonical revision against the expected parent
+hash, verifies its receipt commitment and requires the chain to connect to the
+destination's committed prefix. `HistoryLimits` bounds assembled bytes and the
+aggregate log count before decoding their fields. Operation counts obey the
+existing revision codec bounds. Limits are caller-selected; no default import
+workload or capacity is implied.
+
+Each accepted record and the next expected ancestor are persisted in one synced
+write batch. `import_anchor` and `import_next` expose restart progress. Replayed,
+out-of-order, incomplete and altered records fail without advancing that cursor.
+The final record advances the durable history head, but the import marker still
+blocks normal appends, chunk serving and light-client proof serving.
+
+The caller must keep admission and query publication stopped, recover application
+state at the selected revision, and call `recover` with that same anchor. Recovery
+rejects unfinished imports and other anchors before indexing records. Its final
+durable batch removes the marker. This is the history-side handoff; the running
+node does not yet start snapshot import or transfer peer certificate material.
+
+Starting an import upgrades the history metadata format to 2 in the same batch
+as the import marker. Older binaries reject that format rather than treating an
+unfinished import as an execution suffix to discard. Record bytes remain
+unchanged, and this implementation also opens format 1 histories.
+
 ## Canonical encoding and existing data
 
 Commitment tag 3 encodes the optional DKG payload, optional four native storage

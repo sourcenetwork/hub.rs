@@ -5,7 +5,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-fn block(height: u64, parent: BlockId) -> Block {
+pub(super) fn block(height: u64, parent: BlockId) -> Block {
     Block {
         context: Block::genesis_context(),
         parent,

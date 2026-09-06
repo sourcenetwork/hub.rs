@@ -5,6 +5,10 @@ impl FinalizedHistory {
     /// Assemble a bounded ancestry proof from one durable history snapshot.
     pub fn light_block(&self, height: u64, epochs: &LightBlockIndex) -> Result<LightBlock> {
         let snapshot = self.db.snapshot();
+        ensure!(
+            snapshot.get(transfer::IMPORT)?.is_none(),
+            "history import is not published"
+        );
         let (head, _): (u64, [u8; 32]) =
             borsh::from_slice(&snapshot.get(HEAD)?.context("missing history head")?)?;
         ensure!(

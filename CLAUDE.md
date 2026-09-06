@@ -137,6 +137,13 @@ log targets through `SyncProof`. Synchronization and recovery check reconstructe
 current-state roots before publishing query maps. Operation-log proofs do not
 provide historical activity or absence proofs.
 
+`FinalizedHistory` provides 64 KiB record chunks and a bounded reverse-ancestry
+import API. The import selection and cursor are durable, and imported history
+remains unavailable until recovery at the matching state anchor completes.
+Starting an import selects metadata format 2 to prevent older binaries from
+discarding its unfinished records. The API is not yet attached to peer transport
+or snapshot startup; certificate material still requires separate handoff.
+
 `hub-backend::native` rebuilds query maps from the retained operation log and
 activity bitmap, reading at most 32 operations at a time under partition read
 locks. This bounds temporary hydration buffers; all live query maps remain in
