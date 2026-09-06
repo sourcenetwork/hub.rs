@@ -183,7 +183,7 @@ mod tests {
                 &decision,
                 &Timestamp {
                     block_height: 104,
-                    ..at.clone()
+                    ..at
                 }
             )
             .is_ok()
@@ -193,7 +193,7 @@ mod tests {
                 &decision,
                 &Timestamp {
                     block_height: 105,
-                    ..at.clone()
+                    ..at
                 }
             )
             .is_err()
@@ -203,21 +203,12 @@ mod tests {
                 &decision,
                 &Timestamp {
                     block_height: 4,
-                    ..at.clone()
+                    ..at
                 }
             )
             .is_err()
         );
-        assert!(
-            verify(
-                &decision,
-                &Timestamp {
-                    seconds: 999,
-                    ..at.clone()
-                }
-            )
-            .is_err()
-        );
+        assert!(verify(&decision, &Timestamp { seconds: 999, ..at }).is_err());
         let mut cases = vec![];
         let mut bad = decision.clone();
         bad.id = "legacy".into();
@@ -249,7 +240,7 @@ mod tests {
         let mut bad = decision.clone();
         bad.params.decision_expiration_delta = 0;
         cases.push(bad);
-        let mut bad = decision.clone();
+        let mut bad = decision;
         bad.params.decision_expiration_delta = u64::MAX;
         cases.push(bad);
         for bad in cases {

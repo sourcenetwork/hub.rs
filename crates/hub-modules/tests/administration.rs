@@ -25,7 +25,7 @@ fn operators() -> (OperatorPolicy, Vec<SigningKey>) {
     (policy, keys)
 }
 
-fn request(sequence: u64) -> AdministrativeRequest {
+const fn request(sequence: u64) -> AdministrativeRequest {
     AdministrativeRequest {
         genesis_id: GENESIS,
         sequence,
@@ -111,7 +111,7 @@ fn rejected_approvals_leave_both_stores_unchanged() {
     let mut invalid = signed.clone();
     invalid.request.expires_at += 1;
     cases.push(invalid);
-    let mut invalid = signed.clone();
+    let mut invalid = signed;
     invalid.request.command = AdministrativeCommand::SetAcpParameters(AcpParams::default());
     cases.push(invalid);
     let mut invalid = request(0);

@@ -1733,11 +1733,11 @@ resources:
             id: "doc1".into(),
         };
         module
-            .direct_policy_cmd(&creator, policy_id, PolicyCmd::RegisterObject(obj.clone()))
+            .direct_policy_cmd(&creator, policy_id, PolicyCmd::RegisterObject(obj))
             .unwrap();
 
         // Set reader relation for bob.
-        let rel = Relationship::with_entity("document", "doc1", "reader", reader.clone());
+        let rel = Relationship::with_entity("document", "doc1", "reader", reader);
         let result = module
             .direct_policy_cmd(&creator, policy_id, PolicyCmd::SetRelationship(rel))
             .unwrap();
@@ -1852,7 +1852,7 @@ resources:
 
         let access_request = AccessRequest {
             operations: vec![types::Operation {
-                object: obj.clone(),
+                object: obj,
                 permission: "read".into(),
             }],
             actor: Actor(creator.clone()),
@@ -1928,10 +1928,10 @@ resources:
 
         let access_request = AccessRequest {
             operations: vec![types::Operation {
-                object: obj.clone(),
+                object: obj,
                 permission: "read".into(),
             }],
-            actor: Actor(reader.clone()),
+            actor: Actor(reader),
         };
 
         let result = module
@@ -1961,10 +1961,10 @@ resources:
 
         let access_request = AccessRequest {
             operations: vec![types::Operation {
-                object: obj.clone(),
+                object: obj,
                 permission: "read".into(),
             }],
-            actor: Actor(stranger.clone()),
+            actor: Actor(stranger),
         };
 
         let err = module
@@ -2011,7 +2011,7 @@ resources:
         let mut commitment = RegistrationsCommitment {
             id: 0,
             policy_id: policy_id.clone(),
-            commitment: commitment_bytes.clone(),
+            commitment: commitment_bytes,
             expired: false,
             validity: Duration::Seconds(10),
             metadata: RecordMetadata {
@@ -2265,7 +2265,7 @@ resources:
         let record = module
             .create_policy(&creator, SIMPLE_POLICY, PolicyMarshalingType::ShortYaml)
             .unwrap();
-        let policy_id = record.policy.id.clone();
+        let policy_id = record.policy.id;
 
         // `bogus` is undeclared. defradb (Go-compat, #1060) accepts it; hub must
         // too, or single-/cross-node decisions diverge.
@@ -2333,7 +2333,7 @@ resources:
         let record = module
             .create_policy(&owner, SIMPLE_POLICY, PolicyMarshalingType::ShortYaml)
             .unwrap();
-        let policy_id = record.policy.id.clone();
+        let policy_id = record.policy.id;
         module
             .direct_policy_cmd(&owner, &policy_id, PolicyCmd::RegisterObject(doc("docX")))
             .unwrap();
