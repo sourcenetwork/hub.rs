@@ -20,6 +20,8 @@ pub use hub_modules::types::Timestamp;
 
 /// Current-state point and complete-prefix evidence over Commonware storage.
 pub mod current;
+mod response;
+pub use response::{PERMISSION_RESPONSE_BYTES, PermissionResponse};
 
 /// Shared service limits; consumers may impose tighter limits.
 pub const PERMISSION_LIMITS: PermissionLimits = PermissionLimits {
@@ -94,6 +96,9 @@ pub struct PermissionProof {
 /// Invalid, unavailable or excessive evidence never becomes a permission result.
 #[derive(Debug, thiserror::Error)]
 pub enum PermissionError {
+    /// The selected revision failed finalization verification.
+    #[error(transparent)]
+    Finalization(#[from] hub_domain::LightBlockError),
     /// A request or response exceeded a caller limit.
     #[error("permission limit exceeded")]
     Limit,

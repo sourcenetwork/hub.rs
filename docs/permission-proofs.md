@@ -1,6 +1,6 @@
 # Verified permission and relationship reads
 
-The native node serves Commonware permission evidence through `hub_getPermissionProof`. Standalone point and relationship proofs require an explicitly configured legacy JMT server; those endpoints are unavailable on the native node.
+The native node serves a finalized revision and its Commonware permission evidence together through `hub_getCurrentPermissionProof`. `hub_getPermissionProof` accepts a caller-selected revision when its evidence is available. Standalone point and relationship proofs require an explicitly configured legacy JMT server; those endpoints are unavailable on the native node.
 
 On a JMT server, `hub_getRelationProof(prefix, height)` returns every ACP relationship record under a raw prefix, with evidence for completeness at the requested finalized height. `prefix` is a hex byte string beginning with `relationship/` and ending with `/`. For example, a relation prefix has the form `relationship/<policy-id>//rel/<resource>/<object>/<relation>/`.
 
@@ -21,6 +21,33 @@ All slash-terminated relationship prefixes are counted, including delimiter ance
 Activation changes consensus execution and the next module commitment. Existing deployments require a coordinated operator upgrade. No disk rewrite changes a previously finalized root; pre-activation revisions remain readable but cannot provide this complete-prefix proof. This index does not replace the underlying storage engine or supply historical key enumeration.
 
 ## Permission requests
+
+`hub_getCurrentPermissionProof(policy, request, minimum_height)` returns
+`{ "revision": LightBlock, "proof": PermissionProof }`. The server selects its
+current finalized revision, requires its height to meet the supplied minimum,
+and captures permission evidence while holding all four native partition read
+locks. It releases those locks before waiting for the selected revision's
+certificate. State advancing during that wait does not change the captured
+response. If the finalized index temporarily trails the databases, selection
+retries after releasing the locks. Selection and certificate waits share a
+two-second timeout; this is not a bound on synchronous evaluation or storage work.
+
+`HubClient::verify_current_access` fetches this response once, verifies the
+certificate against the caller's independently provisioned consensus key,
+enforces the minimum height, and evaluates the requested permission using the
+authenticated evidence. It returns the verified revision and local decision.
+The caller supplies any additional timestamp or age policy. A request captured
+before a revocation may finish afterward with the earlier revision; requiring
+the revocation's finalized height prevents accepting that earlier response.
+
+An unavailable revision, unmet minimum or expired server timeout returns
+`RESOURCE_UNAVAILABLE` (`-32002`), never an access decision. The client applies a
+ten-second transport timeout and bounds bytes before JSON deserialization,
+including chunked responses. Its response budget is
+`LIGHT_BLOCK_RESPONSE_BYTES + limits.proof_bytes + 1024`, covering revision
+artifacts, permission evidence and the RPC envelope. Verification separately
+checks revision and proof limits. The service uses `PERMISSION_LIMITS` and the
+corresponding `PERMISSION_RESPONSE_BYTES` transport bound.
 
 `hub_getPermissionProof(policy, request, height)` returns the policy and relationship evidence needed to evaluate an `AccessRequest` at the requested finalized revision. The request contains an actor DID and one or more operations, each naming an object resource, object ID and permission. The response contains tagged point and complete-prefix reads. It carries no authoritative allow/deny flag.
 
@@ -70,8 +97,9 @@ proofs; operation-log history proofs cannot establish historical membership or
 absence.
 
 The current-state root can advance during revisions that do not change the
-requested relationship. A caller selecting a header and then fetching evidence
-must handle `RESOURCE_UNAVAILABLE` by selecting a newer independently verified
-revision and restarting the read within its deadline. It must still enforce its
-minimum revision and freshness requirements. The endpoint does not atomically
-return a selected revision together with its evidence.
+requested relationship. Use `hub_getCurrentPermissionProof` for current reads
+to capture the revision and evidence together. A caller using the separate
+revision and `hub_getPermissionProof` requests can encounter
+`RESOURCE_UNAVAILABLE` between them and must restart the read within its deadline,
+preserving its minimum revision and freshness requirements. Neither endpoint
+provides arbitrary historical activity proofs.

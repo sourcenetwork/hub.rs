@@ -40,30 +40,6 @@ async fn submit(client: &HubClient, signer: &BlsSigner, call: impl SolCall) -> u
     receipt.block_number
 }
 
-async fn revision(client: &HubClient, height: u64, trusted: &ConsensusPublicKey) -> LightBlock {
-    let light = tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            match client
-                .rpc_call_typed::<LightBlock>("hub_getLightBlock", serde_json::json!([height]))
-                .await
-            {
-                Ok(light) => return light,
-                Err(ClientError::Rpc { message, .. })
-                    if message.contains("finalization certificate not found") =>
-                {
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
-                Err(error) => panic!("finalized revision: {error}"),
-            }
-        }
-    })
-    .await
-    .expect("certificate deadline");
-    let block = verify_finalized_block(&light, trusted).unwrap();
-    assert!(block.native_targets.is_some());
-    light
-}
-
 async fn current_evidence(
     client: &HubClient,
     policy: &str,
@@ -71,36 +47,17 @@ async fn current_evidence(
     minimum: u64,
     trusted: &ConsensusPublicKey,
 ) -> (LightBlock, PermissionProof) {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        let mut attempts = 0;
-        loop {
-            attempts += 1;
-            let height = client.block_number().await.unwrap();
-            assert!(height >= minimum);
-            let light = revision(client, height, trusted).await;
-            match client
-                .rpc_call_typed::<PermissionProof>(
-                    "hub_getPermissionProof",
-                    serde_json::json!([policy, request, height]),
-                )
-                .await
-            {
-                Ok(proof) => {
-                    eprintln!("current permission evidence: {attempts} attempts");
-                    return (light, proof);
-                }
-                Err(ClientError::Rpc {
-                    code: -32002,
-                    message,
-                }) if message == "invalid permission evidence: selected module root changed" => {
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                }
-                Err(error) => panic!("permission evidence: {error}"),
-            }
-        }
-    })
-    .await
-    .expect("current permission evidence deadline")
+    let response: hub_client::PermissionResponse = client
+        .rpc_call_typed(
+            "hub_getCurrentPermissionProof",
+            serde_json::json!([policy, request, minimum]),
+        )
+        .await
+        .unwrap();
+    let block = verify_finalized_block(&response.revision, trusted).unwrap();
+    assert!(block.native_targets.is_some());
+    assert!(block.height >= minimum);
+    (response.revision, response.proof)
 }
 
 fn evaluate(
@@ -261,14 +218,45 @@ async fn native_permission_reads_follow_finalized_grants_and_denials() {
         );
         let mut owner_request = request.clone();
         owner_request.actor = Actor(owner.did().parse().unwrap());
-        let (owner_revision, owner_proof) =
-            current_evidence(&replica, &policy, &owner_request, denied, &trusted).await;
-        assert!(evaluate(
-            &owner_revision,
-            &policy,
-            &owner_request,
-            &owner_proof,
-            &trusted
-        ));
+        let (_, allowed) = replica
+            .verify_current_access(&policy, &owner_request, denied, &trusted, PERMISSION_LIMITS)
+            .await
+            .unwrap();
+        assert!(allowed);
     }
+    let mut owner_request = request.clone();
+    owner_request.actor = Actor(owner.did().parse().unwrap());
+    let reads = async {
+        let mut minimum = denied;
+        for _ in 0..20 {
+            let (revision, allowed) = client
+                .verify_current_access(
+                    &policy,
+                    &owner_request,
+                    minimum,
+                    &trusted,
+                    PERMISSION_LIMITS,
+                )
+                .await
+                .unwrap();
+            assert!(allowed);
+            minimum = revision.height;
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    };
+    let writes = async {
+        for index in 0..4 {
+            submit(
+                &client,
+                &owner,
+                IAcp::registerObjectCall {
+                    policyId: policy.parse().unwrap(),
+                    resource: "document".into(),
+                    objectId: format!("concurrent-{index}"),
+                },
+            )
+            .await;
+        }
+    };
+    tokio::join!(reads, writes);
 }

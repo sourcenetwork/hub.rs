@@ -22,12 +22,33 @@ pub async fn permission_proof(
     request: &AccessRequest,
     limits: PermissionLimits,
 ) -> Result<PermissionProof, BackendError> {
-    let reads = capture_reads(snapshot, policy, request, limits)?;
     let (a, b, h, n) = futures::join!(set.0.read(), set.1.read(), set.2.read(), set.3.read());
+    permission_proof_at(
+        [&a, &b, &h, &n],
+        expected,
+        snapshot,
+        policy,
+        request,
+        limits,
+    )
+    .await
+}
+
+/// Generate evidence from immutable partition borrows held at one selected revision.
+/// Shared database callers must retain their read guards until this call returns.
+pub async fn permission_proof_at(
+    [a, b, h, n]: [&NativeDb; 4],
+    expected: B256,
+    snapshot: InMemoryKvStore,
+    policy: &str,
+    request: &AccessRequest,
+    limits: PermissionLimits,
+) -> Result<PermissionProof, BackendError> {
     let roots = [a.root().0, b.root().0, h.root().0, n.root().0];
     if combine_module_roots(&roots) != expected {
         return Err(PermissionError::Invalid("selected module root changed").into());
     }
+    let reads = capture_reads(snapshot, policy, request, limits)?;
     let mut proof = PermissionProof {
         roots: Some(roots.map(B256::from)),
         reads: Vec::new(),
@@ -63,7 +84,7 @@ pub async fn permission_proof(
                 }
             }
             RecordRead::Prefix(prefix) => {
-                let evidence = prefix_proof(&a, &prefix, &mut records, bytes / 2).await?;
+                let evidence = prefix_proof(a, &prefix, &mut records, bytes / 2).await?;
                 PermissionRead::CurrentPrefix {
                     prefix: prefix.into(),
                     proof: evidence.encode().into(),

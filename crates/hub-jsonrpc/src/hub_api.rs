@@ -12,7 +12,7 @@ mod permission;
 mod relation;
 use hub_executor::{ModuleTrees, SharedModuleState};
 use hub_indexer::{BlockIndex, LightBlockIndex};
-use hub_permission::{AccessRequest, PermissionProof};
+use hub_permission::{AccessRequest, PermissionProof, PermissionResponse};
 
 use crate::{
     error::RpcError,
@@ -81,6 +81,15 @@ pub trait HubApi {
         request: AccessRequest,
         height: U64,
     ) -> RpcResult<PermissionProof>;
+
+    /// Capture current native evidence and return its matching finalized revision.
+    #[method(name = "getCurrentPermissionProof")]
+    async fn get_current_permission_proof(
+        &self,
+        policy: String,
+        request: AccessRequest,
+        minimum_height: U64,
+    ) -> RpcResult<PermissionResponse>;
 
     /// Returns a light block at the given height.
     ///
@@ -356,6 +365,16 @@ impl HubApiServer for HubApiImpl {
         height: U64,
     ) -> RpcResult<PermissionProof> {
         self.permission_proof(&policy, &request, height.to()).await
+    }
+
+    async fn get_current_permission_proof(
+        &self,
+        policy: String,
+        request: AccessRequest,
+        minimum_height: U64,
+    ) -> RpcResult<PermissionResponse> {
+        self.current_permission_proof(&policy, &request, minimum_height.to())
+            .await
     }
 
     async fn get_light_block(&self, height: U64) -> RpcResult<LightBlock> {

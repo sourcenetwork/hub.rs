@@ -1,0 +1,51 @@
+use hub_domain::{ConsensusPublicKey, LIGHT_BLOCK_RESPONSE_BYTES, LightBlock, verify_light_block};
+use serde::{Deserialize, Serialize};
+
+use crate::{
+    AccessRequest, PERMISSION_LIMITS, PermissionError, PermissionLimits, PermissionProof,
+    encoded_size, validate_request, verify_permission_proof,
+};
+
+/// Transport budget for revision artifacts, permission evidence and the RPC envelope.
+pub const PERMISSION_RESPONSE_BYTES: usize =
+    LIGHT_BLOCK_RESPONSE_BYTES + PERMISSION_LIMITS.proof_bytes + 1024;
+
+/// Permission evidence paired with the finalized revision from which it was captured.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PermissionResponse {
+    /// Canonical revision and its independently verifiable finalization artifacts.
+    pub revision: LightBlock,
+    /// Policy and relationship evidence at this revision's module root.
+    pub proof: PermissionProof,
+}
+
+impl PermissionResponse {
+    /// Authenticate the revision, enforce the caller's minimum, and evaluate its request.
+    /// The caller provisions the consensus key and any additional freshness requirements.
+    pub fn verify(
+        &self,
+        policy: &str,
+        request: &AccessRequest,
+        minimum_height: u64,
+        trusted: &ConsensusPublicKey,
+        limits: PermissionLimits,
+    ) -> Result<bool, PermissionError> {
+        validate_request(policy, request, limits)?;
+        encoded_size(&self.revision, LIGHT_BLOCK_RESPONSE_BYTES)?;
+        encoded_size(&self.proof, limits.proof_bytes)?;
+        let (_, root) = verify_light_block(&self.revision, trusted)?;
+        if self.revision.height < minimum_height {
+            return Err(PermissionError::Invalid(
+                "revision precedes required minimum",
+            ));
+        }
+        verify_permission_proof(
+            root,
+            self.revision.height,
+            policy,
+            request,
+            &self.proof,
+            limits,
+        )
+    }
+}

@@ -67,26 +67,11 @@ async fn current_access(
     minimum: u64,
     trusted_key: &ConsensusPublicKey,
 ) -> (LightBlock, bool) {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let revision = certified_height(client, minimum, trusted_key).await;
-            match client
-                .verify_access_at(policy, request, &revision, trusted_key, PERMISSION_LIMITS)
-                .await
-            {
-                Ok(allowed) => return (revision, allowed),
-                Err(hub_client::ClientError::Rpc {
-                    code: -32002,
-                    message,
-                }) if message == "invalid permission evidence: selected module root changed" => {
-                    tokio::time::sleep(POLL).await;
-                }
-                Err(error) => panic!("current permission verification: {error}"),
-            }
-        }
-    })
-    .await
-    .expect("current permission deadline")
+    certified_height(client, minimum, trusted_key).await;
+    client
+        .verify_current_access(policy, request, minimum, trusted_key, PERMISSION_LIMITS)
+        .await
+        .unwrap()
 }
 
 #[tokio::test]

@@ -137,10 +137,14 @@ activity bitmap, reading at most 32 operations at a time under partition read
 locks. This bounds temporary hydration buffers; all live query maps remain in
 memory. Keys sharing their first 256 bytes scan one index bucket.
 
-The permission RPC serves Commonware membership, absence and complete-prefix
-witnesses at a matching finalized current-state root. Generation holds all four
-native partition read locks and applies aggregate record and byte limits. The
-client authenticates the evidence before running the shared ACP evaluator.
+`hub_getCurrentPermissionProof` returns a selected finalized revision with its
+Commonware membership, absence and complete-prefix witnesses. Generation holds
+all four native partition read locks and applies aggregate record and byte
+limits, then releases the locks before waiting for the revision's certificate.
+`HubClient::verify_current_access` verifies the certificate, caller's minimum
+height and evidence before running the shared ACP evaluator. Callers supply any
+additional freshness policy. The separate `hub_getPermissionProof` endpoint
+requires the requested root to remain available.
 Standalone `hub_getStateProof` and `hub_getRelationProof` remain JMT-only and are
 unavailable on the native node. Historical native activity proofs are not retained.
 See `docs/permission-proofs.md` for formats and limits.

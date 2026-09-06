@@ -33,7 +33,7 @@ pub use sync_proof::SyncProof;
 pub use hub_permission::current::{MAX_KEY_BYTES, MAX_VALUE_BYTES};
 
 mod permission;
-pub use permission::permission_proof;
+pub use permission::{permission_proof, permission_proof_at};
 
 /// Prefix bytes retained by the index; 64-byte prefixes end inside ACP policy IDs.
 pub const INDEX_PREFIX_BYTES: usize = 256;

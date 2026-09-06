@@ -2,10 +2,12 @@ use super::{HubApiImpl, HubApiServer};
 use crate::error::codes;
 use alloy_primitives::{B256, U64};
 use hub_permission::{
-    AccessRequest, PERMISSION_LIMITS, PermissionError, PermissionProof, PermissionRead, RecordRead,
-    capture_reads, encoded_size, validate_request, verify_permission_proof,
+    AccessRequest, PERMISSION_LIMITS, PERMISSION_RESPONSE_BYTES, PermissionError, PermissionProof,
+    PermissionRead, PermissionResponse, RecordRead, capture_reads, encoded_size, validate_request,
+    verify_permission_proof,
 };
 use jsonrpsee::{core::RpcResult, types::ErrorObjectOwned};
+use std::time::Duration;
 
 fn error(error: impl std::fmt::Display) -> ErrorObjectOwned {
     ErrorObjectOwned::owned(codes::RESOURCE_UNAVAILABLE, error.to_string(), None::<()>)
@@ -21,6 +23,108 @@ fn request_error(error: PermissionError) -> ErrorObjectOwned {
 }
 
 impl HubApiImpl {
+    fn permission_snapshot(&self) -> RpcResult<hub_modules::kv_store::InMemoryKvStore> {
+        Ok(self
+            .modules
+            .as_ref()
+            .ok_or_else(|| error("module records unavailable"))?
+            .read()
+            .map_err(|_| error("module lock poisoned"))?
+            .acp
+            .store()
+            .clone())
+    }
+
+    pub(super) async fn current_permission_proof(
+        &self,
+        policy: &str,
+        request: &AccessRequest,
+        minimum_height: u64,
+    ) -> RpcResult<PermissionResponse> {
+        validate_request(policy, request, PERMISSION_LIMITS).map_err(request_error)?;
+        let databases = self
+            .native_modules
+            .as_ref()
+            .ok_or_else(|| error("native module storage unavailable"))?;
+        let index = self
+            .index
+            .as_ref()
+            .ok_or_else(|| error("finalized revision index unavailable"))?;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            let (selected, proof) = loop {
+                let captured = {
+                    let (a, b, h, n) = tokio::join!(
+                        databases.0.read(),
+                        databases.1.read(),
+                        databases.2.read(),
+                        databases.3.read(),
+                    );
+                    let selected = index
+                        .get_block_by_number(index.head_block_number())
+                        .ok_or_else(|| error("finalized revision unavailable"))?;
+                    if selected.number < minimum_height {
+                        return Err(error("finalized revision precedes required minimum"));
+                    }
+                    let snapshot = self.permission_snapshot()?;
+                    match hub_backend::native::permission_proof_at(
+                        [&a, &b, &h, &n],
+                        selected.module_state_root,
+                        snapshot,
+                        policy,
+                        request,
+                        PERMISSION_LIMITS,
+                    )
+                    .await
+                    {
+                        Ok(proof) => Some((selected, proof)),
+                        Err(hub_backend::BackendError::Permission(PermissionError::Invalid(
+                            "selected module root changed",
+                        ))) => None,
+                        Err(hub_backend::BackendError::Permission(PermissionError::Limit)) => {
+                            return Err(request_error(PermissionError::Limit));
+                        }
+                        Err(cause) => return Err(error(cause)),
+                    }
+                };
+                if let Some(captured) = captured {
+                    break captured;
+                }
+                // Release every read guard so an in-flight finalization can publish its index.
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            };
+            let revision = loop {
+                match self.get_light_block(U64::from(selected.number)).await {
+                    Ok(revision) => break revision,
+                    Err(cause)
+                        if cause
+                            .message()
+                            .contains("finalization certificate not found") =>
+                    {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                    Err(cause) => return Err(cause),
+                }
+            };
+            if revision.height != selected.number
+                || revision.block_hash.parse::<B256>().map_err(error)? != selected.hash
+                || revision.module_state_root.parse::<B256>().map_err(error)?
+                    != selected.module_state_root
+            {
+                return Err(error(
+                    "finalization differs from captured permission revision",
+                ));
+            }
+            revision.check_artifact_limits().map_err(error)?;
+            encoded_size(&revision, hub_domain::LIGHT_BLOCK_RESPONSE_BYTES)
+                .map_err(request_error)?;
+            let response = PermissionResponse { revision, proof };
+            encoded_size(&response, PERMISSION_RESPONSE_BYTES - 1024).map_err(request_error)?;
+            Ok(response)
+        })
+        .await
+        .map_err(|_| error("current permission evidence deadline exceeded"))?
+    }
+
     pub(super) async fn permission_proof(
         &self,
         policy: &str,
@@ -30,16 +134,7 @@ impl HubApiImpl {
         validate_request(policy, request, PERMISSION_LIMITS).map_err(request_error)?;
         let light = self.get_light_block(U64::from(height)).await?;
         let root: B256 = light.module_state_root.parse().map_err(error)?;
-        let modules = self
-            .modules
-            .as_ref()
-            .ok_or_else(|| error("module records unavailable"))?;
-        let snapshot = modules
-            .read()
-            .map_err(|_| error("module lock poisoned"))?
-            .acp
-            .store()
-            .clone();
+        let snapshot = self.permission_snapshot()?;
         if let Some(databases) = &self.native_modules {
             return hub_backend::native::permission_proof(
                 databases,

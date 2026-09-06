@@ -345,7 +345,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
 
         let jsonrpc_handle = tokio::spawn(async move {
             let server = match Server::builder()
-                .max_response_body_size(hub_domain::LIGHT_BLOCK_RESPONSE_BYTES as u32)
+                .max_response_body_size(hub_permission::PERMISSION_RESPONSE_BYTES as u32)
                 .max_connections(max_connections)
                 .build(addr)
                 .await
@@ -693,7 +693,7 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
     /// Returns the server handle and the actual bound address (useful when binding to port 0).
     pub async fn start(self) -> Result<(ServerHandle, SocketAddr), ServerError> {
         let server = Server::builder()
-            .max_response_body_size(hub_domain::LIGHT_BLOCK_RESPONSE_BYTES as u32)
+            .max_response_body_size(hub_permission::PERMISSION_RESPONSE_BYTES as u32)
             .max_connections(self.max_connections)
             .build(self.addr)
             .await

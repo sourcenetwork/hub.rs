@@ -1,7 +1,13 @@
 use super::*;
-use std::{collections::BTreeMap, sync::RwLock};
+use std::{
+    collections::BTreeMap,
+    sync::{Mutex, RwLock, mpsc},
+};
 
-use hub_client::{AccessRequest, Actor, HubClient, Object, Operation, PERMISSION_LIMITS};
+use hub_client::{
+    AccessRequest, Actor, HubClient, Object, Operation, PERMISSION_LIMITS, PermissionResponse,
+};
+use hub_indexer::{BlockIndex, IndexedBlock};
 use hub_jsonrpc::{JsonRpcServer, NodeState};
 
 const POLICY: &str = "\
@@ -35,6 +41,26 @@ async fn apply(set: &OrderedState, height: u64, tx: Tx) {
     assert!(outcome.receipts[0].success());
     set.apply(sealed).await;
     assert!(set.finalize().await.durable().await);
+}
+
+fn index_block(index: &BlockIndex, block: &hub_domain::Block) {
+    index.insert_block(
+        IndexedBlock {
+            hash: block.id().0,
+            number: block.height,
+            parent_hash: block.parent.0,
+            state_root: block.state_root.0,
+            module_state_root: block.module_state_root,
+            timestamp: block.timestamp,
+            gas_limit: 30_000_000,
+            gas_used: 0,
+            base_fee_per_gas: None,
+            prevrandao: block.prevrandao,
+            transaction_hashes: vec![],
+        },
+        vec![],
+        vec![],
+    );
 }
 
 #[test]
@@ -129,15 +155,31 @@ fn synchronized_permission_rpc_verifies_native_evidence_and_subsequent_denial() 
 
                     let history = Arc::new(RwLock::new(BTreeMap::from([(2, light.clone())])));
                     let lookup = history.clone();
+                    let index = Arc::new(BlockIndex::new());
+                    index_block(&index, &block);
+                    type Gate = (::tokio::sync::oneshot::Sender<()>, mpsc::Receiver<()>);
+                    let gate = Arc::new(Mutex::new(None::<Gate>));
+                    let lookup_gate = gate.clone();
                     let db = &replica.databases;
                     let (server, address) =
                         JsonRpcServer::new("127.0.0.1:0".parse().unwrap(), DEPLOYMENT)
                             .with_node_state(Arc::new(NodeState::new(DEPLOYMENT, 0, 4)))
+                            .with_hub_index_and_modules(
+                                index.clone(),
+                                replica.executor.modules().clone(),
+                            )
                             .with_hub_native_modules(
                                 (db.3.clone(), db.4.clone(), db.5.clone(), db.6.clone()),
                                 replica.executor.modules().clone(),
                             )
                             .with_hub_light_block_lookup(Arc::new(move |height| {
+                                if let Some((entered, release)) = lookup_gate.lock().unwrap().take()
+                                {
+                                    entered.send(()).unwrap();
+                                    release
+                                        .recv_timeout(Duration::from_secs(2))
+                                        .map_err(|e| e.to_string())?;
+                                }
                                 lookup
                                     .read()
                                     .unwrap()
@@ -192,23 +234,122 @@ fn synchronized_permission_rpc_verifies_native_evidence_and_subsequent_denial() 
                             .unwrap()
                     );
 
-                    apply(
-                        &replica,
-                        3,
-                        signed(
-                            &owner,
-                            IAcp::setRelationshipCall {
-                                policyId: policy.parse().unwrap(),
-                                resource: "document".into(),
-                                objectId: "report".into(),
-                                relation: "blocked".into(),
-                                actor: actor.into(),
-                            },
+                    let response: PermissionResponse = client
+                        .rpc_call_typed(
+                            "hub_getCurrentPermissionProof",
+                            serde_json::json!([policy, request, 2]),
+                        )
+                        .await
+                        .unwrap();
+                    assert!(
+                        response
+                            .verify(&policy, &request, 2, &trusted, PERMISSION_LIMITS)
+                            .unwrap()
+                    );
+                    assert!(
+                        response
+                            .verify(&policy, &request, 3, &trusted, PERMISSION_LIMITS)
+                            .is_err()
+                    );
+                    assert!(
+                        client
+                            .verify_current_access(
+                                &policy,
+                                &request,
+                                3,
+                                &trusted,
+                                PERMISSION_LIMITS
+                            )
+                            .await
+                            .is_err()
+                    );
+                    let mut tampered = response.clone();
+                    tampered.revision.height += 1;
+                    assert!(
+                        tampered
+                            .verify(&policy, &request, 2, &trusted, PERMISSION_LIMITS)
+                            .is_err()
+                    );
+                    let mut tampered = response.clone();
+                    tampered.proof.roots.as_mut().unwrap()[0].0[0] ^= 1;
+                    assert!(
+                        tampered
+                            .verify(&policy, &request, 2, &trusted, PERMISSION_LIMITS)
+                            .is_err()
+                    );
+                    let mut limits = PERMISSION_LIMITS;
+                    limits.proof_bytes = 1;
+                    assert!(
+                        response
+                            .verify(&policy, &request, 2, &trusted, limits)
+                            .is_err()
+                    );
+
+                    let (entered, captured) = ::tokio::sync::oneshot::channel();
+                    let (release, held) = mpsc::channel();
+                    *gate.lock().unwrap() = Some((entered, held));
+                    let pending = {
+                        let client = HubClient::new(format!("http://{address}"));
+                        let policy = policy.clone();
+                        let request = request.clone();
+                        ::tokio::spawn(async move {
+                            client
+                                .verify_current_access(
+                                    &policy,
+                                    &request,
+                                    2,
+                                    &trusted,
+                                    PERMISSION_LIMITS,
+                                )
+                                .await
+                                .unwrap()
+                        })
+                    };
+                    ::tokio::time::timeout(Duration::from_secs(1), captured)
+                        .await
+                        .unwrap()
+                        .unwrap();
+
+                    ::tokio::time::timeout(
+                        Duration::from_secs(1),
+                        apply(
+                            &replica,
+                            3,
+                            signed(
+                                &owner,
+                                IAcp::setRelationshipCall {
+                                    policyId: policy.parse().unwrap(),
+                                    resource: "document".into(),
+                                    objectId: "report".into(),
+                                    relation: "blocked".into(),
+                                    actor: actor.into(),
+                                },
+                            ),
                         ),
                     )
-                    .await;
-                    let (next, _) = checkpoint::certify(&checkpoint::block(&replica, 3).await, 42);
+                    .await
+                    .expect("permission certificate lookup must release storage guards");
+                    let next_block = checkpoint::block(&replica, 3).await;
+                    index_block(&index, &next_block);
+                    let (next, _) = checkpoint::certify(&next_block, 42);
                     history.write().unwrap().insert(3, next.clone());
+                    release.send(()).unwrap();
+                    let (captured_revision, allowed) = pending.await.unwrap();
+                    assert_eq!(captured_revision.height, 2);
+                    assert!(allowed);
+                    let (revision, allowed) = client
+                        .verify_current_access(&policy, &request, 3, &trusted, PERMISSION_LIMITS)
+                        .await
+                        .unwrap();
+                    assert_eq!(revision.height, 3);
+                    assert!(!allowed);
+                    let mut mixed = response;
+                    mixed.revision = revision;
+                    assert!(
+                        mixed
+                            .verify(&policy, &request, 3, &trusted, PERMISSION_LIMITS)
+                            .is_err()
+                    );
                     assert!(
                         client
                             .verify_access_at(
