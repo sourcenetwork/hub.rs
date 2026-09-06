@@ -21,3 +21,6 @@ pub use state_set::{
 
 /// Ordered native module storage and logical record changes.
 pub mod native;
+
+/// Bounded peer transport for persisted state partitions.
+pub mod p2p;

@@ -1,9 +1,9 @@
 //! State-sync source that never answers.
 //!
-//! commonware-glue's p2p QMDB resolver only serves databases whose operations
-//! decode with a unit codec config, which excludes the variable-length EVM
-//! partitions. Nodes therefore rebuild state by re-executing finalized blocks
-//! fetched through marshal backfill instead of syncing QMDB operations.
+//! Nodes rebuild state by re-executing finalized blocks fetched through marshal
+//! backfill. Bounded partition resolvers are available in `hub_backend::p2p`, but
+//! the node's module-proof and authenticated snapshot handoff paths are not yet
+//! connected to them.
 
 use std::{convert::Infallible, future::Future, marker::PhantomData};
 

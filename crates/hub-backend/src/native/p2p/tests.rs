@@ -1,17 +1,25 @@
 use super::*;
-use crate::native::{MAX_KEY_BYTES, MAX_VALUE_BYTES, state_config};
+use crate::{
+    native::{MAX_KEY_BYTES, MAX_VALUE_BYTES, NativeDb, Operation, state_config},
+    p2p::Partition as _,
+};
 use bytes::Bytes;
-use commonware_codec::{Decode as _, DecodeExt as _, Encode as _};
+use commonware_codec::{Decode as _, DecodeExt as _, Encode as _, EncodeSize as _};
+use commonware_cryptography::sha256::Digest;
 use commonware_glue::stateful::db::{
-    DatabaseSet as _, StateSyncDb as _, SyncEngineConfig, Unmerkleized as _,
+    AttachableResolver, DatabaseSet as _, Shared, StateSyncDb as _, SyncEngineConfig,
+    Unmerkleized as _, p2p,
 };
 use commonware_runtime::{Runner as _, Supervisor as _, buffer::paged::CacheRef, tokio};
 use commonware_storage::{
-    merkle::{Location, MAX_PROOF_DIGESTS_PER_ELEMENT, Proof},
-    qmdb::any::ordered::variable::Update,
+    merkle::{Location, MAX_PROOF_DIGESTS_PER_ELEMENT, Proof, mmr},
+    qmdb::{
+        any::ordered::variable::Update,
+        sync::{FeedbackTx, Request, Response, Source},
+    },
 };
-use commonware_utils::{NZU16, NZUsize, channel::mpsc};
-use std::time::Duration;
+use commonware_utils::{NZU16, NZU64, NZUsize, channel::mpsc};
+use std::{num::NonZeroU64, time::Duration};
 
 mod batching;
 mod network;
@@ -28,7 +36,7 @@ fn update(key: usize, value: usize, next_key: usize) -> Operation {
 #[test]
 fn wire_codec_bounds_every_variable_field_and_response() {
     let largest = update(MAX_KEY_BYTES, MAX_VALUE_BYTES, MAX_KEY_BYTES);
-    let operations = vec![WireOperation(largest.clone()); 2];
+    let operations = vec![crate::p2p::WireOperation::<NativeDb>(largest.clone()); 2];
     let response = Response::<mmr::Family, _, Digest>::Operations {
         proof: Proof {
             leaves: Location::new(2),
@@ -50,7 +58,7 @@ fn wire_codec_bounds_every_variable_field_and_response() {
             inactive_peaks: 0,
             digests: Vec::new(),
         },
-        operations: vec![WireOperation(Operation::Delete(Vec::new())); 3],
+        operations: vec![crate::p2p::WireOperation::<NativeDb>(Operation::Delete(Vec::new())); 3],
     };
     assert!(
         Response::<mmr::Family, WireOperation, Digest>::decode_cfg(
@@ -69,9 +77,13 @@ fn wire_codec_bounds_every_variable_field_and_response() {
         ),
         Operation::CommitFloor(None, Location::new(0)),
     ] {
+        assert!(NativeDb::accepts(&operation));
         let bytes = operation.encode();
         assert_eq!(WireOperation::decode(bytes.clone()).unwrap().0, operation);
-        assert_eq!(WireOperation(operation).encode(), bytes);
+        assert_eq!(
+            crate::p2p::WireOperation::<NativeDb>(operation).encode(),
+            bytes
+        );
         assert!(WireOperation::decode(bytes.slice(..bytes.len() - 1)).is_err());
         let mut trailing = bytes.to_vec();
         trailing.push(0);
@@ -87,6 +99,7 @@ fn wire_codec_bounds_every_variable_field_and_response() {
             Location::new(0),
         ),
     ] {
+        assert!(!NativeDb::accepts(&operation));
         assert!(WireOperation::decode(operation.encode()).is_err());
     }
 }

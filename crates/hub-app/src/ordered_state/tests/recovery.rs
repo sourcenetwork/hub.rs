@@ -18,7 +18,7 @@ fn modules(version: u8) -> ModuleState {
     }))
 }
 
-async fn revision(set: &OrderedState, version: u8) -> OrderedSealed {
+pub(super) async fn revision(set: &OrderedState, version: u8) -> OrderedSealed {
     let (accounts, storage, code, acp, bulletin, hub, nonces) = set.databases.new_batches().await;
     let accounts = accounts
         .write(
@@ -59,7 +59,7 @@ async fn revision(set: &OrderedState, version: u8) -> OrderedSealed {
     }
 }
 
-async fn assert_records(set: &OrderedState, version: u8) {
+pub(super) async fn assert_records(set: &OrderedState, version: u8) {
     let readers = set.readers();
     assert_eq!(
         readers

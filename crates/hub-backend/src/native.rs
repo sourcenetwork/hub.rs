@@ -60,7 +60,7 @@ impl BuildHasher for KeyPrefix {
 pub type NativeDb = Db<mmr::Family, Ctx, Vec<u8>, Bytes, Sha256, KeyPrefix, 32, Sequential>;
 type Operation = <NativeDb as commonware_storage::qmdb::sync::Database>::Op;
 
-fn operation_config() -> <Operation as commonware_codec::Read>::Cfg {
+pub(crate) fn operation_config() -> <Operation as commonware_codec::Read>::Cfg {
     (
         (RangeCfg::new(0..=MAX_KEY_BYTES), ()),
         RangeCfg::new(0..=MAX_VALUE_BYTES),

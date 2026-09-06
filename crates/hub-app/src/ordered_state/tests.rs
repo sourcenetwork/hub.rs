@@ -14,6 +14,7 @@ use hub_backend::state_set_config;
 use hub_client::{ACP_ADDRESS, BlsSigner};
 use hub_modules::acp::abi::IAcp;
 
+mod peer_sync;
 mod recovery;
 
 const DEPLOYMENT: u64 = 9001;

@@ -146,9 +146,12 @@ operation-log sync targets are distinct. Its configuration accepts keys up to
 bucket. This adapter is covered by storage lifecycle tests and is not wired into
 the node's execution or query-proof path.
 
-`hub-backend::native::p2p` adapts ordered native operations to Commonware's peer
-resolver without changing operation bytes or proofs. Its codec shares journal
-key/value limits. Fetches allow up to 64 operations; serving inspects eight at a
+`hub-backend::p2p` adapts execution and ordered native partitions to Commonware's
+peer resolver without changing operation bytes or proofs. Native codecs share
+journal key/value limits; the code partition's peer codec caps values and commit
+metadata at 1 MiB. Oversized local records are rejected by serving; existing code
+journals retain their original decoding limits. Native type aliases remain under
+`hub-backend::native::p2p`. Fetches allow up to 64 operations; serving inspects eight at a
 time and selects a prefix within the response byte budget before obtaining its
 range proof. Responses leave framing space within the 4 MiB transport limit.
 Inspection also generates proofs through Commonware's public API, adding storage
@@ -156,7 +159,10 @@ work in exchange for bounded read-ahead and fewer network responses. The resolve
 retains Commonware cancellation and verification feedback, including peer blocking.
 Authenticated loopback tests cover fresh transfer, pruned-history recovery after
 cancellation, convergence on a newer target, and rejection of a mismatched root.
-This adapter is not connected to node synchronization; execution partitions and
+An authenticated two-peer test transfers nonempty records in all seven partitions,
+resynchronizes to a second revision and reopens from the selected targets. These
+targets are supplied directly by the test, without consensus certificate validation.
+The adapter is not connected to node synchronization; execution partitions and
 the existing JMT module proofs still use the previous paths.
 
 `hub-app::ordered_state::OrderedState` joins the three execution and four ordered
