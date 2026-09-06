@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 hub-crypto.workspace = true
 hub-domain.workspace = true
+hub-permission.workspace = true
 hub-modules.workspace = true
 
 acp = { workspace = true, default-features = false }

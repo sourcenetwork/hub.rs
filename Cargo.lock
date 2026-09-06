@@ -3802,6 +3802,7 @@ dependencies = [
  "hub-crypto",
  "hub-domain",
  "hub-modules",
+ "hub-permission",
  "identity",
  "k256",
  "rand 0.8.5",
@@ -4028,6 +4029,7 @@ dependencies = [
  "hub-domain",
  "hub-executor",
  "hub-indexer",
+ "hub-permission",
  "hub-traits",
  "jsonrpsee",
  "parking_lot",
@@ -4120,6 +4122,20 @@ dependencies = [
  "hub-qmdb",
  "hub-traits",
  "tokio",
+]
+
+[[package]]
+name = "hub-permission"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "hex",
+ "hub-domain",
+ "hub-modules",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "zanzibar",
 ]
 
 [[package]]

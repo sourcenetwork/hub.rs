@@ -20,6 +20,9 @@ use jsonrpsee::core::client::SubscriptionClientT;
 use jsonrpsee::rpc_params;
 use jsonrpsee::ws_client::WsClientBuilder;
 
+#[path = "light_client/permission.rs"]
+mod permission;
+
 const HARDHAT_KEY_0: &str = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 
 const TEST_POLICY_YAML: &str = "\
@@ -27,11 +30,11 @@ name: test-policy
 resources:
   - name: document
     relations:
-      - name: owner
       - name: reader
+      - name: blocked
     permissions:
       - name: read
-        expr: owner + reader
+        expr: reader - blocked->blocked
 ";
 
 fn parse_policy_id(hex_str: &str) -> FixedBytes<32> {
@@ -130,7 +133,6 @@ async fn light_client_proof_verification() {
         "post-genesis prevrandao must come from the threshold VRF seed"
     );
     let evm_signer = EvmSigner::from_hex(HARDHAT_KEY_0, chain_id).expect("valid signer");
-    let evm_did = evm_signer.did();
 
     // ── Phase 2: Create ACP policy + register document ───────────────
     let create_calldata = IAcp::createPolicyCall {
@@ -267,7 +269,7 @@ async fn light_client_proof_verification() {
         resource: "document".into(),
         objectId: "doc1".into(),
         relation: "reader".into(),
-        actor: evm_did.clone(),
+        actor: permission::READER_DID.into(),
     }
     .abi_encode();
     let mutate_receipt = broadcast_evm_tx(
@@ -383,4 +385,17 @@ async fn light_client_proof_verification() {
         proof_2.module_root, proof_1.module_root,
         "ACP module root should differ after set_relationship"
     );
+    let revision: LightBlock = client
+        .rpc_call_typed("hub_getLightBlock", serde_json::json!([h_invalidated]))
+        .await
+        .unwrap();
+    permission::check_permissions(
+        &cluster,
+        &client,
+        &evm_signer,
+        policy_id_str,
+        &revision,
+        &trusted_key,
+    )
+    .await;
 }

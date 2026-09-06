@@ -14,7 +14,12 @@ mod client;
 mod document_acp;
 mod error;
 mod native_tx;
+mod permission;
 mod query;
+pub use hub_permission::{
+    AccessRequest, Actor, Object, Operation, PERMISSION_LIMITS, PermissionLimits, PermissionProof,
+    PermissionRead, ReadLimits, verify_permission_proof,
+};
 mod signer;
 mod subject;
 mod tx;

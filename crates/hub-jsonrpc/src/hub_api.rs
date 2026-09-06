@@ -8,9 +8,11 @@ use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use commonware_cryptography::Hasher as _;
 use hub_domain::{LightBlock, ModuleId, ModuleStateProof, RelationPrefixProof};
 
+mod permission;
 mod relation;
 use hub_executor::{ModuleTrees, SharedModuleState};
 use hub_indexer::{BlockIndex, LightBlockIndex};
+use hub_permission::{AccessRequest, PermissionProof};
 
 use crate::{
     error::RpcError,
@@ -67,6 +69,15 @@ pub trait HubApi {
         prefix: Bytes,
         height: U64,
     ) -> RpcResult<RelationPrefixProof>;
+
+    /// Return bounded evidence for evaluating this request at a finalized revision.
+    #[method(name = "getPermissionProof")]
+    async fn get_permission_proof(
+        &self,
+        policy: String,
+        request: AccessRequest,
+        height: U64,
+    ) -> RpcResult<PermissionProof>;
 
     /// Returns a light block at the given height.
     ///
@@ -308,6 +319,15 @@ impl HubApiServer for HubApiImpl {
         height: U64,
     ) -> RpcResult<RelationPrefixProof> {
         self.relation_proof(&prefix, height.to()).await
+    }
+
+    async fn get_permission_proof(
+        &self,
+        policy: String,
+        request: AccessRequest,
+        height: U64,
+    ) -> RpcResult<PermissionProof> {
+        self.permission_proof(&policy, &request, height.to()).await
     }
 
     async fn get_light_block(&self, height: U64) -> RpcResult<LightBlock> {

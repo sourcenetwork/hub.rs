@@ -105,6 +105,64 @@ impl HubClient {
         Ok(serde_json::from_value(value)?)
     }
 
+    pub(crate) async fn rpc_call_bounded<T: DeserializeOwned>(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+        maximum: usize,
+    ) -> Result<T, ClientError> {
+        let id = self.next_id();
+        let mut response = self
+            .http
+            .post(&self.rpc_url)
+            .timeout(std::time::Duration::from_secs(10))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0", "method": method, "params": params, "id": id,
+            }))
+            .send()
+            .await?
+            .error_for_status()?;
+        if response
+            .content_length()
+            .is_some_and(|size| size > maximum as u64)
+        {
+            return Err(ClientError::ResponseTooLarge(maximum));
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            if chunk.len() > maximum - bytes.len() {
+                return Err(ClientError::ResponseTooLarge(maximum));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let mut value: serde_json::Value = serde_json::from_slice(&bytes)?;
+        if value.get("id").and_then(serde_json::Value::as_u64) != Some(id)
+            || value.get("jsonrpc").and_then(serde_json::Value::as_str) != Some("2.0")
+        {
+            return Err(ClientError::InvalidResponse(
+                "request ID or protocol version mismatch",
+            ));
+        }
+        if let Some(error) = value.get("error") {
+            return Err(ClientError::Rpc {
+                code: error
+                    .get("code")
+                    .and_then(serde_json::Value::as_i64)
+                    .unwrap_or(0),
+                message: error
+                    .get("message")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("unknown")
+                    .into(),
+            });
+        }
+        let result = value
+            .get_mut("result")
+            .map(serde_json::Value::take)
+            .ok_or(ClientError::MissingResult)?;
+        Ok(serde_json::from_value(result)?)
+    }
+
     // ── Ethereum RPC wrappers ───────────────────────────────────────
 
     /// Return the chain ID (`eth_chainId`).
@@ -442,3 +500,6 @@ mod tests {
         assert!(err.to_string().contains("invalid policy ID"));
     }
 }
+
+#[cfg(test)]
+mod permission_transport;

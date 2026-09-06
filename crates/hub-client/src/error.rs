@@ -46,6 +46,22 @@ pub enum ClientError {
     #[error("missing result in RPC response")]
     MissingResult,
 
+    /// Response exceeded the transport byte limit.
+    #[error("RPC response exceeds {0} bytes")]
+    ResponseTooLarge(usize),
+
+    /// Response metadata did not match the request.
+    #[error("invalid RPC response: {0}")]
+    InvalidResponse(&'static str),
+
+    /// Permission evidence or evaluation failed.
+    #[error(transparent)]
+    Permission(#[from] hub_permission::PermissionError),
+
+    /// Finalization could not be verified against configured trust.
+    #[error(transparent)]
+    Finalization(#[from] hub_domain::LightBlockError),
+
     /// HTTP transport error.
     #[error(transparent)]
     Transport(#[from] reqwest::Error),

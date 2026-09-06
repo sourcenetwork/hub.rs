@@ -67,6 +67,7 @@ hub-traits = { path = "crates/hub-traits" }
 hub-app = { path = "crates/hub-app" }
 hub-node = { path = "crates/hub-node" }
 hub-client = { path = "crates/hub-client" }
+hub-permission = { path = "crates/hub-permission" }
 hub-executor = { path = "crates/hub-executor" }
 hub-genesis = { path = "crates/hub-genesis" }
 hub-state = { path = "crates/hub-state" }

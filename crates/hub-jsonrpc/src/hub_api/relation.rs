@@ -51,9 +51,22 @@ impl HubApiImpl {
             .acp
             .store()
             .clone();
+        self.relation_proof_at(prefix, height, root, snapshot.prefix_iter(prefix))
+    }
+
+    pub(super) fn relation_proof_at<'a>(
+        &self,
+        prefix: &[u8],
+        height: u64,
+        root: B256,
+        entries: impl Iterator<Item = (&'a [u8], &'a [u8])>,
+    ) -> RpcResult<RelationPrefixProof> {
+        if prefix.len() > MAX_PREFIX_BYTES {
+            return Err(limit());
+        }
         let mut keys = Vec::new();
         let mut remaining = MAX_BYTES;
-        for (key, value) in snapshot.prefix_iter(prefix) {
+        for (key, value) in entries {
             if keys.len() == MAX_RECORDS {
                 return Err(limit());
             }
