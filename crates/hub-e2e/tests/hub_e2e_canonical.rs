@@ -18,7 +18,7 @@ use hub_client::{
     ACP_ADDRESS, BULLETIN_ADDRESS, BlsSigner, ClientError, EvmSigner, HUB_ADDRESS, HubClient,
     TransactionReceipt,
 };
-use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, TestCluster};
+use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, KeySet, TestCluster};
 use hub_e2e::observe::ClusterAssertions;
 use hub_e2e::{RECEIPT_POLL_ATTEMPTS, RECEIPT_POLL_INTERVAL};
 use hub_modules::acp::abi::IAcp;
@@ -188,11 +188,21 @@ async fn canonical_module_test() {
     // ── SETUP ─────────────────────────────────────────────────────
 
     let chain_id = 9001;
+    let trusted = *KeySet::builder()
+        .nodes(4)
+        .seed(chain_id)
+        .build()
+        .unwrap()
+        .epoch_info()
+        .output
+        .public()
+        .public();
     let genesis = GenesisBuilder::devnet().funded_accounts(1, "1000000000000000000000000");
 
     let cluster = TestCluster::builder()
         .binary(hub_e2e::resolve_binary().expect("resolve hubd binary"))
         .nodes(4)
+        .seed(chain_id)
         .chain_id(chain_id)
         .genesis(genesis)
         .preset(ConsensusPreset::Fast)
@@ -1453,4 +1463,21 @@ async fn canonical_module_test() {
         bulletin_extra.is_err(),
         "Bulletin subscription should have no extra events (no cross-talk from ACP)"
     );
+    for receipt in [
+        &e1_receipt,
+        &e2_receipt,
+        &e4_receipt,
+        &e5_receipt,
+        &g7_receipt,
+    ] {
+        let response = client
+            .read_receipt(receipt.transaction_hash, &trusted)
+            .await
+            .unwrap()
+            .unwrap();
+        let verified = response.verify(receipt.transaction_hash, &trusted).unwrap();
+        assert_eq!(response.revision.height, receipt.block_number);
+        assert_eq!(verified.success(), receipt.status == 1);
+        assert_eq!(verified.logs().len(), receipt.logs.len());
+    }
 }

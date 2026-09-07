@@ -16,7 +16,9 @@ mod error;
 mod native_tx;
 mod permission;
 mod query;
+mod receipt;
 mod record;
+pub use hub_domain::{ExecutionReceipt, ReceiptResponse, ReceiptResponseError};
 pub use hub_permission::{
     AccessRequest, Actor, ModuleId, Object, Operation, PERMISSION_LIMITS, PermissionLimits,
     PermissionProof, PermissionRead, PermissionResponse, RECORD_PROOF_BYTES, ReadLimits,

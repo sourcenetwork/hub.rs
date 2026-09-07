@@ -19,8 +19,7 @@ mod outcome;
 pub use module_snapshot::ModuleSnapshot;
 pub use outcome::{ExecutionOutcome, ExecutionReceipt};
 
-mod receipt_commitment;
-pub use receipt_commitment::receipt_commitment;
+pub use hub_domain::receipt_commitment;
 
 mod revm;
 pub use revm::{

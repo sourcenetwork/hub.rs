@@ -36,13 +36,21 @@ the actor as owner, the authenticated worker as signer, the signed submission
 ID, and the creation revision and timestamp. Editing preserves that creation
 metadata and enforces the actor's ownership and existing policy-edit rules.
 
-The creation receipt provides a lookup hint. To verify the result, obtain the
-policy record from `hub_getCurrentRecordProof` using `policy/objs/<policy-id>` in
-the ACP namespace. Verify its certificate against configured trust and its
-record proof, then compare the policy ID, owner, worker, signed submission ID,
-definition and creation revision with the request. The receipt alone does not
-authenticate the result. This lets concurrent creators identify their own
-policies without scanning the policy list.
+`hub_getReceiptProof` returns the finalized revision and its complete ordered
+receipt commitment. `HubClient::read_receipt` verifies the certificate against
+configured trust, the receipt commitment and the locally computed signed
+submission ID. This authenticates success or failure and emitted events. A
+missing response means evidence is unavailable; it does not permit reusing the
+submission sequence. The older `hub_getTransactionReceipt` response by itself
+does not authenticate execution.
+
+Use the policy ID from the verified creation event to obtain the current record
+from `hub_getCurrentRecordProof` using `policy/objs/<policy-id>` in the ACP
+namespace. Verify its certificate and record proof, then compare the policy ID,
+owner, worker, signed submission ID, definition and creation revision with the
+request. This lets concurrent creators identify their own policies without
+scanning the policy list. A historical receipt proves execution at that
+revision; current permission checks still require current evidence.
 
 Execution checks the exact scope, caller, deployment, validity interval and
 revocation before applying a change. Failed operations do not record delegation

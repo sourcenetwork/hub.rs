@@ -9,6 +9,7 @@ use commonware_cryptography::Hasher as _;
 use hub_domain::{LightBlock, ModuleId, ModuleStateProof, RelationPrefixProof};
 
 mod permission;
+mod receipt;
 mod record;
 mod relation;
 use hub_executor::{ModuleTrees, SharedModuleState};
@@ -48,6 +49,12 @@ pub trait HubApi {
     /// For EVM transactions, these fields are `None`.
     #[method(name = "getTransactionReceipt")]
     async fn get_transaction_receipt(&self, hash: B256) -> RpcResult<Option<RpcNativeReceipt>>;
+
+    /// Return the complete receipt commitment and finality evidence for a submission.
+    /// A missing response does not prove that the submission was never accepted.
+    #[method(name = "getReceiptProof")]
+    async fn get_receipt_proof(&self, hash: B256)
+    -> RpcResult<Option<hub_domain::ReceiptResponse>>;
 
     /// Returns the on-chain native nonce for a BLS identity.
     #[method(name = "getNativeNonce")]
@@ -291,6 +298,13 @@ impl HubApiServer for HubApiImpl {
             signer_did: receipt.signer_did,
             native_nonce,
         }))
+    }
+
+    async fn get_receipt_proof(
+        &self,
+        hash: B256,
+    ) -> RpcResult<Option<hub_domain::ReceiptResponse>> {
+        self.receipt_proof(hash).await
     }
 
     async fn get_native_nonce(&self, did: String) -> RpcResult<U64> {

@@ -50,6 +50,10 @@ fn fixture(
 }
 
 fn light_fixture(seed: u64) -> LightBlock {
+    light_fixture_with(seed, |_| {})
+}
+
+fn light_fixture_with(seed: u64, configure: impl FnOnce(&mut Block)) -> LightBlock {
     let (signers, verifier, material) = fixture(seed);
     let leader = material
         .participants
@@ -58,7 +62,7 @@ fn light_fixture(seed: u64) -> LightBlock {
         .expect("participants are non-empty")
         .clone();
     let round = Round::new(Epoch::new(3), View::new(17));
-    let block = Block {
+    let mut block = Block {
         context: ConsensusContext {
             round,
             leader,
@@ -76,6 +80,7 @@ fn light_fixture(seed: u64) -> LightBlock {
         receipt_commitment: Some(B256::repeat_byte(9)),
         db_targets: DbTargets::default(),
     };
+    configure(&mut block);
     let proposal = Proposal::new(round, View::new(16), block.digest());
     let votes: Vec<_> = signers
         .iter()
@@ -329,4 +334,78 @@ fn proof_limits_apply_before_decoding() {
         verify_light_block(&light, &trusted_key()),
         Err(LightBlockError::LimitExceeded)
     );
+}
+
+#[test]
+fn receipt_evidence_binds_results_to_finality_and_submission() {
+    use crate::{ExecutionReceipt, ReceiptResponse, receipt_commitment};
+    let first = B256::repeat_byte(1);
+    let second = B256::repeat_byte(2);
+    let receipts = vec![
+        ExecutionReceipt::new(first, true, 0, 0, vec![], None),
+        ExecutionReceipt::new(second, false, 0, 0, vec![], None),
+    ];
+    let revision = light_fixture_with(42, |block| {
+        block
+            .txs
+            .push(crate::Tx::new(Bytes::from_static(b"second")));
+        block.receipt_commitment = Some(receipt_commitment(100, &receipts));
+    });
+    let response = ReceiptResponse {
+        revision,
+        gas_limit: 100,
+        receipts,
+    };
+    assert!(response.verify(first, &trusted_key()).unwrap().success());
+    assert!(!response.verify(second, &trusted_key()).unwrap().success());
+    assert!(response.verify(B256::ZERO, &trusted_key()).is_err());
+    assert!(
+        response
+            .verify(first, fixture(100).2.sharing.public())
+            .is_err()
+    );
+    let encoded = serde_json::to_vec(&response).unwrap();
+    let decoded: ReceiptResponse = serde_json::from_slice(&encoded).unwrap();
+    assert!(decoded.verify(first, &trusted_key()).unwrap().success());
+    for mutation in 0..7 {
+        let mut changed = response.clone();
+        match mutation {
+            0 => changed.gas_limit += 1,
+            1 => changed.receipts[0].receipt.status = false.into(),
+            2 => changed.receipts.swap(0, 1),
+            3 => {
+                changed.receipts.pop();
+            }
+            4 => changed.receipts[0].tx_hash = B256::ZERO,
+            5 => changed.revision.height += 1,
+            6 => {
+                changed.receipts[0].receipt.status =
+                    alloy_consensus::Eip658Value::PostState(B256::ZERO)
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            changed.verify(first, &trusted_key()).is_err(),
+            "mutation {mutation}"
+        );
+    }
+    let legacy = ReceiptResponse {
+        revision: light_fixture_with(42, |block| {
+            block
+                .txs
+                .push(crate::Tx::new(Bytes::from_static(b"second")));
+            block.receipt_commitment = None;
+        }),
+        ..response.clone()
+    };
+    assert!(legacy.verify(first, &trusted_key()).is_err());
+    let mut duplicate = response;
+    duplicate.receipts[1].tx_hash = first;
+    duplicate.revision = light_fixture_with(42, |block| {
+        block
+            .txs
+            .push(crate::Tx::new(Bytes::from_static(b"second")));
+        block.receipt_commitment = Some(receipt_commitment(100, &duplicate.receipts));
+    });
+    assert!(duplicate.verify(first, &trusted_key()).is_err());
 }

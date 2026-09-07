@@ -21,6 +21,7 @@ const EDITED: &str = "name: edited\nresources:\n  - name: document\n";
 
 async fn submit(
     client: &HubClient,
+    trusted: &ConsensusPublicKey,
     signer: &BlsSigner,
     target: Address,
     call: impl SolCall,
@@ -37,6 +38,16 @@ async fn submit(
                 assert_eq!(receipt.transaction_hash, hash);
                 assert_eq!(receipt.signer_did.as_deref(), Some(signer.did()));
                 assert_eq!(receipt.native_nonce, Some(tx.nonce));
+                let evidence = client.read_receipt(hash, trusted).await.unwrap().unwrap();
+                let verified = evidence.verify(hash, trusted).unwrap();
+                assert_eq!(evidence.revision.height, receipt.block_number);
+                assert_eq!(verified.success(), receipt.status == 1);
+                assert_eq!(verified.logs().len(), receipt.logs.len());
+                for (proven, displayed) in verified.logs().iter().zip(&receipt.logs) {
+                    assert_eq!(proven.address, displayed.address);
+                    assert_eq!(proven.topics(), displayed.topics);
+                    assert_eq!(proven.data.data, displayed.data);
+                }
                 return receipt;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -165,8 +176,14 @@ async fn native_workers_preserve_policy_ownership_results_and_revocation() {
     let commands_token =
         create_bearer_token(&actor_key, first.did(), deployment, now, now + 300).unwrap();
     let (first_receipt, second_receipt) = tokio::join!(
-        submit(&client, &first, ACP_ADDRESS, create(&first_token)),
-        submit(&client, &second, ACP_ADDRESS, create(&second_token)),
+        submit(&client, &trusted, &first, ACP_ADDRESS, create(&first_token)),
+        submit(
+            &client,
+            &trusted,
+            &second,
+            ACP_ADDRESS,
+            create(&second_token)
+        ),
     );
     let first_id = created_id(&first_receipt, &owner);
     let second_id = created_id(&second_receipt, &owner);
@@ -191,6 +208,7 @@ async fn native_workers_preserve_policy_ownership_results_and_revocation() {
 
     let direct = submit(
         &client,
+        &trusted,
         &first,
         ACP_ADDRESS,
         IAcp::editPolicyCall {
@@ -201,7 +219,14 @@ async fn native_workers_preserve_policy_ownership_results_and_revocation() {
     )
     .await;
     assert_eq!(direct.status, 0);
-    let wrong_worker = submit(&client, &second, ACP_ADDRESS, create(&first_token)).await;
+    let wrong_worker = submit(
+        &client,
+        &trusted,
+        &second,
+        ACP_ADDRESS,
+        create(&first_token),
+    )
+    .await;
     assert_eq!(wrong_worker.status, 0);
     assert!(wrong_worker.logs.is_empty());
     let edit = || IAcp::bearerEditPolicyCall {
@@ -210,15 +235,22 @@ async fn native_workers_preserve_policy_ownership_results_and_revocation() {
         policy: EDITED.as_bytes().to_vec().into(),
         marshalType: 1,
     };
-    let legacy_scope = submit(&client, &first, ACP_ADDRESS, create(&commands_token)).await;
+    let legacy_scope = submit(
+        &client,
+        &trusted,
+        &first,
+        ACP_ADDRESS,
+        create(&commands_token),
+    )
+    .await;
     assert_eq!(legacy_scope.status, 0);
     assert!(legacy_scope.logs.is_empty());
     let mut wrong_scope = edit();
     wrong_scope.bearerToken = second_token.clone();
-    let wrong_scope = submit(&client, &second, ACP_ADDRESS, wrong_scope).await;
+    let wrong_scope = submit(&client, &trusted, &second, ACP_ADDRESS, wrong_scope).await;
     assert_eq!(wrong_scope.status, 0);
     assert!(wrong_scope.logs.is_empty());
-    let edited = submit(&client, &second, ACP_ADDRESS, edit()).await;
+    let edited = submit(&client, &trusted, &second, ACP_ADDRESS, edit()).await;
     assert_eq!(edited.status, 1);
     let record = policy(&client, &first_id, edited.block_number, &trusted).await;
     assert_eq!(record.raw_policy, EDITED);
@@ -230,6 +262,7 @@ async fn native_workers_preserve_policy_ownership_results_and_revocation() {
 
     let revoked_edit = submit(
         &client,
+        &trusted,
         &second,
         HUB_ADDRESS,
         IHub::revokeDelegationCall {
@@ -240,6 +273,7 @@ async fn native_workers_preserve_policy_ownership_results_and_revocation() {
     assert_eq!(revoked_edit.status, 1);
     let revoked = submit(
         &client,
+        &trusted,
         &second,
         HUB_ADDRESS,
         IHub::revokeDelegationCall {
@@ -252,16 +286,37 @@ async fn native_workers_preserve_policy_ownership_results_and_revocation() {
     policy(&replica, &first_id, revoked.block_number, &trusted).await;
     cluster.restart_node(3).unwrap();
     cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
-    let rejected = submit(&replica, &second, ACP_ADDRESS, edit()).await;
+    for receipt in [&first_receipt, &direct] {
+        let proof = replica
+            .read_receipt(receipt.transaction_hash, &trusted)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            proof
+                .verify(receipt.transaction_hash, &trusted)
+                .unwrap()
+                .success(),
+            receipt.status == 1
+        );
+    }
+    let rejected = submit(&replica, &trusted, &second, ACP_ADDRESS, edit()).await;
     assert_eq!(rejected.status, 0);
     assert!(rejected.logs.is_empty());
-    let rejected = submit(&replica, &second, ACP_ADDRESS, create(&second_token)).await;
+    let rejected = submit(
+        &replica,
+        &trusted,
+        &second,
+        ACP_ADDRESS,
+        create(&second_token),
+    )
+    .await;
     assert_eq!(rejected.status, 0);
     assert!(rejected.logs.is_empty());
     let record = policy(&replica, &first_id, rejected.block_number, &trusted).await;
     assert_eq!(record.raw_policy, EDITED);
     assert_eq!(record.metadata.owner_did, owner);
-    let still_allowed = submit(&client, &first, ACP_ADDRESS, create(&first_token)).await;
+    let still_allowed = submit(&client, &trusted, &first, ACP_ADDRESS, create(&first_token)).await;
     let third_id = created_id(&still_allowed, &owner);
     assert_ne!(third_id, first_id);
     assert_ne!(third_id, second_id);

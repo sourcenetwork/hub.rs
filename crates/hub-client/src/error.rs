@@ -62,6 +62,10 @@ pub enum ClientError {
     #[error(transparent)]
     Finalization(#[from] hub_domain::LightBlockError),
 
+    /// Receipt evidence did not match finalized execution.
+    #[error(transparent)]
+    Receipt(#[from] hub_domain::ReceiptResponseError),
+
     /// HTTP transport error.
     #[error(transparent)]
     Transport(#[from] reqwest::Error),
