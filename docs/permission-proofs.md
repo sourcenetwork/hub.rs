@@ -1,6 +1,6 @@
 # Verified record and permission reads
 
-The native node serves a finalized revision and its Commonware permission evidence together through `hub_getCurrentPermissionProof`. `hub_getPermissionProof` accepts a caller-selected revision when its evidence is available. `hub_getCurrentRecordProof` provides native record membership and absence. The older `hub_getStateProof` and `hub_getRelationProof` endpoints require an explicitly configured legacy JMT server.
+The native node serves a finalized revision and its Commonware permission evidence together through `hub_getCurrentPermissionProof`. `hub_getPermissionProof` accepts a caller-selected revision when its evidence is available. `hub_getCurrentRecordProof` provides native record membership and absence; `hub_getCurrentPrefixProof` proves complete current prefixes. The older `hub_getStateProof` and `hub_getRelationProof` endpoints require an explicitly configured legacy JMT server.
 
 On a JMT server, `hub_getRelationProof(prefix, height)` returns every ACP relationship record under a raw prefix, with evidence for completeness at the requested finalized height. `prefix` is a hex byte string beginning with `relationship/` and ending with `/`. For example, a relation prefix has the form `relationship/<policy-id>//rel/<resource>/<object>/<relation>/`.
 
@@ -50,6 +50,30 @@ establish aggregate concurrency or throughput guarantees.
 These are current-state reads. They do not provide arbitrary historical native
 record proofs. Record existence alone does not authorize an operation: consumers
 must validate record semantics or use verified permission evaluation.
+
+## Native prefix and owner reads
+
+`hub_getCurrentPrefixProof(module, prefix, minimum_height)` returns
+`{ "revision": LightBlock, "prefix": PrefixProof }`. It captures a complete
+ordered prefix under the four native partition read locks, then releases them
+before fetching the matching certificate. `HubClient::read_current_prefix`
+verifies finality, the requested module/prefix and minimum revision, combined
+roots, the prefix boundary and every successor. Omitting the first or last
+record, truncating the scan, changing a value or mixing roots fails verification.
+
+Prefix requests allow at most 64 KiB of prefix bytes, 4,096 records, 1 MiB of
+prefix/key/value bytes and 4 MiB of serialized evidence. The transport uses
+`RECORD_RESPONSE_BYTES`, including bounded finalization artifacts. Oversized
+scans fail; they do not return a partial list. Selection and certificate lookup
+share a two-second deadline. Callers supply any additional revision-age policy.
+
+`object_owner_prefix(policy, object)` rejects ambiguous path components.
+`PrefixResponse::verify_object_owner` verifies the complete owner relation,
+checks each record against its canonical key and the requested policy/object,
+and returns the single live actor. Archived records remain in the evidence but
+do not register the object. Empty or entirely archived ownership returns `None`;
+malformed records, conflicting live owners and unavailable evidence are errors.
+Ownership alone does not replace permission evaluation.
 
 ## Permission requests
 

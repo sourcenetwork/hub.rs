@@ -111,7 +111,7 @@ fn storage(error: impl std::fmt::Display) -> BackendError {
     BackendError::Storage(error.to_string())
 }
 
-async fn prefix_proof(
+pub(super) async fn prefix_proof(
     db: &NativeDb,
     prefix: &[u8],
     remaining: &mut ReadLimits,

@@ -130,7 +130,7 @@ pub fn successor<'a>(key: &[u8], next: &'a [u8], prefix: &[u8]) -> Option<&'a [u
 }
 
 impl PrefixEvidence {
-    /// Verify complete ordered coverage against an independently authenticated ACP root.
+    /// Verify complete ordered coverage against an independently authenticated partition root.
     pub fn verify(&self, prefix: &[u8], root: &Digest) -> Result<(), PermissionError> {
         let mut next = match &self.boundary {
             None => Some(prefix),

@@ -172,7 +172,10 @@ additional freshness policy. The separate `hub_getPermissionProof` endpoint
 requires the requested root to remain available.
 `hub_getCurrentRecordProof` captures a native record and its certified revision;
 `HubClient::read_current_record` verifies membership or absence against the requested
-module, key and minimum revision. Standalone `hub_getStateProof` and
+module, key and minimum revision. `hub_getCurrentPrefixProof` and
+`HubClient::read_current_prefix` provide complete native prefixes with the same
+captured-revision guarantees. `PrefixResponse::verify_object_owner` derives live
+ownership from complete owner evidence and treats archived records as unregistered. Standalone `hub_getStateProof` and
 `hub_getRelationProof` remain JMT-only and are unavailable on the native node.
 Historical native activity proofs are not retained.
 See `docs/permission-proofs.md` for formats and limits.

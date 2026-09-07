@@ -1,0 +1,87 @@
+use hub_domain::ConsensusPublicKey;
+use hub_modules::acp::{keys, types::RelationshipRecord};
+use zanzibar::{Relationship, Subject};
+
+use crate::{
+    Actor, ModuleId, Object, PERMISSION_LIMITS, PermissionError, PrefixResponse,
+    RECORD_PROOF_BYTES, current::MAX_KEY_BYTES, encoded_size,
+};
+
+/// Build the unambiguous storage prefix for one object's owner relations.
+pub fn object_owner_prefix(policy: &str, object: &Object) -> Result<Vec<u8>, PermissionError> {
+    encoded_size(&(policy, object), PERMISSION_LIMITS.request_bytes)?;
+    if policy.is_empty() || policy.contains(['/', '\\']) {
+        return Err(PermissionError::Invalid("invalid policy identifier"));
+    }
+    Relationship::try_new(&object.resource, &object.id, "owner", Subject::Wildcard)?;
+    let prefix = keys::relationship_storage_prefix(
+        policy,
+        &Relationship::relation_prefix(&object.resource, &object.id, "owner"),
+    );
+    if prefix.len() > MAX_KEY_BYTES {
+        return Err(PermissionError::Limit);
+    }
+    Ok(prefix)
+}
+
+impl PrefixResponse {
+    /// Return the single live owner from complete, finalized evidence.
+    /// Archived ownership does not register an object or authorize access.
+    pub fn verify_object_owner(
+        &self,
+        policy: &str,
+        object: &Object,
+        minimum_height: u64,
+        trusted: &ConsensusPublicKey,
+    ) -> Result<Option<Actor>, PermissionError> {
+        let prefix = object_owner_prefix(policy, object)?;
+        let evidence = self.verify(
+            ModuleId::Acp,
+            &prefix,
+            minimum_height,
+            trusted,
+            RECORD_PROOF_BYTES,
+        )?;
+        owner(
+            evidence
+                .entries
+                .iter()
+                .map(|entry| (entry.key.as_slice(), entry.value.as_ref())),
+            policy,
+            object,
+        )
+    }
+}
+
+fn owner<'a>(
+    records: impl IntoIterator<Item = (&'a [u8], &'a [u8])>,
+    policy: &str,
+    object: &Object,
+) -> Result<Option<Actor>, PermissionError> {
+    let mut owner = None;
+    for (key, value) in records {
+        let record: RelationshipRecord = serde_json::from_slice(value)
+            .map_err(|_| PermissionError::Invalid("owner record encoding"))?;
+        let relation = &record.relationship;
+        if record.policy_id != policy
+            || relation.resource != object.resource
+            || relation.object_id != object.id
+            || relation.relation != "owner"
+            || keys::relationship_key(policy, &relation.storage_key()) != key
+        {
+            return Err(PermissionError::Invalid(
+                "owner record differs from its key",
+            ));
+        }
+        let Subject::Entity(did) = relation.subject.clone() else {
+            return Err(PermissionError::Invalid("owner is not an actor"));
+        };
+        if !record.archived && owner.replace(Actor(did)).is_some() {
+            return Err(PermissionError::Invalid("multiple live owners"));
+        }
+    }
+    Ok(owner)
+}
+
+#[cfg(test)]
+mod tests;

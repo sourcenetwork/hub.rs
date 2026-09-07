@@ -21,8 +21,9 @@ mod record;
 pub use hub_domain::{ExecutionReceipt, ReceiptResponse, ReceiptResponseError};
 pub use hub_permission::{
     AccessRequest, Actor, ModuleId, Object, Operation, PERMISSION_LIMITS, PermissionLimits,
-    PermissionProof, PermissionRead, PermissionResponse, RECORD_PROOF_BYTES, ReadLimits,
-    RecordProof, RecordResponse, verify_permission_proof,
+    PermissionProof, PermissionRead, PermissionResponse, PrefixProof, PrefixResponse,
+    RECORD_PROOF_BYTES, ReadLimits, RecordProof, RecordResponse, object_owner_prefix,
+    verify_permission_proof,
 };
 mod signer;
 mod subject;

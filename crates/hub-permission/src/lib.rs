@@ -22,6 +22,10 @@ pub use hub_modules::types::Timestamp;
 
 /// Current-state point and complete-prefix evidence over Commonware storage.
 pub mod current;
+mod owner;
+pub use owner::object_owner_prefix;
+mod prefix;
+pub use prefix::{PrefixProof, PrefixResponse};
 mod record;
 pub use record::{RECORD_PROOF_BYTES, RECORD_RESPONSE_BYTES, RecordProof, RecordResponse};
 mod response;

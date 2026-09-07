@@ -91,7 +91,7 @@ async fn native_permission_reads_follow_finalized_grants_and_denials() {
         .output
         .public()
         .public();
-    let cluster = TestCluster::builder()
+    let mut cluster = TestCluster::builder()
         .binary(hub_e2e::resolve_binary().unwrap())
         .nodes(4)
         .seed(deployment)
@@ -144,6 +144,48 @@ async fn native_permission_reads_follow_finalized_grants_and_denials() {
         },
     )
     .await;
+    let object = Object {
+        resource: "document".into(),
+        id: "report".into(),
+    };
+    let owner_prefix = hub_client::object_owner_prefix(&policy, &object).unwrap();
+    let ownership = client
+        .read_current_prefix(
+            ModuleId::Acp,
+            &owner_prefix,
+            granted,
+            &trusted,
+            RECORD_PROOF_BYTES,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        ownership
+            .verify_object_owner(&policy, &object, granted, &trusted)
+            .unwrap()
+            .unwrap()
+            .0
+            .as_str(),
+        owner.did()
+    );
+    assert!(
+        ownership
+            .verify_object_owner(&policy, &object, ownership.revision.height + 1, &trusted)
+            .is_err()
+    );
+    let unrelated_trust = *KeySet::builder()
+        .seed(deployment + 1)
+        .build()
+        .unwrap()
+        .epoch_info()
+        .output
+        .public()
+        .public();
+    assert!(
+        ownership
+            .verify_object_owner(&policy, &object, granted, &unrelated_trust)
+            .is_err()
+    );
     let policy_key = hub_modules::acp::keys::policy_key(&policy);
     let policy_record = client
         .read_current_record(
@@ -299,7 +341,23 @@ async fn native_permission_reads_follow_finalized_grants_and_denials() {
                 .await
                 .unwrap();
             assert_eq!(record.record.value, policy_record.record.value);
-            minimum = record.revision.height;
+            let owners = client
+                .read_current_prefix(
+                    ModuleId::Acp,
+                    &owner_prefix,
+                    record.revision.height,
+                    &trusted,
+                    RECORD_PROOF_BYTES,
+                )
+                .await
+                .unwrap();
+            assert!(
+                owners
+                    .verify_object_owner(&policy, &object, record.revision.height, &trusted)
+                    .unwrap()
+                    .is_some()
+            );
+            minimum = owners.revision.height;
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     };
@@ -318,4 +376,88 @@ async fn native_permission_reads_follow_finalized_grants_and_denials() {
         }
     };
     tokio::join!(reads, writes);
+    let archived = submit(
+        &client,
+        &owner,
+        IAcp::archiveObjectCall {
+            policyId: policy.parse().unwrap(),
+            resource: object.resource.clone(),
+            objectId: object.id.clone(),
+        },
+    )
+    .await;
+    observed
+        .wait_for_height(archived + 2, Duration::from_secs(30))
+        .await
+        .unwrap();
+    for index in 0..cluster.node_count() {
+        let replica = HubClient::new(cluster.node(index).rpc_url());
+        let current = replica
+            .read_current_prefix(
+                ModuleId::Acp,
+                &owner_prefix,
+                archived,
+                &trusted,
+                RECORD_PROOF_BYTES,
+            )
+            .await
+            .unwrap();
+        assert!(
+            current
+                .verify_object_owner(&policy, &object, archived, &trusted)
+                .unwrap()
+                .is_none()
+        );
+        let mut mixed = ownership.clone();
+        mixed.revision = current.revision.clone();
+        assert!(
+            mixed
+                .verify_object_owner(&policy, &object, archived, &trusted)
+                .is_err()
+        );
+        let other = Object {
+            resource: object.resource.clone(),
+            id: "never-registered".into(),
+        };
+        assert!(
+            current
+                .verify_object_owner(&policy, &other, archived, &trusted)
+                .is_err()
+        );
+        let missing = replica
+            .read_current_prefix(
+                ModuleId::Acp,
+                &hub_client::object_owner_prefix(&policy, &other).unwrap(),
+                archived,
+                &trusted,
+                RECORD_PROOF_BYTES,
+            )
+            .await
+            .unwrap();
+        assert!(
+            missing
+                .verify_object_owner(&policy, &other, archived, &trusted)
+                .unwrap()
+                .is_none()
+        );
+    }
+    cluster.restart_node(0).unwrap();
+    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    let restarted = HubClient::new(cluster.node(0).rpc_url());
+    let current = restarted
+        .read_current_prefix(
+            ModuleId::Acp,
+            &owner_prefix,
+            archived,
+            &trusted,
+            RECORD_PROOF_BYTES,
+        )
+        .await
+        .unwrap();
+    assert!(
+        current
+            .verify_object_owner(&policy, &object, archived, &trusted)
+            .unwrap()
+            .is_none()
+    );
 }

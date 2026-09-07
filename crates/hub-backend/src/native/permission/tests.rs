@@ -562,3 +562,154 @@ fn native_records_bind_module_key_value_and_current_root() {
         },
     );
 }
+
+#[test]
+fn native_prefixes_bind_complete_coverage_module_and_root() {
+    use super::super::prefix_proof_at;
+    use hub_permission::{ModuleId, RECORD_PROOF_BYTES};
+
+    let directory = tempfile::tempdir().unwrap();
+    tokio::Runner::new(tokio::Config::new().with_storage_directory(directory.path())).start(
+        |context| async move {
+            let set = init(&context).await;
+            let modules = [
+                ModuleId::Acp,
+                ModuleId::Bulletin,
+                ModuleId::Hub,
+                ModuleId::NativeNonce,
+            ];
+            let root = apply(&set, std::array::from_fn(|_| vec![])).await;
+            {
+                let (a, b, h, n) =
+                    futures::join!(set.0.read(), set.1.read(), set.2.read(), set.3.read());
+                for module in modules {
+                    let proof = prefix_proof_at([&a, &b, &h, &n], root, module, b"p/")
+                        .await
+                        .unwrap();
+                    assert!(
+                        proof
+                            .verify(root, module, b"p/", RECORD_PROOF_BYTES)
+                            .unwrap()
+                            .entries
+                            .is_empty()
+                    );
+                }
+            }
+            let root = apply(
+                &set,
+                std::array::from_fn(|i| {
+                    [b"p/".as_slice(), b"p/a", b"p/b", b"q/"]
+                        .into_iter()
+                        .map(|key| (key.to_vec(), Some(vec![i as u8])))
+                        .collect()
+                }),
+            )
+            .await;
+            let retained = {
+                let (a, b, h, n) =
+                    futures::join!(set.0.read(), set.1.read(), set.2.read(), set.3.read());
+                let mut retained = Vec::new();
+                for module in modules {
+                    let proof = prefix_proof_at([&a, &b, &h, &n], root, module, b"p/")
+                        .await
+                        .unwrap();
+                    let evidence = proof
+                        .verify(root, module, b"p/", RECORD_PROOF_BYTES)
+                        .unwrap();
+                    assert_eq!(evidence.entries.len(), 3);
+                    assert!(
+                        proof
+                            .verify(root, module, b"q/", RECORD_PROOF_BYTES)
+                            .is_err()
+                    );
+                    assert!(proof.verify(root, module, b"p/", 1).is_err());
+                    let other = modules[(module.index() + 1) % 4];
+                    let mut altered = proof.clone();
+                    altered.module = other;
+                    assert!(
+                        altered
+                            .verify(root, other, b"p/", RECORD_PROOF_BYTES)
+                            .is_err()
+                    );
+                    let mut altered = proof.clone();
+                    altered.roots[0].0[0] ^= 1;
+                    assert!(
+                        altered
+                            .verify(root, module, b"p/", RECORD_PROOF_BYTES)
+                            .is_err()
+                    );
+                    for change in 0..4 {
+                        let mut evidence = evidence.clone();
+                        match change {
+                            0 => {
+                                evidence.entries.pop();
+                            }
+                            1 => {
+                                evidence.entries.remove(0);
+                            }
+                            2 => {
+                                evidence.entries.swap(0, 1);
+                            }
+                            _ => {
+                                evidence.entries[0].value = vec![42].into();
+                            }
+                        }
+                        let mut altered = proof.clone();
+                        altered.proof = evidence.encode().into();
+                        assert!(
+                            altered
+                                .verify(root, module, b"p/", RECORD_PROOF_BYTES)
+                                .is_err()
+                        );
+                    }
+                    let mut altered = proof.clone();
+                    let mut bytes = altered.proof.to_vec();
+                    bytes.push(0);
+                    altered.proof = bytes.into();
+                    assert!(
+                        altered
+                            .verify(root, module, b"p/", RECORD_PROOF_BYTES)
+                            .is_err()
+                    );
+                    retained.push(proof);
+                }
+                assert!(
+                    prefix_proof_at(
+                        [&a, &b, &h, &n],
+                        root,
+                        ModuleId::Acp,
+                        &vec![0; MAX_KEY_BYTES + 1]
+                    )
+                    .await
+                    .is_err()
+                );
+                retained
+            };
+            let next = apply(&set, std::array::from_fn(|_| vec![(b"p/a".to_vec(), None)])).await;
+            let (a, b, h, n) =
+                futures::join!(set.0.read(), set.1.read(), set.2.read(), set.3.read());
+            for proof in retained {
+                assert!(
+                    proof
+                        .verify(next, proof.module, b"p/", RECORD_PROOF_BYTES)
+                        .is_err()
+                );
+                assert!(
+                    prefix_proof_at([&a, &b, &h, &n], root, proof.module, b"p/")
+                        .await
+                        .is_err()
+                );
+                let missing = prefix_proof_at([&a, &b, &h, &n], next, proof.module, b"p/a")
+                    .await
+                    .unwrap();
+                assert!(
+                    missing
+                        .verify(next, proof.module, b"p/a", RECORD_PROOF_BYTES)
+                        .unwrap()
+                        .entries
+                        .is_empty()
+                );
+            }
+        },
+    );
+}
