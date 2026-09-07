@@ -33,6 +33,7 @@ ark-ec.workspace = true
 ark-ff.workspace = true
 ark-serialize.workspace = true
 rand.workspace = true
+zeroize = "1.8"
 
 base64.workspace = true
 reqwest.workspace = true
