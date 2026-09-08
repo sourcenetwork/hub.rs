@@ -37,6 +37,25 @@ pub(super) fn dispatch(
     let selector: [u8; 4] = input[..4].try_into().expect("checked length above");
 
     match selector {
+        IHub::applyNodeRequestCall::SELECTOR => {
+            if gas_limit < 100_000 {
+                return Err(PrecompileError::OutOfGas);
+            }
+            let call = IHub::applyNodeRequestCall::abi_decode(input).map_err(decode_error)?;
+            if call.request.len() > hub_modules::hub::nodes::MAX_NODE_BYTES {
+                return Err(PrecompileError::Other("node request is too large".into()));
+            }
+            let signed = serde_json::from_slice(&call.request)
+                .map_err(|error| PrecompileError::Other(error.to_string().into()))?;
+            match module.apply_node_request(block_ctx, &signed) {
+                Ok(record) => Ok(ok_dispatch(
+                    100_000,
+                    IHub::applyNodeRequestCall::abi_encode_returns(&json_bytes(&record)),
+                    vec![],
+                )),
+                Err(error) => Ok(err_dispatch(error)),
+            }
+        }
         IHub::applyAdministrationCall::SELECTOR => {
             if gas_limit < 500_000 {
                 return Err(PrecompileError::OutOfGas);

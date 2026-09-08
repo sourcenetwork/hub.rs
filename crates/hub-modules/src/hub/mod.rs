@@ -9,6 +9,8 @@ mod delegation;
 pub mod error;
 /// Key prefixes and builders for Hub KV storage.
 pub mod keys;
+/// Threshold-service node registration and controller authority.
+pub mod nodes;
 /// Operator-authorized relay grants.
 pub mod relay;
 /// Hub domain types.

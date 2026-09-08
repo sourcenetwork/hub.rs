@@ -1,0 +1,185 @@
+//! Service-node authority, replay protection and certified recovery through native workers.
+
+use hub_client::{
+    BlsSigner, HubClient,
+    nodes::{NodeCommand, NodeInfo, NodeRequest, NodeTarget, SignedNodeRequest, sign_node_request},
+};
+use hub_domain::ConsensusPublicKey;
+use hub_e2e::cluster::{ConsensusPreset, KeySet, TestCluster};
+use k256::ecdsa::SigningKey;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+fn public(key: &SigningKey) -> String {
+    hex::encode(key.verifying_key().to_sec1_bytes())
+}
+
+async fn submit(
+    writer: &HubClient,
+    reader: &HubClient,
+    worker: &BlsSigner,
+    trusted: &ConsensusPublicKey,
+    request: &SignedNodeRequest,
+    success: bool,
+) -> u64 {
+    let id = writer.submit_node_request(worker, request).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let (local, observed) = tokio::try_join!(
+                writer.read_receipt(id, trusted),
+                reader.read_receipt(id, trusted)
+            )
+            .unwrap();
+            if let (Some(_), Some(proof)) = (local, observed) {
+                assert_eq!(proof.verify(id, trusted).unwrap().success(), success);
+                break proof.revision.height;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn native_service_node_authority_survives_worker_changes_and_restart() {
+    let deployment = 9066;
+    let trusted = *KeySet::builder()
+        .seed(deployment)
+        .build()
+        .unwrap()
+        .epoch_info()
+        .output
+        .public()
+        .public();
+    let mut cluster = TestCluster::builder()
+        .nodes(4)
+        .seed(deployment)
+        .chain_id(deployment)
+        .preset(ConsensusPreset::Normal)
+        .build()
+        .await
+        .unwrap();
+    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    let observed = cluster.observe(Duration::from_millis(100));
+    observed
+        .wait_for_height(3, Duration::from_secs(30))
+        .await
+        .unwrap();
+    let writer = HubClient::new(cluster.node(0).rpc_url());
+    let reader = HubClient::new(cluster.node(3).rpc_url());
+    let first: serde_json::Value = writer
+        .rpc_call_typed("eth_getBlockByNumber", serde_json::json!(["0x1", false]))
+        .await
+        .unwrap();
+    let genesis: alloy_primitives::B256 = first["parentHash"].as_str().unwrap().parse().unwrap();
+    let node = SigningKey::from_slice(&[31; 32]).unwrap();
+    let controller = SigningKey::from_slice(&[32; 32]).unwrap();
+    let next = SigningKey::from_slice(&[33; 32]).unwrap();
+    let workers = [
+        BlsSigner::new(7u64.into(), deployment).unwrap(),
+        BlsSigner::new(8u64.into(), deployment).unwrap(),
+    ];
+    let expires_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 300;
+    let request = |sequence, command| NodeRequest {
+        deployment_root: genesis.0,
+        deployment_id: deployment,
+        node_key: public(&node),
+        sequence,
+        expires_at,
+        command,
+    };
+    assert!(
+        reader
+            .read_threshold_node(&public(&node), 0, &trusted)
+            .await
+            .unwrap()
+            .record
+            .is_none()
+    );
+    let create = sign_node_request(
+        request(
+            0,
+            NodeCommand::Register(NodeInfo {
+                peer_id: "peer1".into(),
+                controller_key: public(&controller),
+                allowed_policy_ids: vec!["policy1".into()],
+                allowed_ring_ids: vec![],
+            }),
+        ),
+        &node,
+    )
+    .unwrap();
+    let minimum = submit(&writer, &reader, &workers[0], &trusted, &create, true).await;
+    let state = reader
+        .read_threshold_node(&public(&node), minimum, &trusted)
+        .await
+        .unwrap()
+        .record
+        .unwrap();
+    assert_eq!(state.node_key, public(&node));
+    assert_eq!(state.info.controller_key, public(&controller));
+    assert!(state.info.allows_ring("policy1", "ring1"));
+    assert_eq!(state.sequence, 1);
+    submit(&writer, &reader, &workers[1], &trusted, &create, false).await;
+    let forged =
+        sign_node_request(request(1, NodeCommand::SetPeer("forged".into())), &node).unwrap();
+    submit(&writer, &reader, &workers[0], &trusted, &forged, false).await;
+    let transfer = sign_node_request(
+        request(1, NodeCommand::TransferController(public(&next))),
+        &controller,
+    )
+    .unwrap();
+    submit(&writer, &reader, &workers[1], &trusted, &transfer, true).await;
+    let old = sign_node_request(
+        request(2, NodeCommand::SetPeer("old-controller".into())),
+        &controller,
+    )
+    .unwrap();
+    submit(&writer, &reader, &workers[0], &trusted, &old, false).await;
+    let change =
+        sign_node_request(request(2, NodeCommand::SetPeer("peer2".into())), &next).unwrap();
+    let mut tampered = change.clone();
+    tampered.request.command = NodeCommand::SetPeer("tampered".into());
+    submit(&writer, &reader, &workers[0], &trusted, &tampered, false).await;
+    submit(&writer, &reader, &workers[1], &trusted, &change, true).await;
+    let remove = sign_node_request(
+        request(
+            3,
+            NodeCommand::Disallow(NodeTarget::Policy("policy1".into())),
+        ),
+        &next,
+    )
+    .unwrap();
+    let minimum = submit(&writer, &reader, &workers[1], &trusted, &remove, true).await;
+    cluster.restart_node(3).unwrap();
+    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    let restored = reader
+        .read_threshold_node(&public(&node), minimum, &trusted)
+        .await
+        .unwrap()
+        .record
+        .unwrap();
+    assert_eq!(restored.sequence, 4);
+    assert_eq!(restored.info.peer_id, "peer2");
+    assert_eq!(restored.info.controller_key, public(&next));
+    assert!(!restored.info.allows_ring("policy1", "ring1"));
+    let new_old = sign_node_request(
+        request(4, NodeCommand::SetPeer("old-after-restart".into())),
+        &controller,
+    )
+    .unwrap();
+    let minimum = submit(&writer, &reader, &workers[0], &trusted, &new_old, false).await;
+    assert_eq!(
+        reader
+            .read_threshold_node(&public(&node), minimum, &trusted)
+            .await
+            .unwrap()
+            .record
+            .unwrap(),
+        restored
+    );
+}

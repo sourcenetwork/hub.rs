@@ -20,6 +20,8 @@ sol! {
 
         function applyAdministration(bytes request) external;
 
+        function applyNodeRequest(bytes request) external returns (bytes);
+
         function getAdministration() external view returns (bytes);
 
         // ── Read methods ────────────────────────────────────────────────

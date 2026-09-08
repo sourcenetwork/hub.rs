@@ -16,6 +16,8 @@ mod client;
 mod document_acp;
 mod error;
 mod native_tx;
+/// Signed threshold-service node commands and certified records.
+pub mod nodes;
 mod permission;
 mod query;
 mod receipt;
