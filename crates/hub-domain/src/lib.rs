@@ -3,6 +3,9 @@
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
+mod membership;
+pub use membership::max_epoch_participants;
+
 mod limits;
 pub use limits::*;
 

@@ -30,6 +30,9 @@ pub enum ValidatorRegistryError {
     #[error("membership limit reached: {0}")]
     MembershipLimit(u32),
 
+    #[error("epoch capacity permits at most {0} active participants")]
+    EpochCapacity(u32),
+
     #[error("consensus key is already registered")]
     DuplicateConsensusKey,
 

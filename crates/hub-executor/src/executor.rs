@@ -279,7 +279,7 @@ impl HubExecutor {
                     journal,
                     acp,
                     hub,
-                    block_ctx,
+                    self.config.max_active_members(),
                     &tx_ctx,
                     &native_tx.calldata,
                     NATIVE_TX_GAS_LIMIT,
@@ -460,7 +460,8 @@ impl HubExecutor {
             modules.bulletin.clone(),
             modules.hub.clone(),
         )
-        .with_genesis_id(self.config.genesis_id);
+        .with_genesis_id(self.config.genesis_id)
+        .with_membership_limit(self.config.max_active_members());
         let mut evm = ctx
             .build_mainnet_with_inspector(precompiles.inspector())
             .with_precompiles(precompiles);

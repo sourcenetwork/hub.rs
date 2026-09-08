@@ -700,3 +700,119 @@ fn epoch_rosters_capture_the_boundary_branch_and_survive_later_changes() {
     assert_eq!(&roster_changes[0].0[17..], &4u64.to_be_bytes());
     assert_eq!(roster_changes[0].1.as_ref().unwrap().len(), 64);
 }
+
+#[rstest]
+#[case(true, 4)]
+#[case(false, 4)]
+#[case(true, 20)]
+#[case(false, 20)]
+fn membership_epoch_capacity_rejects_addition_and_both_reactivation_paths(
+    #[case] native: bool,
+    #[case] epoch_length: u64,
+) {
+    let (state, executor) = if native {
+        authorized_actor(native_member_call(0, native_registration()).1)
+    } else {
+        authorized_state()
+    };
+    let context = BlockContext::new(
+        Header {
+            number: 1,
+            gas_limit: 30_000_000,
+            ..Default::default()
+        },
+        B256::ZERO,
+        B256::ZERO,
+    );
+    let mut backup =
+        IValidatorRegistry::addValidatorCall::abi_decode(&native_registration()).unwrap();
+    backup.evmAddr = Address::repeat_byte(0x33);
+    backup.consensusPubkey = "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c"
+        .parse()
+        .unwrap();
+    let mut third = backup.clone();
+    third.evmAddr = Address::repeat_byte(0x44);
+    third.consensusPubkey = "fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025"
+        .parse()
+        .unwrap();
+    let status = |address, active| {
+        IValidatorRegistry::setValidatorStatusCall {
+            evmAddr: address,
+            active,
+        }
+        .abi_encode()
+    };
+    let limited = epoch_length == 4;
+    let commands = [
+        (native_registration(), true),
+        (backup.abi_encode(), true),
+        (status(backup.evmAddr, false), true),
+        (third.abi_encode(), !limited),
+        (status(backup.evmAddr, true), !limited),
+        (
+            IValidatorRegistry::setValidatorStatusByIndexCall {
+                index: U256::from(1),
+                active: true,
+            }
+            .abi_encode(),
+            !limited,
+        ),
+        (status(Address::repeat_byte(0x11), true), true),
+        (
+            IValidatorRegistry::removeValidatorCall {
+                evmAddr: backup.evmAddr,
+            }
+            .abi_encode(),
+            true,
+        ),
+        (status(Address::repeat_byte(0x11), false), !limited),
+    ];
+    for (sequence, (calldata, expected)) in commands.into_iter().enumerate() {
+        let executor = if sequence < 3 {
+            executor.clone()
+        } else {
+            executor
+                .clone()
+                .with_membership_epochs(std::num::NonZeroU64::new(epoch_length).unwrap())
+        };
+        let before = state.accounts.read().unwrap()[&VALIDATOR_REGISTRY_ADDRESS]
+            .storage
+            .clone();
+        let outcome = if native {
+            let request = native_member_call(sequence as u64, calldata).0;
+            let (outcome, modules) = executor
+                .execute_with_modules(&state, &context, &[request], executor.snapshot().unwrap())
+                .unwrap();
+            executor.commit_snapshot(1, modules).unwrap();
+            outcome
+        } else {
+            execute_with_executor(
+                &state,
+                TxKind::Call(VALIDATOR_REGISTRY_ADDRESS),
+                calldata.into(),
+                executor,
+            )
+            .0
+        };
+        assert_eq!(
+            outcome.receipts[0].success(),
+            expected,
+            "command {sequence}"
+        );
+        let mut accounts = state.accounts.write().unwrap();
+        let storage = &mut accounts
+            .get_mut(&VALIDATOR_REGISTRY_ADDRESS)
+            .unwrap()
+            .storage;
+        if let Some(changes) = outcome.changes.accounts.get(&VALIDATOR_REGISTRY_ADDRESS) {
+            storage.extend(changes.storage.clone());
+        }
+        if !expected {
+            assert_eq!(*storage, before, "rejected command changed membership");
+        }
+    }
+    assert_eq!(
+        state.accounts.read().unwrap()[&VALIDATOR_REGISTRY_ADDRESS].storage[&U256::from(1)],
+        U256::from(if limited { 1 } else { 2 })
+    );
+}

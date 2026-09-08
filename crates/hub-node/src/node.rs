@@ -177,6 +177,10 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     let provider = DynamicProvider::default();
     let mut store = FileSecretStore::load(&secrets_path)?;
     let players = epoch_info.output.players().clone();
+    anyhow::ensure!(
+        players.len() <= hub_domain::max_epoch_participants(blocks_per_epoch) as usize,
+        "genesis participants exceed the configured epoch capacity"
+    );
     let sharing = epoch_info.output.public().clone();
     match store.get_share(Epoch::zero()).await {
         Some(share) => provider.register(

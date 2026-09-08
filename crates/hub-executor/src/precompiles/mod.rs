@@ -135,6 +135,7 @@ pub struct HubPrecompiles {
     current_tx_hash: B256,
     current_signer_did: String,
     genesis_id: [u8; 32],
+    max_active_members: u32,
 }
 
 /// Route calldata to the appropriate module based on the target precompile address.
@@ -198,6 +199,7 @@ impl HubPrecompiles {
             current_tx_hash: B256::ZERO,
             current_signer_did: String::new(),
             genesis_id: [0; 32],
+            max_active_members: hub_domain::MAX_DKG_PARTICIPANTS.get(),
         }
     }
 
@@ -219,7 +221,15 @@ impl HubPrecompiles {
             current_tx_hash: B256::ZERO,
             current_signer_did: String::new(),
             genesis_id: [0; 32],
+            max_active_members: hub_domain::MAX_DKG_PARTICIPANTS.get(),
         }
+    }
+
+    /// Enforce the configured epoch capacity on membership commands.
+    #[must_use]
+    pub const fn with_membership_limit(mut self, limit: u32) -> Self {
+        self.max_active_members = limit;
+        self
     }
 
     /// Bind administrative approvals to the deployment genesis record.
@@ -315,7 +325,7 @@ impl<CTX: ContextTr> PrecompileProvider<CTX> for HubPrecompiles {
                     context,
                     &journal.modules.0,
                     &journal.modules.2,
-                    &block_ctx,
+                    self.max_active_members,
                     &tx_ctx,
                     &calldata,
                     inputs.gas_limit,

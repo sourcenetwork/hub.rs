@@ -82,6 +82,14 @@ impl ExecutionConfig {
         }
     }
 
+    /// Maximum active committee allowed by the deployment epoch length.
+    pub fn max_active_members(&self) -> u32 {
+        self.membership_epoch_length.map_or(
+            hub_domain::MAX_DKG_PARTICIPANTS.get(),
+            hub_domain::max_epoch_participants,
+        )
+    }
+
     /// Set the hardfork specification.
     #[must_use]
     pub const fn with_spec_id(mut self, spec_id: SpecId) -> Self {

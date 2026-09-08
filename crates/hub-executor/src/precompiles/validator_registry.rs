@@ -10,7 +10,7 @@ use commonware_codec::ReadExt as _;
 use hub_modules::acp::AcpModule;
 use hub_modules::acp::types::{AccessRequest, Actor, Object, Operation};
 use hub_modules::hub::HubModule;
-use hub_modules::types::{BlockExecCtx, TxExecCtx};
+use hub_modules::types::TxExecCtx;
 use hub_modules::validator_registry::abi::IValidatorRegistry;
 use hub_modules::validator_registry::error::ValidatorRegistryError;
 use hub_modules::validator_registry::types::ValidatorInfo;
@@ -382,7 +382,7 @@ pub(crate) fn dispatch_with_journal<CTX: ContextTr>(
     context: &mut CTX,
     acp: &AcpModule,
     hub: &HubModule,
-    _block_ctx: &BlockExecCtx,
+    max_active_members: u32,
     tx_ctx: &TxExecCtx,
     input: &[u8],
     gas_limit: u64,
@@ -440,7 +440,14 @@ pub(crate) fn dispatch_with_journal<CTX: ContextTr>(
                     hub_domain::MAX_DKG_PARTICIPANTS.get(),
                 )));
             }
-            for existing in load_all_validators(context)? {
+            let members = load_all_validators(context)?;
+            if members.iter().filter(|member| member.active).count() >= max_active_members as usize
+            {
+                return Ok(err_dispatch(ValidatorRegistryError::EpochCapacity(
+                    max_active_members,
+                )));
+            }
+            for existing in members {
                 if existing.consensus_pubkey == hex::encode(call.consensusPubkey) {
                     return Ok(err_dispatch(ValidatorRegistryError::DuplicateConsensusKey));
                 }
@@ -581,6 +588,18 @@ pub(crate) fn dispatch_with_journal<CTX: ContextTr>(
             if !call.active && removes_last_active(context, active)? {
                 return Ok(err_dispatch(ValidatorRegistryError::EmptyCommittee));
             }
+            if call.active
+                && !active
+                && load_all_validators(context)?
+                    .iter()
+                    .filter(|member| member.active)
+                    .count()
+                    >= max_active_members as usize
+            {
+                return Ok(err_dispatch(ValidatorRegistryError::EpochCapacity(
+                    max_active_members,
+                )));
+            }
             store_validator_raw(context, addr, consensus, &p2p, call.active, index)?;
 
             let event = IValidatorRegistry::ValidatorStatusChanged {
@@ -635,6 +654,18 @@ pub(crate) fn dispatch_with_journal<CTX: ContextTr>(
                 };
             if !call.active && removes_last_active(context, active)? {
                 return Ok(err_dispatch(ValidatorRegistryError::EmptyCommittee));
+            }
+            if call.active
+                && !active
+                && load_all_validators(context)?
+                    .iter()
+                    .filter(|member| member.active)
+                    .count()
+                    >= max_active_members as usize
+            {
+                return Ok(err_dispatch(ValidatorRegistryError::EpochCapacity(
+                    max_active_members,
+                )));
             }
             store_validator_raw(context, addr, consensus, &p2p, call.active, index)?;
 

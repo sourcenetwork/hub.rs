@@ -13,6 +13,13 @@ key can belong to only one registered entry, including inactive entries. Stored
 counts, indexes and route lengths are checked at their full encoded width;
 malformed values and inconsistent array/record links are errors.
 
+The active committee is also bounded by the configured epoch length. Commonware
+requires its dealer quorum to fit between the dealing phase and the final epoch
+artifact. For example, 20 revisions per epoch permit 13 active members; 87 permit
+the protocol maximum of 64. Additions and reactivations that exceed this capacity
+are rejected during command execution. Inactive entries do not use active
+committee capacity. Startup rejects a genesis committee that exceeds it.
+
 Removing or deactivating the last active participant is rejected. Inactive
 entries may still be removed.
 
