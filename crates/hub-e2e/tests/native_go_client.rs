@@ -100,6 +100,7 @@ async fn native_go_workers_verify_policy_creation() {
     let outcome_key = operation_key(&format!("did:opk:{}", "ab".repeat(32)), operation_id).unwrap();
     let mut fixture = serde_json::json!({
         "endpoint": cluster.node(0).rpc_url(),
+        "worker_journal": cluster.node(0).data_dir.join("trust-native-worker.db"),
         "trusted_key": hex::encode(trusted.encode()),
         "deployment": deployment,
         "genesis": hex::encode(approved.request.genesis_id),
