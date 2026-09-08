@@ -5,8 +5,12 @@ Build optimized binaries before measuring:
 ```sh
 cargo build --release -p hubd
 cargo build --release -p hub-e2e --example operation_baseline
-HUBD_BINARY=target/release/hubd target/release/examples/operation_baseline 1500 25 128 1
+HUB_E2E_KEEP=1 HUBD_BINARY=target/release/hubd target/release/examples/operation_baseline 1500 25 128 1
 ```
+
+`HUB_E2E_KEEP=1` preserves the printed run directories, including node logs and
+state, for diagnosis. Replica reconciliation reuses one HTTP client per node
+to avoid exhausting local connection ports during large runs.
 
 Arguments are operation count, offered arrivals per second, maximum outstanding
 workflows and permission reads per write (0 or 1). An optional fifth argument selects `fast`,
@@ -33,6 +37,18 @@ JSONL format version 2 reports:
 - Permission-read latency and completed-workflow throughput.
 - Preparation time, request bytes, concurrency limit and receipt polling interval.
 - Post-run replica consistency and restart receipt/state comparisons.
+- Per-node RSS and cumulative CPU time sampled with `ps` once per second during
+  arrivals and drain. `resource_configuration` maps row PIDs to node indices;
+  each `resources` record retains the raw `pid,rss,time` rows. RSS is in KiB;
+  CPU time uses the platform's cumulative `ps` time format, not wall time.
+- Logical data-directory bytes before and after timing, including node logs.
+  These scans do not follow symlinks and run outside the measured interval.
+
+Resource collection requires `ps`. Failed samples/scans carry an `error` field;
+missing measurements are not zero usage. Validate PID coverage when analyzing
+samples. One-second sampling can miss short memory peaks. Directory sizes are
+live, non-atomic observations rather than allocated disk usage or consistent
+snapshots. Process sampling runs during the workload and can perturb results.
 
 Arrivals follow their schedule even under overload. When the outstanding limit
 is reached, the operation is recorded as unsent rather than delaying its arrival.
@@ -46,4 +62,4 @@ qualification. The driver reports whether it was compiled with debug assertions;
 record the node binary hash, build profile, machine, commands and raw output with
 any measurement. A local baseline is not a regional deployment SLA or a maximum
 capacity claim. Sustained mixed workloads, gateway signing/queueing, overload and
-memory/storage growth still need separate qualification.
+long-duration memory/storage growth still need separate qualification.

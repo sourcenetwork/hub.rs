@@ -3,6 +3,8 @@
 
 #[path = "operation_baseline/driver.rs"]
 mod driver;
+#[path = "operation_baseline/resources.rs"]
+mod resources;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -135,6 +137,8 @@ async fn main() {
         })
     );
 
+    resources::storage(&cluster, "before").await;
+    let (stop_resources, resource_task) = resources::start(&cluster);
     let limit = Arc::new(Semaphore::new(outstanding));
     let mut tasks = JoinSet::new();
     let started = Instant::now();
@@ -155,16 +159,22 @@ async fn main() {
         observations.push(result.expect("request task panicked"));
     }
     let elapsed = started.elapsed();
+    let _ = stop_resources.send(());
+    resource_task.await.expect("resource sampler task");
+    resources::storage(&cluster, "after").await;
     observations.sort_unstable_by_key(|o| o.request.index);
     for observation in &observations {
         println!("{}", observation.json());
     }
     println!("{}", driver::summary(&observations, elapsed));
 
+    let replica_clients: Vec<_> = (0..cluster.node_count())
+        .map(|i| HubClient::new(cluster.node(i).rpc_url()))
+        .collect();
     let mut reconciled = 0;
     let mut unresolved = 0;
     for observation in &observations {
-        match driver::verify(&cluster, policy_id, observation).await {
+        match driver::verify(&replica_clients, policy_id, observation).await {
             driver::Resolution::Verified => reconciled += 1,
             driver::Resolution::Unresolved => unresolved += 1,
         }

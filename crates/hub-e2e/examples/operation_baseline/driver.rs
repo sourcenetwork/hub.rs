@@ -5,7 +5,6 @@ use hub_client::{
     AccessRequest, Actor, ClientError, HubClient, Object, Operation, PERMISSION_LIMITS,
 };
 use hub_domain::{ConsensusPublicKey, LightBlock, ReceiptResponse};
-use hub_e2e::cluster::TestCluster;
 use serde_json::{Value, json};
 use tokio::{sync::OwnedSemaphorePermit, time::Instant};
 
@@ -279,12 +278,12 @@ pub(super) async fn check_recovered(
 }
 
 pub(super) async fn verify(
-    cluster: &TestCluster,
+    clients: &[HubClient],
     policy_id: FixedBytes<32>,
     observation: &Observation,
 ) -> Resolution {
     tokio::time::timeout(REQUEST_TIMEOUT, async {
-        let origin = HubClient::new(cluster.node(0).rpc_url());
+        let origin = &clients[0];
         let receipt = origin
             .get_transaction_receipt(observation.request.hash)
             .await
@@ -300,8 +299,7 @@ pub(super) async fn verify(
             assert_eq!(current.block_hash, measured.block_hash);
             assert_eq!(current.status, measured.status);
         }
-        for index in 0..cluster.node_count() {
-            let client = HubClient::new(cluster.node(index).rpc_url());
+        for (index, client) in clients.iter().enumerate() {
             let replica_receipt = if let Some(expected) = &receipt {
                 let actual = client
                     .wait_for_receipt(observation.request.hash, POLL_INTERVAL, 600)
