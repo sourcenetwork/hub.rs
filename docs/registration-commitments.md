@@ -15,7 +15,15 @@ reads consistent.
 
 Commitments belong to one policy and expire after ten minutes by default, matching
 the Go service. The end-of-revision hook marks them expired once the current time
-exceeds their creation time plus the configured lifetime. Successful commitment
+exceeds their creation time plus the configured lifetime. Expiry maintains separate ordered indexes for time and revision deadlines. The
+hook reads due entries and stops at the first future deadline in each index;
+expired records remain queryable without staying in the active indexes. Indexes
+are persisted in ACP state and restored with it. A batch's cost is proportional
+to the commitments expiring in that batch; this is not a fixed per-revision work
+limit. Index inconsistencies return an error before any records in the batch are
+expired.
+
+Successful commitment
 receipts include `RegistrationsCommitted(commitmentId, policyId, commitment)` so
 native callers can obtain the identifier from a certified receipt.
 
@@ -29,4 +37,5 @@ leaf count, 32-byte sibling hashes and exact number of consumed siblings.
 This encoding replaces the ambiguous concatenation used by the unfinished port.
 Old commitment proofs are incompatible. Deploy on fresh state or provide an
 explicit migration; this change does not repair existing owner records or
-zero-timestamp commitments in an older store.
+zero-timestamp commitments in an older store. A migration from an earlier store
+must also populate expiry indexes for every unexpired commitment.

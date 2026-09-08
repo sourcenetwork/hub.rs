@@ -3,6 +3,7 @@
 /// Solidity ABI interface for the ACP precompile.
 pub mod abi;
 mod command_context;
+mod commitment_expiry;
 pub mod decision;
 pub mod delegated_operation;
 mod delegation;
@@ -617,29 +618,7 @@ impl AcpModule {
         block_ctx: &BlockExecCtx,
     ) -> Result<Vec<RegistrationsCommitment>> {
         self.prune_operations(block_ctx.timestamp.seconds)?;
-        let non_expired = self.get_non_expired_commitments()?;
-        let mut flagged = Vec::new();
-
-        let now_seconds = block_ctx.timestamp.seconds;
-        let now_height = block_ctx.timestamp.block_height;
-
-        for mut commitment in non_expired {
-            let creation_seconds = commitment.metadata.creation_ts.seconds;
-            let creation_height = commitment.metadata.creation_ts.block_height;
-
-            let is_expired = match &commitment.validity {
-                Duration::Seconds(n) => now_seconds > creation_seconds.saturating_add(*n),
-                Duration::Blocks(n) => now_height > creation_height.saturating_add(*n),
-            };
-
-            if is_expired {
-                commitment.expired = true;
-                self.update_commitment(&commitment)?;
-                flagged.push(commitment);
-            }
-        }
-
-        Ok(flagged)
+        self.expire_commitments(&block_ctx.timestamp)
     }
 
     // ── Storage access methods ──────────────────────────────────────────
@@ -826,29 +805,36 @@ impl AcpModule {
         let next = counter
             .checked_add(1)
             .ok_or_else(|| AcpError::State("record counter exhausted".into()))?;
+        commitment.id = next;
+        self.update_commitment(commitment)?;
         self.store
             .put(&keys::commitment_counter_key(), next.to_be_bytes().to_vec());
-        commitment.id = next;
-        let bytes = borsh::to_vec(commitment)
-            .map_err(|e| AcpError::State(format!("serialize commitment: {e}")))?;
-        self.store.put(&keys::commitment_key(commitment.id), bytes);
         Ok(())
     }
 
-    #[allow(unused_variables)]
     fn update_commitment(&mut self, commitment: &RegistrationsCommitment) -> Result<()> {
         let bytes = borsh::to_vec(commitment)
             .map_err(|e| AcpError::State(format!("serialize commitment: {e}")))?;
+        if let Some(previous) = self.get_commitment_by_id(commitment.id)? {
+            self.store.delete(&Self::commitment_expiry_key(&previous));
+        }
+        if !commitment.expired {
+            self.store
+                .put(&Self::commitment_expiry_key(commitment), Vec::new());
+        }
         self.store.put(&keys::commitment_key(commitment.id), bytes);
         Ok(())
     }
 
     #[allow(unused_variables)]
     fn get_commitment_by_id(&self, id: u64) -> Result<Option<RegistrationsCommitment>> {
-        Ok(self
-            .store
+        self.store
             .get(&keys::commitment_key(id))
-            .and_then(|bytes| borsh::from_slice(&bytes).ok()))
+            .map(|bytes| {
+                borsh::from_slice(&bytes)
+                    .map_err(|error| AcpError::State(format!("invalid commitment: {error}")))
+            })
+            .transpose()
     }
 
     #[allow(unused_variables)]
@@ -862,17 +848,6 @@ impl AcpModule {
             .into_iter()
             .filter_map(|(_, v)| borsh::from_slice::<RegistrationsCommitment>(&v).ok())
             .filter(|c| c.commitment == commitment)
-            .collect();
-        Ok(results)
-    }
-
-    fn get_non_expired_commitments(&self) -> Result<Vec<RegistrationsCommitment>> {
-        let results = self
-            .store
-            .prefix_scan(&Self::commitment_objs_prefix())
-            .into_iter()
-            .filter_map(|(_, v)| borsh::from_slice::<RegistrationsCommitment>(&v).ok())
-            .filter(|c| !c.expired)
             .collect();
         Ok(results)
     }
