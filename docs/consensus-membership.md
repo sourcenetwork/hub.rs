@@ -13,6 +13,9 @@ key can belong to only one registered entry, including inactive entries. Stored
 counts, indexes and route lengths are checked at their full encoded width;
 malformed values and inconsistent array/record links are errors.
 
+Removing or deactivating the last active participant is rejected. Inactive
+entries may still be removed.
+
 Operators first approve `InitializeMembershipPolicy` using the configured
 approval quorum. That ACP policy controls `manage` on the `registry` resource's
 `registry` object. Membership requests require that permission for the native

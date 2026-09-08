@@ -24,6 +24,9 @@ pub enum ValidatorRegistryError {
     #[error("invalid p2p address: {0}")]
     InvalidP2PAddress(String),
 
+    #[error("membership change would leave no active participants")]
+    EmptyCommittee,
+
     #[error("membership limit reached: {0}")]
     MembershipLimit(u32),
 

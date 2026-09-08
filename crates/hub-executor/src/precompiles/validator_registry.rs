@@ -281,6 +281,18 @@ fn load_all_validators<CTX: ContextTr>(
     Ok(validators)
 }
 
+fn removes_last_active<CTX: ContextTr>(
+    context: &mut CTX,
+    active: bool,
+) -> Result<bool, PrecompileError> {
+    Ok(active
+        && load_all_validators(context)?
+            .iter()
+            .filter(|member| member.active)
+            .count()
+            <= 1)
+}
+
 // ── Write helpers ──────────────────────────────────────────────────────
 
 fn store_validator_raw<CTX: ContextTr>(
@@ -449,7 +461,7 @@ pub(crate) fn dispatch_with_journal<CTX: ContextTr>(
                 return Ok(err_dispatch(e));
             }
 
-            let (_, _, _, _, val_index) = match load_validator_raw(context, call.evmAddr)? {
+            let (_, _, _, active, val_index) = match load_validator_raw(context, call.evmAddr)? {
                 Some(v) => v,
                 None => {
                     return Ok(err_dispatch(ValidatorRegistryError::ValidatorNotFound(
@@ -458,6 +470,9 @@ pub(crate) fn dispatch_with_journal<CTX: ContextTr>(
                 }
             };
 
+            if removes_last_active(context, active)? {
+                return Ok(err_dispatch(ValidatorRegistryError::EmptyCommittee));
+            }
             let count = load_member_count(context)?;
             let last_index = count - 1;
 
@@ -525,15 +540,18 @@ pub(crate) fn dispatch_with_journal<CTX: ContextTr>(
                 return Ok(err_dispatch(e));
             }
 
-            let (addr, consensus, p2p, _, index) = match load_validator_raw(context, call.evmAddr)?
-            {
-                Some(v) => v,
-                None => {
-                    return Ok(err_dispatch(ValidatorRegistryError::ValidatorNotFound(
-                        format!("{:?}", call.evmAddr),
-                    )));
-                }
-            };
+            let (addr, consensus, p2p, active, index) =
+                match load_validator_raw(context, call.evmAddr)? {
+                    Some(v) => v,
+                    None => {
+                        return Ok(err_dispatch(ValidatorRegistryError::ValidatorNotFound(
+                            format!("{:?}", call.evmAddr),
+                        )));
+                    }
+                };
+            if !call.active && removes_last_active(context, active)? {
+                return Ok(err_dispatch(ValidatorRegistryError::EmptyCommittee));
+            }
             store_validator_raw(context, addr, consensus, &p2p, call.active, index)?;
 
             let event = IValidatorRegistry::ValidatorStatusChanged {
@@ -577,14 +595,18 @@ pub(crate) fn dispatch_with_journal<CTX: ContextTr>(
             let idx = call.index.as_limbs()[0];
             let addr_slot = array_element_slot(SLOT_VALIDATORS_ARRAY_BASE, idx);
             let target_addr = u256_to_address(journal_sload(context, addr_slot)?);
-            let (addr, consensus, p2p, _, index) = match load_validator_raw(context, target_addr)? {
-                Some(v) => v,
-                None => {
-                    return Ok(err_dispatch(ValidatorRegistryError::State(format!(
-                        "validator at index {idx} has corrupted mapping"
-                    ))));
-                }
-            };
+            let (addr, consensus, p2p, active, index) =
+                match load_validator_raw(context, target_addr)? {
+                    Some(v) => v,
+                    None => {
+                        return Ok(err_dispatch(ValidatorRegistryError::State(format!(
+                            "validator at index {idx} has corrupted mapping"
+                        ))));
+                    }
+                };
+            if !call.active && removes_last_active(context, active)? {
+                return Ok(err_dispatch(ValidatorRegistryError::EmptyCommittee));
+            }
             store_validator_raw(context, addr, consensus, &p2p, call.active, index)?;
 
             let event = IValidatorRegistry::ValidatorStatusChanged {

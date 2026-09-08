@@ -110,12 +110,77 @@ fn native_registration() -> Vec<u8> {
     .abi_encode()
 }
 
+fn backup_member_call(sequence: u64) -> Bytes {
+    let mut command =
+        IValidatorRegistry::addValidatorCall::abi_decode(&native_registration()).unwrap();
+    command.evmAddr = Address::repeat_byte(0x33);
+    command.consensusPubkey = "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c"
+        .parse()
+        .unwrap();
+    native_member_call(sequence, command.abi_encode()).0
+}
+
+#[test]
+fn native_membership_cannot_remove_or_deactivate_the_last_active_member() {
+    let (registration, actor) = native_member_call(0, native_registration());
+    let commands = [
+        IValidatorRegistry::removeValidatorCall {
+            evmAddr: Address::repeat_byte(0x11),
+        }
+        .abi_encode(),
+        IValidatorRegistry::setValidatorStatusCall {
+            evmAddr: Address::repeat_byte(0x11),
+            active: false,
+        }
+        .abi_encode(),
+        IValidatorRegistry::setValidatorStatusByIndexCall {
+            index: U256::ZERO,
+            active: false,
+        }
+        .abi_encode(),
+    ];
+    let mut requests = vec![registration];
+    requests.extend(
+        commands
+            .into_iter()
+            .enumerate()
+            .map(|(index, command)| native_member_call(index as u64 + 1, command).0),
+    );
+    let (state, executor) = authorized_actor(actor);
+    let context = BlockContext::new(
+        Header {
+            number: 1,
+            gas_limit: 30_000_000,
+            ..Default::default()
+        },
+        B256::ZERO,
+        B256::ZERO,
+    );
+    let (outcome, _) = executor
+        .execute_with_modules(&state, &context, &requests, executor.snapshot().unwrap())
+        .unwrap();
+    assert_eq!(
+        outcome
+            .receipts
+            .iter()
+            .map(|r| r.success())
+            .collect::<Vec<_>>(),
+        [true, false, false, false]
+    );
+    let storage = &outcome.changes.accounts[&VALIDATOR_REGISTRY_ADDRESS].storage;
+    assert_eq!(storage[&U256::from(1)], U256::from(1));
+    assert_eq!(
+        storage[&member_slot(Address::repeat_byte(0x11))].to_be_bytes::<32>()[20],
+        1
+    );
+}
+
 #[test]
 fn native_membership_changes_share_proposal_storage_and_preserve_parent() {
     let (registration, actor) = native_member_call(0, native_registration());
-    let (duplicate, _) = native_member_call(1, native_registration());
+    let (duplicate, _) = native_member_call(2, native_registration());
     let (deactivate, _) = native_member_call(
-        2,
+        3,
         IValidatorRegistry::setValidatorStatusCall {
             evmAddr: Address::repeat_byte(0x11),
             active: false,
@@ -137,7 +202,12 @@ fn native_membership_changes_share_proposal_storage_and_preserve_parent() {
         .execute_with_modules(
             &state,
             &context,
-            &[registration.clone(), duplicate, deactivate],
+            &[
+                registration.clone(),
+                backup_member_call(1),
+                duplicate,
+                deactivate,
+            ],
             parent.clone(),
         )
         .unwrap();
@@ -147,10 +217,10 @@ fn native_membership_changes_share_proposal_storage_and_preserve_parent() {
             .iter()
             .map(|r| r.success())
             .collect::<Vec<_>>(),
-        [true, false, true]
+        [true, true, false, true]
     );
     let slots = &outcome.changes.accounts[&VALIDATOR_REGISTRY_ADDRESS].storage;
-    assert_eq!(slots[&U256::from(1)], U256::from(1));
+    assert_eq!(slots[&U256::from(1)], U256::from(2));
     assert_eq!(
         slots[&member_slot(Address::repeat_byte(0x11))].to_be_bytes::<32>()[20],
         0
@@ -293,7 +363,7 @@ fn native_membership_bounds_the_full_stored_count(#[case] count: U256, #[case] c
 fn native_membership_rejects_reusing_an_inactive_consensus_identity() {
     let (registration, actor) = native_member_call(0, native_registration());
     let (inactive, _) = native_member_call(
-        1,
+        2,
         IValidatorRegistry::setValidatorStatusCall {
             evmAddr: Address::repeat_byte(0x11),
             active: false,
@@ -303,7 +373,7 @@ fn native_membership_rejects_reusing_an_inactive_consensus_identity() {
     let mut duplicate =
         IValidatorRegistry::addValidatorCall::abi_decode(&native_registration()).unwrap();
     duplicate.evmAddr = Address::repeat_byte(0x22);
-    let (duplicate, _) = native_member_call(2, duplicate.abi_encode());
+    let (duplicate, _) = native_member_call(3, duplicate.abi_encode());
     let (state, executor) = authorized_actor(actor);
     let context = BlockContext::new(
         Header {
@@ -318,7 +388,7 @@ fn native_membership_rejects_reusing_an_inactive_consensus_identity() {
         .execute_with_modules(
             &state,
             &context,
-            &[registration, inactive, duplicate],
+            &[registration, backup_member_call(1), inactive, duplicate],
             executor.snapshot().unwrap(),
         )
         .unwrap();
@@ -328,11 +398,11 @@ fn native_membership_rejects_reusing_an_inactive_consensus_identity() {
             .iter()
             .map(|r| r.success())
             .collect::<Vec<_>>(),
-        [true, true, false]
+        [true, true, true, false]
     );
     assert_eq!(
         outcome.changes.accounts[&VALIDATOR_REGISTRY_ADDRESS].storage[&U256::from(1)],
-        U256::from(1)
+        U256::from(2)
     );
 }
 
@@ -530,7 +600,7 @@ fn registry_status_checks_the_full_member_index(#[case] index: U256, #[case] suc
         );
     let calldata = IValidatorRegistry::setValidatorStatusByIndexCall {
         index,
-        active: false,
+        active: true,
     }
     .abi_encode();
     let (outcome, _) = execute_with_executor(
@@ -544,7 +614,7 @@ fn registry_status_checks_the_full_member_index(#[case] index: U256, #[case] suc
     let changes = outcome.changes.accounts.get(&VALIDATOR_REGISTRY_ADDRESS);
     if success {
         let packed = changes.unwrap().storage[&member_slot(member)].to_be_bytes::<32>();
-        assert_eq!(packed[20], 0);
+        assert_eq!(packed[20], 1);
     } else {
         assert!(changes.is_none_or(|account| account.storage.is_empty()));
     }
