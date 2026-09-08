@@ -61,7 +61,10 @@ async fn native_go_workers_verify_policy_creation() {
         &client,
         AdministrativeCommand::SetRelay(RelayGrant {
             issuer: issuer.clone(),
-            scopes: vec![DelegationScope::CreatePolicy],
+            scopes: vec![
+                DelegationScope::PolicyCommands,
+                DelegationScope::CreatePolicy,
+            ],
             expires_at: now + 600,
         }),
         0,
@@ -212,7 +215,7 @@ async fn apply(
 async fn run_client(binary: &str, fixture: &serde_json::Value) {
     run_go_test(
         binary,
-        "-test.run=^TestNative(Cluster|KeysCluster)$",
+        "-test.run=^TestNative(Cluster|KeysCluster|CommandsCluster)$",
         fixture,
     )
     .await;
