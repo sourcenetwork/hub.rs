@@ -131,24 +131,8 @@ impl AcpModule {
         marshal_type: PolicyMarshalingType,
         metadata: RecordMetadata,
     ) -> Result<PolicyRecord> {
-        match marshal_type {
-            PolicyMarshalingType::ShortYaml => {}
-            _ => {
-                return Err(AcpError::InvalidPolicy {
-                    reason: "only ShortYaml marshal type is supported".into(),
-                });
-            }
-        }
-
-        let parsed = policy_yaml::parse_policy_yaml(policy)
-            .map_err(|reason| AcpError::InvalidPolicy { reason })?;
-
-        let counter = self.next_policy_counter();
-
-        let zanzibar_policy =
-            policy_yaml::build_policy(&parsed, counter).map_err(|e| AcpError::InvalidPolicy {
-                reason: e.to_string(),
-            })?;
+        let counter = self.next_policy_counter()?;
+        let zanzibar_policy = Self::compile_policy(policy, &marshal_type, counter)?;
 
         let record = PolicyRecord {
             policy: zanzibar_policy.clone(),
@@ -157,6 +141,8 @@ impl AcpModule {
             metadata,
         };
 
+        self.store
+            .put(keys::POLICY_COUNTER_KEY, counter.to_be_bytes().to_vec());
         let policy_id = zanzibar_policy.id.clone();
         self.set_policy_record(&policy_id, &record);
         Arc::make_mut(&mut self.zanzibar_policies).insert(policy_id, zanzibar_policy);
@@ -185,22 +171,15 @@ impl AcpModule {
             });
         }
 
-        match marshal_type {
-            PolicyMarshalingType::ShortYaml => {}
-            _ => {
-                return Err(AcpError::InvalidPolicy {
-                    reason: "only ShortYaml marshal type is supported".into(),
-                });
-            }
-        }
-
-        let parsed = policy_yaml::parse_policy_yaml(policy)
-            .map_err(|reason| AcpError::InvalidPolicy { reason })?;
+        let mut new_zanzibar = Self::compile_policy(policy, &marshal_type, 0)?;
 
         // Validate preserved resources requirement: existing resources must still be present.
         let existing_policy = &existing.policy;
         for old_resource in &existing_policy.resources {
-            let still_present = parsed.resources.iter().any(|r| r.name == old_resource.name);
+            let still_present = new_zanzibar
+                .resources
+                .iter()
+                .any(|r| r.name == old_resource.name);
             if !still_present {
                 return Err(AcpError::InvalidPolicy {
                     reason: format!(
@@ -211,11 +190,6 @@ impl AcpModule {
             }
         }
 
-        // Build new Policy using counter=0 (ID will be replaced with original).
-        let mut new_zanzibar =
-            policy_yaml::build_policy(&parsed, 0).map_err(|e| AcpError::InvalidPolicy {
-                reason: e.to_string(),
-            })?;
         new_zanzibar.id = policy_id.to_string();
 
         // Prune orphaned relationships: relations that existed in old policy but not new.
@@ -464,21 +438,33 @@ impl AcpModule {
         policy: &str,
         marshal_type: PolicyMarshalingType,
     ) -> Result<(bool, String, Policy)> {
-        let parsed = match policy_yaml::parse_policy_yaml(policy) {
-            Ok(p) => p,
-            Err(msg) => return Ok((false, msg, Policy::new("", ""))),
-        };
-
-        let built = match policy_yaml::build_policy(&parsed, 0) {
-            Ok(p) => p,
-            Err(e) => return Ok((false, e.to_string(), Policy::new("", ""))),
-        };
-
-        if let Err(e) = built.validate() {
-            return Ok((false, e.to_string(), built));
+        match Self::compile_policy(policy, &marshal_type, 0) {
+            Ok(built) => Ok((true, String::new(), built)),
+            Err(error) => Ok((false, error.to_string(), Policy::new("", ""))),
         }
+    }
 
-        Ok((true, String::new(), built))
+    fn compile_policy(
+        policy: &str,
+        marshal_type: &PolicyMarshalingType,
+        counter: u64,
+    ) -> Result<Policy> {
+        if *marshal_type != PolicyMarshalingType::ShortYaml {
+            return Err(AcpError::InvalidPolicy {
+                reason: "only ShortYaml marshal type is supported".into(),
+            });
+        }
+        let parsed = policy_yaml::parse_policy_yaml(policy)
+            .map_err(|reason| AcpError::InvalidPolicy { reason })?;
+        let built = policy_yaml::build_policy(&parsed, counter).map_err(|error| {
+            AcpError::InvalidPolicy {
+                reason: error.to_string(),
+            }
+        })?;
+        built.validate().map_err(|error| AcpError::InvalidPolicy {
+            reason: error.to_string(),
+        })?;
+        Ok(built)
     }
 
     /// Fetch a previously recorded access decision by ID.
@@ -651,16 +637,20 @@ impl AcpModule {
         self.store.put(&keys::policy_key(id), bytes);
     }
 
-    fn next_policy_counter(&mut self) -> u64 {
+    fn next_policy_counter(&self) -> Result<u64> {
         let counter = self
             .store
             .get(keys::POLICY_COUNTER_KEY)
-            .map(|bytes| u64::from_be_bytes(bytes.try_into().expect("counter is 8 bytes")))
+            .map(|bytes| {
+                bytes.try_into().map(u64::from_be_bytes).map_err(|_| {
+                    AcpError::State("policy counter must contain exactly 8 bytes".into())
+                })
+            })
+            .transpose()?
             .unwrap_or(0);
-        let next = counter + 1;
-        self.store
-            .put(keys::POLICY_COUNTER_KEY, next.to_be_bytes().to_vec());
-        next
+        counter
+            .checked_add(1)
+            .ok_or_else(|| AcpError::State("policy counter exhausted".into()))
     }
 
     // ── Storage — Relationships ──────────────────────────────────────────
@@ -1617,6 +1607,8 @@ impl AcpModule {
 
 #[cfg(test)]
 mod policy_edit_tests;
+#[cfg(test)]
+mod policy_validation_tests;
 
 #[cfg(test)]
 mod tests {

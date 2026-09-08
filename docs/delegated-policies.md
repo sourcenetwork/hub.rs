@@ -19,6 +19,11 @@ Delegations use signed ES256K tokens with a worker DID in `sub`, deployment in
 `DelegationScope::EditPolicy` for lifecycle operations. A creation token cannot
 edit policies, and an existing command token cannot create or edit them.
 
+Creation, editing and validation compile the same supported YAML format and
+check permission references before accepting a definition. Failed compilation
+leaves the policy counter, stored records and evaluation cache unchanged.
+Malformed or exhausted counter state rejects creation.
+
 Edits preserve resource types, policy identity and original creation metadata.
 Removing a relation prunes its stored relationships. Malformed relationship
 records or records whose policy/key bindings differ abort the edit before any
