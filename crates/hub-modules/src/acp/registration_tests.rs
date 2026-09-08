@@ -444,3 +444,45 @@ fn default_commitment_expires_after_ten_minutes() {
     assert_eq!(expired[0].id, registrations_commitment.id);
     assert!(expired[0].expired);
 }
+
+#[test]
+fn reveal_checks_deadline_without_waiting_for_cleanup() {
+    for validity in [Duration::Seconds(600), Duration::Blocks(600)] {
+        let (mut module, actor, _, policy, object) = setup();
+        module
+            .set_params(&AcpParams {
+                registrations_commitment_validity: validity,
+                ..AcpParams::default()
+            })
+            .unwrap();
+        let generated = module
+            .query_generate_commitment(&policy, &[object], &Actor(actor.clone()))
+            .unwrap();
+        let PolicyCmdResult::CommitRegistrations {
+            registrations_commitment,
+        } = execute(
+            &mut module,
+            &actor,
+            &policy,
+            PolicyCmd::CommitRegistrations {
+                commitment: generated.commitment,
+            },
+            10,
+        )
+        .unwrap()
+        else {
+            panic!("expected commitment")
+        };
+        let reveal = PolicyCmd::RevealRegistration {
+            registrations_commitment_id: registrations_commitment.id,
+            proof: generated.proofs[0].clone(),
+        };
+        let before = module.store.serialize();
+        assert!(matches!(
+            execute(&mut module, &actor, &policy, reveal.clone(), 611),
+            Err(AcpError::CommitmentExpired { .. })
+        ));
+        assert_eq!(module.store.serialize(), before);
+        execute(&mut module, &actor, &policy, reveal, 610).unwrap();
+    }
+}

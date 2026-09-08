@@ -121,6 +121,10 @@ Commonware coordinator generation, binding the native current-state root to the
 selected operation-log targets. It is reconstructed from the durable recovery
 anchor, not persisted as an independent journal.
 
+ACP and token lifecycle errors reject proposal execution and re-verification.
+Malformed token records are errors, including a mismatch between the storage key
+and the record's token hash. Failed lifecycle work cannot publish its module view.
+
 Pending alternatives retain isolated module snapshots. Database transitions finish
 before query maps are published. Startup aligns all journals to marshal's durable
 anchor, checks the combined native root, and then enables admission and RPC.

@@ -342,14 +342,19 @@ impl HubExecutor {
     }
 
     /// Run end-of-block hooks for modules that need per-block maintenance.
-    fn run_end_block_hooks(modules: &mut ModuleState, block_ctx: &BlockExecCtx) {
-        if let Err(e) = modules.acp.end_blocker(block_ctx) {
-            warn!(?e, "ACP end_blocker failed");
-        }
-
-        if let Err(e) = modules.hub.check_and_update_expired_tokens(block_ctx) {
-            warn!(?e, "Hub expired token sweep failed");
-        }
+    fn run_end_block_hooks(
+        modules: &mut ModuleState,
+        block_ctx: &BlockExecCtx,
+    ) -> Result<(), ExecutionError> {
+        modules
+            .acp
+            .end_blocker(block_ctx)
+            .map_err(|error| ExecutionError::BlockValidation(format!("ACP lifecycle: {error}")))?;
+        modules
+            .hub
+            .check_and_update_expired_tokens(block_ctx)
+            .map_err(|error| ExecutionError::BlockValidation(format!("Hub lifecycle: {error}")))?;
+        Ok(())
     }
 }
 
@@ -547,7 +552,7 @@ impl HubExecutor {
             }
         }
 
-        Self::run_end_block_hooks(&mut modules, &block_ctx);
+        Self::run_end_block_hooks(&mut modules, &block_ctx)?;
 
         if building {
             outcome.executed_tx_indices = Some(executed_indices);
@@ -722,6 +727,56 @@ mod tests {
         assert_eq!(outcome.gas_used, 0);
         assert!(outcome.receipts.is_empty());
         assert_ne!(outcome.module_state_root, B256::ZERO);
+    }
+
+    #[test]
+    fn lifecycle_corruption_rejects_proposals_and_preserves_parent() {
+        use hub_modules::kv_store::{InMemoryKvStore, ModuleKvStore};
+        for (partition, key, expected) in [
+            (
+                0,
+                b"commitment_expiry/seconds/bad".to_vec(),
+                "ACP lifecycle",
+            ),
+            (
+                2,
+                hub_modules::hub::keys::jws_token_key("bad"),
+                "Hub lifecycle",
+            ),
+        ] {
+            let executor = test_executor();
+            let mut stores = std::array::from_fn(|_| InMemoryKvStore::default());
+            stores[partition].put(&key, vec![0]);
+            let parent = ModuleSnapshot {
+                modules: ModuleState::from_stores(stores),
+                trees: None,
+            };
+            let before = parent.modules.serialize_stores();
+            let published = executor.snapshot().unwrap().modules.serialize_stores();
+            for verification in [false, true] {
+                let mut context = BlockContext::new(
+                    alloy_consensus::Header {
+                        number: 1,
+                        timestamp: 100,
+                        gas_limit: 30_000_000,
+                        base_fee_per_gas: Some(0),
+                        ..Default::default()
+                    },
+                    B256::ZERO,
+                    B256::ZERO,
+                );
+                context.is_verification = verification;
+                let error = executor
+                    .execute_with_modules(&MockStateDb, &context, &[], parent.clone())
+                    .unwrap_err();
+                assert!(error.to_string().contains(expected), "{error}");
+                assert_eq!(parent.modules.serialize_stores(), before);
+                assert_eq!(
+                    executor.snapshot().unwrap().modules.serialize_stores(),
+                    published
+                );
+            }
+        }
     }
 
     #[test]

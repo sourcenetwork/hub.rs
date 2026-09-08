@@ -321,10 +321,7 @@ impl HubModule {
     /// 3. If `record.expires_at < block_ctx.timestamp`:
     ///    call `update_jws_token_status(token_hash, Invalid, "")`.
     ///    Empty `invalidated_by` signals automatic expiry.
-    /// 4. Per-token `update_jws_token_status` errors are logged but
-    ///    do not abort iteration. However, iterator-level errors
-    ///    (e.g. deserialization failure on a record) DO abort and
-    ///    propagate upward.
+    /// 4. Malformed records and update failures abort execution.
     ///
     /// # Reads
     /// - Full scan of `0x01` prefix
@@ -354,17 +351,22 @@ impl HubModule {
     /// non-fatal.
     pub fn check_and_update_expired_tokens(&mut self, block_ctx: &BlockExecCtx) -> Result<()> {
         let zero = Timestamp::default();
-        let expired_hashes: Vec<String> = self
-            .store
-            .prefix_scan(keys::JWS_TOKEN_PREFIX)
-            .iter()
-            .filter_map(|(_, v)| borsh::from_slice::<JWSTokenRecord>(v).ok())
-            .filter(|r| r.status != JWSTokenStatus::Invalid)
-            .filter(|r| r.expires_at != zero && r.expires_at.seconds < block_ctx.timestamp.seconds)
-            .map(|r| r.token_hash)
-            .collect();
+        let mut expired_hashes = Vec::new();
+        for (key, value) in self.store.prefix_iter(keys::JWS_TOKEN_PREFIX) {
+            let record: JWSTokenRecord = borsh::from_slice(value)
+                .map_err(|error| HubError::State(format!("invalid token record: {error}")))?;
+            if key != keys::jws_token_key(&record.token_hash) {
+                return Err(HubError::State("token record key mismatch".into()));
+            }
+            if record.status != JWSTokenStatus::Invalid
+                && record.expires_at != zero
+                && record.expires_at.seconds < block_ctx.timestamp.seconds
+            {
+                expired_hashes.push(record.token_hash);
+            }
+        }
         for hash in &expired_hashes {
-            let _ = self.update_jws_token_status(block_ctx, hash, JWSTokenStatus::Invalid, "");
+            self.update_jws_token_status(block_ctx, hash, JWSTokenStatus::Invalid, "")?;
         }
         Ok(())
     }

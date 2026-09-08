@@ -15,7 +15,9 @@ reads consistent.
 
 Commitments belong to one policy and expire after ten minutes by default, matching
 the Go service. The end-of-revision hook marks them expired once the current time
-exceeds their creation time plus the configured lifetime. Expiry maintains separate ordered indexes for time and revision deadlines. The
+exceeds their creation time plus the configured lifetime. Reveals independently
+check that deadline at execution, so a time jump cannot make an expired commitment
+usable before the cleanup hook. The deadline itself remains inclusive. Expiry maintains separate ordered indexes for time and revision deadlines. The
 hook reads due entries and stops at the first future deadline in each index;
 expired records remain queryable without staying in the active indexes. Indexes
 are persisted in ACP state and restored with it. A batch's cost is proportional

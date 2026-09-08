@@ -47,6 +47,17 @@ impl AcpModule {
                     "invalid registration commitment revision".into(),
                 ));
             }
+            let expired = match commitment.validity {
+                Duration::Seconds(delta) => {
+                    block.timestamp.seconds > issued.seconds.saturating_add(delta)
+                }
+                Duration::Blocks(delta) => {
+                    block.timestamp.block_height > issued.block_height.saturating_add(delta)
+                }
+            };
+            if commitment.expired || expired {
+                return Err(AcpError::CommitmentExpired { id: commitment.id });
+            }
             metadata.creation_ts = issued.clone();
         }
         let mut result = self.direct_policy_cmd(actor, policy_id, command)?;
