@@ -26,3 +26,9 @@ segments, with no recursive backtracking. No other wildcard syntax is interprete
 These read limits do not cap stored history or establish a measured execution
 throughput target. Transport response limits apply separately from stored-byte
 inspection limits.
+
+Native startup and snapshot recovery validate complete bulletin records before
+publishing query state. Truncated or trailing record bytes, namespace/post/
+collaborator key mismatches, invalid policy-ID encoding and malformed parameters
+stop restoration with a storage error. Absent settings remain valid for an
+uninitialized module. Recovery does not repair or discard corrupt records.
