@@ -3,11 +3,10 @@
 //! Matches orbis-rs conventions: G1 pubkeys (48 bytes), G2 signatures (96 bytes),
 //! IETF-standard hash-to-curve DST.
 
-use ark_bls12_381::{Bls12_381, G1Affine, G2Affine, G2Projective, g2::Config as G2Config};
+use ark_bls12_381::{G1Affine, G2Affine, G2Projective, g2::Config as G2Config};
 use ark_ec::{
     AffineRepr, CurveGroup,
     hashing::{HashToCurve, curve_maps::wb::WBMap, map_to_curve_hasher::MapToCurveBasedHasher},
-    pairing::Pairing,
 };
 use ark_ff::{Zero, field_hashers::DefaultFieldHasher};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
@@ -72,24 +71,23 @@ pub fn sign(secret_key: &ark_bls12_381::Fr, msg: &[u8]) -> Result<Vec<u8>, BlsEr
 /// Verify a BLS signature against a G1 public key and message.
 ///
 /// Rejects identity points for both the public key and signature to prevent
-/// trivial forgery via degenerate pairing (matches orbis-rs `sign.rs:157-190`).
+/// trivial forgery. Uses blst with signature subgroup and public-key validation.
 pub fn verify(pubkey: &G1Affine, msg: &[u8], sig_bytes: &[u8]) -> Result<(), BlsError> {
     if pubkey.is_zero() {
         return Err(BlsError::InvalidSignature);
     }
 
-    let sig = G2Affine::deserialize_compressed(sig_bytes).map_err(|_| BlsError::Deserialize)?;
-    if sig.is_zero() {
-        return Err(BlsError::InvalidSignature);
-    }
-
-    let h_msg = hash_to_g2(msg)?;
-    let g1_gen = G1Affine::generator();
-
-    let lhs = Bls12_381::pairing(*pubkey, h_msg);
-    let rhs = Bls12_381::pairing(g1_gen, sig);
-
-    if lhs != rhs {
+    let mut encoded_key = [0u8; 48];
+    pubkey
+        .serialize_compressed(encoded_key.as_mut_slice())
+        .map_err(|_| BlsError::Serialize)?;
+    let key =
+        blst::min_pk::PublicKey::from_bytes(&encoded_key).map_err(|_| BlsError::Deserialize)?;
+    let signature =
+        blst::min_pk::Signature::from_bytes(sig_bytes).map_err(|_| BlsError::Deserialize)?;
+    if signature.verify(true, msg, BLS_SIG_DOMAIN, &[], &key, true)
+        != blst::BLST_ERROR::BLST_SUCCESS
+    {
         return Err(BlsError::InvalidSignature);
     }
     Ok(())
@@ -152,6 +150,19 @@ mod tests {
         let msg = b"test message";
         let sig = sign(&sk, msg).expect("sign");
         verify(&pk, msg, &sig).expect("verify");
+    }
+
+    #[test]
+    fn verify_rejects_non_subgroup_public_key_and_trailing_signature_bytes() {
+        let (sk, pk) = generate_keypair();
+        let mut signature = sign(&sk, b"message").unwrap();
+        let torsion =
+            G1Affine::new_unchecked(ark_bls12_381::Fq::from(0), ark_bls12_381::Fq::from(2));
+        assert!(torsion.is_on_curve());
+        assert!(!torsion.is_in_correct_subgroup_assuming_on_curve());
+        assert!(verify(&torsion, b"message", &signature).is_err());
+        signature.push(0);
+        assert!(verify(&pk, b"message", &signature).is_err());
     }
 
     #[test]
