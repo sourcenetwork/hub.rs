@@ -164,3 +164,23 @@ revision and `hub_getPermissionProof` requests can encounter
 `RESOURCE_UNAVAILABLE` between them and must restart the read within its deadline,
 preserving its minimum revision and freshness requirements. Neither endpoint
 provides arbitrary historical activity proofs.
+
+## Bounded prefix pages
+
+`hub_getCurrentPrefixPageProof(request, minimum_height)` captures one certified
+page. The request contains `module`, hex-encoded `prefix` and `start`, and `limit`
+(1–128). Start is an inclusive lower bound within the prefix; use the prefix
+itself for the first page. `HubClient::read_current_prefix_page` verifies the
+captured certificate, minimum revision, exact request and consecutive membership
+witnesses. `PrefixPageResponse::verify` returns entries and an authenticated
+continuation key, or no continuation when the prefix ends at that revision.
+
+Record data is limited to 2 MiB and encoded page evidence to 8 MiB, including an
+exclusion boundary that can contain a large predecessor value. Byte limits can
+shorten a page. Empty nonterminal pages and skipped entries are rejected. Existing
+complete-prefix verification continues to require proof through the prefix end.
+
+Each request selects current state independently. Later pages can use newer
+revisions, including after a cursor key is deleted. Changes before the cursor
+can be missed; pagination does not promise a historical snapshot. Consumers can
+carry the preceding revision forward as their next minimum revision.

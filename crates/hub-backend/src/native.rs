@@ -35,7 +35,7 @@ pub use hub_permission::current::{MAX_KEY_BYTES, MAX_VALUE_BYTES};
 mod record;
 pub use record::record_proof_at;
 mod prefix;
-pub use prefix::prefix_proof_at;
+pub use prefix::{prefix_page_at, prefix_proof_at};
 
 mod permission;
 pub use permission::{permission_proof, permission_proof_at};

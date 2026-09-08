@@ -154,5 +154,60 @@ pub(super) async fn prefix_proof(
     Ok(PrefixEvidence { boundary, entries })
 }
 
+pub(super) async fn page_proof(
+    db: &NativeDb,
+    request: &hub_permission::PrefixPageRequest,
+    mut bytes: usize,
+) -> Result<PrefixEvidence, BackendError> {
+    request.validate()?;
+    let mut data = hub_permission::PAGE_DATA_BYTES;
+    charge(&mut data, request.prefix.len() + request.start.len())?;
+    let start = request.start.to_vec();
+    let boundary = if db.get(&start).await.map_err(storage)?.is_some() {
+        None
+    } else {
+        Some(db.exclusion_proof(&start).await.map_err(storage)?)
+    };
+    charge(&mut bytes, boundary.encode_size() + 0_usize.encode_size())?;
+    let mut next = match &boundary {
+        None => Some(start),
+        Some(Exclusion::KeyValue(_, record)) => {
+            successor(&start, &record.next_key, &request.prefix).map(<[u8]>::to_vec)
+        }
+        Some(Exclusion::Commit(..)) => None,
+    };
+    let mut entries = Vec::new();
+    while entries.len() < usize::from(request.limit) {
+        let Some(key) = next else { break };
+        let value = db
+            .get(&key)
+            .await
+            .map_err(storage)?
+            .ok_or(PermissionError::Invalid("page successor unavailable"))?;
+        let data_size = key.len() + value.len();
+        if data_size > data {
+            if entries.is_empty() {
+                return Err(PermissionError::Limit.into());
+            }
+            break;
+        }
+        let proof = db.key_value_proof(key.clone()).await.map_err(storage)?;
+        let entry = Entry { key, value, proof };
+        let size =
+            entry.encode_size() + (entries.len() + 1).encode_size() - entries.len().encode_size();
+        if size > bytes {
+            if entries.is_empty() {
+                return Err(PermissionError::Limit.into());
+            }
+            break;
+        }
+        charge(&mut data, data_size)?;
+        charge(&mut bytes, size)?;
+        next = successor(&entry.key, &entry.proof.next_key, &request.prefix).map(<[u8]>::to_vec);
+        entries.push(entry);
+    }
+    Ok(PrefixEvidence { boundary, entries })
+}
+
 #[cfg(test)]
 mod tests;

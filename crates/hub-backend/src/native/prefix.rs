@@ -37,3 +37,32 @@ pub async fn prefix_proof_at(
     proof.verify(expected, module, prefix, RECORD_PROOF_BYTES)?;
     Ok(proof)
 }
+
+/// Prove one bounded page while retaining all four partition read guards.
+pub async fn prefix_page_at(
+    databases: [&NativeDb; 4],
+    expected: B256,
+    request: &hub_permission::PrefixPageRequest,
+) -> Result<hub_permission::PrefixPageProof, BackendError> {
+    use hub_permission::{PAGE_PROOF_BYTES, PrefixPageProof, encoded_size};
+    request.validate()?;
+    let roots = databases.map(|db| db.root().0);
+    if combine_module_roots(&roots) != expected {
+        return Err(PermissionError::Invalid("selected module root changed").into());
+    }
+    let mut proof = PrefixPageProof {
+        request: request.clone(),
+        roots: roots.map(B256::from),
+        proof: Default::default(),
+    };
+    let overhead = encoded_size(&proof, PAGE_PROOF_BYTES)?;
+    let evidence = super::permission::page_proof(
+        databases[request.module.index()],
+        request,
+        (PAGE_PROOF_BYTES - overhead) / 2,
+    )
+    .await?;
+    proof.proof = evidence.encode().into();
+    proof.verify(expected, request, PAGE_PROOF_BYTES)?;
+    Ok(proof)
+}

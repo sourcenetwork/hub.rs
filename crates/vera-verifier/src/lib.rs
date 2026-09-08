@@ -11,11 +11,18 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 /// Maximum encoded verification request, including independently configured trust.
-pub const MAX_REQUEST_BYTES: usize = RECEIPT_RESPONSE_BYTES + 4096;
+pub const MAX_REQUEST_BYTES: usize =
+    RECEIPT_RESPONSE_BYTES + 4 * hub_permission::current::MAX_KEY_BYTES + 4096;
 
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum Request {
+    PrefixPage {
+        trusted_key: String,
+        request: hub_permission::PrefixPageRequest,
+        minimum_height: u64,
+        proof: Box<hub_permission::PrefixPageResponse>,
+    },
     ValidatePolicy {
         definition: String,
         format: String,
@@ -76,6 +83,34 @@ fn verify(input: &[u8]) -> Result<Value, String> {
     }
     let request: Request = serde_json::from_slice(input).map_err(|error| error.to_string())?;
     match request {
+        Request::PrefixPage {
+            trusted_key: key,
+            request,
+            minimum_height,
+            proof,
+        } => {
+            let page = proof
+                .verify(
+                    &request,
+                    minimum_height,
+                    &trusted_key(&key)?,
+                    hub_permission::PAGE_PROOF_BYTES,
+                )
+                .map_err(|error| error.to_string())?;
+            let entries: Vec<_> = page
+                .entries
+                .into_iter()
+                .map(|entry| {
+                    json!({
+                        "key": Bytes::from(entry.key), "value": Bytes::from(entry.value)
+                    })
+                })
+                .collect();
+            Ok(
+                json!({"height": proof.revision.height, "timestamp": proof.revision.timestamp,
+                "entries": entries, "continuation": page.continuation}),
+            )
+        }
         Request::ValidatePolicy { definition, format } => {
             if !format.eq_ignore_ascii_case("yaml") {
                 return Ok(

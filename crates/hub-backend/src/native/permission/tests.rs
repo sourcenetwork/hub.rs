@@ -713,3 +713,5 @@ fn native_prefixes_bind_complete_coverage_module_and_root() {
         },
     );
 }
+
+mod page;

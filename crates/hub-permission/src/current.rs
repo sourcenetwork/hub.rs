@@ -132,14 +132,44 @@ pub fn successor<'a>(key: &[u8], next: &'a [u8], prefix: &[u8]) -> Option<&'a [u
 impl PrefixEvidence {
     /// Verify complete ordered coverage against an independently authenticated partition root.
     pub fn verify(&self, prefix: &[u8], root: &Digest) -> Result<(), PermissionError> {
+        if self.verify_span(prefix, prefix, root)?.is_some() {
+            return Err(PermissionError::Invalid("incomplete prefix"));
+        }
+        Ok(())
+    }
+
+    /// Verify consecutive page entries without treating a partial page as complete coverage.
+    pub fn verify_page(
+        &self,
+        prefix: &[u8],
+        start: &[u8],
+        root: &Digest,
+    ) -> Result<Option<Vec<u8>>, PermissionError> {
+        if prefix.len() > MAX_KEY_BYTES || start.len() > MAX_KEY_BYTES || !start.starts_with(prefix)
+        {
+            return Err(PermissionError::Invalid("page selection"));
+        }
+        let next = self.verify_span(prefix, start, root)?;
+        if next.is_some() && self.entries.is_empty() {
+            return Err(PermissionError::Invalid("empty nonterminal page"));
+        }
+        Ok(next)
+    }
+
+    fn verify_span(
+        &self,
+        prefix: &[u8],
+        start: &[u8],
+        root: &Digest,
+    ) -> Result<Option<Vec<u8>>, PermissionError> {
         let mut next = match &self.boundary {
-            None => Some(prefix),
+            None => Some(start),
             Some(boundary) => {
-                if !excluded(prefix, boundary, root) {
+                if !excluded(start, boundary, root) {
                     return Err(PermissionError::Invalid("prefix boundary"));
                 }
                 match boundary {
-                    Exclusion::KeyValue(_, record) => successor(prefix, &record.next_key, prefix),
+                    Exclusion::KeyValue(_, record) => successor(start, &record.next_key, prefix),
                     Exclusion::Commit(..) => None,
                 }
             }
@@ -152,10 +182,7 @@ impl PrefixEvidence {
             }
             next = successor(&entry.key, &entry.proof.next_key, prefix);
         }
-        if next.is_some() {
-            return Err(PermissionError::Invalid("incomplete prefix"));
-        }
-        Ok(())
+        Ok(next.map(<[u8]>::to_vec))
     }
 }
 

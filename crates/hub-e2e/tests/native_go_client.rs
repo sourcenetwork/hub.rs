@@ -238,3 +238,87 @@ async fn run_go_test(binary: &str, selector: &str, fixture: &serde_json::Value) 
         .expect("launch Go native client test");
     assert!(status.success(), "Go native client failed: {status}");
 }
+
+#[tokio::test]
+#[ignore = "requires TRUST_NATIVE_TEST_BINARY built with vera_native and its shared library"]
+async fn native_go_policy_pages() {
+    let binary = std::env::var("TRUST_NATIVE_TEST_BINARY").expect("Go native test binary required");
+    let deployment = 9064;
+    let trusted = *KeySet::builder()
+        .seed(deployment)
+        .build()
+        .unwrap()
+        .epoch_info()
+        .output
+        .public()
+        .public();
+    let cluster = TestCluster::builder()
+        .nodes(4)
+        .seed(deployment)
+        .chain_id(deployment)
+        .preset(ConsensusPreset::Normal)
+        .build()
+        .await
+        .unwrap();
+    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    let client = HubClient::new(cluster.node(0).rpc_url());
+    let signer = BlsSigner::new(7u64.into(), deployment).unwrap();
+    let mut minimum = 0;
+    for i in 0..3 {
+        let data = hub_modules::acp::abi::IAcp::createPolicyCall {
+            policy: format!("name: page{i}\nresources:\n  - name: document\n")
+                .into_bytes()
+                .into(),
+            marshalType: 1,
+        }
+        .abi_encode();
+        let wire = signer.sign_native_tx(ACP_ADDRESS, data.into()).unwrap();
+        let submission = client.send_native_tx(&wire).await.unwrap();
+        minimum = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                if let Some(proof) = client.read_receipt(submission, &trusted).await.unwrap() {
+                    assert!(proof.verify(submission, &trusted).unwrap().success());
+                    break proof.revision.height;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+    let request = hub_permission::PrefixPageRequest {
+        module: hub_permission::ModuleId::Acp,
+        prefix: b"policy/objs/".to_vec().into(),
+        start: b"policy/objs/".to_vec().into(),
+        limit: 2,
+    };
+    let response = client
+        .read_current_prefix_page(
+            &request,
+            minimum,
+            &trusted,
+            hub_permission::PAGE_PROOF_BYTES,
+        )
+        .await
+        .unwrap();
+    let page = response
+        .verify(
+            &request,
+            minimum,
+            &trusted,
+            hub_permission::PAGE_PROOF_BYTES,
+        )
+        .unwrap();
+    assert_eq!(page.entries.len(), 2);
+    assert!(page.continuation.is_some());
+    run_go_test(
+        &binary,
+        "-test.run=^TestNativePolicyPagesCluster$",
+        &serde_json::json!({
+            "endpoint": cluster.node(0).rpc_url(),
+            "trusted_key": hex::encode(trusted.encode()),
+            "minimum_revision": minimum,
+        }),
+    )
+    .await;
+}

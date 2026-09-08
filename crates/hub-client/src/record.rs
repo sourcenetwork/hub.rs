@@ -64,3 +64,26 @@ impl HubClient {
         Ok(response)
     }
 }
+
+impl HubClient {
+    /// Read one certified page. A continuation selects a lower bound, not a historical snapshot.
+    pub async fn read_current_prefix_page(
+        &self,
+        request: &hub_permission::PrefixPageRequest,
+        minimum_height: u64,
+        trusted: &ConsensusPublicKey,
+        maximum_bytes: usize,
+    ) -> Result<hub_permission::PrefixPageResponse, ClientError> {
+        request.validate()?;
+        let maximum_bytes = maximum_bytes.min(hub_permission::PAGE_PROOF_BYTES);
+        let response: hub_permission::PrefixPageResponse = self
+            .rpc_call_bounded(
+                "hub_getCurrentPrefixPageProof",
+                serde_json::json!([request, minimum_height]),
+                hub_domain::LIGHT_BLOCK_RESPONSE_BYTES + maximum_bytes + 1024,
+            )
+            .await?;
+        response.verify(request, minimum_height, trusted, maximum_bytes)?;
+        Ok(response)
+    }
+}

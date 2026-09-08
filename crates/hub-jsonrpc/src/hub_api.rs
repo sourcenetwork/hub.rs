@@ -8,6 +8,7 @@ use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use commonware_cryptography::Hasher as _;
 use hub_domain::{LightBlock, ModuleId, ModuleStateProof, RelationPrefixProof};
 
+mod page;
 mod permission;
 mod prefix;
 mod receipt;
@@ -16,7 +17,8 @@ mod relation;
 use hub_executor::{ModuleTrees, SharedModuleState};
 use hub_indexer::{BlockIndex, LightBlockIndex};
 use hub_permission::{
-    AccessRequest, PermissionProof, PermissionResponse, PrefixResponse, RecordResponse,
+    AccessRequest, PermissionProof, PermissionResponse, PrefixPageRequest, PrefixPageResponse,
+    PrefixResponse, RecordResponse,
 };
 
 use crate::{
@@ -119,6 +121,14 @@ pub trait HubApi {
         prefix: Bytes,
         minimum_height: U64,
     ) -> RpcResult<PrefixResponse>;
+
+    /// Capture a bounded native page with its finalized revision.
+    #[method(name = "getCurrentPrefixPageProof")]
+    async fn get_current_prefix_page_proof(
+        &self,
+        request: PrefixPageRequest,
+        minimum_height: U64,
+    ) -> RpcResult<PrefixPageResponse>;
 
     /// Returns a light block at the given height.
     ///
@@ -430,6 +440,15 @@ impl HubApiServer for HubApiImpl {
         minimum_height: U64,
     ) -> RpcResult<PrefixResponse> {
         self.current_prefix_proof(module, &prefix, minimum_height.to())
+            .await
+    }
+
+    async fn get_current_prefix_page_proof(
+        &self,
+        request: PrefixPageRequest,
+        minimum_height: U64,
+    ) -> RpcResult<PrefixPageResponse> {
+        self.current_prefix_page_proof(&request, minimum_height.to())
             .await
     }
 

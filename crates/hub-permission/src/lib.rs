@@ -26,7 +26,12 @@ mod decision;
 pub use decision::{DecisionOperation, DecisionOutcome, DecisionRecord};
 mod owner;
 pub use owner::object_owner_prefix;
+mod page;
 mod prefix;
+pub use page::{
+    MAX_PAGE_RECORDS, PAGE_DATA_BYTES, PAGE_PROOF_BYTES, PAGE_RESPONSE_BYTES, PrefixPageProof,
+    PrefixPageRequest, PrefixPageResponse, VerifiedPrefixPage,
+};
 pub use prefix::{PrefixProof, PrefixResponse};
 mod record;
 pub use record::{RECORD_PROOF_BYTES, RECORD_RESPONSE_BYTES, RecordProof, RecordResponse};
