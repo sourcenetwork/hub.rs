@@ -6,6 +6,29 @@ use hub_permission::{
 };
 
 impl HubClient {
+    /// Fetch one bounded finality proof and authenticate its exact requested revision.
+    pub async fn read_finalized_revision(
+        &self,
+        height: u64,
+        trusted_key: &ConsensusPublicKey,
+    ) -> Result<LightBlock, ClientError> {
+        if height == 0 {
+            return Err(ClientError::InvalidResponse("revision must be positive"));
+        }
+        let revision: LightBlock = self
+            .rpc_call_bounded(
+                "hub_getLightBlock",
+                serde_json::json!([format!("0x{height:x}")]),
+                hub_domain::LIGHT_BLOCK_RESPONSE_BYTES,
+            )
+            .await?;
+        if revision.height != height {
+            return Err(ClientError::InvalidResponse("finality revision mismatch"));
+        }
+        verify_light_block(&revision, trusted_key)?;
+        Ok(revision)
+    }
+
     /// Fetch and verify current permission evidence and its revision in one bounded response.
     /// Returns the authenticated revision and local decision. The caller supplies the
     /// trusted consensus key, minimum revision and any additional timestamp/age policy.
