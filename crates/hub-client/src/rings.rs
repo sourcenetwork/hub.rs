@@ -66,6 +66,25 @@ pub fn encode_ring_reshare(request: &RingReshareRequest) -> Result<Bytes, Client
     .into())
 }
 
+/// Recover reshare parameters from a journaled command without consulting newer ring state.
+pub fn decode_ring_reshare(calldata: &[u8]) -> Result<Option<RingReshareRequest>, ClientError> {
+    if !calldata.starts_with(&IHub::finalizeRingReshareCall::SELECTOR) {
+        return Ok(None);
+    }
+    if calldata.len() > hub_modules::hub::rings::MAX_RING_REQUEST_BYTES + 100 {
+        return Err(ClientError::InvalidResponse(
+            "reshare call exceeds byte limit",
+        ));
+    }
+    let call = IHub::finalizeRingReshareCall::abi_decode(calldata)
+        .map_err(|_| ClientError::InvalidResponse("invalid reshare call"))?;
+    let request = serde_json::from_slice(&call.request)?;
+    if encode_ring_reshare(&request)?.as_ref() != calldata {
+        return Err(ClientError::InvalidResponse("noncanonical reshare call"));
+    }
+    Ok(Some(request))
+}
+
 /// Encode an aggregate-signed fault report for durable worker preparation.
 pub fn encode_ring_report(report: &SignedReport) -> Result<Bytes, ClientError> {
     let bytes = serde_json::to_vec(report)?;
