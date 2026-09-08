@@ -156,6 +156,8 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
     let nodes = [
         SigningKey::from_slice(&[31; 32]).unwrap(),
         SigningKey::from_slice(&[32; 32]).unwrap(),
+        SigningKey::from_slice(&[33; 32]).unwrap(),
+        SigningKey::from_slice(&[34; 32]).unwrap(),
     ];
     for key in &nodes {
         let signed = sign_node_request(
@@ -186,7 +188,7 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
         )
         .await;
     }
-    let mut peers = nodes.iter().map(public).collect::<Vec<_>>();
+    let mut peers = nodes[..3].iter().map(public).collect::<Vec<_>>();
     peers.sort();
     let mut config = RingConfig {
         policy_id: policy,
@@ -196,7 +198,11 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
         current_version: 0,
         nonce: [1; 32],
         trusted_auth_relay_dids: None,
-        reporting: ReportingConfig::default(),
+        reporting: ReportingConfig {
+            kick_threshold: 1,
+            backup_node_keys: vec![public(&nodes[3])],
+            ..Default::default()
+        },
     };
     let ring = config.id(root.0, &actor).unwrap();
     let command = RingCommand::Create(config.clone());
@@ -285,7 +291,7 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
         &nodes[1],
         RingParticipantCommand::Confirm(ring_public.clone()),
     );
-    let confirmed = execute(
+    execute(
         &writer,
         &reader,
         &worker,
@@ -295,28 +301,81 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
         true,
     )
     .await;
+    let confirmed = execute(
+        &writer,
+        &reader,
+        &worker,
+        &trusted,
+        HUB_ADDRESS,
+        encode_ring_participant_request(&participant(
+            &ring,
+            &nodes[2],
+            RingParticipantCommand::Confirm(ring_public.clone()),
+        ))
+        .unwrap(),
+        true,
+    )
+    .await;
     let active = reader
         .read_threshold_ring(&ring, confirmed.block_number, &trusted)
         .await
         .unwrap()
         .record
         .unwrap();
-    let announce = RingCommand::Update {
+    let report = ReportEnvelope {
+        domain: "orbis-mpc-fault-report".into(),
+        report_type: "node_offline".into(),
+        chain_id: ring_deployment_label(root.0, deployment),
         ring_id: ring.clone(),
-        expected_sequence: active.sequence,
-        update: RingUpdate::StartReshare {
-            peer_node_keys: None,
-            threshold: Some(1),
-        },
+        ring_pk: ring_public.clone(),
+        ring_state_sha256: active.report_state_hash().unwrap(),
+        reporter_node_key: public(&nodes[0]),
+        accused_node_key: public(&nodes[1]),
+        accused_peer_id: public(&nodes[1]),
+        observed_at: now - 10,
+        expires_at: now + 110,
+        session_id: "native-ring-report".into(),
+        payload: NodeOffline {
+            origin_protocol: "pre".into(),
+            origin_protocol_version: 0,
+            accused_committee_scope: CommitteeScope::Current,
+            signing_committee_scope: CommitteeScope::Current,
+        }
+        .canonical_bytes(),
     };
+    let signed = SignedReport {
+        report_id: report.report_id(),
+        signature_scheme: "bls12_381_g1_pk_g2_sig_nul".into(),
+        signature: hex::encode(
+            ring_secret
+                .sign(
+                    &report.canonical_bytes(),
+                    b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_",
+                    &[],
+                )
+                .to_bytes(),
+        ),
+        report,
+    };
+    let encoded = encode_ring_report(&signed).unwrap();
     let announced = execute(
         &writer,
         &reader,
         &worker,
         &trusted,
         HUB_ADDRESS,
-        encode_ring_command(&announce, &token(DelegationScope::ManageRings)).unwrap(),
+        encoded.clone(),
         true,
+    )
+    .await;
+    execute(
+        &writer,
+        &reader,
+        &worker,
+        &trusted,
+        HUB_ADDRESS,
+        encoded,
+        false,
     )
     .await;
     execute(
@@ -356,11 +415,15 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
     let settings = recovered.current_settings();
     assert_eq!(settings.threshold, 2);
     assert_eq!(settings.pss_interval, 86400);
+    let mut replacement_peers = config.peer_node_keys.clone();
+    replacement_peers.retain(|key| key != &public(&nodes[1]));
+    replacement_peers.push(public(&nodes[3]));
+    replacement_peers.sort();
     assert_eq!(
         settings.pending_reshare.unwrap(),
         ReshareTarget {
-            peer_node_keys: config.peer_node_keys.clone(),
-            threshold: 1,
+            peer_node_keys: replacement_peers.clone(),
+            threshold: 2
         }
     );
 
@@ -411,7 +474,11 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
     assert_eq!(final_record.state, recovered.state);
     assert_eq!(final_record.config, config);
     assert_eq!(final_record.sequence, recovered.sequence + 1);
-    assert_eq!(final_record.current_settings().threshold, 1);
+    assert_eq!(final_record.current_settings().threshold, 2);
+    assert_eq!(
+        final_record.current_settings().peer_node_keys,
+        replacement_peers
+    );
     assert!(final_record.current_settings().pending_reshare.is_none());
 
     config.nonce = [2; 32];

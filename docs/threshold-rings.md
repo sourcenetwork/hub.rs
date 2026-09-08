@@ -96,5 +96,38 @@ remain unchanged. Replays, changed targets and outdated sequences are rejected.
 
 This verifies threshold authorization for finalization; it does not verify the
 underlying resharing transcript or guarantee participants retained their shares.
-Report processing, document and key-derivation services are separate pending work. This API does not import
+## Fault reports
+
+`encode_ring_report` prepares a threshold-signed report for durable submission.
+The native JSON envelope calls its namespace `deployment`; signing bytes retain
+the existing Orbis format. The service checks current ring state, protocol version
+at observation time, declared committee membership and the accused node's current
+registered endpoint. Reporting requires a threshold of at least two that can be
+met while excluding the accused.
+
+Offline, unauthorized-request and all existing cryptographic fault evidence kinds
+are supported. Evidence must match the envelope's deployment, ring, state, session,
+accused and timestamp. The threshold signature attests to the off-service evidence
+checks; admission independently enforces structure, bounds and state bindings.
+It does not repeat PRE proof, signature-share or transport-signature verification.
+
+Accepted reports add configured demerits, with lazy window resets and saturating
+counters. Crossing the kick threshold selects the first eligible backup in the
+canonical list and announces a reshare; the serving committee stays unchanged
+until threshold-authorized finalization. Existing pending reshares are preserved.
+
+Each ring retains at most 4,096 session deduplication records. Accepted records
+expire after 120 seconds; admission removes at most 64 indexed expired records
+plus an expired record for the submitted session. A canonical report has one
+deterministic session key, so exact and varied-artifact retries both deduplicate.
+Ring, score and retention changes are committed together. Failed admission leaves
+all three unchanged. Demerit records use `reports::demerits_key` for certified
+record queries.
+
+Module-level evidence bounds preserve the existing per-field limits, with a
+3 MiB payload and 12 MiB JSON ceiling. The current node transport still limits
+individual submissions to 64 KiB. Larger-evidence delivery requires further work
+before report-size qualification is complete.
+
+Document and key-derivation services are separate pending work. This API does not import
 existing rings or choose an encrypted-record migration policy.

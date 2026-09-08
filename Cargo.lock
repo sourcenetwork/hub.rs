@@ -4139,6 +4139,7 @@ dependencies = [
  "identity",
  "imbl",
  "k256",
+ "orbis-reporting",
  "prost 0.14.3",
  "serde",
  "serde_json",
@@ -5688,6 +5689,17 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
+]
+
+[[package]]
+name = "orbis-reporting"
+version = "0.0.1"
+source = "git+https://github.com/sourcenetwork/orbis-rs?rev=47df2a5367c64309595b631ad95156e8fe931b32#47df2a5367c64309595b631ad95156e8fe931b32"
+dependencies = [
+ "hex",
+ "serde",
+ "sha2 0.10.9",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

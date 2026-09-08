@@ -84,6 +84,9 @@ fn token_from(command: &RingCommand, entropy: u8, at: &BlockExecCtx, key: &Signi
     format!("{message}.{}", URL_SAFE_NO_PAD.encode(signature.to_bytes()))
 }
 fn fixture(policy: &str) -> (HubModule, AcpModule, RingConfig) {
+    fixture_nodes(policy, &[2, 3])
+}
+fn fixture_nodes(policy: &str, nodes: &[u8]) -> (HubModule, AcpModule, RingConfig) {
     let mut hub = HubModule::new();
     let mut acp = AcpModule::new();
     let policy_id = acp
@@ -112,7 +115,7 @@ fn fixture(policy: &str) -> (HubModule, AcpModule, RingConfig) {
     )
     .unwrap();
     let mut peers = Vec::new();
-    for key in [secret(2), secret(3)] {
+    for key in nodes.iter().map(|n| secret(*n)) {
         let request = NodeRequest {
             deployment_root: context().genesis_id,
             deployment_id: 9001,
@@ -766,4 +769,197 @@ fn reshare_finalization_preserves_key_and_rejects_replay_and_changed_authority()
     let restored = hub.finalize_ring_reshare(&context(), &sign(&next)).unwrap();
     assert_eq!(restored.current_settings().threshold, 2);
     assert_eq!(restored.state, active.state);
+}
+
+#[test]
+fn reports_deduplicate_expire_and_schedule_replacement_atomically() {
+    use orbis_reporting::{CommitteeScope, NodeOffline};
+    use reports::*;
+    let (mut hub, mut acp, mut config) = fixture_nodes(POLICY, &[2, 3, 4, 5]);
+    config
+        .peer_node_keys
+        .retain(|key| key != &public(&secret(5)));
+    config.reporting.backup_node_keys = vec![public(&secret(4)), public(&secret(5))];
+    config.reporting.backup_node_keys.sort();
+    let key = blst::min_pk::SecretKey::key_gen(&[42; 32], &[]).unwrap();
+    let ring_pk = hex::encode(key.sk_to_pk().to_bytes());
+    let created = apply(&mut hub, &mut acp, &RingCommand::Create(config), 1).unwrap();
+    for node in [2, 3, 4] {
+        hub.apply_ring_participant_request(&context(), &confirm(&created.id, node, &ring_pk))
+            .unwrap();
+    }
+    let initial = hub.threshold_ring(&created.id).unwrap().unwrap();
+    let report = |record: &RingRecord, session: &str, now, accused: u8, scope| ReportEnvelope {
+        domain: orbis_reporting::REPORT_DOMAIN.into(),
+        report_type: orbis_reporting::NODE_OFFLINE_REPORT_TYPE.into(),
+        chain_id: ring_deployment_label(context().genesis_id, context().deployment_id),
+        ring_id: record.id.clone(),
+        ring_pk: ring_pk.clone(),
+        ring_state_sha256: record.report_state_hash().unwrap(),
+        reporter_node_key: public(&secret(2)),
+        accused_node_key: public(&secret(accused)),
+        accused_peer_id: public(&secret(accused)),
+        observed_at: now,
+        expires_at: now + 120,
+        session_id: session.into(),
+        payload: NodeOffline {
+            origin_protocol: "pss_reshare".into(),
+            origin_protocol_version: 0,
+            accused_committee_scope: scope,
+            signing_committee_scope: CommitteeScope::Current,
+        }
+        .canonical_bytes(),
+    };
+    let sign = |report: ReportEnvelope| SignedReport {
+        report_id: report.report_id(),
+        signature_scheme: "bls12_381_g1_pk_g2_sig_nul".into(),
+        signature: hex::encode(
+            key.sign(
+                &report.canonical_bytes(),
+                b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_",
+                &[],
+            )
+            .to_bytes(),
+        ),
+        report,
+    };
+    let first = sign(report(
+        &initial,
+        "session-1",
+        100,
+        3,
+        CommitteeScope::Current,
+    ));
+    let outcome = hub.submit_ring_report(&context(), &first).unwrap();
+    assert_eq!(outcome.demerits.points, 1);
+    assert!(outcome.replacement.is_none());
+    let before = hub.store().serialize();
+    assert!(hub.submit_ring_report(&context(), &first).is_err());
+    let mut another_reporter = first.report.clone();
+    another_reporter.reporter_node_key = public(&secret(4));
+    assert!(
+        hub.submit_ring_report(&context(), &sign(another_reporter))
+            .is_err()
+    );
+    let mut invalid = sign(report(
+        &initial,
+        "different",
+        100,
+        3,
+        CommitteeScope::Current,
+    ));
+    invalid.signature = "00".repeat(96);
+    assert!(hub.submit_ring_report(&context(), &invalid).is_err());
+    assert_eq!(hub.store().serialize(), before);
+    let mut later = context();
+    later.timestamp.seconds = 221;
+    later.timestamp.block_height = 3;
+    assert!(hub.submit_ring_report(&later, &first).is_err());
+    let second = sign(report(
+        &initial,
+        "session-1",
+        221,
+        3,
+        CommitteeScope::Current,
+    ));
+    assert_eq!(
+        hub.submit_ring_report(&later, &second)
+            .unwrap()
+            .demerits
+            .points,
+        2
+    );
+    let third = sign(report(
+        &initial,
+        "session-2",
+        221,
+        3,
+        CommitteeScope::Current,
+    ));
+    let replaced = hub.submit_ring_report(&later, &third).unwrap();
+    assert_eq!(replaced.replacement, Some(public(&secret(5))));
+    let pending = hub.threshold_ring(&created.id).unwrap().unwrap();
+    assert_eq!(pending.sequence, initial.sequence + 1);
+    assert_eq!(pending.state, initial.state);
+    let settings = pending.current_settings();
+    assert_eq!(settings.peer_node_keys, initial.config.peer_node_keys);
+    let target = settings.pending_reshare.unwrap();
+    assert!(!target.peer_node_keys.contains(&public(&secret(3))));
+    assert!(target.peer_node_keys.contains(&public(&secret(5))));
+    assert_eq!(target.threshold, 2);
+    let before = hub.store().serialize();
+    assert!(
+        hub.submit_ring_report(
+            &later,
+            &sign(report(
+                &initial,
+                "stale-state",
+                221,
+                3,
+                CommitteeScope::Current
+            ))
+        )
+        .is_err()
+    );
+    assert!(
+        hub.submit_ring_report(
+            &later,
+            &sign(report(
+                &pending,
+                "wrong-scope",
+                221,
+                5,
+                CommitteeScope::Current
+            ))
+        )
+        .is_err()
+    );
+    assert_eq!(hub.store().serialize(), before);
+    let new_member = hub
+        .submit_ring_report(
+            &later,
+            &sign(report(
+                &pending,
+                "new-member",
+                221,
+                5,
+                CommitteeScope::PendingNew,
+            )),
+        )
+        .unwrap();
+    assert_eq!(new_member.demerits.points, 1);
+    assert!(new_member.replacement.is_none());
+    later.timestamp.seconds = 86500;
+    later.timestamp.block_height = 4;
+    let reset = hub
+        .submit_ring_report(
+            &later,
+            &sign(report(&pending, "reset", 86500, 3, CommitteeScope::Current)),
+        )
+        .unwrap();
+    assert_eq!(reset.demerits.points, 1);
+    assert_eq!(reset.demerits.window_started_at, 86500);
+    assert_eq!(
+        hub.node_demerits(&created.id, &public(&secret(3))).unwrap(),
+        Some(reset.demerits)
+    );
+    hub.store.put(
+        format!("orbis/reports/v1/{}/count", created.id).as_bytes(),
+        MAX_RETAINED_REPORTS.to_be_bytes().to_vec(),
+    );
+    let before = hub.store().serialize();
+    assert!(
+        hub.submit_ring_report(
+            &later,
+            &sign(report(
+                &pending,
+                "capacity",
+                86500,
+                3,
+                CommitteeScope::Current
+            ))
+        )
+        .is_err()
+    );
+    assert_eq!(hub.store().serialize(), before);
 }

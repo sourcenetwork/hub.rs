@@ -27,6 +27,8 @@ sol! {
         function applyRingParticipantRequest(bytes request) external returns (bytes);
         /// Finalize an announced committee change with the existing ring key.
         function finalizeRingReshare(bytes request) external returns (bytes);
+        /// Apply a threshold-authorized fault report.
+        function submitRingReport(bytes request) external returns (bytes);
 
         function getAdministration() external view returns (bytes);
 

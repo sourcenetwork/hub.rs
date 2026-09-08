@@ -4,6 +4,9 @@ use alloy_primitives::Bytes;
 use alloy_sol_types::SolCall as _;
 use hub_domain::ConsensusPublicKey;
 use hub_modules::hub::abi::IHub;
+pub use hub_modules::hub::rings::reports::{
+    CommitteeScope, NodeDemerits, NodeOffline, ReportEnvelope, ReportOutcome, SignedReport,
+};
 pub use hub_modules::hub::rings::{
     ReportingConfig, ReshareTarget, RingCommand, RingConfig, RingParticipantCommand,
     RingParticipantRequest, RingRecord, RingReshareRequest, RingSettings, RingState, RingUpdate,
@@ -58,6 +61,19 @@ pub fn encode_ring_participant_request(
 pub fn encode_ring_reshare(request: &RingReshareRequest) -> Result<Bytes, ClientError> {
     Ok(IHub::finalizeRingReshareCall {
         request: request_bytes(request)?,
+    }
+    .abi_encode()
+    .into())
+}
+
+/// Encode an aggregate-signed fault report for durable worker preparation.
+pub fn encode_ring_report(report: &SignedReport) -> Result<Bytes, ClientError> {
+    let bytes = serde_json::to_vec(report)?;
+    if bytes.len() > hub_modules::hub::rings::reports::MAX_REPORT_REQUEST_BYTES {
+        return Err(ClientError::Signing("report exceeds byte limit".into()));
+    }
+    Ok(IHub::submitRingReportCall {
+        request: bytes.into(),
     }
     .abi_encode()
     .into())

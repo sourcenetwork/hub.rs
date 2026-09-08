@@ -1,6 +1,7 @@
 //! ACP-authorized ring lifecycle and participant-authenticated fresh-DKG outcomes.
 
 mod administration;
+pub mod reports;
 mod reshare;
 mod types;
 pub use hub_crypto::threshold::ThresholdScheme;
