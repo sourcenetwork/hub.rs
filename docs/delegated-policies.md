@@ -56,3 +56,57 @@ Execution checks the exact scope, caller, deployment, validity interval and
 revocation before applying a change. Failed operations do not record delegation
 usage. The actor or the bound worker can revoke a token through
 `revokeDelegation`; revocation applies to that token, including after restart.
+
+## Provider actors and authorized relays
+
+Operators can authorize a relay to attest stable provider actors through
+`AdministrativeCommand::SetRelay`. It requires the existing operator quorum,
+exact genesis identity and next administrative sequence. A grant contains a
+canonical compressed secp256k1 issuer DID, an ordered set of scopes and an
+expiry. No relay is authorized by default. `RevokeRelay` removes the grant;
+replacement installs a new generation identified by its administrative sequence.
+Old assertions cannot become valid again after replacement or reauthorization.
+
+A relay performs provider authentication before signing. The native service
+verifies the relay's assertion against committed authority; it does not fetch
+OIDC keys during execution. The relay is trusted to attest provider identities
+within its granted scopes. Operators must provision this authority explicitly.
+
+`create_relay_token` signs ES256K claims with type `vera-relay-v1+jwt`. Standard
+native delegation claims still bind the issuer, worker, deployment and scope.
+An additional `relay` object contains:
+
+| Field | Meaning |
+|---|---|
+| `actor` | Stable `did:opk:` actor followed by 64 lowercase hexadecimal digits |
+| `genesis_id` | Exact 32-byte genesis identity, encoded as an integer array |
+| `grant_sequence` | Administrative sequence that installed the active grant |
+| `operation` | 32-byte operation commitment, encoded as an integer array |
+
+Assertions must have `nbf == iat`, last at most 600 seconds and expire no later
+than the grant. Expiry is exclusive. A relay assertion cannot use the direct
+actor-token type, or grant authority to a `did:key` actor. Direct key delegations
+remain separate. The worker and issuer may revoke individual assertions through
+`revokeDelegation`; operators can revoke the relay's entire grant.
+
+The operation commitment is SHA-256 of `vera/acp-operation/v1\0` followed by
+compact UTF-8 JSON from `DelegatedOperation`. Its externally tagged variants are
+`CreatePolicy: [definition, format]`, `EditPolicy: [policyId, definition, format]`
+and `PolicyCommand: [policyId, command]`. The JSON has no whitespace outside
+strings; strings use serde JSON escaping, fields retain declaration order, and
+formats use their enum names such as `ShortYaml`. Graph commands use the typed
+`PolicyCmd` representation. The service decodes and serializes these typed
+arguments before checking the commitment. Equivalent transport whitespace does
+not alter the operation; changing its semantic arguments does.
+
+ACP records retain the provider actor as owner and the native worker as
+submitter. Token lifecycle records retain the relay key as issuer, so revocation
+continues to require a signing identity. Provider identity parsing validates its
+representation and never supplies a public key or establishes authentication.
+Clients reading these records must support provider actor identifiers.
+
+`relay/v1/<canonical-issuer-did>` in the Hub namespace stores the Borsh-encoded
+`RelayState`. Read it through the native current-record proof endpoint and
+verify independent consensus trust and freshness before relying on the grant.
+A relay assertion is operation-bound but is not a caller idempotency key;
+separately signed submissions of the same operation may execute more than once.

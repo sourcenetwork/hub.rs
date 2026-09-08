@@ -14,7 +14,19 @@ use sha2::{Digest, Sha256};
 const SECP256K1_PUB_MULTICODEC: u64 = 0xe7;
 
 /// Operations an actor authorizes a worker to submit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+    borsh::BorshSerialize,
+    borsh::BorshDeserialize,
+)]
 pub enum DelegationScope {
     /// Object registration, archival and relationship commands.
     #[serde(rename = "acp:policy")]
@@ -28,7 +40,7 @@ pub enum DelegationScope {
 }
 
 /// Verified claims extracted from a JWT bearer token.
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JwtClaims {
     /// Issuer — a `did:key:z...` (secp256k1) identifier.
@@ -45,9 +57,31 @@ pub struct JwtClaims {
     pub iat: u64,
     /// Earliest execution time in Unix seconds.
     pub nbf: u64,
+    /// Relay assertion, accepted only under an active operator-authorized grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay: Option<RelayAssertion>,
+}
+
+/// Provider identity attested by an explicitly authorized relay.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RelayAssertion {
+    /// Stable identity authenticated by the relay.
+    pub actor: String,
+    /// Exact genesis identity of the deployment.
+    pub genesis_id: [u8; 32],
+    /// Administrative sequence that installed the current relay grant.
+    pub grant_sequence: u64,
+    /// Digest of the exact delegated operation, excluding its bearer token.
+    pub operation: [u8; 32],
 }
 
 impl JwtClaims {
+    /// Actor identity; relay claims still require committed grant verification.
+    pub fn actor(&self) -> &str {
+        self.relay.as_ref().map_or(&self.iss, |relay| &relay.actor)
+    }
+
     /// Check the authenticated caller, deployment and agreed execution time.
     pub fn authorize(&self, submitter: &str, deployment_id: u64, now: u64) -> Result<(), JwtError> {
         if self.sub != submitter || self.aud != format!("vera:{deployment_id}") {
@@ -116,7 +150,7 @@ pub fn verify_bearer_token(token: &str) -> Result<JwtClaims, JwtError> {
     if header.alg != "ES256K" {
         return Err(JwtError::UnsupportedAlgorithm(header.alg));
     }
-    if header.typ != "vera-delegation-v1+jwt" {
+    if header.typ != "vera-delegation-v1+jwt" && header.typ != "vera-relay-v1+jwt" {
         return Err(JwtError::InvalidClaims("unsupported token type".into()));
     }
     let payload_bytes = URL_SAFE_NO_PAD
@@ -124,6 +158,11 @@ pub fn verify_bearer_token(token: &str) -> Result<JwtClaims, JwtError> {
         .map_err(|e| JwtError::PayloadDecode(format!("payload base64: {e}")))?;
     let raw: JwtClaims = serde_json::from_slice(&payload_bytes)
         .map_err(|e| JwtError::PayloadDecode(format!("payload JSON: {e}")))?;
+    if raw.relay.is_some() != (header.typ == "vera-relay-v1+jwt") {
+        return Err(JwtError::InvalidClaims(
+            "token type and relay claims differ".into(),
+        ));
+    }
 
     let compressed_pubkey = compressed_pubkey_from_did(&raw.iss)?;
     let verifying_key = VerifyingKey::from_sec1_bytes(&compressed_pubkey)
@@ -151,6 +190,13 @@ pub fn verify_bearer_token(token: &str) -> Result<JwtClaims, JwtError> {
         ));
     }
     Ok(raw)
+}
+
+/// Canonical compressed key DID used to identify an authorized relay.
+pub fn canonical_issuer(issuer: &str) -> Result<String, JwtError> {
+    let key = compressed_pubkey_from_did(issuer)?;
+    crate::secp256k1::did_from_secp256k1_pubkey(&key)
+        .map_err(|error| JwtError::InvalidIssuer(error.to_string()))
 }
 
 /// Match an issuer for revocation, including compressed and uncompressed key DIDs.

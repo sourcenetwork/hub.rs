@@ -68,6 +68,10 @@ pub enum AdministrativeCommand {
     InitializeMembershipPolicy([u8; 32]),
     /// Change access-control parameters.
     SetAcpParameters(AcpParams),
+    /// Install or replace scoped relay authority, invalidating its prior assertions.
+    SetRelay(super::relay::RelayGrant),
+    /// Remove relay authority immediately at this execution revision.
+    RevokeRelay(String),
 }
 
 /// The exact administrative request covered by each operator signature.
@@ -210,6 +214,13 @@ impl HubModule {
         let encoded_state = borsh::to_vec(&state).map_err(invalid)?;
         if let AdministrativeCommand::SetAcpParameters(parameters) = &request.command {
             acp.set_params(parameters).map_err(invalid)?;
+        }
+        if let AdministrativeCommand::SetRelay(grant) = &request.command {
+            self.set_relay(grant, request.sequence, now)
+                .map_err(invalid)?;
+        }
+        if let AdministrativeCommand::RevokeRelay(issuer) = &request.command {
+            self.revoke_relay(issuer).map_err(invalid)?;
         }
         self.store.put(STATE_KEY, encoded_state);
         Ok(())

@@ -1,0 +1,364 @@
+//! Relay authority, actor attribution and revocation across serialized state.
+
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use hub_crypto::jwt::{DelegationScope, JwtClaims, RelayAssertion};
+use hub_modules::{
+    acp::{
+        AcpModule,
+        delegated_operation::DelegatedOperation,
+        types::{Object, PolicyCmd, PolicyMarshalingType},
+    },
+    hub::{HubModule, administration::*, relay::RelayGrant},
+    kv_store::InMemoryKvStore,
+    types::{BlockExecCtx, Timestamp, TxExecCtx},
+};
+use identity::Did;
+use k256::ecdsa::{
+    Signature, SigningKey,
+    signature::{Signer as _, hazmat::PrehashSigner as _},
+};
+
+const GENESIS: [u8; 32] = [7; 32];
+const POLICY: &str = "name: files\nresources:\n  - name: file\n";
+const FORMAT: PolicyMarshalingType = PolicyMarshalingType::ShortYaml;
+
+fn key() -> SigningKey {
+    SigningKey::from_slice(&[42; 32]).unwrap()
+}
+fn issuer() -> String {
+    hub_crypto::secp256k1::did_from_secp256k1_pubkey(key().verifying_key().to_sec1_bytes().as_ref())
+        .unwrap()
+}
+fn actor() -> String {
+    format!("did:opk:{}", "ab".repeat(32))
+}
+const fn context() -> BlockExecCtx {
+    BlockExecCtx {
+        genesis_id: GENESIS,
+        deployment_id: 9001,
+        timestamp: Timestamp {
+            seconds: 100,
+            block_height: 2,
+        },
+    }
+}
+fn submission() -> TxExecCtx {
+    TxExecCtx {
+        signer: "did:key:worker".into(),
+        tx_hash: vec![9; 32],
+        sequence: 0,
+    }
+}
+fn grant() -> RelayGrant {
+    RelayGrant {
+        issuer: issuer(),
+        scopes: vec![
+            DelegationScope::PolicyCommands,
+            DelegationScope::CreatePolicy,
+            DelegationScope::EditPolicy,
+        ],
+        expires_at: 800,
+    }
+}
+fn claims(operation: &DelegatedOperation<'_>) -> JwtClaims {
+    JwtClaims {
+        iss: issuer(),
+        sub: submission().signer,
+        exp: 200,
+        aud: "vera:9001".into(),
+        scope: operation.scope(),
+        iat: 100,
+        nbf: 100,
+        relay: Some(RelayAssertion {
+            actor: actor(),
+            genesis_id: GENESIS,
+            grant_sequence: 0,
+            operation: operation.digest().unwrap(),
+        }),
+    }
+}
+fn sign(claims: &JwtClaims) -> String {
+    sign_json("vera-relay-v1+jwt", &serde_json::to_string(claims).unwrap())
+}
+fn sign_json(typ: &str, payload: &str) -> String {
+    let header = URL_SAFE_NO_PAD.encode(format!(r#"{{"alg":"ES256K","typ":"{typ}"}}"#));
+    let message = format!("{header}.{}", URL_SAFE_NO_PAD.encode(payload));
+    let signature: Signature = key().sign(message.as_bytes());
+    format!("{message}.{}", URL_SAFE_NO_PAD.encode(signature.to_bytes()))
+}
+fn admin(
+    hub: &mut HubModule,
+    acp: &mut AcpModule,
+    command: AdministrativeCommand,
+) -> Result<(), hub_modules::hub::error::HubError> {
+    let request = AdministrativeRequest {
+        genesis_id: GENESIS,
+        sequence: hub.administration()?.unwrap().sequence,
+        expires_at: 500,
+        command,
+    };
+    let signature: Signature = key().sign_prehash(&request.signing_digest()?).unwrap();
+    hub.apply_administrative_request(
+        acp,
+        GENESIS,
+        100,
+        &SignedAdministrativeRequest {
+            request,
+            approvals: vec![OperatorApproval {
+                signer: 0,
+                signature: hex::encode(signature.to_bytes()),
+            }],
+        },
+    )
+}
+fn modules() -> (HubModule, AcpModule) {
+    let mut hub = HubModule::new();
+    hub.initialize_administration(OperatorPolicy {
+        threshold: 1,
+        keys: vec![hex::encode(key().verifying_key().to_sec1_bytes())],
+    })
+    .unwrap();
+    let mut acp = AcpModule::new();
+    admin(&mut hub, &mut acp, AdministrativeCommand::SetRelay(grant())).unwrap();
+    (hub, acp)
+}
+fn create(
+    hub: &mut HubModule,
+    acp: &mut AcpModule,
+    token: &str,
+) -> Result<hub_modules::acp::types::PolicyRecord, hub_modules::acp::error::AcpError> {
+    acp.bearer_create_policy(hub, &context(), &submission(), token, POLICY, FORMAT)
+}
+
+#[test]
+fn relay_preserves_actor_in_create_edit_and_registration() {
+    let (mut hub, mut acp) = modules();
+    let token = sign(&claims(&DelegatedOperation::CreatePolicy(POLICY, &FORMAT)));
+    let created = create(&mut hub, &mut acp, &token).unwrap();
+    assert_eq!(created.metadata.owner_did, actor());
+    assert_eq!(created.metadata.tx_signer, submission().signer);
+    assert_eq!(created.metadata.tx_hash, submission().tx_hash);
+    let record = hub
+        .get_jws_token(&hub_modules::hub::keys::hash_jws_token(&token))
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.issuer_did, issuer());
+    assert_eq!(record.authorized_account, submission().signer);
+    let policy = created.policy.id;
+    let mut edit = claims(&DelegatedOperation::EditPolicy(&policy, POLICY, &FORMAT));
+    let worker = Did::new(&submission().signer).unwrap();
+    edit.relay.as_mut().unwrap().actor = format!("did:opk:{}", "cd".repeat(32));
+    let before = (hub.store().serialize(), acp.store().serialize());
+    assert!(
+        acp.bearer_edit_policy(
+            &mut hub,
+            &context(),
+            &worker,
+            &sign(&edit),
+            &policy,
+            POLICY,
+            FORMAT
+        )
+        .is_err()
+    );
+    assert_eq!(before, (hub.store().serialize(), acp.store().serialize()));
+    edit.relay.as_mut().unwrap().actor = actor();
+    acp.bearer_edit_policy(
+        &mut hub,
+        &context(),
+        &worker,
+        &sign(&edit),
+        &policy,
+        POLICY,
+        FORMAT,
+    )
+    .unwrap();
+    let object = Object {
+        resource: "file".into(),
+        id: "report".into(),
+    };
+    let cmd = PolicyCmd::RegisterObject(object.clone());
+    let token = sign(&claims(&DelegatedOperation::PolicyCommand(&policy, &cmd)));
+    acp.bearer_policy_cmd(&mut hub, &context(), &worker, &token, &policy, cmd)
+        .unwrap();
+    assert_eq!(
+        acp.query_object_owner(&policy, &object)
+            .unwrap()
+            .1
+            .unwrap()
+            .metadata
+            .owner_did,
+        actor()
+    );
+    let before = (hub.store().serialize(), acp.store().serialize());
+    assert!(
+        acp.bearer_policy_cmd(
+            &mut hub,
+            &context(),
+            &worker,
+            &token,
+            &policy,
+            PolicyCmd::ArchiveObject(object)
+        )
+        .is_err()
+    );
+    assert_eq!(before, (hub.store().serialize(), acp.store().serialize()));
+}
+
+#[test]
+fn relay_assertions_fail_closed_without_mutations() {
+    let base = claims(&DelegatedOperation::CreatePolicy(POLICY, &FORMAT));
+    let (hub, acp) = modules();
+    let mut cases = Vec::new();
+    for field in ["sub", "aud", "iss"] {
+        let mut value = serde_json::to_value(&base).unwrap();
+        value[field] = "wrong".into();
+        cases.push(value);
+    }
+    for (field, value) in [
+        ("exp", 100),
+        ("exp", 801),
+        ("exp", 701),
+        ("nbf", 99),
+        ("iat", 101),
+    ] {
+        let mut claims = serde_json::to_value(&base).unwrap();
+        claims[field] = value.into();
+        cases.push(claims);
+    }
+    for (field, value) in [
+        ("grant_sequence", serde_json::json!(1)),
+        ("genesis_id", serde_json::json!([0; 32].to_vec())),
+        ("operation", serde_json::json!([0; 32].to_vec())),
+        ("actor", serde_json::json!(issuer())),
+        ("actor", serde_json::json!("did:opk:invalid")),
+    ] {
+        let mut claims = serde_json::to_value(&base).unwrap();
+        claims["relay"][field] = value;
+        cases.push(claims);
+    }
+    for value in cases {
+        let mut hub = hub.clone();
+        let mut acp = acp.clone();
+        let before = (hub.store().serialize(), acp.store().serialize());
+        let token = sign_json("vera-relay-v1+jwt", &value.to_string());
+        assert!(create(&mut hub, &mut acp, &token).is_err(), "{value}");
+        assert_eq!(before, (hub.store().serialize(), acp.store().serialize()));
+    }
+    for typ in ["vera-delegation-v1+jwt", "JWT"] {
+        assert!(
+            hub_crypto::jwt::verify_bearer_token(&sign_json(
+                typ,
+                &serde_json::to_string(&base).unwrap()
+            ))
+            .is_err()
+        );
+    }
+    let mut no_assertion = base.clone();
+    no_assertion.relay = None;
+    assert!(hub_crypto::jwt::verify_bearer_token(&sign(&no_assertion)).is_err());
+    let duplicate = serde_json::to_string(&base).unwrap().replace(
+        "\"grant_sequence\":0",
+        "\"grant_sequence\":0,\"grant_sequence\":0",
+    );
+    assert!(
+        hub_crypto::jwt::verify_bearer_token(&sign_json("vera-relay-v1+jwt", &duplicate)).is_err()
+    );
+    let token = sign(&base);
+    assert!(create(&mut HubModule::new(), &mut AcpModule::new(), &token).is_err());
+    let (mut hub, mut acp) = modules();
+    let mut restricted = grant();
+    restricted.scopes = vec![DelegationScope::PolicyCommands];
+    admin(
+        &mut hub,
+        &mut acp,
+        AdministrativeCommand::SetRelay(restricted),
+    )
+    .unwrap();
+    let mut claims = base;
+    claims.relay.as_mut().unwrap().grant_sequence = 1;
+    assert!(create(&mut hub, &mut acp, &sign(&claims)).is_err());
+}
+
+#[test]
+fn relay_and_assertion_revocations_survive_reopen_and_regrant() {
+    let (mut hub, mut acp) = modules();
+    let mut claims = claims(&DelegatedOperation::CreatePolicy(POLICY, &FORMAT));
+    let token = sign(&claims);
+    let worker = Did::new(&claims.sub).unwrap();
+    assert!(
+        hub.revoke_delegation(&context(), &Did::new("did:key:stranger").unwrap(), &token)
+            .is_err()
+    );
+    let mut foreign = context();
+    foreign.genesis_id = [8; 32];
+    assert!(hub.revoke_delegation(&foreign, &worker, &token).is_err());
+    hub.revoke_delegation(&context(), &worker, &token).unwrap();
+    assert!(create(&mut hub, &mut acp, &token).is_err());
+    claims.exp += 1;
+    let unused = sign(&claims);
+    create(&mut hub, &mut acp, &unused).unwrap();
+    admin(
+        &mut hub,
+        &mut acp,
+        AdministrativeCommand::RevokeRelay(issuer()),
+    )
+    .unwrap();
+    let bytes = hub.store().serialize();
+    hub = HubModule::from_store(InMemoryKvStore::deserialize(&bytes).unwrap());
+    assert!(create(&mut hub, &mut acp, &unused).is_err());
+    admin(&mut hub, &mut acp, AdministrativeCommand::SetRelay(grant())).unwrap();
+    assert!(create(&mut hub, &mut acp, &unused).is_err());
+    claims.relay.as_mut().unwrap().grant_sequence = 2;
+    create(&mut hub, &mut acp, &sign(&claims)).unwrap();
+    assert!(create(&mut hub, &mut acp, &token).is_err());
+}
+
+#[test]
+fn invalid_grants_do_not_consume_operator_sequence() {
+    let (hub, acp) = modules();
+    let mut cases = Vec::new();
+    let mut invalid = grant();
+    invalid.scopes.clear();
+    cases.push(invalid);
+    let mut invalid = grant();
+    invalid.scopes.reverse();
+    cases.push(invalid);
+    let mut invalid = grant();
+    invalid.scopes.push(DelegationScope::EditPolicy);
+    cases.push(invalid);
+    let mut invalid = grant();
+    invalid.expires_at = 100;
+    cases.push(invalid);
+    let mut invalid = grant();
+    invalid.issuer = "did:key:invalid".into();
+    cases.push(invalid);
+    for invalid in cases {
+        let mut hub = hub.clone();
+        let mut acp = acp.clone();
+        let before = hub.store().serialize();
+        assert!(admin(&mut hub, &mut acp, AdministrativeCommand::SetRelay(invalid)).is_err());
+        assert_eq!(hub.store().serialize(), before);
+    }
+}
+
+#[test]
+fn operation_commitments_match_independent_json_vectors() {
+    let command = PolicyCmd::RegisterObject(Object {
+        resource: "file".into(),
+        id: "report".into(),
+    });
+    let operations = [
+        DelegatedOperation::CreatePolicy(POLICY, &FORMAT),
+        DelegatedOperation::EditPolicy("policy-id", POLICY, &FORMAT),
+        DelegatedOperation::PolicyCommand("policy-id", &command),
+    ];
+    let expected = [
+        "d1539d909f3395fb921de0d7c5ac64e85c92b7e9147f0f714e76f45087161ac0",
+        "7413ed3d879aebce3ab6f2c4ba0ae03ce8313afb89007c9b97404e6f42a96ee9",
+        "43300ea9818bece4ed37a2f9b9e0fdbd8852e547f9b714000aa174d96d9f76f5",
+    ];
+    for (operation, expected) in operations.iter().zip(expected) {
+        assert_eq!(hex::encode(operation.digest().unwrap()), expected);
+    }
+}

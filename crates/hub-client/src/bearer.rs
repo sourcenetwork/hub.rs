@@ -57,6 +57,44 @@ pub fn create_scoped_bearer_token(
     })
     .to_string();
 
+    sign_payload(signing_key, header, &payload)
+}
+
+/// Sign an operation-bound relay assertion. The issuer must match the signing key.
+/// The node separately verifies the committed grant, actor authority and revocations.
+pub fn create_relay_token(
+    signing_key: &SigningKey,
+    claims: &hub_crypto::jwt::JwtClaims,
+) -> Result<String, ClientError> {
+    let issuer = hub_crypto::secp256k1::did_from_secp256k1_pubkey(
+        signing_key
+            .verifying_key()
+            .to_encoded_point(true)
+            .as_bytes(),
+    )
+    .map_err(|error| ClientError::Signing(error.to_string()))?;
+    if claims.iss != issuer
+        || claims.relay.is_none()
+        || claims.nbf != claims.iat
+        || claims.iat >= claims.exp
+        || claims.exp - claims.iat > hub_modules::hub::relay::MAX_RELAY_TOKEN_TTL
+    {
+        return Err(ClientError::Signing(
+            "invalid relay issuer, assertion or lifetime".into(),
+        ));
+    }
+    sign_payload(
+        signing_key,
+        r#"{"alg":"ES256K","typ":"vera-relay-v1+jwt"}"#,
+        &serde_json::to_string(claims)?,
+    )
+}
+
+fn sign_payload(
+    signing_key: &SigningKey,
+    header: &str,
+    payload: &str,
+) -> Result<String, ClientError> {
     let header_b64 = URL_SAFE_NO_PAD.encode(header.as_bytes());
     let payload_b64 = URL_SAFE_NO_PAD.encode(payload.as_bytes());
 

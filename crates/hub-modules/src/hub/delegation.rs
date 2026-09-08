@@ -12,6 +12,7 @@ impl HubModule {
         caller: &Did,
         token: &str,
         scope: DelegationScope,
+        operation: [u8; 32],
     ) -> Result<JwtClaims> {
         let claims = verify_bearer_token(token).map_err(invalid)?;
         if claims.scope != scope {
@@ -24,6 +25,7 @@ impl HubModule {
                 context.timestamp.seconds,
             )
             .map_err(invalid)?;
+        self.authorize_relay(&claims, operation, context)?;
         if self
             .get_jws_token(&Self::hash_jws_token(token))?
             .is_some_and(|record| record.status != JWSTokenStatus::Valid)
@@ -43,6 +45,9 @@ impl HubModule {
         let claims = verify_bearer_token(token).map_err(invalid)?;
         let caller = caller.to_string();
         if claims.aud != format!("vera:{}", context.deployment_id)
+            || claims.relay.as_ref().is_some_and(|relay| {
+                context.genesis_id == [0; 32] || relay.genesis_id != context.genesis_id
+            })
             || (!matches_issuer(&claims.iss, &caller) && caller != claims.sub)
         {
             return Err(HubError::Unauthorized {

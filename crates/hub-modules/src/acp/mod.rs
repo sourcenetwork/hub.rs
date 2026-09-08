@@ -3,6 +3,7 @@
 /// Solidity ABI interface for the ACP precompile.
 pub mod abi;
 pub mod decision;
+pub mod delegated_operation;
 mod delegation;
 /// ACP error types.
 pub mod error;

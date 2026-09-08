@@ -1,6 +1,7 @@
 use hub_crypto::jwt::DelegationScope;
 use identity::Did;
 
+use super::delegated_operation::DelegatedOperation;
 use super::{AcpError, AcpModule, Result};
 use crate::acp::types::{
     PolicyCmd, PolicyCmdResult, PolicyMarshalingType, PolicyRecord, RecordMetadata,
@@ -33,7 +34,10 @@ impl AcpModule {
             context,
             &caller,
             token,
-            DelegationScope::CreatePolicy,
+            (
+                DelegationScope::CreatePolicy,
+                DelegatedOperation::CreatePolicy(policy, &marshal_type).digest()?,
+            ),
             |module, actor| {
                 module.create_policy_with_metadata(
                     policy,
@@ -66,7 +70,10 @@ impl AcpModule {
             context,
             caller,
             token,
-            DelegationScope::EditPolicy,
+            (
+                DelegationScope::EditPolicy,
+                DelegatedOperation::EditPolicy(policy_id, policy, &marshal_type).digest()?,
+            ),
             |module, actor| module.edit_policy(actor, policy_id, policy, marshal_type),
         )
     }
@@ -86,7 +93,10 @@ impl AcpModule {
             context,
             caller,
             token,
-            DelegationScope::PolicyCommands,
+            (
+                DelegationScope::PolicyCommands,
+                DelegatedOperation::PolicyCommand(policy_id, &cmd).digest()?,
+            ),
             |module, actor| module.direct_policy_cmd(actor, policy_id, cmd),
         )
     }
@@ -97,16 +107,19 @@ impl AcpModule {
         context: &BlockExecCtx,
         caller: &Did,
         token: &str,
-        scope: DelegationScope,
+        delegated: (DelegationScope, [u8; 32]),
         operation: impl FnOnce(&mut Self, &Did) -> Result<T>,
     ) -> Result<T> {
         let invalid = |error: crate::hub::error::HubError| AcpError::InvalidBearerToken {
             reason: error.to_string(),
         };
         let claims = hub
-            .authorize_delegation(context, caller, token, scope)
+            .authorize_delegation(context, caller, token, delegated.0, delegated.1)
             .map_err(invalid)?;
-        let actor = Did::new(&claims.iss).map_err(|error| AcpError::InvalidBearerToken {
+        let actor = Did::new(claims.actor()).map_err(|error| AcpError::InvalidBearerToken {
+            reason: error.to_string(),
+        })?;
+        let issuer = Did::new(&claims.iss).map_err(|error| AcpError::InvalidBearerToken {
             reason: error.to_string(),
         })?;
         let before = self.clone();
@@ -114,7 +127,7 @@ impl AcpModule {
             hub.store_or_update_jws_token(
                 context,
                 token,
-                &actor,
+                &issuer,
                 &claims.sub,
                 Timestamp {
                     seconds: claims.iat,

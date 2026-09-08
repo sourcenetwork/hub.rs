@@ -96,6 +96,11 @@ Each module is a plain Rust struct. Two thin shims sit on top:
 
 Business logic lives once.
 
+Provider relay grants use the same operator quorum as administrative changes.
+Relay assertions bind a stable `did:opk` actor, native worker, genesis, scope,
+grant generation and exact operation. ACP stores the actor as owner; token
+records retain the signing relay as issuer. See docs/delegated-policies.md.
+
 Delegated policy creation and editing preserve the actor as owner while a
 separate worker signs the submission. Creation and editing require distinct
 scopes; existing object-command tokens do not authorize either operation.

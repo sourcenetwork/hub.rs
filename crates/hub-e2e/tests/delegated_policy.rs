@@ -329,3 +329,254 @@ async fn native_workers_preserve_policy_ownership_results_and_revocation() {
         second.nonce()
     );
 }
+
+#[path = "support/administration.rs"]
+mod administration_support;
+
+#[tokio::test]
+async fn native_relay_grants_bind_workers_and_survive_revocation_restart() {
+    use hub_client::{administration::AdministrativeCommand, create_relay_token};
+    use hub_crypto::jwt::{JwtClaims, RelayAssertion};
+    use hub_e2e::cluster::GenesisBuilder;
+    use hub_modules::{
+        acp::{delegated_operation::DelegatedOperation, types::PolicyMarshalingType},
+        hub::relay::RelayGrant,
+    };
+
+    let deployment = 9061;
+    let trusted = *KeySet::builder()
+        .seed(deployment)
+        .build()
+        .unwrap()
+        .epoch_info()
+        .output
+        .public()
+        .public();
+    let mut cluster = TestCluster::builder()
+        .nodes(4)
+        .seed(deployment)
+        .chain_id(deployment)
+        .genesis(GenesisBuilder::devnet().operators(administration_support::operators()))
+        .preset(ConsensusPreset::Normal)
+        .build()
+        .await
+        .unwrap();
+    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    let client = HubClient::new(cluster.node(0).rpc_url());
+    let key = SigningKey::from_slice(&[42; 32]).unwrap();
+    let issuer = hub_crypto::secp256k1::did_from_secp256k1_pubkey(
+        key.verifying_key().to_encoded_point(true).as_bytes(),
+    )
+    .unwrap();
+    let owner = format!("did:opk:{}", "ab".repeat(32));
+    let first = BlsSigner::new(7u64.into(), deployment).unwrap();
+    let second = BlsSigner::new(8u64.into(), deployment).unwrap();
+    let operator_submitter = BlsSigner::new(9u64.into(), deployment).unwrap();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let grant = RelayGrant {
+        issuer: issuer.clone(),
+        scopes: vec![DelegationScope::CreatePolicy],
+        expires_at: now + 600,
+    };
+    let approved =
+        administration_support::approve(&client, AdministrativeCommand::SetRelay(grant.clone()), 0)
+            .await;
+    let token = |worker: &BlsSigner, sequence| {
+        create_relay_token(
+            &key,
+            &JwtClaims {
+                iss: issuer.clone(),
+                sub: worker.did().into(),
+                exp: now + 300,
+                aud: format!("vera:{deployment}"),
+                scope: DelegationScope::CreatePolicy,
+                iat: now,
+                nbf: now,
+                relay: Some(RelayAssertion {
+                    actor: owner.clone(),
+                    genesis_id: approved.request.genesis_id,
+                    grant_sequence: sequence,
+                    operation: DelegatedOperation::CreatePolicy(
+                        POLICY,
+                        &PolicyMarshalingType::ShortYaml,
+                    )
+                    .digest()
+                    .unwrap(),
+                }),
+            },
+        )
+        .unwrap()
+    };
+    let first_token = token(&first, 0);
+    let second_token = token(&second, 0);
+    let rejected = submit(&client, &trusted, &first, ACP_ADDRESS, create(&first_token)).await;
+    assert_eq!(rejected.status, 0);
+    assert!(rejected.logs.is_empty());
+    let installed = submit(
+        &client,
+        &trusted,
+        &operator_submitter,
+        HUB_ADDRESS,
+        IHub::applyAdministrationCall {
+            request: serde_json::to_vec(&approved).unwrap().into(),
+        },
+    )
+    .await;
+    assert_eq!(installed.status, 1);
+    let (a, b) = tokio::join!(
+        submit(&client, &trusted, &first, ACP_ADDRESS, create(&first_token)),
+        submit(
+            &client,
+            &trusted,
+            &second,
+            ACP_ADDRESS,
+            create(&second_token)
+        ),
+    );
+    let id = created_id(&a, &owner);
+    assert_ne!(id, created_id(&b, &owner));
+    for receipt in [&a, &b] {
+        let id = created_id(receipt, &owner);
+        let record = policy(&client, &id, receipt.block_number, &trusted).await;
+        assert_eq!(record.metadata.owner_did, owner);
+        assert_eq!(
+            Some(record.metadata.tx_signer.as_str()),
+            receipt.signer_did.as_deref()
+        );
+        assert_eq!(record.metadata.tx_hash, receipt.transaction_hash.as_slice());
+    }
+    let wrong_worker = submit(
+        &client,
+        &trusted,
+        &first,
+        ACP_ADDRESS,
+        create(&second_token),
+    )
+    .await;
+    assert_eq!(wrong_worker.status, 0);
+    let mut changed = create(&first_token);
+    changed.policy = EDITED.as_bytes().to_vec().into();
+    assert_eq!(
+        submit(&client, &trusted, &first, ACP_ADDRESS, changed)
+            .await
+            .status,
+        0
+    );
+    assert_eq!(
+        submit(
+            &client,
+            &trusted,
+            &first,
+            HUB_ADDRESS,
+            IHub::revokeDelegationCall {
+                token: first_token.clone()
+            }
+        )
+        .await
+        .status,
+        1
+    );
+    assert_eq!(
+        submit(&client, &trusted, &first, ACP_ADDRESS, create(&first_token))
+            .await
+            .status,
+        0
+    );
+    assert_eq!(
+        submit(
+            &client,
+            &trusted,
+            &second,
+            ACP_ADDRESS,
+            create(&second_token)
+        )
+        .await
+        .status,
+        1
+    );
+
+    let replacement =
+        administration_support::approve(&client, AdministrativeCommand::SetRelay(grant), 1).await;
+    assert_eq!(
+        submit(
+            &client,
+            &trusted,
+            &operator_submitter,
+            HUB_ADDRESS,
+            IHub::applyAdministrationCall {
+                request: serde_json::to_vec(&replacement).unwrap().into()
+            }
+        )
+        .await
+        .status,
+        1
+    );
+    assert_eq!(
+        submit(
+            &client,
+            &trusted,
+            &second,
+            ACP_ADDRESS,
+            create(&second_token)
+        )
+        .await
+        .status,
+        0
+    );
+    let replacement_token = token(&second, 1);
+    assert_eq!(
+        submit(
+            &client,
+            &trusted,
+            &second,
+            ACP_ADDRESS,
+            create(&replacement_token)
+        )
+        .await
+        .status,
+        1
+    );
+    let revoked = administration_support::approve(
+        &client,
+        AdministrativeCommand::RevokeRelay(issuer.clone()),
+        2,
+    )
+    .await;
+    let receipt = submit(
+        &client,
+        &trusted,
+        &operator_submitter,
+        HUB_ADDRESS,
+        IHub::applyAdministrationCall {
+            request: serde_json::to_vec(&revoked).unwrap().into(),
+        },
+    )
+    .await;
+    assert_eq!(receipt.status, 1);
+    let replica = HubClient::new(cluster.node(3).rpc_url());
+    policy(&replica, &id, receipt.block_number, &trusted).await;
+    cluster.restart_node(3).unwrap();
+    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    assert_eq!(
+        submit(
+            &replica,
+            &trusted,
+            &second,
+            ACP_ADDRESS,
+            create(&replacement_token)
+        )
+        .await
+        .status,
+        0
+    );
+    assert_eq!(
+        policy(&replica, &id, receipt.block_number, &trusted)
+            .await
+            .metadata
+            .owner_did,
+        owner
+    );
+}
