@@ -27,7 +27,7 @@ use crate::{Block, BlockCfg, ConsensusDigest, PublicKey, TxCfg};
 pub const LIGHT_BLOCK_NAMESPACE: &[u8] = b"_COMMONWARE_HUB_SIMPLEX";
 /// Maximum participant count accepted from an untrusted light-block response.
 pub const LIGHT_BLOCK_MAX_PARTICIPANTS: u32 = 64;
-const LIGHT_BLOCK_MAX_TXS: usize = 64;
+pub(crate) const LIGHT_BLOCK_MAX_TXS: usize = 64;
 const LIGHT_BLOCK_MAX_TX_BYTES: usize = 65_536;
 /// Maximum descendants linking a requested revision to a direct certificate.
 pub const LIGHT_BLOCK_MAX_DESCENDANTS: usize = 64;

@@ -367,6 +367,20 @@ fn receipt_evidence_binds_results_to_finality_and_submission() {
     let encoded = serde_json::to_vec(&response).unwrap();
     let decoded: ReceiptResponse = serde_json::from_slice(&encoded).unwrap();
     assert!(decoded.verify(first, &trusted_key()).unwrap().success());
+    let mut at_limit = response.clone();
+    at_limit
+        .receipts
+        .resize(LIGHT_BLOCK_MAX_TXS, response.receipts[0].clone());
+    let encoded = serde_json::to_vec(&at_limit).unwrap();
+    assert!(serde_json::from_slice::<ReceiptResponse>(&encoded).is_ok());
+    at_limit.receipts.push(response.receipts[0].clone());
+    let encoded = serde_json::to_vec(&at_limit).unwrap();
+    assert!(
+        serde_json::from_slice::<ReceiptResponse>(&encoded)
+            .unwrap_err()
+            .to_string()
+            .contains("too many execution receipts")
+    );
     for mutation in 0..7 {
         let mut changed = response.clone();
         match mutation {
