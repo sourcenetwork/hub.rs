@@ -29,8 +29,8 @@ pub const PAGE_CACHE_SIZE: NonZeroUsize = NZUsize!(4096);
 pub const IO_BUFFER_SIZE: NonZeroUsize = NZUsize!(1024 * 1024);
 /// Mailbox capacity for every actor.
 pub const MAILBOX_SIZE: NonZeroUsize = NZUsize!(1024);
-/// Per-peer message quota for every P2P channel.
-pub const MESSAGE_RATE: Quota = Quota::per_second(NZU32!(1000));
+/// Per-peer channel rate. Burst size also bounds Commonware's preallocated mailboxes.
+pub const MESSAGE_RATE: Quota = Quota::per_second(NZU32!(1000)).allow_burst(NZU32!(64));
 pub use hub_domain::{MAX_BLOCK_TXS, MAX_MESSAGE_BYTES as MAX_MESSAGE_SIZE, MAX_TX_BYTES};
 
 /// P2P channel carrying simplex votes.

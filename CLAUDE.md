@@ -35,7 +35,10 @@ stops:
 
 - **P2P:** `commonware_p2p::authenticated::discovery` network bootstrapped from
   `peers.json`, with registered channels for votes, certificates, the marshal
-  resolver, backfill, block broadcast, DKG, DKG probe, and the mempool.
+  resolver, backfill, block broadcast, DKG, DKG probe, mempool, history, and
+  authenticated state transfer. Each channel permits 1,000 messages/second per
+  peer with a burst of 64. Commonware sizes queues from retained-peer count
+  times burst size, so the burst also controls startup queue allocation.
 - **Consensus:** the Commonware `marshal` actor (block archive + finalization
   storage) driven by the glue `orchestrator` running Simplex with a
   `FixedEpocher` over genesis `blocks_per_epoch` and a VRF elector that feeds
