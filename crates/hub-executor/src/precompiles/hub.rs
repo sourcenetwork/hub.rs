@@ -76,6 +76,25 @@ pub(super) fn dispatch(
                 Err(error) => Ok(err_dispatch(error)),
             }
         }
+        IHub::finalizeRingReshareCall::SELECTOR => {
+            if gas_limit < 500_000 {
+                return Err(PrecompileError::OutOfGas);
+            }
+            let call = IHub::finalizeRingReshareCall::abi_decode(input).map_err(decode_error)?;
+            if call.request.len() > hub_modules::hub::rings::MAX_RING_REQUEST_BYTES {
+                return Err(PrecompileError::Other("ring request is too large".into()));
+            }
+            let signed = serde_json::from_slice(&call.request)
+                .map_err(|error| PrecompileError::Other(error.to_string().into()))?;
+            match module.finalize_ring_reshare(block_ctx, &signed) {
+                Ok(record) => Ok(ok_dispatch(
+                    500_000,
+                    IHub::finalizeRingReshareCall::abi_encode_returns(&json_bytes(&record)),
+                    vec![],
+                )),
+                Err(error) => Ok(err_dispatch(error)),
+            }
+        }
         IHub::applyNodeRequestCall::SELECTOR => {
             if gas_limit < 100_000 {
                 return Err(PrecompileError::OutOfGas);

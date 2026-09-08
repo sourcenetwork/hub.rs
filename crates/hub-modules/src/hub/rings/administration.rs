@@ -120,7 +120,7 @@ impl HubModule {
         Ok(record)
     }
 
-    fn require_ring_nodes(&self, keys: &[String], record: &RingRecord) -> Result<()> {
+    pub(super) fn require_ring_nodes(&self, keys: &[String], record: &RingRecord) -> Result<()> {
         for key in keys {
             let node = self
                 .threshold_node(key)?

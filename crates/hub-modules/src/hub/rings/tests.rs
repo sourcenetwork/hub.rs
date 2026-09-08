@@ -635,3 +635,135 @@ fn ring_reporting_relays_and_reshare_targets_preserve_controller_constraints() {
         removed
     );
 }
+
+#[test]
+fn reshare_finalization_preserves_key_and_rejects_replay_and_changed_authority() {
+    let policy = POLICY.replace("  - name: ring\n", "  - name: ring\n    relations:\n      - name: operator\n    permissions:\n      - name: update_ring\n        expr: operator\n");
+    let (mut hub, mut acp, config) = fixture(&policy);
+    let key = blst::min_pk::SecretKey::key_gen(&[42; 32], &[]).unwrap();
+    let public_key = hex::encode(key.sk_to_pk().to_bytes());
+    let ring = apply(&mut hub, &mut acp, &RingCommand::Create(config), 1).unwrap();
+    for node in [2, 3] {
+        hub.apply_ring_participant_request(&context(), &confirm(&ring.id, node, &public_key))
+            .unwrap();
+    }
+    let active = hub.threshold_ring(&ring.id).unwrap().unwrap();
+    let update = |sequence, update| RingCommand::Update {
+        ring_id: ring.id.clone(),
+        expected_sequence: sequence,
+        update,
+    };
+    let pending = apply(
+        &mut hub,
+        &mut acp,
+        &update(
+            active.sequence,
+            RingUpdate::StartReshare {
+                peer_node_keys: Some(vec![public(&secret(3))]),
+                threshold: Some(1),
+            },
+        ),
+        2,
+    )
+    .unwrap();
+    let sign = |record: &RingRecord| RingReshareRequest {
+        deployment_root: context().genesis_id,
+        deployment_id: context().deployment_id,
+        ring_id: record.id.clone(),
+        expected_sequence: record.sequence,
+        scheme: ThresholdScheme::Bls12381,
+        signature: hex::encode(
+            key.sign(
+                &record
+                    .reshare_signing_bytes(context().deployment_id)
+                    .unwrap(),
+                b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_",
+                &[],
+            )
+            .to_bytes(),
+        ),
+    };
+    let signed = sign(&pending);
+    for variant in 0..5 {
+        let mut bad = signed.clone();
+        match variant {
+            0 => bad.deployment_root[0] ^= 1,
+            1 => bad.deployment_id += 1,
+            2 => bad.expected_sequence += 1,
+            3 => bad.signature = "00".repeat(96),
+            _ => bad.scheme = ThresholdScheme::Decaf377Frost,
+        }
+        let before = hub.store().serialize();
+        assert!(hub.finalize_ring_reshare(&context(), &bad).is_err());
+        assert_eq!(hub.store().serialize(), before);
+    }
+    let changed = apply(
+        &mut hub,
+        &mut acp,
+        &update(pending.sequence, RingUpdate::SetPssInterval(90000)),
+        3,
+    )
+    .unwrap();
+    let mut stale = signed;
+    stale.expected_sequence = changed.sequence;
+    assert!(hub.finalize_ring_reshare(&context(), &stale).is_err());
+    let signed = sign(&changed);
+    let change_permission = |hub: &mut HubModule, sequence, command| {
+        let request = NodeRequest {
+            deployment_root: context().genesis_id,
+            deployment_id: context().deployment_id,
+            node_key: public(&secret(3)),
+            sequence,
+            expires_at: 200,
+            command,
+        };
+        let signature: Signature = secret(3)
+            .sign_prehash(&request.signing_digest().unwrap())
+            .unwrap();
+        hub.apply_node_request(
+            &context(),
+            &SignedNodeRequest {
+                request,
+                signer_key: public(&secret(3)),
+                signature: hex::encode(signature.to_bytes()),
+            },
+        )
+        .unwrap();
+    };
+    let target = crate::hub::nodes::NodeTarget::Policy(ring.config.policy_id.clone());
+    change_permission(&mut hub, 1, NodeCommand::Disallow(target.clone()));
+    let before = hub.store().serialize();
+    assert!(hub.finalize_ring_reshare(&context(), &signed).is_err());
+    assert_eq!(hub.store().serialize(), before);
+    change_permission(&mut hub, 2, NodeCommand::Allow(target));
+    let finalized = hub.finalize_ring_reshare(&context(), &signed).unwrap();
+    assert_eq!(finalized.state, active.state);
+    assert_eq!(finalized.id, ring.id);
+    assert_eq!(finalized.config, ring.config);
+    assert_eq!(finalized.sequence, changed.sequence + 1);
+    let settings = finalized.current_settings();
+    assert_eq!(settings.peer_node_keys, vec![public(&secret(3))]);
+    assert_eq!(settings.threshold, 1);
+    assert_eq!(settings.pss_interval, 90000);
+    assert!(settings.pending_reshare.is_none());
+    assert!(hub.finalize_ring_reshare(&context(), &signed).is_err());
+    let next = apply(
+        &mut hub,
+        &mut acp,
+        &update(
+            finalized.sequence,
+            RingUpdate::StartReshare {
+                peer_node_keys: Some(ring.config.peer_node_keys.clone()),
+                threshold: Some(2),
+            },
+        ),
+        4,
+    )
+    .unwrap();
+    let mut replay = signed;
+    replay.expected_sequence = next.sequence;
+    assert!(hub.finalize_ring_reshare(&context(), &replay).is_err());
+    let restored = hub.finalize_ring_reshare(&context(), &sign(&next)).unwrap();
+    assert_eq!(restored.current_settings().threshold, 2);
+    assert_eq!(restored.state, active.state);
+}

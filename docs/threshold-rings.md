@@ -79,6 +79,22 @@ registered and their controllers must permit the ring or its policy. A resharing
 announcement records the target committee and threshold while the current committee
 continues serving; a second announcement is rejected while one is pending.
 
-Threshold-signed resharing finalization, report processing, document and
-key-derivation services are separate pending work. This API does not import
+## Resharing finalization
+
+`RingRecord::reshare_signing_bytes` builds the existing Orbis protobuf signing
+document from the current committee, pending target, policy, relay set and ring
+sequence. Its deployment namespace is `vera:<deployment_id>:<deployment_root_hex>`.
+The sequence advances for every administrative mutation, so even changes to
+settings omitted from the protobuf projection invalidate previous signatures.
+
+Submit the aggregate signature with `encode_ring_reshare` through the durable
+worker. The service verifies either `bls12_381_g1_pk_g2_sig_nul` or
+`decaf377_frost` against the existing ring key, then rechecks target controllers'
+current permission. It atomically replaces the committee/threshold, clears the
+pending target and advances the sequence. The ring identifier and public key
+remain unchanged. Replays, changed targets and outdated sequences are rejected.
+
+This verifies threshold authorization for finalization; it does not verify the
+underlying resharing transcript or guarantee participants retained their shares.
+Report processing, document and key-derivation services are separate pending work. This API does not import
 existing rings or choose an encrypted-record migration policy.

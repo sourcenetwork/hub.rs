@@ -25,6 +25,8 @@ sol! {
         function applyRingCommand(bytes request, string bearerToken) external returns (bytes);
 
         function applyRingParticipantRequest(bytes request) external returns (bytes);
+        /// Finalize an announced committee change with the existing ring key.
+        function finalizeRingReshare(bytes request) external returns (bytes);
 
         function getAdministration() external view returns (bytes);
 

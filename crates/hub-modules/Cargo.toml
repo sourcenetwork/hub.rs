@@ -24,9 +24,11 @@ imbl = "5.0.0"
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+prost = "0.14"
 thiserror.workspace = true
 
 [dev-dependencies]
+blst = "0.3"
 base64.workspace = true
 k256.workspace = true
 

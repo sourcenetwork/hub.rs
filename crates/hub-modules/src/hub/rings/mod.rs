@@ -1,7 +1,10 @@
 //! ACP-authorized ring lifecycle and participant-authenticated fresh-DKG outcomes.
 
 mod administration;
+mod reshare;
 mod types;
+pub use hub_crypto::threshold::ThresholdScheme;
+pub use reshare::{RingReshareRequest, ring_deployment_label};
 pub use types::*;
 
 use super::{HubError, HubModule, Result};

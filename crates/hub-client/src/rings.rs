@@ -6,8 +6,8 @@ use hub_domain::ConsensusPublicKey;
 use hub_modules::hub::abi::IHub;
 pub use hub_modules::hub::rings::{
     ReportingConfig, ReshareTarget, RingCommand, RingConfig, RingParticipantCommand,
-    RingParticipantRequest, RingRecord, RingSettings, RingState, RingUpdate, ScheduledUpgrade,
-    SignedRingParticipantRequest,
+    RingParticipantRequest, RingRecord, RingReshareRequest, RingSettings, RingState, RingUpdate,
+    ScheduledUpgrade, SignedRingParticipantRequest, ThresholdScheme, ring_deployment_label,
 };
 use k256::ecdsa::{Signature, SigningKey, signature::hazmat::PrehashSigner as _};
 
@@ -49,6 +49,15 @@ pub fn encode_ring_participant_request(
 ) -> Result<Bytes, ClientError> {
     Ok(IHub::applyRingParticipantRequestCall {
         request: request_bytes(signed)?,
+    }
+    .abi_encode()
+    .into())
+}
+
+/// Encode a threshold-signed reshare for durable worker preparation.
+pub fn encode_ring_reshare(request: &RingReshareRequest) -> Result<Bytes, ClientError> {
+    Ok(IHub::finalizeRingReshareCall {
+        request: request_bytes(request)?,
     }
     .abi_encode()
     .into())

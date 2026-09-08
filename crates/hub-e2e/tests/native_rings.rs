@@ -55,6 +55,8 @@ async fn execute(
 #[tokio::test]
 async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
     let deployment = 9067;
+    let ring_secret = blst::min_pk::SecretKey::key_gen(&[42; 32], &[]).unwrap();
+    let ring_public = hex::encode(ring_secret.sk_to_pk().to_bytes());
     let trusted = *KeySet::builder()
         .seed(deployment)
         .build()
@@ -251,7 +253,7 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
     let first = participant(
         &ring,
         &nodes[0],
-        RingParticipantCommand::Confirm("aabb".into()),
+        RingParticipantCommand::Confirm(ring_public.clone()),
     );
     execute(
         &writer,
@@ -281,7 +283,7 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
     let second = participant(
         &ring,
         &nodes[1],
-        RingParticipantCommand::Confirm("aabb".into()),
+        RingParticipantCommand::Confirm(ring_public.clone()),
     );
     let confirmed = execute(
         &writer,
@@ -346,7 +348,7 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
     assert_eq!(
         recovered.state,
         RingState::Active {
-            public_key: "aabb".into()
+            public_key: ring_public.clone()
         }
     );
     assert_eq!(recovered.config, config);
@@ -361,6 +363,56 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
             threshold: 1,
         }
     );
+
+    let signature = ring_secret
+        .sign(
+            &recovered.reshare_signing_bytes(deployment).unwrap(),
+            b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_",
+            &[],
+        )
+        .to_bytes();
+    let finalize = encode_ring_reshare(&RingReshareRequest {
+        deployment_root: root.0,
+        deployment_id: deployment,
+        ring_id: ring.clone(),
+        expected_sequence: recovered.sequence,
+        scheme: ThresholdScheme::Bls12381,
+        signature: hex::encode(signature),
+    })
+    .unwrap();
+    let finalized = execute(
+        &writer,
+        &reader,
+        &worker,
+        &trusted,
+        HUB_ADDRESS,
+        finalize.clone(),
+        true,
+    )
+    .await;
+    execute(
+        &writer,
+        &reader,
+        &worker,
+        &trusted,
+        HUB_ADDRESS,
+        finalize,
+        false,
+    )
+    .await;
+    cluster.restart_node(3).unwrap();
+    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    let final_record = reader
+        .read_threshold_ring(&ring, finalized.block_number, &trusted)
+        .await
+        .unwrap()
+        .record
+        .unwrap();
+    assert_eq!(final_record.state, recovered.state);
+    assert_eq!(final_record.config, config);
+    assert_eq!(final_record.sequence, recovered.sequence + 1);
+    assert_eq!(final_record.current_settings().threshold, 1);
+    assert!(final_record.current_settings().pending_reshare.is_none());
 
     config.nonce = [2; 32];
     let ring = config.id(root.0, &actor).unwrap();
@@ -419,7 +471,7 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
         encode_ring_participant_request(&participant(
             &ring,
             &nodes[1],
-            RingParticipantCommand::Confirm("aabb".into()),
+            RingParticipantCommand::Confirm(ring_public.clone()),
         ))
         .unwrap(),
         false,

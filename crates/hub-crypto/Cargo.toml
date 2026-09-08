@@ -17,6 +17,8 @@ ark-ec.workspace = true
 ark-ff.workspace = true
 ark-serialize.workspace = true
 sha2.workspace = true
+blst = "0.3"
+decaf377 = "0.10"
 
 # DID derivation
 multibase.workspace = true

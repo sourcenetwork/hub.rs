@@ -8,3 +8,4 @@ pub mod bls;
 pub mod jwt;
 pub mod operation;
 pub mod secp256k1;
+pub mod threshold;
