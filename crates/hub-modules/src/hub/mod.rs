@@ -13,6 +13,8 @@ pub mod keys;
 pub mod nodes;
 /// Operator-authorized relay grants.
 pub mod relay;
+/// Ring lifecycle and participant attestations.
+pub mod rings;
 /// Hub domain types.
 pub mod types;
 

@@ -12,6 +12,8 @@ use super::{
 /// Exact semantic arguments authorized by a relay, excluding the assertion itself.
 #[derive(Debug, Serialize)]
 pub enum DelegatedOperation<'a> {
+    /// Complete ring command, including all creation parameters.
+    RingCommand(&'a crate::hub::rings::RingCommand),
     /// Policy definition and serialization format.
     CreatePolicy(&'a str, &'a PolicyMarshalingType),
     /// Policy identifier, replacement definition and serialization format.
@@ -30,6 +32,7 @@ impl DelegatedOperation<'_> {
             Self::EditPolicy(..) => DelegationScope::EditPolicy,
             Self::PolicyCommand(..) => DelegationScope::PolicyCommands,
             Self::CheckAccess(..) => DelegationScope::RecordAccessDecision,
+            Self::RingCommand(..) => DelegationScope::ManageRings,
         }
     }
 

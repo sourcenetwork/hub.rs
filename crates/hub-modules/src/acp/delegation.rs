@@ -37,7 +37,7 @@ impl AcpModule {
                 DelegationScope::CreatePolicy,
                 DelegatedOperation::CreatePolicy(policy, &marshal_type).digest()?,
             ),
-            |module, actor| {
+            |module, _hub, actor| {
                 module.create_policy_with_metadata(
                     policy,
                     marshal_type,
@@ -73,7 +73,7 @@ impl AcpModule {
                 DelegationScope::EditPolicy,
                 DelegatedOperation::EditPolicy(policy_id, policy, &marshal_type).digest()?,
             ),
-            |module, actor| module.edit_policy(actor, policy_id, policy, marshal_type),
+            |module, _hub, actor| module.edit_policy(actor, policy_id, policy, marshal_type),
         )
     }
 
@@ -96,7 +96,7 @@ impl AcpModule {
                 DelegationScope::PolicyCommands,
                 DelegatedOperation::PolicyCommand(policy_id, &cmd).digest()?,
             ),
-            |module, actor| module.direct_policy_cmd(actor, policy_id, cmd),
+            |module, _hub, actor| module.direct_policy_cmd(actor, policy_id, cmd),
         )
     }
 
@@ -123,18 +123,20 @@ impl AcpModule {
                 DelegationScope::RecordAccessDecision,
                 DelegatedOperation::CheckAccess(policy_id, request).digest()?,
             ),
-            |module, _caller| module.check_access(&worker, policy_id, request, context, submission),
+            |module, _hub, _caller| {
+                module.check_access(&worker, policy_id, request, context, submission)
+            },
         )
     }
 
-    fn with_delegation<T: Serialize + DeserializeOwned>(
+    pub(crate) fn with_delegation<T: Serialize + DeserializeOwned>(
         &mut self,
         hub: &mut HubModule,
         context: &BlockExecCtx,
         submission: &TxExecCtx,
         token: &str,
         delegated: (DelegationScope, [u8; 32]),
-        operation: impl FnOnce(&mut Self, &Did) -> Result<T>,
+        operation: impl FnOnce(&mut Self, &mut HubModule, &Did) -> Result<T>,
     ) -> Result<T> {
         let invalid = |error: crate::hub::error::HubError| AcpError::InvalidBearerToken {
             reason: error.to_string(),
@@ -169,7 +171,7 @@ impl AcpModule {
             }
         }
         let before = (self.clone(), hub.clone());
-        let result = operation(self, &actor).and_then(|result| {
+        let result = operation(self, hub, &actor).and_then(|result| {
             if let Some(request) = &claims.request {
                 self.complete_operation(
                     actor.as_ref(),

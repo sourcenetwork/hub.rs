@@ -6,6 +6,8 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 #[allow(missing_docs)]
 pub enum HubError {
+    #[error("invalid ring request: {reason}")]
+    InvalidRingRequest { reason: String },
     #[error("invalid node request: {reason}")]
     InvalidNodeRequest { reason: String },
     #[error("invalid administrative request: {reason}")]

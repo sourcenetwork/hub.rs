@@ -40,6 +40,9 @@ pub enum DelegationScope {
     /// Record a successful access decision for the requested actor and operations.
     #[serde(rename = "acp:access:record")]
     RecordAccessDecision,
+    /// Create and manage threshold-service rings under ACP authority.
+    #[serde(rename = "orbis:ring")]
+    ManageRings,
 }
 
 /// Verified claims extracted from a JWT bearer token.

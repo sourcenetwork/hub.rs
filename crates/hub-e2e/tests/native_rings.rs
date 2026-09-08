@@ -1,0 +1,374 @@
+//! Native ring creation, participant attestation and certified recovery.
+
+use alloy_primitives::{Address, B256, Bytes};
+use alloy_sol_types::{SolCall as _, SolEvent as _};
+use hub_client::{
+    ACP_ADDRESS, BlsSigner, DelegationScope, HUB_ADDRESS, HubClient, NativeReceipt,
+    create_scoped_bearer_token,
+    nodes::{NodeCommand, NodeInfo, NodeRequest, encode_node_request, sign_node_request},
+    rings::*,
+};
+use hub_domain::{ConsensusPublicKey, NativeTx};
+use hub_e2e::cluster::{ConsensusPreset, KeySet, TestCluster};
+use hub_modules::acp::{
+    abi::IAcp,
+    types::{Object, PolicyCmd},
+};
+use k256::ecdsa::SigningKey;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+const POLICY: &str = "name: rings\nresources:\n  - name: ring_policy\n    relations:\n      - name: creator\n    permissions:\n      - name: create_ring\n        expr: creator\n  - name: ring\n";
+fn public(key: &SigningKey) -> String {
+    hex::encode(key.verifying_key().to_sec1_bytes())
+}
+
+async fn execute(
+    writer: &HubClient,
+    reader: &HubClient,
+    worker: &BlsSigner,
+    trusted: &ConsensusPublicKey,
+    target: Address,
+    call: Bytes,
+    success: bool,
+) -> NativeReceipt {
+    let wire = worker.sign_native_tx(target, call).unwrap();
+    let id = writer.send_native_tx(&wire).await.unwrap();
+    assert_eq!(id, NativeTx::decode_wire(&wire).unwrap().tx_id().0);
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let (local, remote) = tokio::try_join!(
+                writer.read_receipt(id, trusted),
+                reader.read_receipt(id, trusted)
+            )
+            .unwrap();
+            if let (Some(local), Some(_)) = (local, remote) {
+                assert_eq!(local.verify(id, trusted).unwrap().success(), success);
+                return writer.get_native_receipt(id).await.unwrap().unwrap();
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
+    let deployment = 9067;
+    let trusted = *KeySet::builder()
+        .seed(deployment)
+        .build()
+        .unwrap()
+        .epoch_info()
+        .output
+        .public()
+        .public();
+    let mut cluster = TestCluster::builder()
+        .nodes(4)
+        .seed(deployment)
+        .chain_id(deployment)
+        .preset(ConsensusPreset::Normal)
+        .build()
+        .await
+        .unwrap();
+    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    cluster
+        .observe(Duration::from_millis(100))
+        .wait_for_height(3, Duration::from_secs(30))
+        .await
+        .unwrap();
+    let writer = HubClient::new(cluster.node(0).rpc_url());
+    let reader = HubClient::new(cluster.node(3).rpc_url());
+    let first: serde_json::Value = writer
+        .rpc_call_typed("eth_getBlockByNumber", serde_json::json!(["0x1", false]))
+        .await
+        .unwrap();
+    let root: B256 = first["parentHash"].as_str().unwrap().parse().unwrap();
+    let worker = BlsSigner::new(7u64.into(), deployment).unwrap();
+    let issuer = SigningKey::from_slice(&[30; 32]).unwrap();
+    let actor = hub_crypto::secp256k1::did_from_secp256k1_pubkey(
+        issuer.verifying_key().to_sec1_bytes().as_ref(),
+    )
+    .unwrap();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let token = |scope| {
+        create_scoped_bearer_token(&issuer, worker.did(), deployment, now, now + 300, scope)
+            .unwrap()
+    };
+    let created = execute(
+        &writer,
+        &reader,
+        &worker,
+        &trusted,
+        ACP_ADDRESS,
+        IAcp::bearerCreatePolicyCall {
+            bearerToken: token(DelegationScope::CreatePolicy),
+            policy: POLICY.as_bytes().to_vec().into(),
+            marshalType: 1,
+        }
+        .abi_encode()
+        .into(),
+        true,
+    )
+    .await;
+    let log = &created.logs[0];
+    let event = IAcp::DelegatedPolicyCreated::decode_raw_log_validate(
+        log.topics.iter().copied(),
+        &log.data,
+    )
+    .unwrap();
+    assert_eq!(event.creator, actor);
+    let policy = hex::encode(event.policyId);
+    for cmd in [
+        PolicyCmd::RegisterObject(Object {
+            resource: "ring_policy".into(),
+            id: policy.clone(),
+        }),
+        PolicyCmd::SetRelationship(acp::Relationship::with_entity(
+            "ring_policy",
+            &policy,
+            "creator",
+            identity::Did::new(&actor).unwrap(),
+        )),
+    ] {
+        execute(
+            &writer,
+            &reader,
+            &worker,
+            &trusted,
+            ACP_ADDRESS,
+            IAcp::bearerPolicyCmdCall {
+                bearerToken: token(DelegationScope::PolicyCommands),
+                policyId: event.policyId,
+                cmd: serde_json::to_vec(&cmd).unwrap().into(),
+            }
+            .abi_encode()
+            .into(),
+            true,
+        )
+        .await;
+    }
+    let nodes = [
+        SigningKey::from_slice(&[31; 32]).unwrap(),
+        SigningKey::from_slice(&[32; 32]).unwrap(),
+    ];
+    for key in &nodes {
+        let signed = sign_node_request(
+            NodeRequest {
+                deployment_root: root.0,
+                deployment_id: deployment,
+                node_key: public(key),
+                sequence: 0,
+                expires_at: now + 300,
+                command: NodeCommand::Register(NodeInfo {
+                    peer_id: public(key),
+                    controller_key: public(key),
+                    allowed_policy_ids: vec![policy.clone()],
+                    allowed_ring_ids: vec![],
+                }),
+            },
+            key,
+        )
+        .unwrap();
+        execute(
+            &writer,
+            &reader,
+            &worker,
+            &trusted,
+            HUB_ADDRESS,
+            encode_node_request(&signed).unwrap(),
+            true,
+        )
+        .await;
+    }
+    let mut peers = nodes.iter().map(public).collect::<Vec<_>>();
+    peers.sort();
+    let mut config = RingConfig {
+        policy_id: policy,
+        peer_node_keys: peers,
+        threshold: 2,
+        pss_interval: 86400,
+        current_version: 0,
+        nonce: [1; 32],
+        trusted_auth_relay_dids: None,
+        reporting: ReportingConfig::default(),
+    };
+    let ring = config.id(root.0, &actor).unwrap();
+    let command = RingCommand::Create(config.clone());
+    execute(
+        &writer,
+        &reader,
+        &worker,
+        &trusted,
+        HUB_ADDRESS,
+        encode_ring_command(&command, &token(DelegationScope::PolicyCommands)).unwrap(),
+        false,
+    )
+    .await;
+    assert!(
+        reader
+            .read_threshold_ring(&ring, 0, &trusted)
+            .await
+            .unwrap()
+            .record
+            .is_none()
+    );
+    let created = execute(
+        &writer,
+        &reader,
+        &worker,
+        &trusted,
+        HUB_ADDRESS,
+        encode_ring_command(&command, &token(DelegationScope::ManageRings)).unwrap(),
+        true,
+    )
+    .await;
+    let record = reader
+        .read_threshold_ring(&ring, created.block_number, &trusted)
+        .await
+        .unwrap()
+        .record
+        .unwrap();
+    assert_eq!(record.creator, actor);
+    assert!(matches!(record.state, RingState::Pending { .. }));
+    let participant = |id: &str, key: &SigningKey, command| {
+        sign_ring_participant_request(
+            RingParticipantRequest {
+                deployment_root: root.0,
+                deployment_id: deployment,
+                ring_id: id.into(),
+                node_key: public(key),
+                command,
+                expires_at: now + 300,
+            },
+            key,
+        )
+        .unwrap()
+    };
+    let first = participant(
+        &ring,
+        &nodes[0],
+        RingParticipantCommand::Confirm("aabb".into()),
+    );
+    execute(
+        &writer,
+        &reader,
+        &worker,
+        &trusted,
+        HUB_ADDRESS,
+        encode_ring_participant_request(&first).unwrap(),
+        true,
+    )
+    .await;
+    let duplicate = participant(
+        &ring,
+        &nodes[0],
+        RingParticipantCommand::Confirm("ccdd".into()),
+    );
+    execute(
+        &writer,
+        &reader,
+        &worker,
+        &trusted,
+        HUB_ADDRESS,
+        encode_ring_participant_request(&duplicate).unwrap(),
+        false,
+    )
+    .await;
+    let second = participant(
+        &ring,
+        &nodes[1],
+        RingParticipantCommand::Confirm("aabb".into()),
+    );
+    let confirmed = execute(
+        &writer,
+        &reader,
+        &worker,
+        &trusted,
+        HUB_ADDRESS,
+        encode_ring_participant_request(&second).unwrap(),
+        true,
+    )
+    .await;
+    cluster.restart_node(3).unwrap();
+    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    assert_eq!(
+        reader
+            .read_threshold_ring(&ring, confirmed.block_number, &trusted)
+            .await
+            .unwrap()
+            .record
+            .unwrap()
+            .state,
+        RingState::Active {
+            public_key: "aabb".into()
+        }
+    );
+
+    config.nonce = [2; 32];
+    let ring = config.id(root.0, &actor).unwrap();
+    let create = encode_ring_command(
+        &RingCommand::Create(config),
+        &token(DelegationScope::ManageRings),
+    )
+    .unwrap();
+    execute(
+        &writer,
+        &reader,
+        &worker,
+        &trusted,
+        HUB_ADDRESS,
+        create.clone(),
+        true,
+    )
+    .await;
+    let cancel = participant(&ring, &nodes[0], RingParticipantCommand::Cancel);
+    let cancelled = execute(
+        &writer,
+        &reader,
+        &worker,
+        &trusted,
+        HUB_ADDRESS,
+        encode_ring_participant_request(&cancel).unwrap(),
+        true,
+    )
+    .await;
+    assert!(matches!(
+        reader
+            .read_threshold_ring(&ring, cancelled.block_number, &trusted)
+            .await
+            .unwrap()
+            .record
+            .unwrap()
+            .state,
+        RingState::Cancelled { .. }
+    ));
+    execute(
+        &writer,
+        &reader,
+        &worker,
+        &trusted,
+        HUB_ADDRESS,
+        create,
+        false,
+    )
+    .await;
+    execute(
+        &writer,
+        &reader,
+        &worker,
+        &trusted,
+        HUB_ADDRESS,
+        encode_ring_participant_request(&participant(
+            &ring,
+            &nodes[1],
+            RingParticipantCommand::Confirm("aabb".into()),
+        ))
+        .unwrap(),
+        false,
+    )
+    .await;
+}

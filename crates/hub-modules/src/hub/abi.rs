@@ -22,6 +22,10 @@ sol! {
 
         function applyNodeRequest(bytes request) external returns (bytes);
 
+        function applyRingCommand(bytes request, string bearerToken) external returns (bytes);
+
+        function applyRingParticipantRequest(bytes request) external returns (bytes);
+
         function getAdministration() external view returns (bytes);
 
         // ── Read methods ────────────────────────────────────────────────

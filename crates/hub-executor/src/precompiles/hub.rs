@@ -37,6 +37,45 @@ pub(super) fn dispatch(
     let selector: [u8; 4] = input[..4].try_into().expect("checked length above");
 
     match selector {
+        IHub::applyRingCommandCall::SELECTOR => {
+            if gas_limit < 500_000 {
+                return Err(PrecompileError::OutOfGas);
+            }
+            let call = IHub::applyRingCommandCall::abi_decode(input).map_err(decode_error)?;
+            if call.request.len() > hub_modules::hub::rings::MAX_RING_REQUEST_BYTES {
+                return Err(PrecompileError::Other("ring command is too large".into()));
+            }
+            let command = serde_json::from_slice(&call.request)
+                .map_err(|error| PrecompileError::Other(error.to_string().into()))?;
+            match module.apply_ring_command(acp, block_ctx, tx_ctx, &call.bearerToken, &command) {
+                Ok(record) => Ok(ok_dispatch(
+                    500_000,
+                    IHub::applyRingCommandCall::abi_encode_returns(&json_bytes(&record)),
+                    vec![],
+                )),
+                Err(error) => Ok(err_dispatch(error)),
+            }
+        }
+        IHub::applyRingParticipantRequestCall::SELECTOR => {
+            if gas_limit < 100_000 {
+                return Err(PrecompileError::OutOfGas);
+            }
+            let call =
+                IHub::applyRingParticipantRequestCall::abi_decode(input).map_err(decode_error)?;
+            if call.request.len() > hub_modules::hub::rings::MAX_RING_REQUEST_BYTES {
+                return Err(PrecompileError::Other("ring request is too large".into()));
+            }
+            let signed = serde_json::from_slice(&call.request)
+                .map_err(|error| PrecompileError::Other(error.to_string().into()))?;
+            match module.apply_ring_participant_request(block_ctx, &signed) {
+                Ok(record) => Ok(ok_dispatch(
+                    100_000,
+                    IHub::applyRingParticipantRequestCall::abi_encode_returns(&json_bytes(&record)),
+                    vec![],
+                )),
+                Err(error) => Ok(err_dispatch(error)),
+            }
+        }
         IHub::applyNodeRequestCall::SELECTOR => {
             if gas_limit < 100_000 {
                 return Err(PrecompileError::OutOfGas);
