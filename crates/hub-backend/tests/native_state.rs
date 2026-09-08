@@ -281,3 +281,29 @@ fn record_limits_and_colliding_prefixes_survive_reopen() {
         );
     });
 }
+
+#[test]
+fn native_hydration_rejects_invalid_bulletin_keys_without_modifying_state() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = tokio::Config::new().with_storage_directory(directory.path());
+    tokio::Runner::new(config).start(|context| async move {
+        let set = open(&context).await;
+        let mut changes: ModuleChanges = Default::default();
+        changes[1].push((b"post/legacy/id".to_vec(), Some(vec![255; 8])));
+        let sealed = native::prepare(set.new_batches().await, changes)
+            .await
+            .unwrap();
+        set.apply(sealed).await;
+        assert!(set.finalize().await.durable().await);
+        let before = set.committed_targets().await;
+        let before_root = root(&set).await;
+        let error = native::load_modules(&set).await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("invalid bulletin record identity")
+        );
+        assert_eq!(set.committed_targets().await, before);
+        assert_eq!(root(&set).await, before_root);
+    });
+}

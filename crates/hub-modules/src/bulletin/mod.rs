@@ -6,6 +6,7 @@ pub mod abi;
 pub mod error;
 /// Key prefixes and builders for Bulletin KV storage.
 pub mod keys;
+mod storage;
 /// Bulletin domain types.
 pub mod types;
 
@@ -70,7 +71,7 @@ const MODULE_DID: &str = "did:key:bulletin";
 /// "p_bulletin"                                         → BulletinParams
 /// ```
 ///
-/// Key sanitization: `/` in component parts is replaced with `|`.
+/// Component encoding escapes `%` and literal `|`, then replaces `/` with `|`.
 /// Namespace IDs are always prefixed: user `"ns1"` → stored `"bulletin/ns1"`.
 /// Post IDs are deterministic: `hex(sha256(namespaceId + payload))`.
 #[derive(Clone, Debug, Default)]

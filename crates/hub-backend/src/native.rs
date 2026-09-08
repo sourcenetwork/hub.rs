@@ -186,7 +186,12 @@ pub fn state_root(batches: &NativeMerkleized) -> alloy_primitives::B256 {
 pub async fn load_modules(set: &NativeStateSet) -> Result<ModuleState, BackendError> {
     let (acp, bulletin, hub, nonces) =
         futures::try_join!(load(&set.0), load(&set.1), load(&set.2), load(&set.3))?;
-    Ok(ModuleState::from_stores([acp, bulletin, hub, nonces]))
+    let modules = ModuleState::from_stores([acp, bulletin, hub, nonces]);
+    modules
+        .bulletin
+        .validate_storage_keys()
+        .map_err(|e| BackendError::Storage(e.to_string()))?;
+    Ok(modules)
 }
 
 async fn load(db: &Shared<NativeDb>) -> Result<InMemoryKvStore, BackendError> {

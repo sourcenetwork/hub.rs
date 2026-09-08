@@ -1,11 +1,21 @@
 //! Bulletin module key prefixes and builders.
 //!
-//! Matches Go `x/bulletin/types/keys.go`. Composite keys use `/`-sanitization
-//! to prevent path collisions when namespace IDs or DIDs contain `/`.
+//! Composite components escape percent signs and literal pipes before mapping
+//! slashes to pipes. Ordinary namespace keys retain their original encoding.
 
 use sha2::{Digest, Sha256};
 
-use crate::key_encoding::{sanitize_key_part, unsanitize_key_part};
+fn sanitize_key_part(part: &str) -> String {
+    part.replace('%', "%25")
+        .replace('|', "%7C")
+        .replace('/', "|")
+}
+
+fn unsanitize_key_part(part: &str) -> String {
+    part.replace('|', "/")
+        .replace("%7C", "|")
+        .replace("%25", "%")
+}
 
 /// Singleton key for the module's ACP policy ID.
 pub const POLICY_ID_KEY: &[u8] = b"policy_id";
@@ -138,6 +148,37 @@ mod tests {
         let key_a = post_key("ns/a", "post1");
         let key_b = post_key("ns", "a/post1");
         assert_ne!(key_a, key_b);
+    }
+
+    #[test]
+    fn reserved_components_are_distinct_and_roundtrip() {
+        let components = [
+            "a/b",
+            "a|b",
+            "a%7Cb",
+            "a%257Cb",
+            "a%25b",
+            "a%b",
+            "日本/語|%",
+        ];
+        let mut posts = std::collections::HashSet::new();
+        let mut collaborators = std::collections::HashSet::new();
+        for namespace in components {
+            for id in components {
+                let post = post_key(namespace, id);
+                assert_eq!(parse_post_key(&post), (namespace.into(), id.into()));
+                assert!(post.starts_with(&post_prefix(namespace)));
+                assert!(posts.insert(post));
+                let collaborator = collaborator_key(namespace, id);
+                assert_eq!(
+                    parse_collaborator_key(&collaborator),
+                    (namespace.into(), id.into())
+                );
+                assert!(collaborator.starts_with(&collaborator_prefix(namespace)));
+                assert!(collaborators.insert(collaborator));
+            }
+        }
+        assert_eq!(post_key("bulletin/team", "id"), b"post/bulletin|team/id");
     }
 
     #[test]

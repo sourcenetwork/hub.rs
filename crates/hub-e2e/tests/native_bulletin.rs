@@ -22,7 +22,12 @@ async fn submit(
     let id = client.send_native_tx(&wire).await.unwrap();
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            if let Some(proof) = observer.read_receipt(id, trusted).await.unwrap() {
+            let (observed, local) = tokio::try_join!(
+                observer.read_receipt(id, trusted),
+                client.read_receipt(id, trusted),
+            )
+            .unwrap();
+            if let (Some(proof), Some(_)) = (observed, local) {
                 let receipt = proof.verify(id, trusted).unwrap();
                 assert_eq!(receipt.success(), success, "{receipt:?}");
                 break proof.revision.height;
@@ -227,7 +232,7 @@ async fn certified_bulletin_reads_follow_grants_pages_and_restart() {
             .records
             .is_empty()
     );
-    minimum = submit(
+    submit(
         &writer,
         &reader,
         &collaborator,
@@ -236,6 +241,7 @@ async fn certified_bulletin_reads_follow_grants_pages_and_restart() {
         false,
     )
     .await;
+    minimum = namespace_isolation(&writer, &reader, &owner, &collaborator, &trusted).await;
     cluster.restart_node(3).unwrap();
     cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
     let restored = reader
@@ -255,6 +261,19 @@ async fn certified_bulletin_reads_follow_grants_pages_and_restart() {
             .value
             .is_none()
     );
+    for namespace in ["a/b", "a|b", "a%7Cb"] {
+        let posts = reader
+            .list_bulletin_posts(namespace, None, 2, minimum, &trusted)
+            .await
+            .unwrap();
+        assert_eq!(posts.records.len(), 1);
+        assert_eq!(posts.records[0].namespace, format!("bulletin/{namespace}"));
+        let grant = reader
+            .read_bulletin_collaborator(namespace, collaborator.did(), minimum, &trusted)
+            .await
+            .unwrap();
+        assert_eq!(grant.value.is_some(), namespace != "a|b");
+    }
     let untrusted = *KeySet::builder()
         .seed(deployment + 1)
         .build()
@@ -269,4 +288,65 @@ async fn certified_bulletin_reads_follow_grants_pages_and_restart() {
             .await
             .is_err()
     );
+}
+
+async fn namespace_isolation(
+    writer: &HubClient,
+    reader: &HubClient,
+    owner: &BlsSigner,
+    collaborator: &BlsSigner,
+    trusted: &ConsensusPublicKey,
+) -> u64 {
+    for namespace in ["a/b", "a|b", "a%7Cb"] {
+        submit(
+            writer,
+            reader,
+            owner,
+            trusted,
+            IBulletin::registerNamespaceCall {
+                namespace: namespace.into(),
+            },
+            true,
+        )
+        .await;
+        submit(
+            writer,
+            reader,
+            owner,
+            trusted,
+            IBulletin::addCollaboratorCall {
+                namespace: namespace.into(),
+                collaboratorDid: collaborator.did().into(),
+            },
+            true,
+        )
+        .await;
+        let minimum = submit(
+            writer,
+            reader,
+            collaborator,
+            trusted,
+            post(namespace, b"shared"),
+            true,
+        )
+        .await;
+        let posts = reader
+            .list_bulletin_posts(namespace, None, 2, minimum, trusted)
+            .await
+            .unwrap();
+        assert_eq!(posts.records.len(), 1);
+        assert_eq!(posts.records[0].namespace, format!("bulletin/{namespace}"));
+    }
+    submit(
+        writer,
+        reader,
+        owner,
+        trusted,
+        IBulletin::removeCollaboratorCall {
+            namespace: "a|b".into(),
+            collaboratorDid: collaborator.did().into(),
+        },
+        true,
+    )
+    .await
 }

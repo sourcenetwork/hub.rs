@@ -201,3 +201,19 @@ or proof of namespace existence is implied by an empty post/collaborator page.
 Stored collaborator records do not enumerate owner authority. A post's opaque
 `proof` bytes are authenticated as stored data; these reads do not validate the
 application protocol represented by those bytes.
+
+## Bulletin component encoding
+
+Bulletin composite keys escape `%` as `%25` and literal `|` as `%7C`, then map
+`/` to `|`. Thus `a/b`, `a|b` and `a%7Cb` occupy different post and collaborator
+prefixes. Keys without literal pipes or percent signs retain their previous
+encoding. Namespace record keys and payload-derived post identifiers do not
+change.
+
+Native state hydration checks composite keys against the identifiers stored in
+each record. An affected legacy key or corrupt identity stops startup/recovery
+with a storage error; records are never silently rekeyed. Deployments containing
+old records with literal pipes or percent signs require an explicit migration
+from verified source records. Earlier collisions may already have overwritten
+records, so the retained state alone may not recover every original grant.
+All consensus members and bulletin clients must use the same encoding version.
