@@ -1,6 +1,7 @@
 //! RPC configuration.
 
 use serde::{Deserialize, Serialize};
+use std::num::NonZeroU32;
 
 /// Default HTTP RPC address.
 pub const DEFAULT_HTTP_ADDR: &str = "0.0.0.0:8545";
@@ -18,6 +19,10 @@ pub struct RpcConfig {
     /// WebSocket server address.
     #[serde(default = "default_ws_addr")]
     pub ws_addr: String,
+
+    /// Maximum simultaneous RPC connections; excess connections receive HTTP 429.
+    #[serde(default = "default_max_connections")]
+    pub max_connections: NonZeroU32,
 }
 
 impl Default for RpcConfig {
@@ -25,8 +30,13 @@ impl Default for RpcConfig {
         Self {
             http_addr: DEFAULT_HTTP_ADDR.to_string(),
             ws_addr: DEFAULT_WS_ADDR.to_string(),
+            max_connections: default_max_connections(),
         }
     }
+}
+
+const fn default_max_connections() -> NonZeroU32 {
+    NonZeroU32::new(100).unwrap()
 }
 
 fn default_http_addr() -> String {
@@ -53,6 +63,7 @@ mod tests {
         let config = RpcConfig {
             http_addr: "127.0.0.1:8080".to_string(),
             ws_addr: "127.0.0.1:8081".to_string(),
+            max_connections: NonZeroU32::new(512).unwrap(),
         };
         let serialized = serde_json::to_string(&config).expect("serialize");
         let deserialized: RpcConfig = serde_json::from_str(&serialized).expect("deserialize");
@@ -64,6 +75,7 @@ mod tests {
         let config = RpcConfig {
             http_addr: "0.0.0.0:9545".to_string(),
             ws_addr: "0.0.0.0:9546".to_string(),
+            ..Default::default()
         };
         let serialized = toml::to_string(&config).expect("serialize toml");
         let deserialized: RpcConfig = toml::from_str(&serialized).expect("deserialize toml");
@@ -91,10 +103,24 @@ mod tests {
     }
 
     #[test]
+    fn connection_limit_defaults_and_rejects_zero() {
+        assert_eq!(
+            serde_json::from_str::<RpcConfig>("{}")
+                .unwrap()
+                .max_connections
+                .get(),
+            100
+        );
+        assert!(serde_json::from_str::<RpcConfig>(r#"{"max_connections":0}"#).is_err());
+        assert!(serde_json::from_str::<RpcConfig>(r#"{"max_connections":4294967296}"#).is_err());
+    }
+
+    #[test]
     fn test_rpc_config_clone_and_eq() {
         let config = RpcConfig {
             http_addr: "custom:1111".to_string(),
             ws_addr: "custom:2222".to_string(),
+            ..Default::default()
         };
         assert_eq!(config, config.clone());
         assert_ne!(config, RpcConfig::default());

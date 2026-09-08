@@ -77,6 +77,7 @@ impl HubClient {
             .json(&body)
             .send()
             .await?
+            .error_for_status()?
             .json()
             .await?;
 

@@ -44,6 +44,7 @@ pub(super) struct Observation {
     workflow_ms: Option<f64>,
     error: Option<String>,
     verification_failure: bool,
+    read_throttles: u64,
     diagnostic_revision: Option<LightBlock>,
     diagnostic_error: Option<String>,
 }
@@ -57,6 +58,7 @@ impl Observation {
             "permission_read_ms": self.permission_ms, "scheduled_to_workflow_ms": self.workflow_ms,
             "height": self.receipt.as_ref().map(|r| r.block_number), "error": self.error,
             "verification_failure": self.verification_failure,
+            "read_throttles": self.read_throttles,
             "diagnostic_refetched_revision": self.diagnostic_revision,
             "diagnostic_refetch_error": self.diagnostic_error,
         })
@@ -81,6 +83,7 @@ pub(super) async fn observe(
         workflow_ms: None,
         error: None,
         verification_failure: false,
+        read_throttles: 0,
         diagnostic_revision: None,
         diagnostic_error: None,
     };
@@ -95,7 +98,7 @@ pub(super) async fn observe(
         match result {
             Ok(hash) => assert_eq!(hash, observation.request.hash, "submission hash mismatch"),
             Err(error) => {
-                if matches!(error, ClientError::Rpc { .. }) {
+                if matches!(error, ClientError::Rpc { .. }) || is_throttled(&error) {
                     observation.outcome = "rejected";
                 }
                 observation.error = Some(error.to_string());
@@ -133,15 +136,23 @@ pub(super) async fn observe(
                             }],
                         };
                         let started = Instant::now();
-                        let permission = client
-                            .verify_current_access(
-                                &reads.policy,
-                                &request,
-                                response.revision.height,
-                                &reads.trusted,
-                                PERMISSION_LIMITS,
-                            )
-                            .await;
+                        let permission = loop {
+                            let result = client
+                                .verify_current_access(
+                                    &reads.policy,
+                                    &request,
+                                    response.revision.height,
+                                    &reads.trusted,
+                                    PERMISSION_LIMITS,
+                                )
+                                .await;
+                            if result.as_ref().is_err_and(is_throttled) {
+                                observation.read_throttles += 1;
+                                tokio::time::sleep(Duration::from_millis(250)).await;
+                                continue;
+                            }
+                            break result;
+                        };
                         observation.permission_ms = Some(started.elapsed().as_secs_f64() * 1000.0);
                         match permission {
                             Ok((_, allowed)) => {
@@ -165,6 +176,11 @@ pub(super) async fn observe(
                     return;
                 }
                 Ok(None) => {}
+                Err(error) if is_throttled(&error) => {
+                    observation.read_throttles += 1;
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    continue;
+                }
                 Err(error) => {
                     observation.verification_failure = matches!(
                         &error,
@@ -216,6 +232,7 @@ pub(super) fn summary(observations: &[Observation], elapsed: Duration) -> Value 
         "offered": observations.len(), "confirmed": count("confirmed"),
         "reverted": count("reverted"), "rejected": count("rejected"),
         "unknown": count("unknown"), "not_sent": count("not_sent"),
+        "read_throttles": observations.iter().map(|o| o.read_throttles).sum::<u64>(),
         "verification_failures": observations.iter().filter(|o| o.verification_failure).count(),
         "confirmed_per_second": count("confirmed") as f64 / elapsed.as_secs_f64(),
         "completed_workflows": observations.iter().filter(|o| o.workflow_ms.is_some()).count(),
@@ -346,4 +363,8 @@ pub(super) fn assert_no_verification_failures(observations: &[Observation]) {
         observations.iter().all(|o| !o.verification_failure),
         "invalid proof responses invalidate the workload run"
     );
+}
+
+fn is_throttled(error: &ClientError) -> bool {
+    matches!(error, ClientError::Transport(error) if error.status() == Some(reqwest::StatusCode::TOO_MANY_REQUESTS))
 }

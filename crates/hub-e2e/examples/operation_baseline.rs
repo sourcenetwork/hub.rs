@@ -23,8 +23,8 @@ const CHAIN_ID: u64 = 9001;
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     assert!(
-        args.len() <= 5,
-        "usage: operation_baseline [count] [arrivals/sec] [max outstanding] [permission reads 0/1] [fast|normal|stress]"
+        args.len() <= 6,
+        "usage: operation_baseline [count] [arrivals/sec] [max outstanding] [permission reads 0/1] [fast|normal|stress] [RPC connections]"
     );
     let parse = |index: usize, default: usize| {
         args.get(index).map_or(default, |value| {
@@ -42,6 +42,10 @@ async fn main() {
         "stress" => ConsensusPreset::Stress,
         _ => panic!("timing preset must be fast, normal or stress"),
     };
+    let rpc_connections = u32::try_from(parse(5, 100))
+        .ok()
+        .and_then(std::num::NonZeroU32::new)
+        .expect("positive RPC connection limit within u32");
     let timing = preset.params();
     let keys = KeySet::builder().seed(42).build().unwrap();
     let trusted = *keys.epoch_info().output.public().public();
@@ -53,6 +57,7 @@ async fn main() {
         .seed(42)
         .chain_id(CHAIN_ID)
         .preset(preset)
+        .rpc_max_connections(rpc_connections)
         .build()
         .await
         .expect("start cluster");
@@ -125,7 +130,7 @@ async fn main() {
             "kind": "configuration", "workload": "certified_native_registrations",
             "format_version": 2, "permission_reads_per_write": permission_reads,
             "runner_debug_assertions": cfg!(debug_assertions),
-            "nodes": 4, "preset": format!("{preset:?}"),
+            "rpc_max_connections": rpc_connections.get(), "nodes": 4, "preset": format!("{preset:?}"),
             "leader_timeout_ms": timing.leader_timeout.as_millis(),
             "notarization_timeout_ms": timing.notarization_timeout.as_millis(),
             "nullify_retry_ms": timing.nullify_retry.as_millis(), "count": count, "arrivals_per_second": rate,

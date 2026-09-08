@@ -209,6 +209,7 @@ pub(crate) fn run(chain_id: u64, data_dir: PathBuf, args: &TestnetArgs) -> eyre:
                 // ws_addr is unused by the RPC server but set explicitly to
                 // avoid misleading defaults that look like port conflicts.
                 ws_addr: format!("0.0.0.0:{}", rpc_ports[i]),
+                ..Default::default()
             },
             ..Default::default()
         };

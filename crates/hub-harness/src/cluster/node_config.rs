@@ -54,6 +54,7 @@ impl ConsensusPreset {
 #[derive(Debug)]
 pub struct NodeConfigBuilder {
     chain_id: u64,
+    rpc_max_connections: std::num::NonZeroU32,
     preset: ConsensusPreset,
     consensus_override: Option<ConsensusParams>,
 }
@@ -62,6 +63,7 @@ impl Default for NodeConfigBuilder {
     fn default() -> Self {
         Self {
             chain_id: 9001,
+            rpc_max_connections: std::num::NonZeroU32::new(100).unwrap(),
             preset: ConsensusPreset::Fast,
             consensus_override: None,
         }
@@ -69,6 +71,13 @@ impl Default for NodeConfigBuilder {
 }
 
 impl NodeConfigBuilder {
+    /// Set the per-node RPC connection limit.
+    #[must_use]
+    pub const fn rpc_max_connections(mut self, limit: std::num::NonZeroU32) -> Self {
+        self.rpc_max_connections = limit;
+        self
+    }
+
     /// Create a builder with default values.
     pub fn new() -> Self {
         Self::default()
@@ -122,11 +131,13 @@ listen_addr = "0.0.0.0:{p2p_port}"
 [rpc]
 http_addr = "0.0.0.0:{rpc_port}"
 ws_addr = "0.0.0.0:{rpc_port}"
+max_connections = {rpc_max_connections}
 "#,
             chain_id = self.chain_id,
             data_dir = data_dir.display(),
             p2p_port = p2p_port,
             rpc_port = rpc_port,
+            rpc_max_connections = self.rpc_max_connections,
         )
     }
 

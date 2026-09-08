@@ -23,6 +23,7 @@ pub struct TestClusterBuilder {
     genesis: Option<GenesisBuilder>,
     preset: ConsensusPreset,
     chain_id: u64,
+    rpc_max_connections: std::num::NonZeroU32,
     jmt_seeder: Option<JmtSeeder>,
     binary: Option<PathBuf>,
 }
@@ -49,6 +50,7 @@ impl Default for TestClusterBuilder {
             genesis: None,
             preset: ConsensusPreset::Fast,
             chain_id: 9001,
+            rpc_max_connections: std::num::NonZeroU32::new(100).unwrap(),
             jmt_seeder: None,
             binary: None,
         }
@@ -56,6 +58,13 @@ impl Default for TestClusterBuilder {
 }
 
 impl TestClusterBuilder {
+    /// Set the per-node RPC connection limit.
+    #[must_use]
+    pub const fn rpc_max_connections(mut self, limit: std::num::NonZeroU32) -> Self {
+        self.rpc_max_connections = limit;
+        self
+    }
+
     /// Set the number of nodes in the cluster.
     #[must_use]
     pub const fn nodes(mut self, n: usize) -> Self {
@@ -119,7 +128,8 @@ impl TestClusterBuilder {
 
         let node_config = NodeConfigBuilder::new()
             .chain_id(chain_id)
-            .preset(self.preset);
+            .preset(self.preset)
+            .rpc_max_connections(self.rpc_max_connections);
 
         let consensus = node_config.consensus();
 
@@ -202,6 +212,8 @@ impl TestClusterBuilder {
 
             let args: Vec<&str> = if n == 1 {
                 vec![
+                    "--config",
+                    &config_str,
                     "devnet",
                     "--rpc-port",
                     &rpc_port_str,
