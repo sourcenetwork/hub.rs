@@ -22,6 +22,8 @@ pub use hub_modules::types::Timestamp;
 
 /// Current-state point and complete-prefix evidence over Commonware storage.
 pub mod current;
+mod decision;
+pub use decision::{DecisionOperation, DecisionOutcome, DecisionRecord};
 mod owner;
 pub use owner::object_owner_prefix;
 mod prefix;

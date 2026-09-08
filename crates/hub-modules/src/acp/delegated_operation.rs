@@ -6,7 +6,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::{
     AcpError, Result,
-    types::{PolicyCmd, PolicyMarshalingType},
+    types::{AccessRequest, PolicyCmd, PolicyMarshalingType},
 };
 
 /// Exact semantic arguments authorized by a relay, excluding the assertion itself.
@@ -18,6 +18,8 @@ pub enum DelegatedOperation<'a> {
     EditPolicy(&'a str, &'a str, &'a PolicyMarshalingType),
     /// Policy identifier and the complete graph command.
     PolicyCommand(&'a str, &'a PolicyCmd),
+    /// Policy identifier, target actor and ordered permission operations.
+    CheckAccess(&'a str, &'a AccessRequest),
 }
 
 impl DelegatedOperation<'_> {
@@ -27,6 +29,7 @@ impl DelegatedOperation<'_> {
             Self::CreatePolicy(..) => DelegationScope::CreatePolicy,
             Self::EditPolicy(..) => DelegationScope::EditPolicy,
             Self::PolicyCommand(..) => DelegationScope::PolicyCommands,
+            Self::CheckAccess(..) => DelegationScope::RecordAccessDecision,
         }
     }
 

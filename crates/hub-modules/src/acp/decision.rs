@@ -63,11 +63,20 @@ impl DecisionRequest {
 
     /// Decode authenticated record bytes and bind the grant to this request and evaluation revision.
     pub fn verify_record(&self, bytes: &[u8], at: &Timestamp) -> Result<AccessDecision, AcpError> {
-        if bytes.len() > 128 << 10 {
-            return Err(invalid("access decision exceeds byte limit"));
+        let decision = AccessDecision::decode_record(bytes)?;
+        let expires = self.verify_issuance(&decision, at)?;
+        if at.block_height >= expires {
+            return Err(invalid("access decision expired"));
         }
-        let decision: AccessDecision = borsh::from_slice(bytes)
-            .map_err(|e| AcpError::State(format!("invalid access decision: {e}")))?;
+        Ok(decision)
+    }
+
+    /// Bind issuance to this request and return its exclusive expiry, without granting current access.
+    pub fn verify_issuance(
+        &self,
+        decision: &AccessDecision,
+        at: &Timestamp,
+    ) -> Result<u64, AcpError> {
         if decision.id != self.id()?
             || decision.policy_id != self.policy_id
             || decision.creator != self.creator
@@ -91,10 +100,51 @@ impl DecisionRequest {
             .issued_height
             .checked_add(decision.params.decision_expiration_delta)
             .ok_or_else(|| invalid("access decision expiry overflow"))?;
-        if at.block_height >= expires {
-            return Err(invalid("access decision expired"));
+        if expires <= decision.issued_height {
+            return Err(invalid("invalid access decision lifetime"));
         }
-        Ok(decision)
+        Ok(expires)
+    }
+}
+
+impl AccessDecision {
+    /// Decode bounded record bytes. Decoding alone does not authenticate a decision.
+    pub fn decode_record(bytes: &[u8]) -> Result<Self, AcpError> {
+        if bytes.len() > 128 << 10 {
+            return Err(invalid("access decision exceeds byte limit"));
+        }
+        borsh::from_slice(bytes)
+            .map_err(|error| AcpError::State(format!("invalid access decision: {error}")))
+    }
+
+    /// Verify issuance under the requested deployment and ID, including records past their expiry.
+    pub fn verify_issuance(
+        &self,
+        deployment_id: u64,
+        id: &str,
+        at: &Timestamp,
+    ) -> Result<u64, AcpError> {
+        if self.id != id {
+            return Err(invalid(
+                "access decision ID differs from the requested record",
+            ));
+        }
+        identity::Did::new(&self.creator).map_err(|_| invalid("invalid decision creator"))?;
+        let expected = DecisionRequest {
+            deployment_id,
+            policy_id: self.policy_id.clone(),
+            creator: self.creator.clone(),
+            creator_sequence: self.creator_acc_sequence,
+            request: AccessRequest {
+                actor: super::types::Actor(
+                    self.actor
+                        .parse()
+                        .map_err(|_| invalid("invalid decision actor"))?,
+                ),
+                operations: self.operations.clone(),
+            },
+        };
+        expected.verify_issuance(self, at)
     }
 }
 
@@ -209,6 +259,26 @@ mod tests {
             .is_err()
         );
         assert!(verify(&decision, &Timestamp { seconds: 999, ..at }).is_err());
+        let expired = Timestamp {
+            block_height: 105,
+            ..at
+        };
+        assert_eq!(
+            decision
+                .verify_issuance(request.deployment_id, &decision.id, &expired)
+                .unwrap(),
+            105
+        );
+        assert!(
+            decision
+                .verify_issuance(request.deployment_id + 1, &decision.id, &at)
+                .is_err()
+        );
+        assert!(
+            decision
+                .verify_issuance(request.deployment_id, &"ff".repeat(32), &at)
+                .is_err()
+        );
         let mut cases = vec![];
         let mut bad = decision.clone();
         bad.id = "legacy".into();

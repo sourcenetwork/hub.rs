@@ -648,8 +648,10 @@ mod tests {
     #[test]
     fn hub_executor_validate_header() {
         let executor = test_executor();
-        let mut header = alloy_consensus::Header::default();
-        header.gas_limit = 30_000_000;
+        let header = alloy_consensus::Header {
+            gas_limit: 30_000_000,
+            ..Default::default()
+        };
         assert!(
             <HubExecutor as BlockExecutor<MockStateDb>>::validate_header(&executor, &header)
                 .is_ok()

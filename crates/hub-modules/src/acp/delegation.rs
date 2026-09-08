@@ -6,7 +6,8 @@ use super::delegated_operation::DelegatedOperation;
 use super::operation::OperationRecord;
 use super::{AcpError, AcpModule, Result};
 use crate::acp::types::{
-    PolicyCmd, PolicyCmdResult, PolicyMarshalingType, PolicyRecord, RecordMetadata,
+    AccessDecision, AccessRequest, PolicyCmd, PolicyCmdResult, PolicyMarshalingType, PolicyRecord,
+    RecordMetadata,
 };
 use crate::hub::HubModule;
 use crate::types::{BlockExecCtx, Timestamp, TxExecCtx};
@@ -96,6 +97,33 @@ impl AcpModule {
                 DelegatedOperation::PolicyCommand(policy_id, &cmd).digest()?,
             ),
             |module, actor| module.direct_policy_cmd(actor, policy_id, cmd),
+        )
+    }
+
+    /// Record a decision with caller-bound recovery and the original submitting worker identity.
+    pub fn bearer_check_access(
+        &mut self,
+        hub: &mut HubModule,
+        context: &BlockExecCtx,
+        submission: &TxExecCtx,
+        token: &str,
+        policy_id: &str,
+        request: &AccessRequest,
+    ) -> Result<AccessDecision> {
+        let worker =
+            Did::new(&submission.signer).map_err(|error| AcpError::InvalidBearerToken {
+                reason: error.to_string(),
+            })?;
+        self.with_delegation(
+            hub,
+            context,
+            submission,
+            token,
+            (
+                DelegationScope::RecordAccessDecision,
+                DelegatedOperation::CheckAccess(policy_id, request).digest()?,
+            ),
+            |module, _caller| module.check_access(&worker, policy_id, request, context, submission),
         )
     }
 

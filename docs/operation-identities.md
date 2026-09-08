@@ -1,6 +1,6 @@
 # Caller operation identities
 
-Delegated ACP creation, editing and graph commands accept an optional signed
+Delegated ACP creation, editing, graph commands and access-decision recording accept an optional signed
 `request` claim. It binds a caller operation ID, exact semantic operation digest
 and genesis identity. Direct key delegations and operator-authorized relay
 assertions use the same execution path. All members must support this claim
@@ -63,3 +63,14 @@ operation never ran. Receipt verification establishes the submitted attempt's
 result; retries can have different submission IDs while referring to the same
 original outcome. Neither a missing receipt nor a transport timeout establishes
 rejection.
+
+Decision recording requires `acp:access:record`; existing policy scopes do not
+provide this authority. Its digest is the typed `CheckAccess(policy_id, request)`
+operation. The caller namespaces recovery while the submitting worker remains
+the decision creator. All requested permissions are evaluated during execution.
+A successful retry returns the original decision even after grant removal or
+decision expiry, provided the operation deadline and current relay authorization
+still permit the retry. It never renews the decision. Fresh denied requests leave
+no decision or outcome. Current reads expose issuance and expiry separately from
+permission evaluation. All members must support the appended scope and call
+before operators enable it.

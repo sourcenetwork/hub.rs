@@ -55,7 +55,7 @@ impl HubModule {
     pub(super) fn set_relay(&mut self, grant: &RelayGrant, sequence: u64, now: u64) -> Result<()> {
         let key = relay_key(&grant.issuer)?;
         if grant.scopes.is_empty()
-            || grant.scopes.len() > 3
+            || grant.scopes.len() > 4
             || grant.scopes.windows(2).any(|pair| pair[0] >= pair[1])
             || grant.expires_at <= now
         {

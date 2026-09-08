@@ -1,3 +1,6 @@
+#[path = "decision_tests.rs"]
+mod decisions;
+
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use hub_crypto::{jwt::JwtClaims, operation::OperationClaim};
 use k256::ecdsa::{Signature, SigningKey, signature::Signer as _};

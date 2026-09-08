@@ -752,6 +752,38 @@ pub(super) fn dispatch(
             Ok(ok_dispatch(WRITE_GAS, ret, vec![]))
         }
 
+        IAcp::bearerCheckAccessCall::SELECTOR => {
+            if gas_limit < WRITE_GAS {
+                return Err(PrecompileError::OutOfGas);
+            }
+            let call = IAcp::bearerCheckAccessCall::abi_decode(input).map_err(decode_error)?;
+            if call.request.len() > 64 << 10 {
+                return Err(PrecompileError::Other(
+                    "access request exceeds byte limit".into(),
+                ));
+            }
+            let request: AccessRequest =
+                serde_json::from_slice(&call.request).map_err(|error| {
+                    PrecompileError::Other(format!("access request JSON decode: {error}").into())
+                })?;
+            let decision = match module.bearer_check_access(
+                hub,
+                block_ctx,
+                tx_ctx,
+                &call.bearerToken,
+                &policy_id_to_string(&call.policyId),
+                &request,
+            ) {
+                Ok(decision) => decision,
+                Err(error) => return Ok(err_dispatch(error)),
+            };
+            Ok(ok_dispatch(
+                WRITE_GAS,
+                IAcp::bearerCheckAccessCall::abi_encode_returns(&json_bytes(&decision)),
+                vec![],
+            ))
+        }
+
         IAcp::checkAccessCall::SELECTOR => {
             if gas_limit < WRITE_GAS {
                 return Err(PrecompileError::OutOfGas);
@@ -1458,7 +1490,7 @@ resources:
         let record = module
             .create_policy(&creator, CROSS_POLICY_YAML, PolicyMarshalingType::ShortYaml)
             .unwrap();
-        let policy_id = record.policy.id.clone();
+        let policy_id = record.policy.id;
         let pid = policy_fixed(&policy_id);
 
         let fields = || IAcp::setRelationshipSubjectCall {

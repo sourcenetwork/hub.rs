@@ -1,6 +1,6 @@
 # Native client proof verification
 
-`vera-verifier` exposes receipt, current-record, live object-owner and permission
+`vera-verifier` exposes receipt, current-record, live object-owner, permission and stored access-decision
 verification through the C interface in `crates/vera-verifier/include/vera_verifier.h`. It calls the same
 `ReceiptResponse::verify`, `RecordResponse::verify`,
 `PrefixResponse::verify_object_owner` and `PermissionResponse::verify`
@@ -65,6 +65,29 @@ and `PERMISSION_LIMITS`. Success returns
 Every requested operation must be allowed. A denial is a valid result; incomplete
 or invalid evidence is an error. The result describes the queried revision and
 does not create a stored access decision or ticket.
+
+Stored access-decision requests use the same certified record response:
+
+```json
+{"kind":"access_decision","trusted_key":"<96-byte hex key>","deployment_id":9063,"decision_id":"<64 lowercase hex characters>","minimum_height":1,"proof":{}}
+```
+
+The verifier authenticates `access_decision/<decision_id>` and binds the decision
+ID to its deployment, policy, submitting worker and sequence, target actor and
+ordered operations. It checks issuance and returns `record` containing `decision`
+and `expires_at_revision`, plus the certified `height` and `timestamp`. Absence
+returns a null record. Expired records remain readable; this result is issuance
+metadata and does not establish current permission.
+
+Caller-bound recovery uses `kind: "decision_outcome"` with `operation` containing
+`deployment_id`, `caller`, `operation_id` (32-byte hex), `policy_id` and `request`
+(the same ordered actor/operations format as permission verification). It also
+requires `trusted_key`, `minimum_height` and `proof`. The verifier derives the
+caller operation key and checks the exact operation digest, original worker,
+submission, issuance revision and decision identity. The returned `outcome`
+contains `decision`, `expires_at_revision`, `submission` and `revision`; absence
+returns null. Recovery preserves the original expiry, including when the decision
+has expired. The caller operation record has its own bounded retention deadline.
 
 Malformed or invalid evidence returns `{"error":"..."}` with no result. Only
 the result returned by this interface is authenticated. Consensus trust must

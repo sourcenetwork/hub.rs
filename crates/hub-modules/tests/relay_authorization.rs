@@ -378,3 +378,92 @@ fn transaction(caller: &Did) -> hub_modules::types::TxExecCtx {
         signer: caller.to_string(),
     }
 }
+
+#[test]
+fn recording_decisions_requires_its_own_relay_grant_even_for_retries() {
+    use hub_crypto::operation::{OperationClaim, OperationId};
+    use hub_modules::acp::types::{AccessRequest, Actor, Operation};
+    let (mut hub, mut acp) = modules();
+    let owner = Did::new(actor()).unwrap();
+    let policy = acp
+        .create_policy(
+            &owner,
+            "name: decisions\nresources:\n  - name: file\n    permissions:\n      - name: read\n",
+            FORMAT,
+        )
+        .unwrap()
+        .policy
+        .id;
+    let object = Object {
+        resource: "file".into(),
+        id: "report".into(),
+    };
+    acp.direct_policy_cmd(&owner, &policy, PolicyCmd::RegisterObject(object.clone()))
+        .unwrap();
+    let request = AccessRequest {
+        actor: Actor(owner),
+        operations: vec![Operation {
+            object,
+            permission: "read".into(),
+        }],
+    };
+    let operation = DelegatedOperation::CheckAccess(&policy, &request);
+    let mut id = [1; 32];
+    id[..8].copy_from_slice(&200u64.to_be_bytes());
+    let mut claims = claims(&operation);
+    claims.request = Some(OperationClaim {
+        id: OperationId(id),
+        digest: operation.digest().unwrap(),
+        genesis_id: GENESIS,
+    });
+    assert!(
+        acp.bearer_check_access(
+            &mut hub,
+            &context(),
+            &submission(),
+            &sign(&claims),
+            &policy,
+            &request
+        )
+        .is_err()
+    );
+    let mut authority = grant();
+    authority.scopes.push(DelegationScope::RecordAccessDecision);
+    admin(
+        &mut hub,
+        &mut acp,
+        AdministrativeCommand::SetRelay(authority),
+    )
+    .unwrap();
+    claims.relay.as_mut().unwrap().grant_sequence = 1;
+    let original = acp
+        .bearer_check_access(
+            &mut hub,
+            &context(),
+            &submission(),
+            &sign(&claims),
+            &policy,
+            &request,
+        )
+        .unwrap();
+    assert_eq!(original.creator, submission().signer);
+    assert_eq!(original.actor, actor());
+    assert!(acp.operation(&actor(), OperationId(id)).unwrap().is_some());
+    admin(
+        &mut hub,
+        &mut acp,
+        AdministrativeCommand::RevokeRelay(issuer()),
+    )
+    .unwrap();
+    assert!(
+        acp.bearer_check_access(
+            &mut hub,
+            &context(),
+            &submission(),
+            &sign(&claims),
+            &policy,
+            &request
+        )
+        .is_err()
+    );
+}

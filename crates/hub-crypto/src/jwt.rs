@@ -37,6 +37,9 @@ pub enum DelegationScope {
     /// Edit policies owned by the actor.
     #[serde(rename = "acp:policy:edit")]
     EditPolicy,
+    /// Record a successful access decision for the requested actor and operations.
+    #[serde(rename = "acp:access:record")]
+    RecordAccessDecision,
 }
 
 /// Verified claims extracted from a JWT bearer token.

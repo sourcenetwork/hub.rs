@@ -91,6 +91,8 @@ sol! {
 
         function flagHijackAttempt(uint64 eventId) external returns (bytes event);
 
+        function bearerCheckAccess(string bearerToken, bytes32 policyId, bytes request) external returns (bytes);
+
         function checkAccess(
             bytes32 policyId,
             string[] resources,

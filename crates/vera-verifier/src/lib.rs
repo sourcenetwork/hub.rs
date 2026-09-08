@@ -4,8 +4,8 @@ use alloy_primitives::{B256, Bytes};
 use commonware_codec::DecodeExt as _;
 use hub_domain::{ConsensusPublicKey, RECEIPT_RESPONSE_BYTES, ReceiptResponse};
 use hub_permission::{
-    AccessRequest, ModuleId, Object, PERMISSION_LIMITS, PermissionResponse, PrefixResponse,
-    RECORD_PROOF_BYTES, RecordResponse,
+    AccessRequest, DecisionOperation, ModuleId, Object, PERMISSION_LIMITS, PermissionResponse,
+    PrefixResponse, RECORD_PROOF_BYTES, RecordResponse,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -25,6 +25,19 @@ enum Request {
         trusted_key: String,
         module: ModuleId,
         key: Bytes,
+        minimum_height: u64,
+        proof: Box<RecordResponse>,
+    },
+    AccessDecision {
+        trusted_key: String,
+        deployment_id: u64,
+        decision_id: String,
+        minimum_height: u64,
+        proof: Box<RecordResponse>,
+    },
+    DecisionOutcome {
+        trusted_key: String,
+        operation: DecisionOperation,
         minimum_height: u64,
         proof: Box<RecordResponse>,
     },
@@ -90,6 +103,38 @@ fn verify(input: &[u8]) -> Result<Value, String> {
                 .map_err(|error| error.to_string())?;
             Ok(
                 json!({"height": proof.revision.height, "timestamp": proof.revision.timestamp, "value": proof.record.value}),
+            )
+        }
+        Request::AccessDecision {
+            trusted_key: key,
+            deployment_id,
+            decision_id,
+            minimum_height,
+            proof,
+        } => {
+            let record = proof
+                .verify_access_decision(
+                    deployment_id,
+                    &decision_id,
+                    minimum_height,
+                    &trusted_key(&key)?,
+                )
+                .map_err(|error| error.to_string())?;
+            Ok(
+                json!({"height": proof.revision.height, "timestamp": proof.revision.timestamp, "record": record}),
+            )
+        }
+        Request::DecisionOutcome {
+            trusted_key: key,
+            operation,
+            minimum_height,
+            proof,
+        } => {
+            let outcome = proof
+                .verify_decision_outcome(&operation, minimum_height, &trusted_key(&key)?)
+                .map_err(|error| error.to_string())?;
+            Ok(
+                json!({"height": proof.revision.height, "timestamp": proof.revision.timestamp, "outcome": outcome}),
             )
         }
         Request::Permission {

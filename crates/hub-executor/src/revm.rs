@@ -619,8 +619,10 @@ mod tests {
             },
         ));
 
-        let mut header = Header::default();
-        header.gas_limit = 1000;
+        let mut header = Header {
+            gas_limit: 1000,
+            ..Default::default()
+        };
         assert!(
             <RevmExecutor as BlockExecutor<MockStateDb>>::validate_header(&executor, &header)
                 .is_err()
@@ -652,11 +654,13 @@ mod tests {
             base_fee_per_gas: None,
         };
 
-        let mut header = Header::default();
-        header.parent_hash = B256::repeat_byte(1);
-        header.number = 101;
-        header.timestamp = 1001;
-        header.gas_limit = 30_000_000;
+        let mut header = Header {
+            parent_hash: B256::repeat_byte(1),
+            number: 101,
+            timestamp: 1001,
+            gas_limit: 30_000_000,
+            ..Default::default()
+        };
 
         assert!(
             executor
@@ -685,11 +689,13 @@ mod tests {
             base_fee_per_gas: None,
         };
 
-        let mut header = Header::default();
-        header.parent_hash = B256::repeat_byte(1);
-        header.number = 101;
-        header.timestamp = 999;
-        header.gas_limit = 30_000_000;
+        let header = Header {
+            parent_hash: B256::repeat_byte(1),
+            number: 101,
+            timestamp: 999,
+            gas_limit: 30_000_000,
+            ..Default::default()
+        };
 
         assert!(
             executor
@@ -711,11 +717,13 @@ mod tests {
             base_fee_per_gas: None,
         };
 
-        let mut header = Header::default();
-        header.parent_hash = B256::repeat_byte(1);
-        header.number = 101;
-        header.timestamp = 1001;
-        header.gas_limit = 35_000_000;
+        let header = Header {
+            parent_hash: B256::repeat_byte(1),
+            number: 101,
+            timestamp: 1001,
+            gas_limit: 35_000_000,
+            ..Default::default()
+        };
 
         assert!(
             executor

@@ -12,6 +12,7 @@ Delegations use signed ES256K tokens with a worker DID in `sub`, deployment in
 | `acp:policy` | Existing object registration, archival and relationship commands |
 | `acp:policy:create` | Create policies owned by the token issuer |
 | `acp:policy:edit` | Edit policies already owned by the token issuer |
+| `acp:access:record` | Record granted access for the requested target actor |
 
 `create_bearer_token` retains the existing command scope.
 `create_scoped_bearer_token` accepts `DelegationScope::CreatePolicy` or
@@ -92,10 +93,11 @@ remain separate. The worker and issuer may revoke individual assertions through
 The operation commitment is SHA-256 of `vera/acp-operation/v1\0` followed by
 compact UTF-8 JSON from `DelegatedOperation`. Its externally tagged variants are
 `CreatePolicy: [definition, format]`, `EditPolicy: [policyId, definition, format]`
-and `PolicyCommand: [policyId, command]`. The JSON has no whitespace outside
+`PolicyCommand: [policyId, command]` and `CheckAccess: [policyId, request]`. The JSON has no whitespace outside
 strings; strings use serde JSON escaping, fields retain declaration order, and
 formats use their enum names such as `ShortYaml`. Graph commands use the typed
-`PolicyCmd` representation. The service decodes and serializes these typed
+`PolicyCmd` representation. Access requests contain ordered `operations` followed
+by `actor`; each operation contains `object` (`resource`, `id`) and `permission`. The service decodes and serializes these typed
 arguments before checking the commitment. Equivalent transport whitespace does
 not alter the operation; changing its semantic arguments does.
 
