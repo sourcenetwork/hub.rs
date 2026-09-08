@@ -257,3 +257,56 @@ fn commitment_opening_cannot_reactivate_an_archived_object() {
         assert_eq!(candidate.store().serialize(), before);
     }
 }
+
+#[test]
+fn policy_edits_preserve_defra_specification_across_restore() {
+    let definition = "name: files\nresources:\n  - name: file\n    relations:\n      - name: reader\n      - name: writer\n    permissions:\n      - name: read\n        expr: reader\n      - name: write\n        expr: writer\n";
+    let mut module = AcpModule::new();
+    let policy = module
+        .create_policy(
+            &owner(),
+            &format!("spec: defra\n{definition}"),
+            PolicyMarshalingType::ShortYaml,
+        )
+        .unwrap()
+        .policy
+        .id;
+    module
+        .direct_policy_cmd(&owner(), &policy, PolicyCmd::RegisterObject(object()))
+        .unwrap();
+    module
+        .direct_policy_cmd(
+            &owner(),
+            &policy,
+            PolicyCmd::SetRelationship(Relationship::with_entity(
+                "file",
+                "report",
+                "writer",
+                reader(),
+            )),
+        )
+        .unwrap();
+    assert!(can_read(&module, &policy));
+
+    for spec in ["", "spec: none\n", "spec: defra\n"] {
+        module = restore(&module);
+        module
+            .edit_policy(
+                &owner(),
+                &policy,
+                &format!("{spec}{definition}"),
+                PolicyMarshalingType::ShortYaml,
+            )
+            .unwrap();
+        assert!(can_read(&module, &policy));
+        assert!(can_read(&restore(&module), &policy));
+        let before = module.store().serialize();
+        let invalid = definition.replace("      - name: write\n        expr: writer\n", "");
+        assert!(
+            module
+                .edit_policy(&owner(), &policy, &invalid, PolicyMarshalingType::ShortYaml)
+                .is_err()
+        );
+        assert_eq!(module.store().serialize(), before);
+    }
+}

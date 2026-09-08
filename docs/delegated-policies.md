@@ -24,6 +24,13 @@ check permission references before accepting a definition. Failed compilation
 leaves the policy counter, stored records and evaluation cache unchanged.
 Malformed or exhausted counter state rejects creation.
 
+`spec: defra` requires `read` and `write` permissions on every resource and
+makes write access grant read access. Specification names are case-insensitive;
+unknown names are rejected. An omitted specification or `spec: none` selects
+ordinary permission evaluation when creating a policy. Edits retain the stored
+specification even when the replacement definition omits it or names another.
+Records without a stored specification retain ordinary permission evaluation.
+
 Edits preserve resource types, policy identity and original creation metadata.
 Removing a relation prunes its stored relationships. Malformed relationship
 records or records whose policy/key bindings differ abort the edit before any

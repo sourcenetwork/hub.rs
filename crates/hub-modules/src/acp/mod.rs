@@ -25,7 +25,7 @@ use acp::{Policy, Relationship};
 use error::AcpError;
 use identity::Did;
 use sha2::{Digest, Sha256};
-use zanzibar::PermissionEngine;
+use zanzibar::{PermissionEngine, PolicySpecification};
 use zanzibar_store::QmdbZanzibarStore;
 
 use crate::kv_store::{InMemoryKvStore, ModuleKvStore};
@@ -132,7 +132,7 @@ impl AcpModule {
         metadata: RecordMetadata,
     ) -> Result<PolicyRecord> {
         let counter = self.next_policy_counter()?;
-        let zanzibar_policy = Self::compile_policy(policy, &marshal_type, counter)?;
+        let zanzibar_policy = Self::compile_policy(policy, &marshal_type, counter, None)?;
 
         let record = PolicyRecord {
             policy: zanzibar_policy.clone(),
@@ -171,7 +171,12 @@ impl AcpModule {
             });
         }
 
-        let mut new_zanzibar = Self::compile_policy(policy, &marshal_type, 0)?;
+        let mut new_zanzibar = Self::compile_policy(
+            policy,
+            &marshal_type,
+            0,
+            Some(existing.policy.specification),
+        )?;
 
         // Validate preserved resources requirement: existing resources must still be present.
         let existing_policy = &existing.policy;
@@ -438,7 +443,7 @@ impl AcpModule {
         policy: &str,
         marshal_type: PolicyMarshalingType,
     ) -> Result<(bool, String, Policy)> {
-        match Self::compile_policy(policy, &marshal_type, 0) {
+        match Self::compile_policy(policy, &marshal_type, 0, None) {
             Ok(built) => Ok((true, String::new(), built)),
             Err(error) => Ok((false, error.to_string(), Policy::new("", ""))),
         }
@@ -448,14 +453,18 @@ impl AcpModule {
         policy: &str,
         marshal_type: &PolicyMarshalingType,
         counter: u64,
+        original_specification: Option<PolicySpecification>,
     ) -> Result<Policy> {
         if *marshal_type != PolicyMarshalingType::ShortYaml {
             return Err(AcpError::InvalidPolicy {
                 reason: "only ShortYaml marshal type is supported".into(),
             });
         }
-        let parsed = policy_yaml::parse_policy_yaml(policy)
+        let mut parsed = policy_yaml::parse_policy_yaml(policy)
             .map_err(|reason| AcpError::InvalidPolicy { reason })?;
+        if let Some(specification) = original_specification {
+            parsed.spec = specification;
+        }
         let built = policy_yaml::build_policy(&parsed, counter).map_err(|error| {
             AcpError::InvalidPolicy {
                 reason: error.to_string(),
