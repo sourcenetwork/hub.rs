@@ -5,6 +5,7 @@ pub mod abi;
 /// Operator approvals and administrative state transitions.
 pub mod administration;
 mod delegation;
+mod token_expiry;
 /// Hub error types.
 pub mod error;
 /// Key prefixes and builders for Hub KV storage.
@@ -312,65 +313,6 @@ impl HubModule {
         self.set_jws_token(&record)
     }
 
-    /// Sweep expired tokens (called at end of each block).
-    ///
-    /// # Flow
-    ///
-    /// 1. Iterate all records in primary store (0x01 prefix).
-    /// 2. Skip records where `status == Invalid`.
-    /// 3. If `record.expires_at < block_ctx.timestamp`:
-    ///    call `update_jws_token_status(token_hash, Invalid, "")`.
-    ///    Empty `invalidated_by` signals automatic expiry.
-    /// 4. Malformed records and update failures abort execution.
-    ///
-    /// # Reads
-    /// - Full scan of `0x01` prefix
-    ///
-    /// # Writes
-    /// - `0x01 || token_hash` for each expired token
-    ///
-    /// # Ctx
-    /// `block_ctx.timestamp` for expiry comparison. Go correctly
-    /// uses `sdkCtx.BlockTime()` here (unlike `RecordJWSTokenUsage`
-    /// and `UpdateJWSTokenStatus` which use `time.Now()`).
-    ///
-    /// # Go bug: zero-expiry tokens
-    /// Go has no `!expires_at.is_zero()` guard in this sweep.
-    /// The zero `time.Time` value (`0001-01-01`) is always before
-    /// `block_time`, so tokens created with zero expiry (meaning
-    /// "no expiry") are immediately swept as expired in the next
-    /// block. The creation path (`store_or_update_jws_token`) has
-    /// a `!expiresAt.IsZero()` guard for validation, but this
-    /// sweep does not. hub.rs should add an `expires_at.is_zero()`
-    /// guard here to skip tokens with no expiry.
-    ///
-    /// # Implementation notes
-    /// Called by the end-block hook. Only block context is available
-    /// (no tx context during end-block). The caller (`EndBlocker`)
-    /// logs errors but always returns nil — sweep failures are
-    /// non-fatal.
-    pub fn check_and_update_expired_tokens(&mut self, block_ctx: &BlockExecCtx) -> Result<()> {
-        let zero = Timestamp::default();
-        let mut expired_hashes = Vec::new();
-        for (key, value) in self.store.prefix_iter(keys::JWS_TOKEN_PREFIX) {
-            let record: JWSTokenRecord = borsh::from_slice(value)
-                .map_err(|error| HubError::State(format!("invalid token record: {error}")))?;
-            if key != keys::jws_token_key(&record.token_hash) {
-                return Err(HubError::State("token record key mismatch".into()));
-            }
-            if record.status != JWSTokenStatus::Invalid
-                && record.expires_at != zero
-                && record.expires_at.seconds < block_ctx.timestamp.seconds
-            {
-                expired_hashes.push(record.token_hash);
-            }
-        }
-        for hash in &expired_hashes {
-            self.update_jws_token_status(block_ctx, hash, JWSTokenStatus::Invalid, "")?;
-        }
-        Ok(())
-    }
-
     /// Look up a JWS token record by hash.
     ///
     /// # Flow
@@ -384,8 +326,12 @@ impl HubModule {
         self.store
             .get(&keys::jws_token_key(token_hash))
             .map(|bytes| {
-                borsh::from_slice(&bytes)
-                    .map_err(|e: std::io::Error| HubError::State(e.to_string()))
+                let record: JWSTokenRecord = borsh::from_slice(&bytes)
+                    .map_err(|e: std::io::Error| HubError::State(e.to_string()))?;
+                if record.token_hash != token_hash {
+                    return Err(HubError::State("token record key mismatch".into()));
+                }
+                Ok(record)
             })
             .transpose()
     }
@@ -670,6 +616,14 @@ impl HubModule {
             });
         }
         let bytes = borsh::to_vec(record).map_err(|e| HubError::State(e.to_string()))?;
+        if let Some(previous) = self.get_jws_token(&record.token_hash)?
+            && let Some(key) = Self::token_expiry_key(&previous)
+        {
+            self.store.delete(&key);
+        }
+        if let Some(key) = Self::token_expiry_key(record) {
+            self.store.put(&key, Vec::new());
+        }
         self.store
             .put(&keys::jws_token_key(&record.token_hash), bytes);
         let did_key = keys::jws_token_by_did_key(&record.issuer_did, &record.token_hash);

@@ -12,6 +12,8 @@ pub const JWS_TOKEN_PREFIX: &[u8] = &[0x01];
 pub const JWS_TOKEN_BY_DID_PREFIX: &[u8] = &[0x02];
 /// Account → token_hash secondary index prefix.
 pub const JWS_TOKEN_BY_ACCOUNT_PREFIX: &[u8] = &[0x03];
+/// Ordered expiry deadlines for active tokens.
+pub const JWS_TOKEN_EXPIRY_PREFIX: &[u8] = &[0x04];
 /// Module parameters key.
 pub const PARAMS_KEY: &[u8] = b"p_hub";
 /// Write-once chain configuration key.

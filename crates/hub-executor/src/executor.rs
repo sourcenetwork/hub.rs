@@ -747,6 +747,15 @@ mod tests {
             let executor = test_executor();
             let mut stores = std::array::from_fn(|_| InMemoryKvStore::default());
             stores[partition].put(&key, vec![0]);
+            if partition == 2 {
+                let index = [
+                    hub_modules::hub::keys::JWS_TOKEN_EXPIRY_PREFIX,
+                    &0u64.to_be_bytes(),
+                    b"bad",
+                ]
+                .concat();
+                stores[partition].put(&index, Vec::new());
+            }
             let parent = ModuleSnapshot {
                 modules: ModuleState::from_stores(stores),
                 trees: None,
