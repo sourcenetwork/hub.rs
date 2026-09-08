@@ -1,4 +1,4 @@
-//! Four-node registration workload. Arguments: count, arrivals/sec, max outstanding, permission reads (0/1), timing preset.
+//! Four-node certified registration workload; see docs/native-workload.md for arguments.
 //! Build hubd in release mode and set HUBD_BINARY to that binary before running.
 
 #[path = "operation_baseline/driver.rs"]
@@ -13,7 +13,7 @@ use alloy_primitives::FixedBytes;
 use alloy_sol_types::SolCall;
 use hub_client::{ACP_ADDRESS, BlsSigner, HubClient};
 use hub_domain::NativeTx;
-use hub_e2e::cluster::{ConsensusPreset, KeySet, TestCluster};
+use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, KeySet, TestCluster};
 use hub_modules::acp::abi::IAcp;
 use tokio::{sync::Semaphore, task::JoinSet, time::Instant};
 
@@ -23,8 +23,8 @@ const CHAIN_ID: u64 = 9001;
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     assert!(
-        args.len() <= 6,
-        "usage: operation_baseline [count] [arrivals/sec] [max outstanding] [permission reads 0/1] [fast|normal|stress] [RPC connections]"
+        args.len() <= 7,
+        "usage: operation_baseline [count] [arrivals/sec] [max outstanding] [permission reads 0/1] [fast|normal|stress] [RPC connections] [epoch revisions]"
     );
     let parse = |index: usize, default: usize| {
         args.get(index).map_or(default, |value| {
@@ -46,6 +46,14 @@ async fn main() {
         .ok()
         .and_then(std::num::NonZeroU32::new)
         .expect("positive RPC connection limit within u32");
+    let epoch_length = u64::try_from(parse(6, 20))
+        .ok()
+        .and_then(std::num::NonZeroU64::new)
+        .expect("positive epoch length within u64");
+    assert!(
+        hub_domain::max_epoch_participants(epoch_length) >= 4,
+        "epoch is too short for four participants"
+    );
     let timing = preset.params();
     let keys = KeySet::builder().seed(42).build().unwrap();
     let trusted = *keys.epoch_info().output.public().public();
@@ -54,6 +62,7 @@ async fn main() {
 
     let mut cluster = TestCluster::builder()
         .nodes(4)
+        .genesis(GenesisBuilder::devnet().blocks_per_epoch(epoch_length.get()))
         .seed(42)
         .chain_id(CHAIN_ID)
         .preset(preset)
@@ -130,6 +139,10 @@ async fn main() {
             "kind": "configuration", "workload": "certified_native_registrations",
             "format_version": 2, "permission_reads_per_write": permission_reads,
             "runner_debug_assertions": cfg!(debug_assertions),
+            "revisions_per_epoch": epoch_length.get(),
+            "max_operations_per_revision": hub_domain::MAX_BLOCK_TXS,
+            "max_encoded_operation_bytes_per_revision": hub_domain::MAX_BLOCK_TX_BYTES,
+            "max_encoded_revision_bytes": hub_domain::MAX_BLOCK_BYTES,
             "rpc_max_connections": rpc_connections.get(), "nodes": 4, "preset": format!("{preset:?}"),
             "leader_timeout_ms": timing.leader_timeout.as_millis(),
             "notarization_timeout_ms": timing.notarization_timeout.as_millis(),

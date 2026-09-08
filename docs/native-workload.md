@@ -19,7 +19,16 @@ records the selected preset and resolved timeouts. A sixth argument selects the
 per-node RPC connection limit (default 100), independently of outstanding
 workflows. Operators configure the same limit with `rpc.max_connections` in
 node TOML; it must be a positive u32. A higher connection limit increases server
-resource exposure and is not a throughput guarantee. It prepares independent BLS signers and
+resource exposure and is not a throughput guarantee. The seventh argument sets
+revisions per epoch (default 20); values too short for four participants are
+rejected before node startup. The output records this value and the protocol's
+operation-count and encoded-byte limits.
+
+Use the same epoch length when comparing timing presets or implementation
+changes. Short epochs exercise frequent DKG transitions. A run that finishes
+inside one long epoch measures steady-state traffic and does not qualify
+transition or membership-change behavior. Larger epochs also change how long
+an operator-requested membership change may take to activate. It prepares independent BLS signers and
 signed registrations before the timed interval; signing time and byte volume are
 reported separately. This isolates node/client request handling from signing
 preparation and does not model a production gateway's worker pool.
