@@ -1,6 +1,9 @@
 //! In-memory mempool implementation.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    sync::Arc,
+};
 
 use commonware_codec::EncodeSize as _;
 use hub_domain::Tx;
@@ -8,7 +11,7 @@ use parking_lot::RwLock;
 
 use crate::traits::{Mempool, TxId};
 
-/// Simple in-memory mempool backed by a BTreeMap.
+/// Bounded pending transactions selected in local admission order.
 #[derive(Debug, Clone)]
 pub struct InMemoryMempool {
     inner: Arc<RwLock<Pending>>,
@@ -20,10 +23,17 @@ const MAX_PENDING_TXS: usize = 4096;
 #[derive(Debug, Default)]
 struct Pending {
     txs: BTreeMap<TxId, Tx>,
+    order: VecDeque<TxId>,
     bytes: usize,
 }
 
 impl Pending {
+    fn ordered(&self) -> impl Iterator<Item = (&TxId, &Tx)> {
+        self.order
+            .iter()
+            .map(|id| (id, self.txs.get(id).expect("queued transaction")))
+    }
+
     fn accepts(&self, id: &TxId, tx: &Tx) -> bool {
         tx.bytes.len() <= hub_domain::MAX_TX_BYTES
             && (self.txs.contains_key(id)
@@ -47,8 +57,7 @@ impl InMemoryMempool {
         let mut remaining = hub_domain::MAX_BLOCK_TX_BYTES - 5;
         self.inner
             .read()
-            .txs
-            .iter()
+            .ordered()
             .filter(|(id, _)| !excluded.contains(id))
             .take(max_txs.min(hub_domain::MAX_BLOCK_TXS))
             .take_while(|(_, tx)| {
@@ -85,6 +94,7 @@ impl Mempool for InMemoryMempool {
             return false;
         }
         inner.bytes += tx.bytes.len();
+        inner.order.push_back(id);
         inner.txs.insert(id, tx);
         true
     }
@@ -92,8 +102,7 @@ impl Mempool for InMemoryMempool {
     fn build(&self, max_txs: usize, excluded: &std::collections::BTreeSet<TxId>) -> Vec<Tx> {
         let inner = self.inner.read();
         inner
-            .txs
-            .iter()
+            .ordered()
             .filter(|(id, _)| !excluded.contains(id))
             .take(max_txs)
             .map(|(_, tx)| tx.clone())
@@ -101,12 +110,17 @@ impl Mempool for InMemoryMempool {
     }
 
     fn prune(&self, tx_ids: &[TxId]) {
+        if tx_ids.is_empty() {
+            return;
+        }
         let mut inner = self.inner.write();
         for id in tx_ids {
             if let Some(tx) = inner.txs.remove(id) {
                 inner.bytes -= tx.bytes.len();
             }
         }
+        let Pending { txs, order, .. } = &mut *inner;
+        order.retain(|id| txs.contains_key(id));
     }
 
     fn len(&self) -> usize {
@@ -136,6 +150,34 @@ mod tests {
         assert!(pool.insert(txs[5].clone()));
         let excluded = txs.iter().map(Tx::id).collect();
         assert!(pool.build_block(64, &excluded).is_empty());
+    }
+
+    #[test]
+    fn admission_order_survives_hash_priority_duplicates_exclusions_and_pruning() {
+        let pool = InMemoryMempool::new();
+        let mut txs: Vec<_> = (0..8).map(|i| Tx::new(vec![i].into())).collect();
+        txs.sort_by_key(|tx| std::cmp::Reverse(tx.id()));
+        for tx in &txs {
+            assert!(pool.insert(tx.clone()));
+        }
+        assert!(!pool.insert(txs[0].clone()));
+        assert_eq!(pool.build(3, &Default::default()), txs[..3]);
+        assert_eq!(pool.build_block(3, &Default::default()), txs[..3]);
+        let excluded = [txs[0].id()].into_iter().collect();
+        assert_eq!(pool.build_block(2, &excluded), txs[1..3]);
+        pool.prune(&[txs[0].id(), txs[3].id()]);
+        assert!(pool.insert(txs[0].clone()));
+        let expected: Vec<_> = txs[1..3]
+            .iter()
+            .chain(txs[4..].iter())
+            .chain([&txs[0]])
+            .cloned()
+            .collect();
+        assert_eq!(pool.build(10, &Default::default()), expected);
+        let ids: Vec<_> = txs.iter().map(Tx::id).collect();
+        pool.prune(&ids);
+        assert!(pool.inner.read().order.is_empty());
+        assert_eq!(pool.inner.read().bytes, 0);
     }
 
     #[test]
