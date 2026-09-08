@@ -96,7 +96,9 @@ impl AcpModule {
                 DelegationScope::PolicyCommands,
                 DelegatedOperation::PolicyCommand(policy_id, &cmd).digest()?,
             ),
-            |module, _hub, actor| module.direct_policy_cmd(actor, policy_id, cmd),
+            |module, _hub, actor| {
+                module.execute_policy_cmd(actor, policy_id, cmd, context, submission)
+            },
         )
     }
 

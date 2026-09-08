@@ -5,6 +5,8 @@ sol! {
     interface IAcp {
         // ── Events ──────────────────────────────────────────────────────
 
+        event RegistrationsCommitted(uint64 indexed commitmentId, bytes32 indexed policyId, bytes32 commitment);
+
         event PolicyCreated(string indexed policyId, string creator);
         event DelegatedPolicyCreated(bytes32 indexed policyId, string creator);
         event PolicyEdited(string indexed policyId, string creator, uint256 relationshipsRemoved);

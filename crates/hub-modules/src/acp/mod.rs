@@ -2,6 +2,7 @@
 
 /// Solidity ABI interface for the ACP precompile.
 pub mod abi;
+mod command_context;
 pub mod decision;
 pub mod delegated_operation;
 mod delegation;
@@ -314,7 +315,8 @@ impl AcpModule {
         Ok(decision)
     }
 
-    /// Execute a policy command authenticated by the tx signer's DID.
+    /// Execute context-free command logic. Runtime callers use `execute_policy_cmd`
+    /// to retain authenticated submission metadata and registration priority.
     #[allow(unused_variables)]
     pub fn direct_policy_cmd(
         &mut self,
@@ -548,6 +550,7 @@ impl AcpModule {
         }
 
         for obj in objects {
+            self.validate_registration_object(policy_id, obj)?;
             self.ensure_object_unregistered(policy_id, obj)?;
         }
 
@@ -557,10 +560,10 @@ impl AcpModule {
         let leaf_hashes: Vec<[u8; 32]> = objects
             .iter()
             .map(|obj| {
-                let leaf_data = format!("{}{}{}{}", policy_id, obj.resource, obj.id, actor_did);
-                Self::compute_leaf_hash(leaf_data.as_bytes())
+                Self::registration_leaf(policy_id, obj, &actor_did)
+                    .map(|data| Self::compute_leaf_hash(&data))
             })
-            .collect();
+            .collect::<Result<_>>()?;
 
         let levels = Self::build_merkle_levels(&leaf_hashes);
         let root = levels.last().unwrap()[0];
@@ -812,9 +815,17 @@ impl AcpModule {
         let counter = self
             .store
             .get(&keys::commitment_counter_key())
-            .map(|b| u64::from_be_bytes(b.try_into().expect("counter is 8 bytes")))
+            .map(|bytes| {
+                bytes
+                    .try_into()
+                    .map(u64::from_be_bytes)
+                    .map_err(|_| AcpError::State("invalid record counter".into()))
+            })
+            .transpose()?
             .unwrap_or(0);
-        let next = counter + 1;
+        let next = counter
+            .checked_add(1)
+            .ok_or_else(|| AcpError::State("record counter exhausted".into()))?;
         self.store
             .put(&keys::commitment_counter_key(), next.to_be_bytes().to_vec());
         commitment.id = next;
@@ -877,9 +888,17 @@ impl AcpModule {
         let counter = self
             .store
             .get(&keys::amendment_event_counter_key())
-            .map(|b| u64::from_be_bytes(b.try_into().expect("counter is 8 bytes")))
+            .map(|bytes| {
+                bytes
+                    .try_into()
+                    .map(u64::from_be_bytes)
+                    .map_err(|_| AcpError::State("invalid record counter".into()))
+            })
+            .transpose()?
             .unwrap_or(0);
-        let next = counter + 1;
+        let next = counter
+            .checked_add(1)
+            .ok_or_else(|| AcpError::State("record counter exhausted".into()))?;
         self.store.put(
             &keys::amendment_event_counter_key(),
             next.to_be_bytes().to_vec(),
@@ -1078,12 +1097,7 @@ impl AcpModule {
         Ok(())
     }
 
-    fn cmd_register_object(
-        &mut self,
-        creator: &Did,
-        policy_id: &str,
-        obj: Object,
-    ) -> Result<PolicyCmdResult> {
+    fn validate_registration_object(&self, policy_id: &str, obj: &Object) -> Result<()> {
         let policy = self
             .zanzibar_policies
             .get(policy_id)
@@ -1106,6 +1120,17 @@ impl AcpModule {
                 reason: format!("resource '{}' not defined in policy", obj.resource),
             });
         }
+
+        Ok(())
+    }
+
+    fn cmd_register_object(
+        &mut self,
+        creator: &Did,
+        policy_id: &str,
+        obj: Object,
+    ) -> Result<PolicyCmdResult> {
+        self.validate_registration_object(policy_id, &obj)?;
 
         self.ensure_object_unregistered(policy_id, &obj)?;
 
@@ -1287,6 +1312,7 @@ impl AcpModule {
         commitment_id: u64,
         proof: RegistrationProof,
     ) -> Result<PolicyCmdResult> {
+        self.validate_registration_object(policy_id, &proof.object)?;
         let commitment = self
             .get_commitment_by_id(commitment_id)?
             .ok_or(AcpError::CommitmentNotFound { id: commitment_id })?;
@@ -1295,13 +1321,14 @@ impl AcpModule {
             return Err(AcpError::CommitmentExpired { id: commitment_id });
         }
 
-        let leaf_data = format!(
-            "{}{}{}{}",
-            policy_id, proof.object.resource, proof.object.id, creator
-        );
+        if commitment.policy_id != policy_id {
+            return Err(AcpError::InvalidProof {
+                reason: "registration commitment belongs to another policy".into(),
+            });
+        }
 
-        let valid_proof =
-            Self::verify_merkle_proof(&commitment.commitment, &proof, leaf_data.as_bytes());
+        let leaf_data = Self::registration_leaf(policy_id, &proof.object, creator.as_str())?;
+        let valid_proof = Self::verify_merkle_proof(&commitment.commitment, &proof, &leaf_data);
         if !valid_proof {
             return Err(AcpError::InvalidProof {
                 reason: "Merkle proof verification failed".into(),
@@ -1372,23 +1399,6 @@ impl AcpModule {
         let previous_owner_did = Did::new(&existing.metadata.owner_did)
             .map_err(|_| AcpError::State("stored owner DID is invalid".into()))?;
 
-        let owner_rel_prefix =
-            Relationship::relation_prefix(&proof.object.resource, &proof.object.id, "owner");
-        let scan_prefix = keys::relationship_storage_prefix(policy_id, &owner_rel_prefix);
-        for (kv_key, value) in self.store.prefix_scan(&scan_prefix) {
-            if let Ok(mut rec) = serde_json::from_slice::<RelationshipRecord>(&value) {
-                rec.metadata.owner_did = creator.to_string();
-                rec.relationship = Relationship::with_entity(
-                    proof.object.resource.clone(),
-                    proof.object.id.clone(),
-                    "owner",
-                    creator.clone(),
-                );
-                let bytes = serde_json::to_vec(&rec).expect("serialize RelationshipRecord");
-                self.store.put(&kv_key, bytes);
-            }
-        }
-
         let amended_rel = Relationship::with_entity(
             proof.object.resource.clone(),
             proof.object.id.clone(),
@@ -1414,6 +1424,8 @@ impl AcpModule {
         };
 
         self.create_amendment_event(&mut event)?;
+        self.delete_relationship(policy_id, &existing.relationship.storage_key());
+        self.set_relationship(policy_id, &record.relationship.storage_key(), &record);
 
         Ok(PolicyCmdResult::RevealRegistration { record, event })
     }
@@ -1558,6 +1570,15 @@ impl AcpModule {
 
     // ── RFC 6962 Merkle tree helpers ─────────────────────────────────────
 
+    fn registration_leaf(policy: &str, object: &Object, actor: &str) -> Result<Vec<u8>> {
+        let mut data = b"vera/registration-leaf/v1\0".to_vec();
+        data.extend(
+            borsh::to_vec(&(policy, &object.resource, &object.id, actor))
+                .map_err(|error| AcpError::State(error.to_string()))?,
+        );
+        Ok(data)
+    }
+
     fn compute_leaf_hash(data: &[u8]) -> [u8; 32] {
         let mut h = Sha256::new();
         h.update([0x00u8]);
@@ -1619,20 +1640,34 @@ impl AcpModule {
 
     /// Verify an RFC 6962 Merkle audit proof.
     fn verify_merkle_proof(root: &[u8], proof: &RegistrationProof, leaf_data: &[u8]) -> bool {
-        let mut current = Self::compute_leaf_hash(leaf_data).to_vec();
-        let mut idx = proof.leaf_index;
-
-        for sibling in &proof.merkle_proof {
-            let hash = if idx.is_multiple_of(2) {
-                Self::compute_inner_hash(&current, sibling)
-            } else {
-                Self::compute_inner_hash(sibling, &current)
-            };
-            current = hash.to_vec();
-            idx >>= 1;
+        if root.len() != 32
+            || proof.leaf_count == 0
+            || proof.leaf_index >= proof.leaf_count
+            || proof.merkle_proof.len() > 64
+            || proof.merkle_proof.iter().any(|sibling| sibling.len() != 32)
+        {
+            return false;
         }
-
-        current == root
+        let mut current = Self::compute_leaf_hash(leaf_data);
+        let mut index = proof.leaf_index;
+        let mut width = proof.leaf_count;
+        let mut siblings = proof.merkle_proof.iter();
+        while width > 1 {
+            if !index.is_multiple_of(2) {
+                let Some(sibling) = siblings.next() else {
+                    return false;
+                };
+                current = Self::compute_inner_hash(sibling, &current);
+            } else if index + 1 < width {
+                let Some(sibling) = siblings.next() else {
+                    return false;
+                };
+                current = Self::compute_inner_hash(&current, sibling);
+            }
+            index /= 2;
+            width = width.div_ceil(2);
+        }
+        siblings.next().is_none() && current.as_slice() == root
     }
 }
 
@@ -1640,6 +1675,8 @@ impl AcpModule {
 mod policy_edit_tests;
 #[cfg(test)]
 mod policy_validation_tests;
+#[cfg(test)]
+mod registration_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2170,12 +2207,9 @@ resources:
 
         // Verify proof for each object.
         for (i, obj) in objects.iter().enumerate() {
-            let leaf_data = format!("{}{}{}{}", policy_id, obj.resource, obj.id, creator);
-            let valid = AcpModule::verify_merkle_proof(
-                &result.commitment,
-                &result.proofs[i],
-                leaf_data.as_bytes(),
-            );
+            let leaf_data = AcpModule::registration_leaf(policy_id, obj, creator.as_str()).unwrap();
+            let valid =
+                AcpModule::verify_merkle_proof(&result.commitment, &result.proofs[i], &leaf_data);
             assert!(valid, "proof {i} should be valid");
         }
     }

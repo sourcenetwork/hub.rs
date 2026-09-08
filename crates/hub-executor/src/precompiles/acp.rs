@@ -378,10 +378,11 @@ pub(super) fn dispatch(
                 acp::Subject::entity(actor_did),
             ));
 
-            let result = match module.direct_policy_cmd(&creator, &policy_id, cmd) {
-                Ok(r) => r,
-                Err(e) => return Ok(err_dispatch(e)),
-            };
+            let result =
+                match module.execute_policy_cmd(&creator, &policy_id, cmd, block_ctx, tx_ctx) {
+                    Ok(r) => r,
+                    Err(e) => return Ok(err_dispatch(e)),
+                };
 
             let (record_existed, record) = match result {
                 hub_modules::acp::types::PolicyCmdResult::SetRelationship {
@@ -424,10 +425,11 @@ pub(super) fn dispatch(
                 acp::Subject::entity(actor_did),
             ));
 
-            let result = match module.direct_policy_cmd(&creator, &policy_id, cmd) {
-                Ok(r) => r,
-                Err(e) => return Ok(err_dispatch(e)),
-            };
+            let result =
+                match module.execute_policy_cmd(&creator, &policy_id, cmd, block_ctx, tx_ctx) {
+                    Ok(r) => r,
+                    Err(e) => return Ok(err_dispatch(e)),
+                };
 
             let record_found = match result {
                 hub_modules::acp::types::PolicyCmdResult::DeleteRelationship { record_found } => {
@@ -471,10 +473,11 @@ pub(super) fn dispatch(
                 subject,
             ));
 
-            let result = match module.direct_policy_cmd(&creator, &policy_id, cmd) {
-                Ok(r) => r,
-                Err(e) => return Ok(err_dispatch(e)),
-            };
+            let result =
+                match module.execute_policy_cmd(&creator, &policy_id, cmd, block_ctx, tx_ctx) {
+                    Ok(r) => r,
+                    Err(e) => return Ok(err_dispatch(e)),
+                };
 
             let (record_existed, record) = match result {
                 hub_modules::acp::types::PolicyCmdResult::SetRelationship {
@@ -528,10 +531,11 @@ pub(super) fn dispatch(
                 subject,
             ));
 
-            let result = match module.direct_policy_cmd(&creator, &policy_id, cmd) {
-                Ok(r) => r,
-                Err(e) => return Ok(err_dispatch(e)),
-            };
+            let result =
+                match module.execute_policy_cmd(&creator, &policy_id, cmd, block_ctx, tx_ctx) {
+                    Ok(r) => r,
+                    Err(e) => return Ok(err_dispatch(e)),
+                };
 
             let record_found = match result {
                 hub_modules::acp::types::PolicyCmdResult::DeleteRelationship { record_found } => {
@@ -572,10 +576,11 @@ pub(super) fn dispatch(
                 id: call.objectId,
             });
 
-            let result = match module.direct_policy_cmd(&creator, &policy_id, cmd) {
-                Ok(r) => r,
-                Err(e) => return Ok(err_dispatch(e)),
-            };
+            let result =
+                match module.execute_policy_cmd(&creator, &policy_id, cmd, block_ctx, tx_ctx) {
+                    Ok(r) => r,
+                    Err(e) => return Ok(err_dispatch(e)),
+                };
 
             let record = match result {
                 hub_modules::acp::types::PolicyCmdResult::RegisterObject { record } => record,
@@ -610,10 +615,11 @@ pub(super) fn dispatch(
                 id: call.objectId,
             });
 
-            let result = match module.direct_policy_cmd(&creator, &policy_id, cmd) {
-                Ok(r) => r,
-                Err(e) => return Ok(err_dispatch(e)),
-            };
+            let result =
+                match module.execute_policy_cmd(&creator, &policy_id, cmd, block_ctx, tx_ctx) {
+                    Ok(r) => r,
+                    Err(e) => return Ok(err_dispatch(e)),
+                };
 
             let (found, relationships_removed) = match result {
                 hub_modules::acp::types::PolicyCmdResult::ArchiveObject {
@@ -651,10 +657,11 @@ pub(super) fn dispatch(
                 id: call.objectId,
             });
 
-            let result = match module.direct_policy_cmd(&creator, &policy_id, cmd) {
-                Ok(r) => r,
-                Err(e) => return Ok(err_dispatch(e)),
-            };
+            let result =
+                match module.execute_policy_cmd(&creator, &policy_id, cmd, block_ctx, tx_ctx) {
+                    Ok(r) => r,
+                    Err(e) => return Ok(err_dispatch(e)),
+                };
 
             let (record, relationship_modified) = match result {
                 hub_modules::acp::types::PolicyCmdResult::UnarchiveObject {
@@ -682,10 +689,11 @@ pub(super) fn dispatch(
                 commitment: call.commitment.to_vec(),
             };
 
-            let result = match module.direct_policy_cmd(&creator, &policy_id, cmd) {
-                Ok(r) => r,
-                Err(e) => return Ok(err_dispatch(e)),
-            };
+            let result =
+                match module.execute_policy_cmd(&creator, &policy_id, cmd, block_ctx, tx_ctx) {
+                    Ok(r) => r,
+                    Err(e) => return Ok(err_dispatch(e)),
+                };
 
             let commitment_id = match result {
                 hub_modules::acp::types::PolicyCmdResult::CommitRegistrations {
@@ -695,7 +703,16 @@ pub(super) fn dispatch(
             };
 
             let ret = IAcp::commitRegistrationsCall::abi_encode_returns(&commitment_id);
-            Ok(ok_dispatch(WRITE_GAS, ret, vec![]))
+            let event = IAcp::RegistrationsCommitted {
+                commitmentId: commitment_id,
+                policyId: call.policyId,
+                commitment: alloy_primitives::B256::from_slice(&call.commitment),
+            };
+            Ok(ok_dispatch(
+                WRITE_GAS,
+                ret,
+                vec![event_log(ACP_ADDRESS, &event)],
+            ))
         }
 
         IAcp::revealRegistrationCall::SELECTOR => {
@@ -713,11 +730,15 @@ pub(super) fn dispatch(
                 proof,
             };
 
-            // policy_id is not needed — the commitment record carries it.
-            let result = match module.direct_policy_cmd(&creator, "", cmd) {
-                Ok(r) => r,
-                Err(e) => return Ok(err_dispatch(e)),
+            let policy_id = match module.query_registrations_commitment(call.commitmentId) {
+                Ok(commitment) => commitment.policy_id,
+                Err(error) => return Ok(err_dispatch(error)),
             };
+            let result =
+                match module.execute_policy_cmd(&creator, &policy_id, cmd, block_ctx, tx_ctx) {
+                    Ok(r) => r,
+                    Err(e) => return Ok(err_dispatch(e)),
+                };
 
             let encoded = serde_json::to_vec(&result).unwrap_or_default();
             let ret_bytes = Bytes::from(encoded);
@@ -738,7 +759,7 @@ pub(super) fn dispatch(
             // policy_id is empty — FlagHijackAttempt looks up the amendment
             // event by event_id; the event record itself carries the policy_id.
             // The module implementation must ignore policy_id for this variant.
-            let result = match module.direct_policy_cmd(&creator, "", cmd) {
+            let result = match module.execute_policy_cmd(&creator, "", cmd, block_ctx, tx_ctx) {
                 Ok(r) => r,
                 Err(e) => return Ok(err_dispatch(e)),
             };
