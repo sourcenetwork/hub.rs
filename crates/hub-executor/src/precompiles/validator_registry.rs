@@ -293,7 +293,7 @@ fn clear_validator<CTX: ContextTr>(
 
 // ── Dispatch entry point ───────────────────────────────────────────────
 
-pub(super) fn dispatch_with_journal<CTX: ContextTr>(
+pub(crate) fn dispatch_with_journal<CTX: ContextTr>(
     context: &mut CTX,
     acp: &AcpModule,
     hub: &HubModule,

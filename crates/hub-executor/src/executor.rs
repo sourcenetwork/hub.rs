@@ -23,7 +23,9 @@ use hub_traits::StateDb;
 use revm::{
     Context, ExecuteCommitEvm, InspectEvm, Journal, MainBuilder,
     context::{block::BlockEnv, result::ExecutionResult},
+    context_interface::{ContextTr, JournalTr},
     database::State,
+    precompile::PrecompileError,
 };
 use tracing::warn;
 
@@ -196,7 +198,8 @@ impl HubExecutor {
     }
 
     /// Execute a native BLS transaction: verify signature, derive DID, dispatch to module.
-    fn execute_native_tx(
+    #[allow(clippy::too_many_arguments)]
+    fn execute_native_tx<CTX: ContextTr>(
         &self,
         tx_bytes: &[u8],
         block_ctx: &BlockExecCtx,
@@ -204,6 +207,7 @@ impl HubExecutor {
         bulletin: &mut BulletinModule,
         hub: &mut HubModule,
         nonce_store: &mut NativeNonceStore,
+        journal: &mut CTX,
     ) -> Result<ExecutionReceipt, ExecutionError> {
         let native_tx = NativeTx::decode_wire(tx_bytes)
             .map_err(|e| ExecutionError::TxDecode(format!("native tx: {e}")))?;
@@ -225,14 +229,10 @@ impl HubExecutor {
         let signer_did = bls::did_from_bls_pubkey(&pubkey)
             .map_err(|e| ExecutionError::BlsVerification(format!("DID: {e}")))?;
 
-        if native_tx.target == VALIDATOR_REGISTRY_ADDRESS {
-            return Err(ExecutionError::InvalidTx(
-                "ValidatorRegistry does not support native transactions".to_string(),
-            ));
-        }
         if native_tx.target != ACP_ADDRESS
             && native_tx.target != BULLETIN_ADDRESS
             && native_tx.target != HUB_ADDRESS
+            && native_tx.target != VALIDATOR_REGISTRY_ADDRESS
         {
             return Err(ExecutionError::UnknownNativeTarget(native_tx.target));
         }
@@ -256,7 +256,28 @@ impl HubExecutor {
         };
 
         let before = (acp.clone(), bulletin.clone(), hub.clone());
+        let checkpoint = journal.journal_mut().checkpoint();
         let dispatch_result = catch_unwind(AssertUnwindSafe(|| {
+            if native_tx.target == VALIDATOR_REGISTRY_ADDRESS {
+                journal
+                    .journal_mut()
+                    .load_account(VALIDATOR_REGISTRY_ADDRESS)
+                    .map_err(|error| {
+                        PrecompileError::Fatal(format!("membership account read failed: {error:?}"))
+                    })?;
+                journal
+                    .journal_mut()
+                    .touch_account(VALIDATOR_REGISTRY_ADDRESS);
+                return crate::precompiles::validator_registry::dispatch_with_journal(
+                    journal,
+                    acp,
+                    hub,
+                    block_ctx,
+                    &tx_ctx,
+                    &native_tx.calldata,
+                    NATIVE_TX_GAS_LIMIT,
+                );
+            }
             dispatch_to_module(
                 acp,
                 bulletin,
@@ -272,6 +293,9 @@ impl HubExecutor {
 
         if !matches!(&dispatch_result, Ok(Ok(result)) if !result.precompile.reverted) {
             (*acp, *bulletin, *hub) = before;
+            journal.journal_mut().checkpoint_revert(checkpoint);
+        } else {
+            journal.journal_mut().checkpoint_commit();
         }
 
         let failed_receipt = || {
@@ -301,6 +325,7 @@ impl HubExecutor {
                     None,
                 ))
             }
+            Ok(Err(PrecompileError::Fatal(message))) => Err(ExecutionError::TxExecution(message)),
             Ok(Err(_)) => Ok(failed_receipt()),
             Err(_) => {
                 warn!(%tx_hash, "native tx module panicked");
@@ -350,6 +375,25 @@ impl HubExecutor {
         let building = !context.is_verification;
         let mut executed_indices: Vec<usize> = Vec::new();
 
+        let adapter = StateDbAdapter::new(state.clone());
+        let db = State::builder().with_database_ref(adapter).build();
+
+        type Db<S> = State<revm::database::WrapDatabaseRef<StateDbAdapter<S>>>;
+        let ctx: Context<BlockEnv, _, _, Db<S>, Journal<Db<S>>, ()> =
+            Context::new(db, self.config.spec_id);
+        let mut ctx = ctx
+            .modify_cfg_chained(|cfg| {
+                cfg.chain_id = self.config.chain_id;
+            })
+            .modify_block_chained(|blk: &mut BlockEnv| {
+                blk.number = U256::from(context.header.number);
+                blk.timestamp = U256::from(context.header.timestamp);
+                blk.beneficiary = context.header.beneficiary;
+                blk.gas_limit = context.header.gas_limit;
+                blk.basefee = context.header.base_fee_per_gas.unwrap_or_default();
+                blk.prevrandao = Some(context.prevrandao);
+            });
+
         for (i, tx_bytes) in txs.iter().enumerate() {
             if tx_bytes.is_empty() || !NativeTx::is_native_tx(tx_bytes[0]) {
                 continue;
@@ -362,8 +406,10 @@ impl HubExecutor {
                 &mut modules.bulletin,
                 &mut modules.hub,
                 &mut modules.nonces,
+                &mut ctx,
             ) {
                 Ok(r) => r,
+                Err(error @ ExecutionError::TxExecution(_)) => return Err(error),
                 Err(e) if building => {
                     let tx_hash = keccak256(tx_bytes);
                     warn!(%tx_hash, ?e, "skipping native tx");
@@ -371,6 +417,26 @@ impl HubExecutor {
                 }
                 Err(e) => return Err(e),
             };
+
+            let journaled = ctx.journal_mut().finalize();
+            outcome.changes.merge(extract_changes(&journaled));
+            // Native module storage is retained even when its account has no balance or code.
+            for (address, account) in journaled {
+                if account.is_touched() {
+                    let storage = account
+                        .storage
+                        .into_iter()
+                        .map(|(slot, value)| (slot, value.into()))
+                        .collect();
+                    ctx.journal_mut()
+                        .db_mut()
+                        .cache
+                        .accounts
+                        .get_mut(&address)
+                        .expect("journaled account was loaded into the proposal cache")
+                        .change(account.info, storage);
+                }
+            }
 
             executed_indices.push(i);
             let gas_used = receipt.gas_used;
@@ -380,25 +446,6 @@ impl HubExecutor {
             receipt.receipt.cumulative_gas_used = cumulative_gas;
             outcome.receipts.push(receipt);
         }
-
-        let adapter = StateDbAdapter::new(state.clone());
-        let db = State::builder().with_database_ref(adapter).build();
-
-        type Db<S> = State<revm::database::WrapDatabaseRef<StateDbAdapter<S>>>;
-        let ctx: Context<BlockEnv, _, _, Db<S>, Journal<Db<S>>, ()> =
-            Context::new(db, self.config.spec_id);
-        let ctx = ctx
-            .modify_cfg_chained(|cfg| {
-                cfg.chain_id = self.config.chain_id;
-            })
-            .modify_block_chained(|blk: &mut BlockEnv| {
-                blk.number = U256::from(context.header.number);
-                blk.timestamp = U256::from(context.header.timestamp);
-                blk.beneficiary = context.header.beneficiary;
-                blk.gas_limit = context.header.gas_limit;
-                blk.basefee = context.header.base_fee_per_gas.unwrap_or_default();
-                blk.prevrandao = Some(context.prevrandao);
-            });
 
         let precompiles = HubPrecompiles::with_modules(
             self.config.spec_id,
@@ -618,6 +665,14 @@ mod tests {
         }
     }
 
+    fn test_journal()
+    -> Context<BlockEnv, revm::context::TxEnv, revm::context::CfgEnv, revm::database::EmptyDB> {
+        Context::new(
+            revm::database::EmptyDB::default(),
+            revm::primitives::hardfork::SpecId::default(),
+        )
+    }
+
     #[test]
     fn hub_executor_new() {
         let executor = test_executor();
@@ -676,6 +731,7 @@ mod tests {
             &mut bulletin,
             &mut hub,
             &mut nonces,
+            &mut test_journal(),
         );
         assert!(matches!(result, Err(ExecutionError::TxDecode(_))));
     }
@@ -706,6 +762,7 @@ mod tests {
             &mut bulletin,
             &mut hub,
             &mut nonces,
+            &mut test_journal(),
         );
         match result {
             Err(ExecutionError::ChainIdMismatch { expected, got }) => {
@@ -742,6 +799,7 @@ mod tests {
             &mut bulletin,
             &mut hub,
             &mut nonces,
+            &mut test_journal(),
         );
         assert!(matches!(result, Err(ExecutionError::BlsVerification(_))));
     }
@@ -794,6 +852,7 @@ mod tests {
             &mut bulletin,
             &mut hub,
             &mut nonces,
+            &mut test_journal(),
         );
         assert!(matches!(
             result,
@@ -903,6 +962,7 @@ mod tests {
                 &mut bulletin,
                 &mut hub,
                 &mut nonces,
+                &mut test_journal(),
             )
             .unwrap();
         assert!(receipt.success(), "getParams query should succeed");
@@ -996,6 +1056,7 @@ mod tests {
                     &mut bulletin,
                     &mut hub,
                     &mut nonces,
+                    &mut test_journal(),
                 )
                 .unwrap();
             assert!(result.success());
@@ -1035,6 +1096,7 @@ mod tests {
             &mut bulletin,
             &mut hub,
             &mut nonces,
+            &mut test_journal(),
         );
         match result {
             Err(ExecutionError::NonceMismatch { expected, got, .. }) => {
@@ -1065,6 +1127,7 @@ mod tests {
             &mut bulletin,
             &mut hub,
             &mut nonces,
+            &mut test_journal(),
         );
         assert!(result_0.is_ok(), "nonce 0 should pass: {result_0:?}");
 
@@ -1077,6 +1140,7 @@ mod tests {
             &mut bulletin,
             &mut hub,
             &mut nonces,
+            &mut test_journal(),
         );
         assert!(result_1.is_ok(), "nonce 1 should pass: {result_1:?}");
 
@@ -1089,6 +1153,7 @@ mod tests {
             &mut bulletin,
             &mut hub,
             &mut nonces,
+            &mut test_journal(),
         );
         assert!(matches!(
             result_replay,
@@ -1116,6 +1181,7 @@ mod tests {
             &mut bulletin,
             &mut hub,
             &mut nonces,
+            &mut test_journal(),
         );
         assert!(result.is_ok());
 
@@ -1128,6 +1194,7 @@ mod tests {
             &mut bulletin,
             &mut hub,
             &mut nonces,
+            &mut test_journal(),
         );
         match result {
             Err(ExecutionError::NonceMismatch { expected, got, .. }) => {

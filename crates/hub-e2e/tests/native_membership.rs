@@ -1,0 +1,262 @@
+//! Admit a new process through native membership writes and distributed resharing.
+
+#[path = "support/administration.rs"]
+mod administration;
+
+use std::{fs, net::TcpListener, process::Stdio, time::Duration};
+
+use alloy_primitives::{Address, B256, Bytes, keccak256};
+use alloy_sol_types::SolCall;
+use commonware_codec::Encode as _;
+use commonware_cryptography::{Signer as _, ed25519};
+use hub_client::{
+    BlsSigner, HubClient, VALIDATOR_REGISTRY_ADDRESS, administration::AdministrativeCommand,
+};
+use hub_domain::{ConsensusPublicKey, EpochMaterial, LightBlock, NativeTx};
+use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, KeySet, NodeConfigBuilder, TestCluster};
+use hub_modules::validator_registry::abi::IValidatorRegistry;
+use serde_json::json;
+
+const DEADLINE: Duration = Duration::from_secs(60);
+
+async fn receipt(client: &HubClient, id: B256, trusted: &ConsensusPublicKey) -> u64 {
+    tokio::time::timeout(DEADLINE, async {
+        loop {
+            if let Ok(Some(proof)) = client.read_receipt(id, trusted).await {
+                assert!(proof.verify(id, trusted).unwrap().success());
+                return proof.revision.height;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("certified receipt deadline")
+}
+
+async fn submit(
+    client: &HubClient,
+    signer: &BlsSigner,
+    trusted: &ConsensusPublicKey,
+    call: Vec<u8>,
+) -> u64 {
+    let wire = signer
+        .sign_native_tx(VALIDATOR_REGISTRY_ADDRESS, Bytes::from(call))
+        .unwrap();
+    let id = NativeTx::decode_wire(&wire).unwrap().tx_id().0;
+    assert_eq!(client.send_native_tx(&wire).await.unwrap(), id);
+    receipt(client, id, trusted).await
+}
+
+async fn membership(
+    client: &HubClient,
+    trusted: &ConsensusPublicKey,
+    minimum: u64,
+    members: usize,
+) -> LightBlock {
+    tokio::time::timeout(DEADLINE, async {
+        loop {
+            if let Ok(height) = client.block_number().await
+                && height >= minimum
+                && let Ok(revision) = client.read_finalized_revision(height, trusted).await
+            {
+                let material = EpochMaterial::decode_bounded(
+                    &hex::decode(revision.epoch_material.trim_start_matches("0x")).unwrap(),
+                )
+                .unwrap();
+                if material.participants.len() == members {
+                    return revision;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("new certified membership deadline")
+}
+
+#[tokio::test]
+async fn native_member_joins_without_bootstrap_share_and_sustains_quorum() {
+    let deployment = 9079;
+    let keys = KeySet::builder().seed(deployment).build().unwrap();
+    let trusted = *keys.epoch_info().output.public().public();
+    let mut cluster = TestCluster::builder()
+        .binary(hub_e2e::resolve_binary().unwrap())
+        .nodes(4)
+        .seed(deployment)
+        .chain_id(deployment)
+        .genesis(
+            GenesisBuilder::devnet()
+                .operators(administration::operators())
+                .blocks_per_epoch(20),
+        )
+        .preset(ConsensusPreset::Normal)
+        .build()
+        .await
+        .unwrap();
+    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    cluster
+        .observe(Duration::from_millis(100))
+        .wait_for_height(3, Duration::from_secs(30))
+        .await
+        .unwrap();
+    let origin = HubClient::new(cluster.node(0).rpc_url());
+    let signer = BlsSigner::new(7u64.into(), deployment).unwrap();
+    let created = origin.native_create_policy(&signer, b"name: native_membership\nresources:\n  - name: registry\n    relations:\n      - name: admin\n    permissions:\n      - name: manage\n        expr: admin\n", 1).await.unwrap();
+    receipt(&origin, created.transaction_hash, &trusted).await;
+    let policy = origin.get_policy_ids().await.unwrap().pop().unwrap();
+    let policy_id = B256::from_slice(&hex::decode(&policy).unwrap());
+    let registered = origin
+        .native_register_object(&signer, policy_id, "registry", "registry")
+        .await
+        .unwrap();
+    receipt(&origin, registered.transaction_hash, &trusted).await;
+    let granted = origin
+        .native_set_relationship(
+            &signer,
+            policy_id,
+            "registry",
+            "registry",
+            "admin",
+            signer.did(),
+        )
+        .await
+        .unwrap();
+    receipt(&origin, granted.transaction_hash, &trusted).await;
+    let approved = administration::approve(
+        &origin,
+        AdministrativeCommand::InitializeMembershipPolicy(policy_id.0),
+        0,
+    )
+    .await;
+    let initialized = origin
+        .native_apply_administration(&signer, &approved)
+        .await
+        .unwrap();
+    receipt(&origin, initialized.transaction_hash, &trusted).await;
+
+    let local = tempfile::tempdir().unwrap();
+    let directory_path = local.path().to_owned();
+    if std::env::var_os("HUB_E2E_KEEP").is_some() {
+        let _ = local.keep();
+        eprintln!("incoming member artifacts: {}", directory_path.display());
+    }
+    let directory = directory_path.as_path();
+    let key = ed25519::PrivateKey::from_seed(deployment + 4);
+    let public = key.public_key();
+    let public_hex = hex::encode(public.encode());
+    let p2p = TcpListener::bind("127.0.0.1:0").unwrap();
+    let rpc = TcpListener::bind("127.0.0.1:0").unwrap();
+    let p2p_port = p2p.local_addr().unwrap().port();
+    let rpc_port = rpc.local_addr().unwrap().port();
+    fs::copy(
+        cluster.node(0).data_dir.join("genesis.json"),
+        directory.join("genesis.json"),
+    )
+    .unwrap();
+    fs::write(directory.join("validator.key"), key.encode()).unwrap();
+    fs::write(
+        directory.join("config.toml"),
+        NodeConfigBuilder::new()
+            .chain_id(deployment)
+            .build_config_toml(directory, p2p_port, rpc_port),
+    )
+    .unwrap();
+    let mut peers: serde_json::Value = serde_json::from_slice(
+        &fs::read(
+            cluster
+                .node(0)
+                .data_dir
+                .parent()
+                .unwrap()
+                .join("peers.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    peers["participants"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!(public_hex));
+    peers["bootstrappers"][&public_hex] = json!(format!("127.0.0.1:{p2p_port}"));
+    fs::write(
+        directory.join("peers.json"),
+        serde_json::to_vec(&peers).unwrap(),
+    )
+    .unwrap();
+    assert!(!directory.join("secrets.json").exists());
+    let log = fs::File::create(directory.join("node.log")).unwrap();
+    drop((p2p, rpc));
+    let mut incoming = tokio::process::Command::new(hub_e2e::resolve_binary().unwrap())
+        .arg("--config")
+        .arg(directory.join("config.toml"))
+        .arg("--data-dir")
+        .arg(directory)
+        .arg("--chain-id")
+        .arg(deployment.to_string())
+        .arg("validator")
+        .arg("--peers")
+        .arg(directory.join("peers.json"))
+        .arg("--rpc-port")
+        .arg(rpc_port.to_string())
+        .args([
+            "--leader-timeout-ms",
+            "500",
+            "--notarization-timeout-ms",
+            "1000",
+            "--nullify-retry-ms",
+            "2000",
+        ])
+        .stdout(Stdio::from(log.try_clone().unwrap()))
+        .stderr(Stdio::from(log))
+        .env("RUST_LOG", "info")
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let joining = HubClient::new(format!("http://127.0.0.1:{rpc_port}"));
+    let member = Address::from_slice(&keccak256(public.encode())[12..]);
+    let admitted = submit(
+        &origin,
+        &signer,
+        &trusted,
+        IValidatorRegistry::addValidatorCall {
+            evmAddr: member,
+            consensusPubkey: B256::from_slice(public.encode().as_ref()),
+            p2pAddr: format!("127.0.0.1:{p2p_port}"),
+        }
+        .abi_encode(),
+    )
+    .await;
+    let active = membership(&joining, &trusted, admitted + 1, 5).await;
+    let material = EpochMaterial::decode_bounded(
+        &hex::decode(active.epoch_material.trim_start_matches("0x")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        material
+            .participants
+            .iter()
+            .any(|participant| participant == &public)
+    );
+    assert_ne!(material.sharing, *keys.epoch_info().output.public());
+    let secrets: serde_json::Value =
+        serde_json::from_slice(&fs::read(directory.join("secrets.json")).unwrap()).unwrap();
+    assert!(secrets["shares"].get("0").is_none());
+    assert!(!secrets["shares"].as_object().unwrap().is_empty());
+
+    cluster.kill_node(3);
+    let changed = submit(
+        &joining,
+        &signer,
+        &trusted,
+        IValidatorRegistry::setValidatorStatusCall {
+            evmAddr: member,
+            active: true,
+        }
+        .abi_encode(),
+    )
+    .await;
+    assert!(changed > active.height);
+    assert!(incoming.try_wait().unwrap().is_none());
+    incoming.kill().await.unwrap();
+    incoming.wait().await.unwrap();
+}

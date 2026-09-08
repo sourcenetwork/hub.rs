@@ -16,6 +16,10 @@ fn authorized_state() -> (MockStateDb, HubExecutor) {
     .unwrap()
     .parse::<identity::Did>()
     .unwrap();
+    authorized_actor(did)
+}
+
+fn authorized_actor(did: identity::Did) -> (MockStateDb, HubExecutor) {
     let mut modules = ModuleState::default();
     let policy = modules.acp.create_policy(&did,
         "name: membership\nresources:\n  - name: registry\n    relations:\n      - name: admin\n    permissions:\n      - name: manage\n        expr: admin\n",
@@ -66,6 +70,178 @@ fn member_slot(address: Address) -> U256 {
     data[12..32].copy_from_slice(address.as_slice());
     data[63] = 3;
     U256::from_be_bytes(keccak256(data).0)
+}
+
+fn native_member_call(sequence: u64, calldata: Vec<u8>) -> (Bytes, identity::Did) {
+    use ark_ec::{AffineRepr as _, CurveGroup as _};
+    use ark_serialize::CanonicalSerialize as _;
+    let key = ark_bls12_381::Fr::from(7u64);
+    let public = (ark_bls12_381::G1Affine::generator() * key).into_affine();
+    let mut encoded = Vec::new();
+    public.serialize_compressed(&mut encoded).unwrap();
+    let mut request = hub_domain::NativeTx {
+        chain_id: 9001,
+        nonce: sequence,
+        bls_pubkey: alloy_primitives::FixedBytes::from_slice(&encoded),
+        target: VALIDATOR_REGISTRY_ADDRESS,
+        calldata: calldata.into(),
+        signature: Default::default(),
+    };
+    request.signature = alloy_primitives::FixedBytes::from_slice(
+        &hub_crypto::bls::sign(&key, &request.signing_data()).unwrap(),
+    );
+    (
+        request.encode_wire().into(),
+        hub_crypto::bls::did_from_bls_pubkey(&public)
+            .unwrap()
+            .parse()
+            .unwrap(),
+    )
+}
+
+fn native_registration() -> Vec<u8> {
+    IValidatorRegistry::addValidatorCall {
+        evmAddr: Address::repeat_byte(0x11),
+        consensusPubkey: "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+            .parse()
+            .unwrap(),
+        p2pAddr: "127.0.0.1:3000".into(),
+    }
+    .abi_encode()
+}
+
+#[test]
+fn native_membership_changes_share_proposal_storage_and_preserve_parent() {
+    let (registration, actor) = native_member_call(0, native_registration());
+    let (duplicate, _) = native_member_call(1, native_registration());
+    let (deactivate, _) = native_member_call(
+        2,
+        IValidatorRegistry::setValidatorStatusCall {
+            evmAddr: Address::repeat_byte(0x11),
+            active: false,
+        }
+        .abi_encode(),
+    );
+    let (state, executor) = authorized_actor(actor);
+    let context = BlockContext::new(
+        Header {
+            number: 1,
+            gas_limit: 30_000_000,
+            ..Default::default()
+        },
+        B256::ZERO,
+        B256::ZERO,
+    );
+    let parent = executor.snapshot().unwrap();
+    let (outcome, _) = executor
+        .execute_with_modules(
+            &state,
+            &context,
+            &[registration.clone(), duplicate, deactivate],
+            parent.clone(),
+        )
+        .unwrap();
+    assert_eq!(
+        outcome
+            .receipts
+            .iter()
+            .map(|r| r.success())
+            .collect::<Vec<_>>(),
+        [true, false, true]
+    );
+    let slots = &outcome.changes.accounts[&VALIDATOR_REGISTRY_ADDRESS].storage;
+    assert_eq!(slots[&U256::from(1)], U256::from(1));
+    assert_eq!(
+        slots[&member_slot(Address::repeat_byte(0x11))].to_be_bytes::<32>()[20],
+        0
+    );
+    assert_eq!(
+        state.accounts.read().unwrap()[&VALIDATOR_REGISTRY_ADDRESS]
+            .storage
+            .len(),
+        1
+    );
+    let (sibling, _) = executor
+        .execute_with_modules(&state, &context, &[registration], parent)
+        .unwrap();
+    assert!(sibling.receipts[0].success());
+    assert_eq!(
+        sibling.changes.accounts[&VALIDATOR_REGISTRY_ADDRESS].storage
+            [&member_slot(Address::repeat_byte(0x11))]
+            .to_be_bytes::<32>()[20],
+        1
+    );
+}
+
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn native_membership_storage_failure_aborts_the_proposal(#[case] building: bool) {
+    let (registration, actor) = native_member_call(0, native_registration());
+    let (mut state, executor) = authorized_actor(actor);
+    state.unreadable_storage = Some((
+        VALIDATOR_REGISTRY_ADDRESS,
+        member_slot(Address::repeat_byte(0x11)).wrapping_add(U256::from(2)),
+    ));
+    let mut context = BlockContext::new(
+        Header {
+            number: 1,
+            gas_limit: 30_000_000,
+            ..Default::default()
+        },
+        B256::ZERO,
+        B256::ZERO,
+    );
+    context.is_verification = !building;
+    let error = executor
+        .execute_with_modules(
+            &state,
+            &context,
+            &[registration],
+            executor.snapshot().unwrap(),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        hub_executor::ExecutionError::TxExecution(_)
+    ));
+    assert_eq!(
+        state.accounts.read().unwrap()[&VALIDATOR_REGISTRY_ADDRESS]
+            .storage
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn native_membership_requires_the_configured_actor_permission() {
+    let (registration, _) = native_member_call(0, native_registration());
+    let (state, executor) = authorized_state();
+    let context = BlockContext::new(
+        Header {
+            number: 1,
+            gas_limit: 30_000_000,
+            ..Default::default()
+        },
+        B256::ZERO,
+        B256::ZERO,
+    );
+    let (outcome, _) = executor
+        .execute_with_modules(
+            &state,
+            &context,
+            &[registration],
+            executor.snapshot().unwrap(),
+        )
+        .unwrap();
+    assert!(!outcome.receipts[0].success());
+    assert!(
+        outcome
+            .changes
+            .accounts
+            .get(&VALIDATOR_REGISTRY_ADDRESS)
+            .is_none_or(|account| account.storage.is_empty())
+    );
 }
 
 #[rstest]

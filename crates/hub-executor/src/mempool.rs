@@ -14,7 +14,7 @@ use hub_overlay::OverlayState;
 use hub_qmdb::{AccountUpdate, ChangeSet};
 use hub_traits::StateDb;
 
-use crate::precompiles::{ACP_ADDRESS, BULLETIN_ADDRESS, HUB_ADDRESS};
+use crate::precompiles::{ACP_ADDRESS, BULLETIN_ADDRESS, HUB_ADDRESS, VALIDATOR_REGISTRY_ADDRESS};
 use crate::{ExecutionConfig, ExecutionError, TxValidator};
 
 /// Result of validating a transaction for mempool admission.
@@ -115,6 +115,7 @@ impl<S: StateDb> MempoolValidator<S> {
         if native_tx.target != ACP_ADDRESS
             && native_tx.target != BULLETIN_ADDRESS
             && native_tx.target != HUB_ADDRESS
+            && native_tx.target != VALIDATOR_REGISTRY_ADDRESS
         {
             return Err(ExecutionError::UnknownNativeTarget(native_tx.target));
         }
@@ -145,6 +146,7 @@ impl<S: StateDb> MempoolValidator<S> {
         if native_tx.target != ACP_ADDRESS
             && native_tx.target != BULLETIN_ADDRESS
             && native_tx.target != HUB_ADDRESS
+            && native_tx.target != VALIDATOR_REGISTRY_ADDRESS
         {
             return Err(ExecutionError::UnknownNativeTarget(native_tx.target));
         }
@@ -274,6 +276,7 @@ impl<S: StateDb> MempoolValidator<S> {
         if native_tx.target != ACP_ADDRESS
             && native_tx.target != BULLETIN_ADDRESS
             && native_tx.target != HUB_ADDRESS
+            && native_tx.target != VALIDATOR_REGISTRY_ADDRESS
         {
             return Err(ExecutionError::UnknownNativeTarget(native_tx.target));
         }
@@ -649,6 +652,24 @@ mod tests {
 
         let err = validator.validate_tx(&wire).await.unwrap_err();
         assert!(matches!(err, ExecutionError::UnknownNativeTarget(_)));
+    }
+
+    #[tokio::test]
+    async fn native_membership_admission_and_recheck() {
+        let (key, public) = test_bls_keypair();
+        let mut request = NativeTx::decode_wire(&signed_native_tx(&key, &public, 0)).unwrap();
+        request.target = VALIDATOR_REGISTRY_ADDRESS;
+        request.signature =
+            FixedBytes::from_slice(&bls::sign(&key, &request.signing_data()).unwrap());
+        let wire = request.encode_wire();
+        let mut validator = MempoolValidator::new(MockStateDb::new(), test_config(), 0);
+        let validated =
+            MempoolValidator::<MockStateDb>::pre_validate_native(CHAIN_ID, &wire).unwrap();
+        validator.admit_native(&validated).unwrap();
+        validator.recheck_tx_stateless(&wire).await.unwrap();
+        let mut legacy_entry = MempoolValidator::new(MockStateDb::new(), test_config(), 0);
+        legacy_entry.validate_tx(&wire).await.unwrap();
+        assert!(legacy_entry.validate_tx(&wire).await.is_err());
     }
 
     // -- Empty tx tests --

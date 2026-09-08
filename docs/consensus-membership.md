@@ -1,0 +1,49 @@
+# Consensus membership
+
+Consensus membership changes accept native signed submissions. They use the
+existing registry rules and storage, including ACP authorization, through the
+shared command dispatcher. Admission and proposal rechecking accept the registry
+target. A rejected command consumes its submission sequence and leaves membership
+unchanged. A storage failure aborts proposal execution; it cannot become a
+certified rejection or leave a partial member entry.
+
+Operators first approve `InitializeMembershipPolicy` using the configured
+approval quorum. That ACP policy controls `manage` on the `registry` resource's
+`registry` object. Membership requests require that permission for the native
+signer's DID. Registration, status changes and removal use the same permission
+check. An independent native worker can submit the operator approvals; those
+approvals bind the deployment root, administrative sequence, expiry and command.
+
+Membership writes use `VALIDATOR_REGISTRY_ADDRESS` with the request bindings in
+`hub_modules::validator_registry::abi`. Persist the signed submission before sending, retain its identifier,
+and use `read_receipt` with independently provisioned consensus trust to verify
+the result. A successful receipt records the registry update. The effective
+committee changes after successful distributed resharing, so inspect verified
+revision evidence and its `EpochMaterial.participants` before treating admission
+as complete.
+
+For an incoming process:
+
+1. Provision the same deployment genesis and an independent participant identity.
+2. Include that public identity and its reachable route in the incoming process's
+   peer configuration, with existing members as bootstrappers.
+3. Start with an empty threshold-secret store. The process initially verifies
+   consensus evidence using the public genesis material.
+4. Submit the authorized membership registration and wait for its certified result.
+5. Wait for verified evidence that includes the incoming identity in the effective
+   committee. The new share is received through resharing and persisted locally.
+
+The consensus public key remains stable through this transition. The public
+sharing polynomial changes. A member's service address and its consensus identity
+remain distinct configuration values.
+
+The `native_membership` process fixture starts four members, admits a fifth with
+no initial share, verifies its new committee evidence, and stops an original
+member. A subsequent native write finalizes with the incoming member needed for
+quorum. The fixture covers functional admission and continued finalization;
+removal, interruption during admission, restart with the new share and broader
+network/storage faults require additional qualification.
+
+```sh
+HUBD_BINARY=/path/to/hubd cargo test -p hub-e2e --test native_membership
+```
