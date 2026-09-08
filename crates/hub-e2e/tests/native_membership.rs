@@ -76,7 +76,16 @@ async fn membership(
 
 #[tokio::test]
 async fn native_member_joins_without_bootstrap_share_and_sustains_quorum() {
-    let deployment = 9079;
+    admit_member(false).await;
+}
+
+#[tokio::test]
+async fn interrupted_member_recovers_after_admission_without_a_share() {
+    admit_member(true).await;
+}
+
+async fn admit_member(interrupt: bool) {
+    let deployment = if interrupt { 9080 } else { 9079 };
     let keys = KeySet::builder().seed(deployment).build().unwrap();
     let trusted = *keys.epoch_info().output.public().public();
     let mut cluster = TestCluster::builder()
@@ -213,6 +222,25 @@ async fn native_member_joins_without_bootstrap_share_and_sustains_quorum() {
         .kill_on_drop(true);
     let mut incoming = command.spawn().unwrap();
     let joining = HubClient::new(format!("http://127.0.0.1:{rpc_port}"));
+    if interrupt {
+        tokio::time::timeout(DEADLINE, async {
+            loop {
+                assert!(incoming.try_wait().unwrap().is_none());
+                if tokio::net::TcpStream::connect(("127.0.0.1", p2p_port))
+                    .await
+                    .is_ok()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("incoming member starts before interruption");
+        incoming.kill().await.unwrap();
+        incoming.wait().await.unwrap();
+        assert!(!directory.join("secrets.json").exists());
+    }
     let member = Address::from_slice(&keccak256(public.encode())[12..]);
     let admitted = submit(
         &origin,
@@ -226,6 +254,18 @@ async fn native_member_joins_without_bootstrap_share_and_sustains_quorum() {
         .abi_encode(),
     )
     .await;
+    if interrupt {
+        membership(&origin, &trusted, admitted + 1, 5).await;
+        assert!(!directory.join("secrets.json").exists());
+        let log = fs::OpenOptions::new()
+            .append(true)
+            .open(directory.join("node.log"))
+            .unwrap();
+        command
+            .stdout(Stdio::from(log.try_clone().unwrap()))
+            .stderr(Stdio::from(log));
+        incoming = command.spawn().unwrap();
+    }
     let active = membership(&joining, &trusted, admitted + 1, 5).await;
     let material = EpochMaterial::decode_bounded(
         &hex::decode(active.epoch_material.trim_start_matches("0x")).unwrap(),
