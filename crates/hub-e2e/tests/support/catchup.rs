@@ -4,9 +4,12 @@ use std::{fs, time::Duration};
 
 use commonware_codec::Encode as _;
 use hub_client::{
-    AccessRequest, Actor, BlsSigner, HubClient, Object, Operation, PERMISSION_LIMITS,
+    AccessRequest, Actor, BlsSigner, HubClient, ModuleId, Object, Operation, PERMISSION_LIMITS,
+    RECORD_PROOF_BYTES,
 };
-use hub_domain::{ConsensusPublicKey, LightBlock, verify_light_block};
+use hub_domain::{
+    ConsensusPublicKey, DkgPayload, LightBlock, verify_finalized_block, verify_light_block,
+};
 use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, KeySet, TestCluster};
 use serde_json::json;
 
@@ -74,10 +77,57 @@ async fn current_access(
         .unwrap()
 }
 
+async fn check_pruned_rosters(
+    client: &HubClient,
+    minimum: u64,
+    trusted: &ConsensusPublicKey,
+    expected: &[u8],
+) {
+    let prefix = b"consensus_roster/";
+    let current = client
+        .read_current_prefix(ModuleId::Hub, prefix, minimum, trusted, RECORD_PROOF_BYTES)
+        .await
+        .unwrap();
+    let evidence = current
+        .verify(ModuleId::Hub, prefix, minimum, trusted, RECORD_PROOF_BYTES)
+        .unwrap();
+    assert_eq!(evidence.entries.len(), 3);
+    let latest = (current.revision.height + 1) / 20 + 2;
+    for (offset, entry) in evidence.entries.iter().enumerate() {
+        let epoch = u64::from_be_bytes(entry.key[prefix.len()..].try_into().unwrap());
+        assert_eq!(epoch, latest - 2 + offset as u64);
+        assert!(epoch > 3, "epoch 3 must have left live state");
+        assert_eq!(entry.value.as_ref(), expected);
+    }
+    let historic: LightBlock = client
+        .rpc_call_typed("hub_getLightBlock", json!(["0x27"]))
+        .await
+        .unwrap();
+    let boundary = verify_finalized_block(&historic, trusted).unwrap();
+    assert_eq!(boundary.height, 39);
+    let Some(DkgPayload::EpochInfo(info)) = boundary.payload else {
+        panic!("historical boundary is missing the selection artifact");
+    };
+    assert_eq!(info.epoch.get(), 2);
+    let selected: Vec<_> = info
+        .next_players
+        .iter()
+        .flat_map(|key| key.encode().to_vec())
+        .collect();
+    assert_eq!(selected, expected);
+}
+
 pub(super) async fn recover_replica(snapshot: bool, interrupt: bool) {
     let deployment = 9041;
     let keys = KeySet::builder().seed(deployment).build().unwrap();
     let trusted_key = *keys.epoch_info().output.public().public();
+    let expected_roster: Vec<_> = keys
+        .epoch_info()
+        .output
+        .players()
+        .iter()
+        .flat_map(|key| key.encode().to_vec())
+        .collect();
     let mut cluster = TestCluster::builder()
         .binary(hub_e2e::resolve_binary().unwrap())
         .nodes(4)
@@ -176,11 +226,14 @@ pub(super) async fn recover_replica(snapshot: bool, interrupt: bool) {
         &origin,
         &policies[0],
         &request,
-        42.max(receipts.last().unwrap().block_number),
+        (if snapshot { 82u64 } else { 42 }).max(receipts.last().unwrap().block_number),
         &trusted_key,
     )
     .await;
-    assert!(target.epoch >= 2);
+    assert!(target.epoch >= if snapshot { 4 } else { 2 });
+    if snapshot {
+        check_pruned_rosters(&origin, target.height, &trusted_key, &expected_roster).await;
+    }
     assert!(!allowed);
     eprintln!("cold replica starts at origin height {}", target.height);
 
@@ -255,7 +308,11 @@ pub(super) async fn recover_replica(snapshot: bool, interrupt: bool) {
         let snapshot_revision = status["snapshotRevision"]
             .as_u64()
             .expect("snapshot handoff must run");
-        assert!(snapshot_revision > 0);
+        assert!(
+            snapshot_revision >= 79,
+            "snapshot must include roster pruning"
+        );
+        check_pruned_rosters(&replica, target.height, &trusted_key, &expected_roster).await;
         cluster.kill_node(3);
         cluster.restart_node(3).unwrap();
         cluster.wait_ready(DEADLINE).await.unwrap();
@@ -274,6 +331,7 @@ pub(super) async fn recover_replica(snapshot: bool, interrupt: bool) {
             .await
             .unwrap();
         assert!(status["snapshotRevision"].as_u64().unwrap() >= snapshot_revision);
+        check_pruned_rosters(&replica, target.height, &trusted_key, &expected_roster).await;
     }
     // Allow a complete resharing ceremony after replay, then require this
     // replica's vote: only three of the four participants remain online.
