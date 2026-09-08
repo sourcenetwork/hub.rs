@@ -210,13 +210,21 @@ async fn apply(
 }
 
 async fn run_client(binary: &str, fixture: &serde_json::Value) {
+    run_go_test(
+        binary,
+        "-test.run=^TestNative(Cluster|KeysCluster)$",
+        fixture,
+    )
+    .await;
+    if let Ok(gateway) = std::env::var("TRUST_NATIVE_GATEWAY_TEST_BINARY") {
+        run_go_test(&gateway, "-test.run=^TestNativeGatewayCluster$", fixture).await;
+    }
+}
+
+async fn run_go_test(binary: &str, selector: &str, fixture: &serde_json::Value) {
     let mut command = tokio::process::Command::new(binary);
     command
-        .args([
-            "-test.run=^TestNative(Cluster|KeysCluster)$",
-            "-test.v",
-            "-test.timeout=60s",
-        ])
+        .args([selector, "-test.v", "-test.timeout=60s"])
         .env("VERA_NATIVE_FIXTURE", fixture.to_string())
         .kill_on_drop(true);
     let status = tokio::time::timeout(Duration::from_secs(65), command.status())
