@@ -45,6 +45,9 @@ pub enum BulletinError {
     #[error("invalid glob pattern: {pattern}")]
     InvalidGlob { pattern: String },
 
+    #[error("bulletin query budget exceeded; use certified native pages")]
+    QueryLimit,
+
     #[error("state error: {0}")]
     State(String),
 }

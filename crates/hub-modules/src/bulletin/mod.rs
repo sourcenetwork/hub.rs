@@ -2,6 +2,7 @@
 
 /// Solidity ABI interface for the Bulletin precompile.
 pub mod abi;
+mod collections;
 /// Bulletin error types.
 pub mod error;
 /// Key prefixes and builders for Bulletin KV storage.
@@ -446,43 +447,16 @@ impl BulletinModule {
             })
     }
 
-    /// List all namespaces.
-    ///
-    /// # Flow
-    ///
-    /// 1. Iterate all entries under the `"namespace/"` prefix.
-    /// 2. Deserialize each value as `Namespace`.
-    /// 3. Return the collected list.
-    ///
-    /// # Reads
-    /// - All keys under `"namespace/"` prefix
+    /// List namespaces within the collection work budget.
     pub fn query_namespaces(&self) -> Result<Vec<Namespace>> {
-        Ok(self.get_all_namespaces())
+        self.collect_records(
+            keys::NAMESPACE_PREFIX,
+            |_| true,
+            |record: &Namespace| keys::namespace_key(&record.id),
+        )
     }
 
-    /// List collaborators on a namespace.
-    ///
-    /// # Flow
-    ///
-    /// 1. Compute `namespace_id = "bulletin/" + namespace`.
-    /// 2. Verify namespace exists — read `"namespace/" + namespace_id`,
-    ///    return `NamespaceNotFound` if absent.
-    /// 3. Iterate all entries under `"collaborator/"` prefix.
-    /// 4. Filter to keys starting with `sanitize(namespace_id) + "/"`.
-    /// 5. Deserialize matching values as `Collaborator`.
-    /// 6. Return the collected list.
-    ///
-    /// # Reads
-    /// - `"namespace/" + namespace_id` (existence check)
-    /// - Keys under `"collaborator/"` prefix, filtered by namespace
-    ///
-    /// # Errors
-    /// - `NamespaceNotFound` — namespace does not exist
-    ///
-    /// # Implementation notes
-    /// Go uses a full-table scan with in-callback filtering.
-    /// A cleaner approach is to use a sub-prefix iterator:
-    /// `"collaborator/" + sanitize(namespace_id) + "/"`.
+    /// List namespace collaborators within the collection work budget.
     pub fn query_namespace_collaborators(&self, namespace: &str) -> Result<Vec<Collaborator>> {
         let namespace_id = format!("bulletin/{}", namespace);
         if !self.has_namespace(&namespace_id) {
@@ -490,31 +464,14 @@ impl BulletinModule {
                 namespace: namespace.to_string(),
             });
         }
-        Ok(self.get_namespace_collaborators(&namespace_id))
+        self.collect_records(
+            &keys::collaborator_prefix(&namespace_id),
+            |_| true,
+            |record: &Collaborator| keys::collaborator_key(&record.namespace, &record.did),
+        )
     }
 
-    /// List posts in a namespace.
-    ///
-    /// # Flow
-    ///
-    /// 1. Compute `namespace_id = "bulletin/" + namespace`.
-    /// 2. Verify namespace exists — read `"namespace/" + namespace_id`,
-    ///    return `NamespaceNotFound` if absent.
-    /// 3. Iterate all entries under `"post/"` prefix.
-    /// 4. Filter to keys starting with `sanitize(namespace_id) + "/"`.
-    /// 5. Deserialize matching values as `Post`.
-    /// 6. Return the collected list.
-    ///
-    /// # Reads
-    /// - `"namespace/" + namespace_id` (existence check)
-    /// - Keys under `"post/"` prefix, filtered by namespace
-    ///
-    /// # Errors
-    /// - `NamespaceNotFound` — namespace does not exist
-    ///
-    /// # Implementation notes
-    /// Same full-table-scan pattern as collaborators. Prefer sub-prefix
-    /// iterator: `"post/" + sanitize(namespace_id) + "/"`.
+    /// List namespace posts within the collection work budget.
     pub fn query_namespace_posts(&self, namespace: &str) -> Result<Vec<Post>> {
         let namespace_id = format!("bulletin/{}", namespace);
         if !self.has_namespace(&namespace_id) {
@@ -522,7 +479,11 @@ impl BulletinModule {
                 namespace: namespace.to_string(),
             });
         }
-        Ok(self.get_namespace_posts(&namespace_id))
+        self.collect_records(
+            &keys::post_prefix(&namespace_id),
+            |_| true,
+            |record: &Post| keys::post_key(&record.namespace, &record.id),
+        )
     }
 
     /// Look up a post by namespace and ID.
@@ -556,53 +517,16 @@ impl BulletinModule {
             })
     }
 
-    /// List all posts across all namespaces.
-    ///
-    /// # Flow
-    ///
-    /// 1. Iterate all entries under the `"post/"` prefix.
-    /// 2. Deserialize each value as `Post`.
-    /// 3. Return the collected list.
-    ///
-    /// # Reads
-    /// - All keys under `"post/"` prefix
+    /// List posts within the collection work budget.
     pub fn query_posts(&self) -> Result<Vec<Post>> {
-        Ok(self.get_all_posts())
+        self.collect_records(
+            keys::POST_PREFIX,
+            |_| true,
+            |record: &Post| keys::post_key(&record.namespace, &record.id),
+        )
     }
 
-    /// Query posts matching a glob pattern within a namespace.
-    ///
-    /// # Flow
-    ///
-    /// 1. Compute `namespace_id = "bulletin/" + namespace`.
-    ///    Note: unlike other namespace-scoped queries, this does NOT
-    ///    validate namespace existence. If the namespace has no posts,
-    ///    an empty list is returned.
-    /// 2. Open a sub-prefix iterator scoped to
-    ///    `"post/" + sanitize(namespace_id)`.
-    /// 3. For each entry, extract the post ID portion of the key:
-    ///    strip any leading `|` or `/` separator, strip any trailing `/`,
-    ///    then unsanitize (restore `|` → `/`).
-    /// 4. Apply glob matching against the cleaned, unsanitized post ID.
-    ///    Glob supports `*` as a wildcard that matches across `/`.
-    /// 5. Collect matching entries, deserialize as `Post`.
-    /// 6. Return the matched posts.
-    ///
-    /// # Reads
-    /// - Keys under `"post/" + sanitize(namespace_id)` sub-prefix
-    ///
-    /// # Errors
-    /// - Empty `namespace` → Go returns `InvalidArgument` at the gRPC layer.
-    ///   Validate non-empty namespace before iterating.
-    ///
-    /// The glob function itself (`utils.Glob`) accepts any pattern
-    /// and returns a bool; it never fails. The Rust implementation may
-    /// choose to validate patterns if using a stricter glob library.
-    ///
-    /// # Implementation notes
-    /// The Go implementation uses a tighter prefix store scoped to the
-    /// namespace (unlike other post queries). This is the correct approach.
-    /// `*` matches across path separators (not single-segment like shell glob).
+    /// Match namespace post IDs with `*`, within the collection work budget.
     pub fn query_iterate_glob(&self, namespace: &str, glob: &str) -> Result<Vec<Post>> {
         if namespace.is_empty() {
             return Err(BulletinError::InvalidGlob {
@@ -613,16 +537,14 @@ impl BulletinModule {
         let namespace_id = format!("bulletin/{}", namespace);
         let scan_prefix = keys::post_prefix(&namespace_id);
 
-        let mut results = Vec::new();
-        for (key, value) in self.store.prefix_scan(&scan_prefix) {
-            let (_, post_id) = keys::parse_post_key(&key);
-            if glob_match(glob, &post_id)
-                && let Ok(post) = borsh::from_slice::<Post>(&value)
-            {
-                results.push(post);
-            }
+        if glob.len() > 4096 {
+            return Err(BulletinError::QueryLimit);
         }
-        Ok(results)
+        self.collect_records(
+            &scan_prefix,
+            |post: &Post| glob_match(glob, &post.id),
+            |post| keys::post_key(&post.namespace, &post.id),
+        )
     }
 
     /// Query current module parameters.
@@ -724,14 +646,6 @@ impl BulletinModule {
         self.store.has(&keys::namespace_key(namespace_id))
     }
 
-    fn get_all_namespaces(&self) -> Vec<Namespace> {
-        self.store
-            .prefix_scan(keys::NAMESPACE_PREFIX)
-            .iter()
-            .filter_map(|(_, v)| borsh::from_slice(v).ok())
-            .collect()
-    }
-
     // ── Storage — Collaborators ────────────────────────────────────────
 
     fn set_collaborator(&mut self, collaborator: &Collaborator) {
@@ -751,14 +665,6 @@ impl BulletinModule {
             .delete(&keys::collaborator_key(namespace_id, collaborator_did));
     }
 
-    fn get_namespace_collaborators(&self, namespace_id: &str) -> Vec<Collaborator> {
-        self.store
-            .prefix_scan(&keys::collaborator_prefix(namespace_id))
-            .iter()
-            .filter_map(|(_, v)| borsh::from_slice(v).ok())
-            .collect()
-    }
-
     // ── Storage — Posts ────────────────────────────────────────────────
 
     fn set_post(&mut self, post: &Post) {
@@ -771,22 +677,6 @@ impl BulletinModule {
         self.store
             .get(&keys::post_key(namespace_id, post_id))
             .and_then(|bytes| borsh::from_slice(&bytes).ok())
-    }
-
-    fn get_namespace_posts(&self, namespace_id: &str) -> Vec<Post> {
-        self.store
-            .prefix_scan(&keys::post_prefix(namespace_id))
-            .iter()
-            .filter_map(|(_, v)| borsh::from_slice(v).ok())
-            .collect()
-    }
-
-    fn get_all_posts(&self) -> Vec<Post> {
-        self.store
-            .prefix_scan(keys::POST_PREFIX)
-            .iter()
-            .filter_map(|(_, v)| borsh::from_slice(v).ok())
-            .collect()
     }
 
     // ── Storage — Utility ──────────────────────────────────────────────
