@@ -798,20 +798,27 @@ impl BulletinModule {
 
 /// Simple glob match where `*` matches any sequence of characters including `/`.
 fn glob_match(pattern: &str, value: &str) -> bool {
-    glob_match_inner(pattern.as_bytes(), value.as_bytes())
+    let Some((prefix, rest)) = pattern.split_once('*') else {
+        return pattern == value;
+    };
+    let Some(value) = value.strip_prefix(prefix) else {
+        return false;
+    };
+    let (middle, suffix) = rest.rsplit_once('*').unwrap_or(("", rest));
+    let Some(mut remaining) = value.strip_suffix(suffix) else {
+        return false;
+    };
+    for literal in middle.split('*').filter(|literal| !literal.is_empty()) {
+        let Some(position) = remaining.find(literal) else {
+            return false;
+        };
+        remaining = &remaining[position + literal.len()..];
+    }
+    true
 }
 
-fn glob_match_inner(pattern: &[u8], value: &[u8]) -> bool {
-    match (pattern.first(), value.first()) {
-        (None, None) => true,
-        (Some(&b'*'), _) => {
-            glob_match_inner(&pattern[1..], value)
-                || (!value.is_empty() && glob_match_inner(pattern, &value[1..]))
-        }
-        (None, Some(_)) | (Some(_), None) => false,
-        (Some(p), Some(v)) => p == v && glob_match_inner(&pattern[1..], &value[1..]),
-    }
-}
+#[cfg(test)]
+mod glob_tests;
 
 #[cfg(test)]
 mod tests {
