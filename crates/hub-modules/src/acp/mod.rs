@@ -4,6 +4,8 @@
 pub mod abi;
 mod command_context;
 mod commitment_expiry;
+mod registration_queries;
+pub use registration_queries::{MAX_REGISTRATION_LEAF_BYTES, MAX_REGISTRATION_OBJECTS};
 pub mod decision;
 pub mod delegated_operation;
 mod delegation;
@@ -500,13 +502,7 @@ impl AcpModule {
         policy_id: &str,
         object: &Object,
     ) -> Result<(bool, Option<RelationshipRecord>)> {
-        let owner_prefix = Relationship::relation_prefix(&object.resource, &object.id, "owner");
-        let scan_prefix = keys::relationship_storage_prefix(policy_id, &owner_prefix);
-        let owner_rec = self
-            .store
-            .prefix_scan(&scan_prefix)
-            .into_iter()
-            .find_map(|(_, v)| serde_json::from_slice::<RelationshipRecord>(&v).ok());
+        let owner_rec = self.registration_owner_record(policy_id, object)?;
 
         match owner_rec {
             Some(rec) if !rec.archived => Ok((true, Some(rec))),
@@ -538,11 +534,7 @@ impl AcpModule {
         objects: &[Object],
         actor: &types::Actor,
     ) -> Result<GenerateCommitmentResult> {
-        if objects.is_empty() {
-            return Err(AcpError::InvalidAccessRequest {
-                reason: "objects list is empty".into(),
-            });
-        }
+        Self::validate_commitment_input(policy_id, objects, actor.0.as_str())?;
 
         if !self.zanzibar_policies.contains_key(policy_id) {
             return Err(AcpError::PolicyNotFound {
@@ -1063,7 +1055,7 @@ impl AcpModule {
         // Archiving preserves ownership; only unarchive may reactivate it.
         let owner_prefix = Relationship::relation_prefix(&obj.resource, &obj.id, "owner");
         let scan_prefix = keys::relationship_storage_prefix(policy_id, &owner_prefix);
-        if !self.store.prefix_scan(&scan_prefix).is_empty() {
+        if self.store.prefix_iter(&scan_prefix).next().is_some() {
             return Err(AcpError::ObjectAlreadyRegistered {
                 resource: obj.resource.clone(),
                 object_id: obj.id.clone(),
@@ -1076,7 +1068,6 @@ impl AcpModule {
         let policy = self
             .zanzibar_policies
             .get(policy_id)
-            .cloned()
             .ok_or_else(|| AcpError::PolicyNotFound {
                 id: policy_id.to_string(),
             })?;
@@ -1196,18 +1187,8 @@ impl AcpModule {
         policy_id: &str,
         obj: Object,
     ) -> Result<PolicyCmdResult> {
-        let owner_prefix = Relationship::relation_prefix(&obj.resource, &obj.id, "owner");
-        let scan_prefix = keys::relationship_storage_prefix(policy_id, &owner_prefix);
-
-        let (kv_key, mut rec) = self
-            .store
-            .prefix_scan(&scan_prefix)
-            .into_iter()
-            .find_map(|(k, v)| {
-                serde_json::from_slice::<RelationshipRecord>(&v)
-                    .ok()
-                    .map(|r| (k, r))
-            })
+        let mut rec = self
+            .registration_owner_record(policy_id, &obj)?
             .ok_or_else(|| AcpError::ObjectNotRegistered {
                 resource: obj.resource.clone(),
                 object_id: obj.id.clone(),
@@ -1226,7 +1207,10 @@ impl AcpModule {
         rec.archived = false;
 
         let bytes = serde_json::to_vec(&rec).expect("serialize RelationshipRecord");
-        self.store.put(&kv_key, bytes);
+        self.store.put(
+            &keys::relationship_storage_prefix(policy_id, &rec.relationship.storage_key()),
+            bytes,
+        );
 
         Ok(PolicyCmdResult::UnarchiveObject {
             record: rec,

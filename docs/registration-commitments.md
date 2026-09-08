@@ -29,6 +29,18 @@ Successful commitment
 receipts include `RegistrationsCommitted(commitmentId, policyId, commitment)` so
 native callers can obtain the identifier from a certified receipt.
 
+Commitment generation accepts 1–256 objects and at most 64 KiB of aggregate
+encoded leaf bytes, counting the repeated policy and actor strings for each leaf.
+It checks these limits before state lookups and proof allocation. Larger sets
+must be split into separate commitments. These limits bound this generator's
+work; they do not limit the size of a proof supplied for an independently built
+commitment beyond the verifier's existing proof-shape checks.
+
+Owner queries inspect at most two records. Missing ownership returns unregistered;
+malformed, duplicate or mismatched ownership records return an error. Unarchive
+uses the same validation, including actor, policy, object and storage-key binding.
+Archived ownership remains reserved for its previous owner.
+
 The registration leaf is `vera/registration-leaf/v1` followed by a zero byte and
 the Borsh encoding of four strings: policy ID, resource, object ID and actor DID.
 Strings use Borsh's little-endian 32-bit byte lengths and UTF-8 bytes. The leaf
