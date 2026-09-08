@@ -3807,6 +3807,7 @@ dependencies = [
  "ark-std 0.4.0",
  "async-trait",
  "base64 0.22.1",
+ "borsh",
  "hex",
  "hub-crypto",
  "hub-domain",

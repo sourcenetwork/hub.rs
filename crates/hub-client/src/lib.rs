@@ -10,6 +10,8 @@
 pub mod administration;
 mod bearer;
 mod bls_signer;
+/// Certified bulletin records and bounded listings.
+pub mod bulletin;
 mod client;
 mod document_acp;
 mod error;

@@ -11,6 +11,7 @@ description = "Rust client library for hub (EVM + BLS transaction paths)"
 workspace = true
 
 [dependencies]
+borsh.workspace = true
 hub-crypto.workspace = true
 hub-domain.workspace = true
 hub-permission.workspace = true

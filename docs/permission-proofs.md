@@ -184,3 +184,20 @@ Each request selects current state independently. Later pages can use newer
 revisions, including after a cursor key is deleted. Changes before the cursor
 can be missed; pagination does not promise a historical snapshot. Consumers can
 carry the preceding revision forward as their next minimum revision.
+
+## Typed bulletin reads
+
+`hub_client::bulletin` provides certified namespace, post and collaborator reads,
+plus bounded listings for each record family. Names are unprefixed inputs (for
+example, `team` selects the stored `bulletin/team` namespace). A point read
+returns a typed value or certified absence, with the revision and timestamp.
+Post identifiers bind the namespace and payload hash. Borsh decoders reject
+trailing bytes and records that differ from the requested key or namespace.
+
+Listings use the current-prefix page protocol above. Pass `None` for the first
+cursor, then use the returned continuation unchanged. Limits are 1–128 records;
+byte limits may shorten a page. Each page is independently certified. No snapshot
+or proof of namespace existence is implied by an empty post/collaborator page.
+Stored collaborator records do not enumerate owner authority. A post's opaque
+`proof` bytes are authenticated as stored data; these reads do not validate the
+application protocol represented by those bytes.
