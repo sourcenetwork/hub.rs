@@ -62,6 +62,7 @@ fn grant() -> RelayGrant {
 }
 fn claims(operation: &DelegatedOperation<'_>) -> JwtClaims {
     JwtClaims {
+        request: None,
         iss: issuer(),
         sub: submission().signer,
         exp: 200,
@@ -153,7 +154,7 @@ fn relay_preserves_actor_in_create_edit_and_registration() {
         acp.bearer_edit_policy(
             &mut hub,
             &context(),
-            &worker,
+            &transaction(&worker),
             &sign(&edit),
             &policy,
             POLICY,
@@ -166,7 +167,7 @@ fn relay_preserves_actor_in_create_edit_and_registration() {
     acp.bearer_edit_policy(
         &mut hub,
         &context(),
-        &worker,
+        &transaction(&worker),
         &sign(&edit),
         &policy,
         POLICY,
@@ -179,8 +180,15 @@ fn relay_preserves_actor_in_create_edit_and_registration() {
     };
     let cmd = PolicyCmd::RegisterObject(object.clone());
     let token = sign(&claims(&DelegatedOperation::PolicyCommand(&policy, &cmd)));
-    acp.bearer_policy_cmd(&mut hub, &context(), &worker, &token, &policy, cmd)
-        .unwrap();
+    acp.bearer_policy_cmd(
+        &mut hub,
+        &context(),
+        &transaction(&worker),
+        &token,
+        &policy,
+        cmd,
+    )
+    .unwrap();
     assert_eq!(
         acp.query_object_owner(&policy, &object)
             .unwrap()
@@ -195,7 +203,7 @@ fn relay_preserves_actor_in_create_edit_and_registration() {
         acp.bearer_policy_cmd(
             &mut hub,
             &context(),
-            &worker,
+            &transaction(&worker),
             &token,
             &policy,
             PolicyCmd::ArchiveObject(object)
@@ -360,5 +368,13 @@ fn operation_commitments_match_independent_json_vectors() {
     ];
     for (operation, expected) in operations.iter().zip(expected) {
         assert_eq!(hex::encode(operation.digest().unwrap()), expected);
+    }
+}
+
+fn transaction(caller: &Did) -> hub_modules::types::TxExecCtx {
+    hub_modules::types::TxExecCtx {
+        sequence: 0,
+        tx_hash: vec![1; 32],
+        signer: caller.to_string(),
     }
 }

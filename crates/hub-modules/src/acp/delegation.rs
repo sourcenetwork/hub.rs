@@ -1,7 +1,9 @@
 use hub_crypto::jwt::DelegationScope;
 use identity::Did;
+use serde::{Serialize, de::DeserializeOwned};
 
 use super::delegated_operation::DelegatedOperation;
+use super::operation::OperationRecord;
 use super::{AcpError, AcpModule, Result};
 use crate::acp::types::{
     PolicyCmd, PolicyCmdResult, PolicyMarshalingType, PolicyRecord, RecordMetadata,
@@ -25,14 +27,10 @@ impl AcpModule {
                 "missing authenticated submission identifier".into(),
             ));
         }
-        let caller =
-            Did::new(&submission.signer).map_err(|error| AcpError::InvalidBearerToken {
-                reason: error.to_string(),
-            })?;
         self.with_delegation(
             hub,
             context,
-            &caller,
+            submission,
             token,
             (
                 DelegationScope::CreatePolicy,
@@ -59,7 +57,7 @@ impl AcpModule {
         &mut self,
         hub: &mut HubModule,
         context: &BlockExecCtx,
-        caller: &Did,
+        submission: &TxExecCtx,
         token: &str,
         policy_id: &str,
         policy: &str,
@@ -68,7 +66,7 @@ impl AcpModule {
         self.with_delegation(
             hub,
             context,
-            caller,
+            submission,
             token,
             (
                 DelegationScope::EditPolicy,
@@ -83,7 +81,7 @@ impl AcpModule {
         &mut self,
         hub: &mut HubModule,
         context: &BlockExecCtx,
-        caller: &Did,
+        submission: &TxExecCtx,
         token: &str,
         policy_id: &str,
         cmd: PolicyCmd,
@@ -91,7 +89,7 @@ impl AcpModule {
         self.with_delegation(
             hub,
             context,
-            caller,
+            submission,
             token,
             (
                 DelegationScope::PolicyCommands,
@@ -101,11 +99,11 @@ impl AcpModule {
         )
     }
 
-    fn with_delegation<T>(
+    fn with_delegation<T: Serialize + DeserializeOwned>(
         &mut self,
         hub: &mut HubModule,
         context: &BlockExecCtx,
-        caller: &Did,
+        submission: &TxExecCtx,
         token: &str,
         delegated: (DelegationScope, [u8; 32]),
         operation: impl FnOnce(&mut Self, &Did) -> Result<T>,
@@ -113,8 +111,12 @@ impl AcpModule {
         let invalid = |error: crate::hub::error::HubError| AcpError::InvalidBearerToken {
             reason: error.to_string(),
         };
+        let caller =
+            Did::new(&submission.signer).map_err(|error| AcpError::InvalidBearerToken {
+                reason: error.to_string(),
+            })?;
         let claims = hub
-            .authorize_delegation(context, caller, token, delegated.0, delegated.1)
+            .authorize_delegation(context, &caller, token, delegated.0, delegated.1)
             .map_err(invalid)?;
         let actor = Did::new(claims.actor()).map_err(|error| AcpError::InvalidBearerToken {
             reason: error.to_string(),
@@ -122,8 +124,41 @@ impl AcpModule {
         let issuer = Did::new(&claims.iss).map_err(|error| AcpError::InvalidBearerToken {
             reason: error.to_string(),
         })?;
-        let before = self.clone();
+        if let Some(request) = &claims.request {
+            if submission.tx_hash.len() != 32 {
+                return Err(AcpError::State(
+                    "missing authenticated submission identifier".into(),
+                ));
+            }
+            if let Some(record) = self.operation(actor.as_ref(), request.id)? {
+                if record.id != request.id || record.digest != delegated.1 {
+                    return Err(AcpError::InvalidBearerToken {
+                        reason: "operation identity was used for different arguments".into(),
+                    });
+                }
+                return serde_json::from_value(record.result)
+                    .map_err(|error| AcpError::State(error.to_string()));
+            }
+        }
+        let before = (self.clone(), hub.clone());
         let result = operation(self, &actor).and_then(|result| {
+            if let Some(request) = &claims.request {
+                self.complete_operation(
+                    actor.as_ref(),
+                    &OperationRecord {
+                        id: request.id,
+                        digest: delegated.1,
+                        actor: actor.to_string(),
+                        submission: submission.tx_hash.as_slice().try_into().map_err(|_| {
+                            AcpError::State("missing authenticated submission identifier".into())
+                        })?,
+                        worker: submission.signer.clone(),
+                        revision: context.timestamp.clone(),
+                        result: serde_json::to_value(&result)
+                            .map_err(|error| AcpError::State(error.to_string()))?,
+                    },
+                )?;
+            }
             hub.store_or_update_jws_token(
                 context,
                 token,
@@ -142,7 +177,7 @@ impl AcpModule {
             Ok(result)
         });
         if result.is_err() {
-            *self = before;
+            (*self, *hub) = before;
         }
         result
     }

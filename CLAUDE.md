@@ -106,6 +106,10 @@ separate worker signs the submission. Creation and editing require distinct
 scopes; existing object-command tokens do not authorize either operation.
 Created records bind the owner, worker, signed submission ID and creation
 revision. See `docs/delegated-policies.md` for result verification.
+Signed caller operation identities deduplicate successful effects across workers.
+Outcomes are bounded, expire without allowing ID reuse, and share the execution
+rollback boundary. Operator approvals configure the retained outcome budget.
+See `docs/operation-identities.md`.
 
 ### State and recovery
 

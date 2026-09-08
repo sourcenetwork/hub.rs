@@ -9,6 +9,7 @@ mod delegation;
 pub mod error;
 /// Key prefixes and builders for ACP KV storage.
 pub mod keys;
+pub mod operation;
 pub mod read_capture;
 pub mod record_store;
 /// ACP domain types.
@@ -601,6 +602,7 @@ impl AcpModule {
         &mut self,
         block_ctx: &BlockExecCtx,
     ) -> Result<Vec<RegistrationsCommitment>> {
+        self.prune_operations(block_ctx.timestamp.seconds)?;
         let non_expired = self.get_non_expired_commitments()?;
         let mut flagged = Vec::new();
 

@@ -8,10 +8,15 @@ use hub_client::{
     ACP_ADDRESS, BlsSigner, DelegationScope, HUB_ADDRESS, HubClient,
     administration::{AdministrativeCommand, SignedAdministrativeRequest},
 };
+use hub_crypto::operation::OperationId;
 use hub_domain::{ConsensusPublicKey, NativeTx};
 use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, KeySet, TestCluster};
 use hub_modules::{
-    acp::{delegated_operation::DelegatedOperation, types::PolicyMarshalingType},
+    acp::{
+        delegated_operation::DelegatedOperation,
+        operation::{OperationRecord, operation_key},
+        types::PolicyMarshalingType,
+    },
     hub::{abi::IHub, relay::RelayGrant},
 };
 use k256::ecdsa::SigningKey;
@@ -64,6 +69,13 @@ async fn native_go_workers_verify_policy_creation() {
     .await;
     let operator = BlsSigner::new(9u64.into(), deployment).unwrap();
     apply(&client, &client, &trusted, &operator, &approved).await;
+    let budget = administration_support::approve(
+        &client,
+        AdministrativeCommand::SetOperationBudget(128 << 20),
+        1,
+    )
+    .await;
+    apply(&client, &client, &trusted, &operator, &budget).await;
 
     let signer = BlsSigner::new(7u64.into(), deployment).unwrap();
     let vector = signer
@@ -82,6 +94,10 @@ async fn native_go_workers_verify_policy_creation() {
             })
         })
         .collect();
+    let mut operation_id = [11; 32];
+    operation_id[..8].copy_from_slice(&(now + 500).to_be_bytes());
+    let operation_id = OperationId(operation_id);
+    let outcome_key = operation_key(&format!("did:opk:{}", "ab".repeat(32)), operation_id).unwrap();
     let mut fixture = serde_json::json!({
         "endpoint": cluster.node(0).rpc_url(),
         "trusted_key": hex::encode(trusted.encode()),
@@ -92,12 +108,67 @@ async fn native_go_workers_verify_policy_creation() {
         "submission": NativeTx::decode_wire(&vector).unwrap().tx_id().0,
         "worker": signer.did(),
         "vectors": vectors,
+        "operation_id": hex::encode(operation_id.0),
+        "operation_key": hex::encode(&outcome_key),
     });
     run_client(&binary, &fixture).await;
-    let revoked =
-        administration_support::approve(&client, AdministrativeCommand::RevokeRelay(issuer), 1)
-            .await;
+    let outcome = client
+        .read_current_record(
+            hub_client::ModuleId::Acp,
+            &outcome_key,
+            0,
+            &trusted,
+            hub_client::RECORD_PROOF_BYTES,
+        )
+        .await
+        .unwrap();
+    let outcome: OperationRecord =
+        serde_json::from_slice(outcome.record.value.as_ref().unwrap()).unwrap();
     let replica = HubClient::new(cluster.node(3).rpc_url());
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if let Some(proof) = replica
+                .read_receipt(outcome.submission.into(), &trusted)
+                .await
+                .unwrap()
+            {
+                assert!(
+                    proof
+                        .verify(outcome.submission.into(), &trusted)
+                        .unwrap()
+                        .success()
+                );
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    cluster.restart_node(3).unwrap();
+    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    fixture["endpoint"] = serde_json::json!(cluster.node(3).rpc_url());
+    let budget = replica
+        .read_current_record(
+            hub_client::ModuleId::Acp,
+            b"operation-budget/v1",
+            0,
+            &trusted,
+            hub_client::RECORD_PROOF_BYTES,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        budget.record.value.unwrap().as_ref(),
+        (128u64 << 20).to_be_bytes()
+    );
+    fixture["recover"] = serde_json::json!(true);
+    fixture["expected_policy"] = outcome.result["policy"]["id"].clone();
+    run_client(&binary, &fixture).await;
+    fixture["recover"] = serde_json::json!(false);
+    let revoked =
+        administration_support::approve(&client, AdministrativeCommand::RevokeRelay(issuer), 2)
+            .await;
     apply(&client, &replica, &trusted, &operator, &revoked).await;
     cluster.restart_node(3).unwrap();
     cluster.wait_ready(Duration::from_secs(30)).await.unwrap();

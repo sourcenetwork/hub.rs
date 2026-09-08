@@ -68,7 +68,7 @@ fn bearer_expiration_uses_execution_time_before_mutating_state() {
         let result = module.bearer_policy_cmd(
             &mut hub_modules::hub::HubModule::new(),
             &context,
-            &actor,
+            &transaction(&actor),
             &token,
             &policy_id,
             PolicyCmd::RegisterObject(object.clone()),
@@ -135,19 +135,40 @@ fn delegation_binds_caller_deployment_and_revocation() {
     let mut hub = HubModule::new();
     let before = base.store().serialize();
     assert!(
-        base.bearer_policy_cmd(&mut hub, &context, &stranger, &token, &policy, command())
-            .is_err()
+        base.bearer_policy_cmd(
+            &mut hub,
+            &context,
+            &transaction(&stranger),
+            &token,
+            &policy,
+            command()
+        )
+        .is_err()
     );
     context.deployment_id = 9002;
     assert!(
-        base.bearer_policy_cmd(&mut hub, &context, &caller, &token, &policy, command())
-            .is_err()
+        base.bearer_policy_cmd(
+            &mut hub,
+            &context,
+            &transaction(&caller),
+            &token,
+            &policy,
+            command()
+        )
+        .is_err()
     );
     context.deployment_id = 9001;
     context.timestamp.seconds = 4;
     assert!(
-        base.bearer_policy_cmd(&mut hub, &context, &caller, &token, &policy, command())
-            .is_err()
+        base.bearer_policy_cmd(
+            &mut hub,
+            &context,
+            &transaction(&caller),
+            &token,
+            &policy,
+            command()
+        )
+        .is_err()
     );
     assert_eq!(base.store().serialize(), before);
     assert!(hub.store().is_empty());
@@ -172,8 +193,15 @@ fn delegation_binds_caller_deployment_and_revocation() {
             InMemoryKvStore::deserialize(&revoked.store().serialize()).unwrap(),
         );
         assert!(
-            base.bearer_policy_cmd(&mut reopened, &context, &caller, &token, &policy, command())
-                .is_err()
+            base.bearer_policy_cmd(
+                &mut reopened,
+                &context,
+                &transaction(&caller),
+                &token,
+                &policy,
+                command()
+            )
+            .is_err()
         );
         assert_eq!(base.store().serialize(), before);
         assert_eq!(
@@ -188,12 +216,26 @@ fn delegation_binds_caller_deployment_and_revocation() {
         id: "report".into(),
     });
     assert!(
-        base.bearer_policy_cmd(&mut hub, &context, &caller, &token, &policy, invalid)
-            .is_err()
+        base.bearer_policy_cmd(
+            &mut hub,
+            &context,
+            &transaction(&caller),
+            &token,
+            &policy,
+            invalid
+        )
+        .is_err()
     );
     assert!(hub.store().is_empty());
-    base.bearer_policy_cmd(&mut hub, &context, &caller, &token, &policy, command())
-        .unwrap();
+    base.bearer_policy_cmd(
+        &mut hub,
+        &context,
+        &transaction(&caller),
+        &token,
+        &policy,
+        command(),
+    )
+    .unwrap();
     let (_, record) = base.query_object_owner(&policy, &object).unwrap();
     assert_eq!(record.unwrap().metadata.owner_did, issuer);
     let hash = hub_modules::hub::keys::hash_jws_token(&token);
@@ -203,8 +245,15 @@ fn delegation_binds_caller_deployment_and_revocation() {
     hub.revoke_delegation(&context, &owner, &token).unwrap();
     let before = base.store().serialize();
     assert!(
-        base.bearer_policy_cmd(&mut hub, &context, &caller, &token, &policy, command())
-            .is_err()
+        base.bearer_policy_cmd(
+            &mut hub,
+            &context,
+            &transaction(&caller),
+            &token,
+            &policy,
+            command()
+        )
+        .is_err()
     );
     assert_eq!(base.store().serialize(), before);
     assert_eq!(
@@ -298,7 +347,7 @@ fn delegated_policy_lifecycle_preserves_ownership_and_revocation() {
                 .bearer_policy_cmd(
                     &mut hub,
                     &context,
-                    &worker,
+                    &transaction(&worker),
                     lifecycle_token,
                     &created.policy.id,
                     PolicyCmd::RegisterObject(Object {
@@ -330,7 +379,7 @@ fn delegated_policy_lifecycle_preserves_ownership_and_revocation() {
         module.bearer_edit_policy(
             &mut hub,
             &context,
-            &worker,
+            &transaction(&worker),
             &intruder_token,
             &created.policy.id,
             edited,
@@ -359,7 +408,7 @@ fn delegated_policy_lifecycle_preserves_ownership_and_revocation() {
         .bearer_edit_policy(
             &mut hub,
             &context,
-            &other_worker,
+            &transaction(&other_worker),
             &other_token,
             &created.policy.id,
             edited,
@@ -375,7 +424,7 @@ fn delegated_policy_lifecycle_preserves_ownership_and_revocation() {
             .bearer_edit_policy(
                 &mut hub,
                 &context,
-                &worker,
+                &transaction(&worker),
                 &edit_token,
                 &created.policy.id,
                 "name: removes-resource\nresources: []\n",
@@ -406,7 +455,7 @@ fn delegated_policy_lifecycle_preserves_ownership_and_revocation() {
             .bearer_edit_policy(
                 &mut hub,
                 &context,
-                &worker,
+                &transaction(&worker),
                 &edit_token,
                 &created.policy.id,
                 policy,
@@ -436,20 +485,33 @@ fn delegated_policy_creation_rolls_back_when_usage_cannot_be_recorded() {
         tx_hash: vec![7; 32],
         signer: worker.to_string(),
     };
+    let policy = "name: files\nresources:\n  - name: file\n";
+    let mut operation_id = [1; 32];
+    operation_id[..8].copy_from_slice(&100u64.to_be_bytes());
+    let request = hub_crypto::operation::OperationClaim {
+        id: hub_crypto::operation::OperationId(operation_id),
+        digest: hub_modules::acp::delegated_operation::DelegatedOperation::CreatePolicy(
+            policy,
+            &PolicyMarshalingType::ShortYaml,
+        )
+        .digest()
+        .unwrap(),
+        genesis_id: [7; 32],
+    };
     let token = signed_token(
         &key,
         serde_json::json!({
             "iss": issuer, "sub": worker.to_string(), "aud": "vera:9001",
-            "scope": "acp:policy:create", "iat": 10, "nbf": 5, "exp": 100,
+            "scope": "acp:policy:create", "iat": 10, "nbf": 5, "exp": 100, "request": request,
         }),
     );
     let context = BlockExecCtx {
+        genesis_id: [7; 32],
         deployment_id: 9001,
         timestamp: Timestamp {
             seconds: 20,
             block_height: 1,
         },
-        ..Default::default()
     };
     let mut store = InMemoryKvStore::default();
     store.put(hub_modules::hub::keys::CHAIN_CONFIG_KEY, vec![0xff]);
@@ -472,4 +534,12 @@ fn delegated_policy_creation_rolls_back_when_usage_cannot_be_recorded() {
     assert_eq!(module.store().serialize(), before);
     assert_eq!(hub.store().serialize(), hub_before);
     assert!(module.query_policy_ids().unwrap().is_empty());
+}
+
+fn transaction(caller: &Did) -> hub_modules::types::TxExecCtx {
+    hub_modules::types::TxExecCtx {
+        sequence: 0,
+        tx_hash: vec![1; 32],
+        signer: caller.to_string(),
+    }
 }

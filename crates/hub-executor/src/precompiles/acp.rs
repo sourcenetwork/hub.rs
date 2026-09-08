@@ -274,12 +274,11 @@ pub(super) fn dispatch(
             let call = IAcp::bearerEditPolicyCall::abi_decode(input).map_err(decode_error)?;
             let policy = std::str::from_utf8(&call.policy)
                 .map_err(|_| PrecompileError::Other("invalid UTF-8 in policy".into()))?;
-            let caller = did_from_signer(&tx_ctx.signer)?;
             let policy_id = policy_id_to_string(&call.policyId);
             let (removed, record) = match module.bearer_edit_policy(
                 hub,
                 block_ctx,
-                &caller,
+                tx_ctx,
                 &call.bearerToken,
                 &policy_id,
                 policy,
@@ -824,7 +823,6 @@ pub(super) fn dispatch(
                 return Err(PrecompileError::OutOfGas);
             }
             let call = IAcp::bearerPolicyCmdCall::abi_decode(input).map_err(decode_error)?;
-            let creator = did_from_signer(&tx_ctx.signer)?;
             let policy_id = policy_id_to_string(&call.policyId);
             let cmd: PolicyCmd = serde_json::from_slice(&call.cmd)
                 .map_err(|e| PrecompileError::Other(format!("cmd JSON decode: {e}").into()))?;
@@ -832,7 +830,7 @@ pub(super) fn dispatch(
             let result = match module.bearer_policy_cmd(
                 hub,
                 block_ctx,
-                &creator,
+                tx_ctx,
                 &call.bearerToken,
                 &policy_id,
                 cmd,

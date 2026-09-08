@@ -26,6 +26,19 @@ impl HubModule {
             )
             .map_err(invalid)?;
         self.authorize_relay(&claims, operation, context)?;
+        if let Some(request) = &claims.request {
+            request
+                .id
+                .validate(context.timestamp.seconds)
+                .map_err(invalid)?;
+            if context.genesis_id == [0; 32]
+                || request.genesis_id != context.genesis_id
+                || request.digest != operation
+                || claims.exp > request.id.expires_at()
+            {
+                return Err(invalid("operation identity does not bind this request"));
+            }
+        }
         if self
             .get_jws_token(&Self::hash_jws_token(token))?
             .is_some_and(|record| record.status != JWSTokenStatus::Valid)
@@ -47,6 +60,9 @@ impl HubModule {
         if claims.aud != format!("vera:{}", context.deployment_id)
             || claims.relay.as_ref().is_some_and(|relay| {
                 context.genesis_id == [0; 32] || relay.genesis_id != context.genesis_id
+            })
+            || claims.request.as_ref().is_some_and(|request| {
+                context.genesis_id == [0; 32] || request.genesis_id != context.genesis_id
             })
             || (!matches_issuer(&claims.iss, &caller) && caller != claims.sub)
         {

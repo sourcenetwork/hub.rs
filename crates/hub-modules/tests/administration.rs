@@ -86,6 +86,39 @@ fn quorum_changes_parameters_once_and_survives_serialization() {
 }
 
 #[test]
+fn outcome_budget_requires_operator_approval_and_survives_reopen() {
+    let (policy, keys) = operators();
+    let mut hub = HubModule::new();
+    let mut acp = AcpModule::new();
+    hub.initialize_administration(policy).unwrap();
+    let mut change = request(0);
+    change.command = AdministrativeCommand::SetOperationBudget(128 << 20);
+    let approved = approve(change, &keys);
+    let mut unauthorized = approved.clone();
+    unauthorized.approvals.pop();
+    let before = (hub.store().serialize(), acp.store().serialize());
+    assert!(
+        hub.apply_administrative_request(&mut acp, GENESIS, 100, &unauthorized)
+            .is_err()
+    );
+    assert_eq!(before, (hub.store().serialize(), acp.store().serialize()));
+    hub.apply_administrative_request(&mut acp, GENESIS, 100, &approved)
+        .unwrap();
+    assert_eq!(acp.operation_budget().unwrap(), 128 << 20);
+    let mut acp =
+        AcpModule::from_store(InMemoryKvStore::deserialize(&acp.store().serialize()).unwrap());
+    assert_eq!(acp.operation_budget().unwrap(), 128 << 20);
+    let before = (hub.store().serialize(), acp.store().serialize());
+    let mut invalid = request(1);
+    invalid.command = AdministrativeCommand::SetOperationBudget(0);
+    assert!(
+        hub.apply_administrative_request(&mut acp, GENESIS, 100, &approve(invalid, &keys))
+            .is_err()
+    );
+    assert_eq!(before, (hub.store().serialize(), acp.store().serialize()));
+}
+
+#[test]
 fn rejected_approvals_leave_both_stores_unchanged() {
     let (policy, keys) = operators();
     let mut hub = HubModule::new();

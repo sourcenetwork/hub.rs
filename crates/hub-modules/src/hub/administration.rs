@@ -72,6 +72,8 @@ pub enum AdministrativeCommand {
     SetRelay(super::relay::RelayGrant),
     /// Remove relay authority immediately at this execution revision.
     RevokeRelay(String),
+    /// Set the maximum retained encoded operation outcomes, in bytes.
+    SetOperationBudget(u64),
 }
 
 /// The exact administrative request covered by each operator signature.
@@ -221,6 +223,9 @@ impl HubModule {
         }
         if let AdministrativeCommand::RevokeRelay(issuer) = &request.command {
             self.revoke_relay(issuer).map_err(invalid)?;
+        }
+        if let AdministrativeCommand::SetOperationBudget(bytes) = &request.command {
+            acp.set_operation_budget(*bytes).map_err(invalid)?;
         }
         self.store.put(STATE_KEY, encoded_state);
         Ok(())

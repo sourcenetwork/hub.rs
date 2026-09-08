@@ -388,6 +388,7 @@ async fn native_relay_grants_bind_workers_and_survive_revocation_restart() {
         create_relay_token(
             &key,
             &JwtClaims {
+                request: None,
                 iss: issuer.clone(),
                 sub: worker.did().into(),
                 exp: now + 300,

@@ -60,6 +60,9 @@ pub struct JwtClaims {
     /// Relay assertion, accepted only under an active operator-authorized grant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relay: Option<RelayAssertion>,
+    /// Optional caller operation identity; execution must verify its exact request binding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<crate::operation::OperationClaim>,
 }
 
 /// Provider identity attested by an explicitly authorized relay.

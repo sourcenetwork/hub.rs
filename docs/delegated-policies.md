@@ -110,3 +110,9 @@ Clients reading these records must support provider actor identifiers.
 verify independent consensus trust and freshness before relying on the grant.
 A relay assertion is operation-bound but is not a caller idempotency key;
 separately signed submissions of the same operation may execute more than once.
+
+Caller operation IDs add bounded cross-worker idempotency to these delegated
+methods. The signed request claim binds the exact operation and genesis, and
+retries return the original successful outcome. See
+[operation-identities.md](operation-identities.md) for deadlines, resource
+budgets, verification and recovery semantics.
