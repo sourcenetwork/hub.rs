@@ -213,8 +213,14 @@ fn indirect_fixture(count: usize) -> LightBlock {
 }
 
 fn signed_finalization(block: &Block, seed: u64) -> String {
+    signed_proposal(
+        Proposal::new(block.context.round, block.context.parent.0, block.digest()),
+        seed,
+    )
+}
+
+fn signed_proposal(proposal: Proposal<ConsensusDigest>, seed: u64) -> String {
     let (signers, verifier, _) = fixture(seed);
-    let proposal = Proposal::new(block.context.round, block.context.parent.0, block.digest());
     let votes: Vec<_> = signers
         .iter()
         .take(3)
@@ -422,4 +428,104 @@ fn receipt_evidence_binds_results_to_finality_and_submission() {
         block.receipt_commitment = Some(receipt_commitment(100, &duplicate.receipts));
     });
     assert!(duplicate.verify(first, &trusted_key()).is_err());
+}
+
+fn epoch_end(block: &mut Block) {
+    use commonware_cryptography::bls12381::primitives::sharing::Mode;
+    use commonware_glue::dkg::types::{EpochInfo, EpochOutcome};
+    let players = fixture(42).2.participants;
+    let (output, _) =
+        deal::<MinSig, _, N3f1>(TestRng::new(42), Mode::NonZeroCounter, players.clone()).unwrap();
+    block.payload = Some(crate::DkgPayload::EpochInfo(EpochInfo {
+        outcome: EpochOutcome::Success,
+        epoch: Epoch::new(block.context.round.epoch().get() + 1),
+        output,
+        players: players.clone(),
+        next_players: players,
+        directory: commonware_utils::sequence::Unit,
+    }));
+}
+
+#[test]
+fn epoch_end_reproposal_verifies_directly_and_through_ancestry() {
+    for indirect in [false, true] {
+        let mut light = light_fixture_with(42, epoch_end);
+        if indirect {
+            light = indirect_fixture(1);
+        }
+        let encoded = if indirect {
+            &light.descendants[0]
+        } else {
+            &light.block
+        };
+        let mut block = decode_block(&decode_hex("block", encoded).unwrap()).unwrap();
+        epoch_end(&mut block);
+        if indirect {
+            light.descendants[0] = encode_hex(&block.encode());
+        }
+        let proposal = Proposal::new(
+            Round::new(
+                block.context.round.epoch(),
+                View::new(block.context.round.view().get() + 1),
+            ),
+            block.context.round.view(),
+            block.digest(),
+        );
+        light.finalization = signed_proposal(proposal, 42);
+        verify_finalized_block(&light, &trusted_key()).unwrap();
+        let forged = signed_proposal(
+            Proposal::new(block.context.round, block.context.parent.0, block.digest()),
+            100,
+        );
+        let mut certificate = Finalization::<LightConsensusScheme, ConsensusDigest>::decode(
+            decode_hex("finalization", &light.finalization)
+                .unwrap()
+                .as_slice(),
+        )
+        .unwrap();
+        certificate.certificate = Finalization::<LightConsensusScheme, ConsensusDigest>::decode(
+            decode_hex("finalization", &forged).unwrap().as_slice(),
+        )
+        .unwrap()
+        .certificate;
+        light.finalization = encode_hex(&certificate.encode());
+        assert_eq!(
+            verify_finalized_block(&light, &trusted_key()).unwrap_err(),
+            LightBlockError::InvalidCertificate
+        );
+    }
+}
+
+#[test]
+fn invalid_reproposal_contexts_are_rejected_even_with_valid_signatures() {
+    for terminal in [false, true] {
+        let mut light = light_fixture_with(42, |block| {
+            if terminal {
+                epoch_end(block);
+            }
+        });
+        let block = decode_block(&decode_hex("block", &light.block).unwrap()).unwrap();
+        for (epoch, view, parent) in [
+            (3, 18, 17),
+            (4, 18, 17),
+            (3, 16, 15),
+            (3, 18, 16),
+            (3, 18, 18),
+        ] {
+            light.finalization = signed_proposal(
+                Proposal::new(
+                    Round::new(Epoch::new(epoch), View::new(view)),
+                    View::new(parent),
+                    block.digest(),
+                ),
+                42,
+            );
+            let result = verify_finalized_block(&light, &trusted_key());
+            if terminal && (epoch, view, parent) == (3, 18, 17) {
+                result.unwrap();
+            } else {
+                assert_eq!(result.unwrap_err(), LightBlockError::ProposalMismatch);
+            }
+        }
+    }
 }

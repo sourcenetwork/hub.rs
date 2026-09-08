@@ -19,6 +19,15 @@ returns the requested revision's roots. A newer descendant does not refresh
 the requested revision's timestamp or change which state a record proof must
 authenticate.
 
+Commonware can re-propose an epoch's final revision in a later view. Its
+certificate signs the same canonical digest while its proposal view and parent
+view advance. The verifier accepts this when the certified revision carries
+next-epoch information, the certificate stays in the same epoch, and the parent
+view lies between the original view (inclusive) and the certificate view
+(exclusive). Threshold signature verification remains mandatory. This applies
+to both direct proofs and the last descendant; consumers need the updated
+shared verifier to accept these certificates.
+
 The node serves direct certificates from its existing index. It assembles
 indirect proofs from one snapshot of its durable finalized history, using
 the first retained direct certificate within the proof limits, and

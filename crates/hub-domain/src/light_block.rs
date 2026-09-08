@@ -371,6 +371,7 @@ pub fn verify_finalized_block(
         return Err(LightBlockError::UntrustedConsensusKey);
     }
 
+    let mut certified_epoch_end = is_epoch_end(&block);
     let mut certified_context = block.context.clone();
     let mut certified_height = block.height;
     let mut certified_hash = block_hash;
@@ -384,6 +385,7 @@ pub fn verify_finalized_block(
         }
         certified_hash = keccak256(&bytes);
         certified_height = descendant.height;
+        certified_epoch_end = is_epoch_end(&descendant);
         certified_context = descendant.context;
     }
     let expected = Proposal::new(
@@ -394,7 +396,16 @@ pub fn verify_finalized_block(
     let finalization_bytes = decode_hex("finalization", &light.finalization)?;
     let finalization: Finalization<LightConsensusScheme, ConsensusDigest> =
         Finalization::decode(finalization_bytes.as_slice())?;
-    if finalization.proposal != expected {
+    // Commonware may re-propose the same epoch-ending block in a later view.
+    // Its signed payload remains the digest of the original canonical block.
+    let proposal = &finalization.proposal;
+    let reproposal = certified_epoch_end
+        && proposal.payload == expected.payload
+        && proposal.round.epoch() == expected.round.epoch()
+        && proposal.round.view() > expected.round.view()
+        && proposal.parent >= expected.round.view()
+        && proposal.parent < proposal.round.view();
+    if *proposal != expected && !reproposal {
         return Err(LightBlockError::ProposalMismatch);
     }
 
@@ -404,6 +415,14 @@ pub fn verify_finalized_block(
     }
 
     Ok(block)
+}
+
+fn is_epoch_end(block: &Block) -> bool {
+    matches!(
+        &block.payload,
+        Some(crate::DkgPayload::EpochInfo(info))
+            if block.context.round.epoch().get().checked_add(1) == Some(info.epoch.get())
+    )
 }
 
 #[cfg(test)]

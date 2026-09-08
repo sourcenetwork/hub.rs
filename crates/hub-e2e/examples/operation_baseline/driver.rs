@@ -4,7 +4,7 @@ use alloy_primitives::{B256, FixedBytes};
 use hub_client::{
     AccessRequest, Actor, ClientError, HubClient, Object, Operation, PERMISSION_LIMITS,
 };
-use hub_domain::ConsensusPublicKey;
+use hub_domain::{ConsensusPublicKey, LightBlock, ReceiptResponse};
 use hub_e2e::cluster::TestCluster;
 use serde_json::{Value, json};
 use tokio::{sync::OwnedSemaphorePermit, time::Instant};
@@ -44,6 +44,9 @@ pub(super) struct Observation {
     permission_ms: Option<f64>,
     workflow_ms: Option<f64>,
     error: Option<String>,
+    verification_failure: bool,
+    diagnostic_revision: Option<LightBlock>,
+    diagnostic_error: Option<String>,
 }
 
 impl Observation {
@@ -54,6 +57,9 @@ impl Observation {
             "submit_rpc_ms": self.submit_ms, "scheduled_to_certified_receipt_ms": self.receipt_ms,
             "permission_read_ms": self.permission_ms, "scheduled_to_workflow_ms": self.workflow_ms,
             "height": self.receipt.as_ref().map(|r| r.block_number), "error": self.error,
+            "verification_failure": self.verification_failure,
+            "diagnostic_refetched_revision": self.diagnostic_revision,
+            "diagnostic_refetch_error": self.diagnostic_error,
         })
     }
 }
@@ -75,6 +81,9 @@ pub(super) async fn observe(
         permission_ms: None,
         workflow_ms: None,
         error: None,
+        verification_failure: false,
+        diagnostic_revision: None,
+        diagnostic_error: None,
     };
     let Some(_permit) = permit else {
         return observation;
@@ -140,6 +149,12 @@ pub(super) async fn observe(
                                 assert!(allowed, "certified owner permission denied")
                             }
                             Err(error) => {
+                                observation.verification_failure = matches!(
+                                    &error,
+                                    ClientError::Finalization(_)
+                                        | ClientError::Receipt(_)
+                                        | ClientError::Permission(_)
+                                );
                                 observation.error = Some(error.to_string());
                                 return;
                             }
@@ -152,7 +167,27 @@ pub(super) async fn observe(
                 }
                 Ok(None) => {}
                 Err(error) => {
+                    observation.verification_failure = matches!(
+                        &error,
+                        ClientError::Finalization(_)
+                            | ClientError::Receipt(_)
+                            | ClientError::Permission(_)
+                    );
                     observation.error = Some(error.to_string());
+                    if observation.verification_failure
+                        && let Ok(Some(response)) = client
+                            .rpc_call_typed::<Option<ReceiptResponse>>(
+                                "hub_getReceiptProof",
+                                json!([observation.request.hash]),
+                            )
+                            .await
+                    {
+                        observation.diagnostic_error = response
+                            .verify(observation.request.hash, &reads.trusted)
+                            .err()
+                            .map(|error| error.to_string());
+                        observation.diagnostic_revision = Some(response.revision);
+                    }
                     return;
                 }
             }
@@ -160,7 +195,7 @@ pub(super) async fn observe(
         }
     })
     .await;
-    if completed.is_err() {
+    if completed.is_err() && observation.error.is_none() {
         observation.error = Some("request deadline elapsed; submission was not retried".into());
     }
     observation
@@ -182,6 +217,7 @@ pub(super) fn summary(observations: &[Observation], elapsed: Duration) -> Value 
         "offered": observations.len(), "confirmed": count("confirmed"),
         "reverted": count("reverted"), "rejected": count("rejected"),
         "unknown": count("unknown"), "not_sent": count("not_sent"),
+        "verification_failures": observations.iter().filter(|o| o.verification_failure).count(),
         "confirmed_per_second": count("confirmed") as f64 / elapsed.as_secs_f64(),
         "completed_workflows": observations.iter().filter(|o| o.workflow_ms.is_some()).count(),
         "completed_workflows_per_second": observations.iter().filter(|o| o.workflow_ms.is_some()).count() as f64 / elapsed.as_secs_f64(),
@@ -305,4 +341,11 @@ pub(super) async fn verify(
     })
     .await
     .expect("replica verification timed out")
+}
+
+pub(super) fn assert_no_verification_failures(observations: &[Observation]) {
+    assert!(
+        observations.iter().all(|o| !o.verification_failure),
+        "invalid proof responses invalidate the workload run"
+    );
 }

@@ -1,4 +1,4 @@
-//! Four-node registration workload. Arguments: count, arrivals/sec, max outstanding, permission reads (0/1).
+//! Four-node registration workload. Arguments: count, arrivals/sec, max outstanding, permission reads (0/1), timing preset.
 //! Build hubd in release mode and set HUBD_BINARY to that binary before running.
 
 #[path = "operation_baseline/driver.rs"]
@@ -21,8 +21,8 @@ const CHAIN_ID: u64 = 9001;
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     assert!(
-        args.len() <= 4,
-        "usage: operation_baseline [count] [arrivals/sec] [max outstanding] [permission reads 0/1]"
+        args.len() <= 5,
+        "usage: operation_baseline [count] [arrivals/sec] [max outstanding] [permission reads 0/1] [fast|normal|stress]"
     );
     let parse = |index: usize, default: usize| {
         args.get(index).map_or(default, |value| {
@@ -34,6 +34,13 @@ async fn main() {
     let outstanding = parse(2, 128);
     let permission_reads = parse(3, 1);
     assert!(permission_reads <= 1);
+    let preset = match args.get(4).map(String::as_str).unwrap_or("normal") {
+        "fast" => ConsensusPreset::Fast,
+        "normal" => ConsensusPreset::Normal,
+        "stress" => ConsensusPreset::Stress,
+        _ => panic!("timing preset must be fast, normal or stress"),
+    };
+    let timing = preset.params();
     let keys = KeySet::builder().seed(42).build().unwrap();
     let trusted = *keys.epoch_info().output.public().public();
     assert!((1..=10_000).contains(&count) && (1..=10_000).contains(&rate));
@@ -43,7 +50,7 @@ async fn main() {
         .nodes(4)
         .seed(42)
         .chain_id(CHAIN_ID)
-        .preset(ConsensusPreset::Normal)
+        .preset(preset)
         .build()
         .await
         .expect("start cluster");
@@ -116,7 +123,10 @@ async fn main() {
             "kind": "configuration", "workload": "certified_native_registrations",
             "format_version": 2, "permission_reads_per_write": permission_reads,
             "runner_debug_assertions": cfg!(debug_assertions),
-            "nodes": 4, "preset": "Normal", "count": count, "arrivals_per_second": rate,
+            "nodes": 4, "preset": format!("{preset:?}"),
+            "leader_timeout_ms": timing.leader_timeout.as_millis(),
+            "notarization_timeout_ms": timing.notarization_timeout.as_millis(),
+            "nullify_retry_ms": timing.nullify_retry.as_millis(), "count": count, "arrivals_per_second": rate,
             "max_outstanding": outstanding, "receipt_poll_ms": driver::POLL_INTERVAL.as_millis(),
             "request_timeout_ms": driver::REQUEST_TIMEOUT.as_millis(),
             "signing_seconds": signing_start.elapsed().as_secs_f64(),
@@ -247,4 +257,5 @@ async fn main() {
         receipt_mismatches, 0,
         "restarted replica lost receipt history"
     );
+    driver::assert_no_verification_failures(&observations);
 }
