@@ -119,7 +119,58 @@ pub struct RingRead {
     pub record: Option<RingRecord>,
 }
 
+/// Certified fault-score state for a threshold ring member.
+#[derive(Clone, Debug)]
+pub struct NodeDemeritsRead {
+    /// Certified revision covering this read.
+    pub revision: u64,
+    /// Revision's Unix timestamp.
+    pub timestamp: u64,
+    /// Stored score, or certified absence.
+    pub record: Option<NodeDemerits>,
+}
+
 impl HubClient {
+    /// Read recorded fault points; apply the ring's reset interval with `effective_points`.
+    pub async fn read_threshold_node_demerits(
+        &self,
+        ring_id: &str,
+        node_key: &str,
+        minimum: u64,
+        trusted: &ConsensusPublicKey,
+    ) -> Result<NodeDemeritsRead, ClientError> {
+        let key = hub_modules::hub::rings::reports::demerits_key(ring_id, node_key)
+            .map_err(|e| ClientError::Signing(e.to_string()))?;
+        let response = self
+            .read_current_record(ModuleId::Hub, &key, minimum, trusted, RECORD_PROOF_BYTES)
+            .await?;
+        let record = response
+            .record
+            .value
+            .map(|bytes| {
+                if bytes.len() > 512 {
+                    return Err(ClientError::InvalidResponse(
+                        "fault-score record exceeds byte limit",
+                    ));
+                }
+                let record: NodeDemerits = serde_json::from_slice(&bytes)?;
+                if record.points == 0
+                    || record.window_started_at == 0
+                    || record.revision.block_height == 0
+                    || record.revision.block_height > response.revision.height
+                {
+                    return Err(ClientError::InvalidResponse("invalid fault-score record"));
+                }
+                Ok(record)
+            })
+            .transpose()?;
+        Ok(NodeDemeritsRead {
+            revision: response.revision.height,
+            timestamp: response.revision.timestamp,
+            record,
+        })
+    }
+
     /// Read ring metadata against caller-provisioned consensus trust and minimum revision.
     pub async fn read_threshold_ring(
         &self,
