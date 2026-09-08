@@ -28,8 +28,17 @@ caller's consensus key and minimum revision, then validates the record identity
 and metadata. Callers supply any additional freshness policy. Submission returns
 a locally checked identifier; retain it and use `read_receipt` to verify the
 execution outcome. Reusing a completed authorization through another worker
-fails its per-node sequence check. This API does not add a durable worker journal
-or an automatic retry policy; existing native worker custody remains separate.
+fails its per-node sequence check.
+
+For durable submission, open `NativeWorker` with the application's encrypted key
+store callbacks, encode the command with `encode_node_request`, and call
+`prepare(HUB_ADDRESS, calldata)` before sending. The journal retains exact signed
+bytes across restarts and refuses a different pending request. Use `acknowledge`
+with a certified receipt to advance the worker sequence after either successful
+or rejected execution. Missing receipts and transport errors leave it pending.
+The journal format is shared with DefraDB's existing native worker; keys remain
+in the caller's secret store. Opening and mutating the journal perform blocking
+filesystem IO.
 
 This preserves the node-registration/controller behavior needed by the Orbis
 consumer. Ring creation/finalization, reporting, document/key-derivation storage

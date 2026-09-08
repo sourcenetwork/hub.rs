@@ -40,6 +40,23 @@ pub fn sign_node_request(
     })
 }
 
+/// Encode a node command for `NativeWorker::prepare` before network submission.
+pub fn encode_node_request(
+    signed: &SignedNodeRequest,
+) -> Result<alloy_primitives::Bytes, ClientError> {
+    let request = serde_json::to_vec(signed)?;
+    if request.len() > hub_modules::hub::nodes::MAX_NODE_BYTES {
+        return Err(ClientError::Signing(
+            "node request exceeds byte limit".into(),
+        ));
+    }
+    Ok(IHub::applyNodeRequestCall {
+        request: request.into(),
+    }
+    .abi_encode()
+    .into())
+}
+
 impl HubClient {
     /// Submit an authorized node command. Retain the returned ID for certified receipt recovery.
     pub async fn submit_node_request(
@@ -47,16 +64,7 @@ impl HubClient {
         submitter: &BlsSigner,
         signed: &SignedNodeRequest,
     ) -> Result<B256, ClientError> {
-        let request = serde_json::to_vec(signed)?;
-        if request.len() > hub_modules::hub::nodes::MAX_NODE_BYTES {
-            return Err(ClientError::InvalidResponse(
-                "node request exceeds byte limit",
-            ));
-        }
-        let call = IHub::applyNodeRequestCall {
-            request: request.into(),
-        };
-        let wire = submitter.sign_native_tx(HUB_ADDRESS, call.abi_encode().into())?;
+        let wire = submitter.sign_native_tx(HUB_ADDRESS, encode_node_request(signed)?)?;
         let expected: B256 = hub_domain::NativeTx::decode_wire(&wire)
             .map_err(|e| ClientError::Signing(e.to_string()))?
             .tx_id()

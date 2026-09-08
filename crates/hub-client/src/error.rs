@@ -38,6 +38,10 @@ pub enum ClientError {
     #[error("signing error: {0}")]
     Signing(String),
 
+    /// Durable submission state could not be read, validated or persisted.
+    #[error("native worker state: {0}")]
+    Worker(String),
+
     /// BLS operation failed.
     #[error("BLS error: {0}")]
     Bls(String),

@@ -20,6 +20,7 @@ required-features = ["fault-injection"]
 hub-harness.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 acp = { workspace = true, default-features = false }
 alloy-primitives.workspace = true
 alloy-sol-types.workspace = true

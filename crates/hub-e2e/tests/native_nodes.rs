@@ -182,4 +182,60 @@ async fn native_service_node_authority_survives_worker_changes_and_restart() {
             .unwrap(),
         restored
     );
+
+    let directory = tempfile::tempdir().unwrap();
+    let keys = std::cell::RefCell::new(std::collections::BTreeMap::<String, Vec<u8>>::new());
+    let open = || {
+        hub_client::NativeWorker::open(
+            directory.path(),
+            deployment,
+            |name| {
+                keys.borrow()
+                    .get(name)
+                    .cloned()
+                    .map(Into::into)
+                    .ok_or("missing key")
+            },
+            |name, bytes| {
+                keys.borrow_mut().insert(name.into(), bytes.to_vec());
+                Ok::<_, String>(())
+            },
+        )
+    };
+    let change = sign_node_request(
+        request(4, NodeCommand::SetPeer("durable-peer".into())),
+        &next,
+    )
+    .unwrap();
+    let calldata = hub_client::nodes::encode_node_request(&change).unwrap();
+    for (sequence, success) in [(0, true), (1, false)] {
+        let mut worker = open().unwrap();
+        assert_eq!(worker.next_sequence(), sequence);
+        let wire = worker
+            .prepare(hub_client::HUB_ADDRESS, calldata.clone())
+            .unwrap()
+            .to_vec();
+        let id = writer.send_native_tx(&wire).await.unwrap();
+        drop(worker);
+        let mut worker = open().unwrap();
+        assert_eq!(worker.pending().unwrap(), wire);
+        let proof = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                if let Some(proof) = writer.read_receipt(id, &trusted).await.unwrap() {
+                    break proof;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            worker.acknowledge(&proof, &trusted).unwrap().success(),
+            success
+        );
+        drop(worker);
+        let worker = open().unwrap();
+        assert!(worker.pending().is_none());
+        assert_eq!(worker.next_sequence(), sequence + 1);
+    }
 }
