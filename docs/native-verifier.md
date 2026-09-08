@@ -1,8 +1,9 @@
 # Native client proof verification
 
-`vera-verifier` exposes receipt and current-record verification through the C
+`vera-verifier` exposes receipt, current-record and live object-owner verification through the C
 interface in `crates/vera-verifier/include/vera_verifier.h`. It calls the same
-`ReceiptResponse::verify` and `RecordResponse::verify` implementations as Rust
+`ReceiptResponse::verify`, `RecordResponse::verify` and
+`PrefixResponse::verify_object_owner` implementations as Rust
 clients. Build the shared library with `cargo build -p vera-verifier`.
 
 Each call takes UTF-8 JSON bytes, without a terminating NUL. The caller keeps
@@ -35,6 +36,22 @@ returns a null value. The requested module, key and minimum height are verified.
 Applications must also bind record contents to their operation and apply any
 required freshness policy. Inclusion alone does not authorize an operation.
 
+Current object-owner request:
+
+```json
+{"kind":"object_owner","trusted_key":"<96-byte hex key>","policy_id":"<policy ID>","object":{"resource":"document","id":"report"},"minimum_height":1,"proof":{}}
+```
+
+`proof` is the `hub_getCurrentPrefixProof` result for
+`object_owner_prefix(policy_id, object)` in the ACP module. The verifier derives
+the prefix again, authenticates complete coverage and the selected revision,
+and returns `{"result":{"height":0,"timestamp":0,"owner":"did:..."}}` with
+verified values. Missing or archived ownership returns a null owner. Invalid
+owner records or multiple live owners fail verification. This describes live
+registration; it does not return an archived owner as a current registration.
+Minimum height bounds the accepted revision. Callers remain responsible for any
+additional freshness requirement.
+
 Malformed or invalid evidence returns `{"error":"..."}` with no result. Only
 the result returned by this interface is authenticated. Consensus trust must
 come from independent provisioning, never from the response being verified.
@@ -48,4 +65,7 @@ search path. Linux uses `libvera_verifier.so` and the platform loader search pat
 The ignored `hub-e2e` test `native_go_client` runs a prebuilt Trust API test binary
 from `TRUST_NATIVE_TEST_BINARY`. It checks independent Go/Rust signing and
 operation commitments, concurrent provider-owned policy creation, receipt and
-record verification, tampering, and revoked relay authority after node restart.
+record verification, object registration/archive/reactivation, altered owner
+evidence, and revoked relay authority after node restart. The current owner
+verifier rejects changed policy/object selection, minimum revision, consensus
+trust, proof roots, witnesses and revision metadata.

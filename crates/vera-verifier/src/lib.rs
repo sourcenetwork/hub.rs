@@ -3,7 +3,7 @@
 use alloy_primitives::{B256, Bytes};
 use commonware_codec::DecodeExt as _;
 use hub_domain::{ConsensusPublicKey, RECEIPT_RESPONSE_BYTES, ReceiptResponse};
-use hub_permission::{ModuleId, RECORD_PROOF_BYTES, RecordResponse};
+use hub_permission::{ModuleId, Object, PrefixResponse, RECORD_PROOF_BYTES, RecordResponse};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -24,6 +24,13 @@ enum Request {
         key: Bytes,
         minimum_height: u64,
         proof: Box<RecordResponse>,
+    },
+    ObjectOwner {
+        trusted_key: String,
+        policy_id: String,
+        object: Object,
+        minimum_height: u64,
+        proof: Box<PrefixResponse>,
     },
 }
 
@@ -74,6 +81,19 @@ fn verify(input: &[u8]) -> Result<Value, String> {
             Ok(
                 json!({"height": proof.revision.height, "timestamp": proof.revision.timestamp, "value": proof.record.value}),
             )
+        }
+        Request::ObjectOwner {
+            trusted_key: key,
+            policy_id,
+            object,
+            minimum_height,
+            proof,
+        } => {
+            let owner = proof
+                .verify_object_owner(&policy_id, &object, minimum_height, &trusted_key(&key)?)
+                .map_err(|error| error.to_string())?;
+            Ok(json!({"height": proof.revision.height,
+                "timestamp": proof.revision.timestamp, "owner": owner}))
         }
     }
 }
