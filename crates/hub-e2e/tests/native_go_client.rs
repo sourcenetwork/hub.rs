@@ -64,6 +64,7 @@ async fn native_go_workers_verify_policy_creation() {
             scopes: vec![
                 DelegationScope::PolicyCommands,
                 DelegationScope::CreatePolicy,
+                DelegationScope::EditPolicy,
                 DelegationScope::RecordAccessDecision,
             ],
             expires_at: now + 600,

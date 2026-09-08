@@ -224,14 +224,22 @@ impl AcpModule {
             .prefix_scan(&keys::relationship_policy_prefix(policy_id));
         let mut to_delete = Vec::new();
         for (kv_key, value) in &all_rels {
-            if let Ok(rec) = serde_json::from_slice::<RelationshipRecord>(value) {
-                let rel = &rec.relationship;
-                if new_zanzibar
-                    .get_relation(&rel.resource, &rel.relation)
-                    .is_none()
-                {
-                    to_delete.push(kv_key.clone());
-                }
+            let record: RelationshipRecord = serde_json::from_slice(value).map_err(|error| {
+                AcpError::State(format!("invalid relationship record: {error}"))
+            })?;
+            let relationship = &record.relationship;
+            if record.policy_id != policy_id
+                || keys::relationship_key(policy_id, &relationship.storage_key()) != *kv_key
+            {
+                return Err(AcpError::State(
+                    "relationship record differs from its key".into(),
+                ));
+            }
+            if new_zanzibar
+                .get_relation(&relationship.resource, &relationship.relation)
+                .is_none()
+            {
+                to_delete.push(kv_key.clone());
             }
         }
         let removed = to_delete.len() as u64;
@@ -1606,6 +1614,9 @@ impl AcpModule {
         current == root
     }
 }
+
+#[cfg(test)]
+mod policy_edit_tests;
 
 #[cfg(test)]
 mod tests {

@@ -19,6 +19,12 @@ Delegations use signed ES256K tokens with a worker DID in `sub`, deployment in
 `DelegationScope::EditPolicy` for lifecycle operations. A creation token cannot
 edit policies, and an existing command token cannot create or edit them.
 
+Edits preserve resource types, policy identity and original creation metadata.
+Removing a relation prunes its stored relationships. Malformed relationship
+records or records whose policy/key bindings differ abort the edit before any
+pruning. Caller operation retries retain the original result after later edits;
+see [operation-identities.md](operation-identities.md).
+
 The shared ACP interface accepts:
 
 ```text
