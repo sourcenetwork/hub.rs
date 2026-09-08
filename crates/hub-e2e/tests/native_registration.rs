@@ -88,9 +88,33 @@ async fn native_registration_preserves_commitment_priority_and_owner_proofs() {
         .await
         .unwrap();
     assert!(registered.block_number > early_height);
-    let (_, late) = submit(&client, &second, &trusted, commit()).await;
+    let (late_height, late) = submit(&client, &second, &trusted, commit()).await;
     assert!(late.success());
     let late = IAcp::RegistrationsCommitted::decode_log(&late.logs()[0]).unwrap();
+    let first_page = client
+        .read_registration_commitment_ids(early.data.commitment, None, 1, late_height, &trusted)
+        .await
+        .unwrap();
+    assert_eq!(first_page.ids, vec![early.data.commitmentId]);
+    assert!(first_page.continuation.is_some());
+    let second_page = client
+        .read_registration_commitment_ids(
+            early.data.commitment,
+            first_page.continuation,
+            1,
+            first_page.revision,
+            &trusted,
+        )
+        .await
+        .unwrap();
+    assert_eq!(second_page.ids, vec![late.data.commitmentId]);
+    assert!(second_page.continuation.is_none());
+    let missing = client
+        .read_registration_commitment_ids(B256::ZERO, None, 1, late_height, &trusted)
+        .await
+        .unwrap();
+    assert!(missing.ids.is_empty());
+    assert!(missing.continuation.is_none());
     let reveal = |id| {
         IAcp::revealRegistrationCall {
             commitmentId: id,

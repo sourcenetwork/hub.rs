@@ -53,3 +53,27 @@ Old commitment proofs are incompatible. Deploy on fresh state or provide an
 explicit migration; this change does not repair existing owner records or
 zero-timestamp commitments in an older store. A migration from an earlier store
 must also populate expiry indexes for every unexpired commitment.
+
+## Commitment discovery
+
+Each commitment has a root index entry using
+`commitment/indexes/commitment/idx/ || root[32] || / || id_be[8]` with an empty value.
+The entry remains after expiry. It is maintained with the primary record and
+included in ACP snapshots. Older stores require explicit index population.
+
+`HubClient::read_registration_commitment_ids` uses the existing certified native
+prefix-page endpoint. Supply the root, optional continuation, a limit from 1 to
+128, a minimum revision and trusted consensus key. The result contains verified
+IDs in ascending order, its revision and an inclusive continuation for the next
+page. A missing root returns a certified empty page. Later pages can select newer
+state; the cursor does not pin a historical snapshot.
+
+Read a discovered primary record with `read_current_record`, module `Acp` and
+`acp::keys::commitment_key(id)`, using at least the page's revision. Such a read
+may select newer state, including a changed expiry flag. The index authenticates
+the root-to-ID association, not the primary record's mutable metadata.
+
+The legacy by-value query uses the same index and returns complete results only
+when they fit within 128 records and 1 MiB of stored record bytes. Larger results
+return an explicit error directing callers to certified pages; they are never
+silently truncated. Indexed record corruption is an error rather than absence.

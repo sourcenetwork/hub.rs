@@ -22,6 +22,8 @@ mod permission;
 mod query;
 mod receipt;
 mod record;
+/// Certified registration commitment discovery.
+pub mod registrations;
 /// Threshold-service ring commands and certified state.
 pub mod rings;
 /// Encrypted documents and signing derivations.

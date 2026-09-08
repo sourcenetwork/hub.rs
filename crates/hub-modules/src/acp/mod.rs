@@ -4,6 +4,7 @@
 pub mod abi;
 mod command_context;
 mod commitment_expiry;
+mod commitment_lookup;
 mod registration_queries;
 pub use registration_queries::{MAX_REGISTRATION_LEAF_BYTES, MAX_REGISTRATION_OBJECTS};
 pub mod decision;
@@ -777,6 +778,7 @@ impl AcpModule {
 
     // ── Storage — Commitments ────────────────────────────────────────────
 
+    #[cfg(test)]
     fn commitment_objs_prefix() -> Vec<u8> {
         [keys::COMMITMENT_PREFIX, keys::OBJS_SUBPREFIX].concat()
     }
@@ -809,11 +811,18 @@ impl AcpModule {
             .map_err(|e| AcpError::State(format!("serialize commitment: {e}")))?;
         if let Some(previous) = self.get_commitment_by_id(commitment.id)? {
             self.store.delete(&Self::commitment_expiry_key(&previous));
+            self.store.delete(&keys::commitment_by_commitment_index_key(
+                &previous.commitment, previous.id,
+            ));
         }
         if !commitment.expired {
             self.store
                 .put(&Self::commitment_expiry_key(commitment), Vec::new());
         }
+        self.store.put(
+            &keys::commitment_by_commitment_index_key(&commitment.commitment, commitment.id),
+            Vec::new(),
+        );
         self.store.put(&keys::commitment_key(commitment.id), bytes);
         Ok(())
     }
@@ -827,21 +836,6 @@ impl AcpModule {
                     .map_err(|error| AcpError::State(format!("invalid commitment: {error}")))
             })
             .transpose()
-    }
-
-    #[allow(unused_variables)]
-    fn filter_commitments_by_commitment(
-        &self,
-        commitment: &[u8],
-    ) -> Result<Vec<RegistrationsCommitment>> {
-        let results = self
-            .store
-            .prefix_scan(&Self::commitment_objs_prefix())
-            .into_iter()
-            .filter_map(|(_, v)| borsh::from_slice::<RegistrationsCommitment>(&v).ok())
-            .filter(|c| c.commitment == commitment)
-            .collect();
-        Ok(results)
     }
 
     // ── Storage — Amendment events ───────────────────────────────────────
