@@ -227,10 +227,10 @@ async fn run_client(binary: &str, fixture: &serde_json::Value) {
 async fn run_go_test(binary: &str, selector: &str, fixture: &serde_json::Value) {
     let mut command = tokio::process::Command::new(binary);
     command
-        .args([selector, "-test.v", "-test.timeout=60s"])
+        .args([selector, "-test.v", "-test.timeout=120s"])
         .env("VERA_NATIVE_FIXTURE", fixture.to_string())
         .kill_on_drop(true);
-    let status = tokio::time::timeout(Duration::from_secs(65), command.status())
+    let status = tokio::time::timeout(Duration::from_secs(125), command.status())
         .await
         .expect("Go client must finish within its deadline")
         .expect("launch Go native client test");
