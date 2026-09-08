@@ -151,15 +151,12 @@ impl<S: StateDb> MempoolValidator<S> {
             return Err(ExecutionError::UnknownNativeTarget(native_tx.target));
         }
 
-        let pubkey = bls::deserialize_pubkey(native_tx.bls_pubkey.as_slice())
-            .map_err(|e| ExecutionError::BlsVerification(format!("pubkey: {e}")))?;
-
-        let signing_data = native_tx.signing_data();
-        bls::verify(&pubkey, &signing_data, native_tx.signature.as_slice())
-            .map_err(|e| ExecutionError::BlsVerification(format!("signature: {e}")))?;
-
-        let signer_did = bls::did_from_bls_pubkey(&pubkey)
-            .map_err(|e| ExecutionError::BlsVerification(format!("DID: {e}")))?;
+        let signer_did = bls::verify_and_identify(
+            native_tx.bls_pubkey.as_slice(),
+            &native_tx.signing_data(),
+            native_tx.signature.as_slice(),
+        )
+        .map_err(|e| ExecutionError::BlsVerification(format!("signature: {e}")))?;
 
         Ok(PreValidatedNativeTx {
             signer_did,

@@ -81,8 +81,29 @@ pub fn verify(pubkey: &G1Affine, msg: &[u8], sig_bytes: &[u8]) -> Result<(), Bls
     pubkey
         .serialize_compressed(encoded_key.as_mut_slice())
         .map_err(|_| BlsError::Serialize)?;
-    let key =
-        blst::min_pk::PublicKey::from_bytes(&encoded_key).map_err(|_| BlsError::Deserialize)?;
+    verify_compressed(&encoded_key, msg, sig_bytes).map(|_| ())
+}
+
+/// Verify a compressed G1 key/G2 signature and return the authenticated signer's DID.
+/// Both points are validated before deriving the DID from the canonical key encoding.
+pub fn verify_and_identify(
+    pubkey: &[u8],
+    msg: &[u8],
+    signature: &[u8],
+) -> Result<String, BlsError> {
+    let key = verify_compressed(pubkey, msg, signature)?;
+    Ok(did_from_encoded_key(&key.to_bytes()))
+}
+
+fn verify_compressed(
+    pubkey: &[u8],
+    msg: &[u8],
+    sig_bytes: &[u8],
+) -> Result<blst::min_pk::PublicKey, BlsError> {
+    if pubkey.len() != 48 || sig_bytes.len() != 96 {
+        return Err(BlsError::Deserialize);
+    }
+    let key = blst::min_pk::PublicKey::from_bytes(pubkey).map_err(|_| BlsError::Deserialize)?;
     let signature =
         blst::min_pk::Signature::from_bytes(sig_bytes).map_err(|_| BlsError::Deserialize)?;
     if signature.verify(true, msg, BLS_SIG_DOMAIN, &[], &key, true)
@@ -90,7 +111,7 @@ pub fn verify(pubkey: &G1Affine, msg: &[u8], sig_bytes: &[u8]) -> Result<(), Bls
     {
         return Err(BlsError::InvalidSignature);
     }
-    Ok(())
+    Ok(key)
 }
 
 /// Deserialize a compressed BLS G1 public key (48 bytes).
@@ -111,20 +132,21 @@ pub fn did_from_bls_pubkey(pubkey: &G1Affine) -> Result<String, BlsError> {
     if pubkey.is_zero() {
         return Err(BlsError::InvalidPublicKey);
     }
+    let mut pubkey_bytes = [0u8; 48];
+    pubkey
+        .serialize_compressed(pubkey_bytes.as_mut_slice())
+        .map_err(|_| BlsError::Serialize)?;
+    Ok(did_from_encoded_key(&pubkey_bytes))
+}
+
+fn did_from_encoded_key(pubkey: &[u8; 48]) -> String {
     let mut varint_buf = [0u8; 10];
     let varint = unsigned_varint::encode::u64(BLS_G1_MULTICODEC, &mut varint_buf);
-
-    let mut pubkey_bytes = Vec::with_capacity(48);
-    pubkey
-        .serialize_compressed(&mut pubkey_bytes)
-        .map_err(|_| BlsError::Serialize)?;
-
-    let mut codec_bytes = Vec::with_capacity(varint.len() + pubkey_bytes.len());
+    let mut codec_bytes = Vec::with_capacity(varint.len() + pubkey.len());
     codec_bytes.extend_from_slice(varint);
-    codec_bytes.extend_from_slice(&pubkey_bytes);
-
+    codec_bytes.extend_from_slice(pubkey);
     let encoded = multibase::encode(multibase::Base::Base58Btc, &codec_bytes);
-    Ok(format!("did:key:{encoded}"))
+    format!("did:key:{encoded}")
 }
 
 #[cfg(test)]
@@ -163,6 +185,32 @@ mod tests {
         assert!(verify(&torsion, b"message", &signature).is_err());
         signature.push(0);
         assert!(verify(&pk, b"message", &signature).is_err());
+    }
+
+    #[test]
+    fn compressed_verification_preserves_identity_and_rejects_invalid_inputs() {
+        let (sk, pk) = generate_keypair();
+        let mut encoded = Vec::new();
+        pk.serialize_compressed(&mut encoded).unwrap();
+        let signature = sign(&sk, b"message").unwrap();
+        assert_eq!(
+            verify_and_identify(&encoded, b"message", &signature).unwrap(),
+            did_from_bls_pubkey(&pk).unwrap()
+        );
+        assert!(verify_and_identify(&encoded, b"other", &signature).is_err());
+        assert!(verify_and_identify(&encoded[..47], b"message", &signature).is_err());
+        let torsion =
+            G1Affine::new_unchecked(ark_bls12_381::Fq::from(0), ark_bls12_381::Fq::from(2));
+        for invalid in [G1Affine::zero(), torsion] {
+            let mut encoded = Vec::new();
+            invalid.serialize_compressed(&mut encoded).unwrap();
+            assert!(verify_and_identify(&encoded, b"message", &signature).is_err());
+        }
+        let mut identity_signature = Vec::new();
+        G2Affine::zero()
+            .serialize_compressed(&mut identity_signature)
+            .unwrap();
+        assert!(verify_and_identify(&encoded, b"message", &identity_signature).is_err());
     }
 
     #[test]
