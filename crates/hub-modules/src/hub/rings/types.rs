@@ -140,6 +140,12 @@ pub struct RingRecord {
     pub config: RingConfig,
     pub state: RingState,
     pub revision: crate::types::Timestamp,
+    /// Absent in initial records; current settings then equal the creation configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<RingSettings>,
+    /// Advances on every mutation, including multiple changes in the same revision.
+    #[serde(default)]
+    pub sequence: u64,
 }
 
 impl RingRecord {
@@ -150,6 +156,9 @@ impl RingRecord {
             || self.revision.seconds == 0
         {
             return Err(invalid("ring record identity or revision mismatch"));
+        }
+        if let Some(settings) = &self.settings {
+            settings.validate(self)?;
         }
         match &self.state {
             RingState::Pending {
@@ -191,12 +200,146 @@ impl RingRecord {
     }
 }
 
+/// Mutable service configuration; the creation commitment stays unchanged.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RingSettings {
+    pub peer_node_keys: Vec<String>,
+    pub threshold: u32,
+    pub pss_interval: u64,
+    pub current_version: u64,
+    pub scheduled_upgrade: Option<ScheduledUpgrade>,
+    pub reporting: ReportingConfig,
+    pub trusted_auth_relay_dids: Option<Vec<String>>,
+    pub pending_reshare: Option<ReshareTarget>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScheduledUpgrade {
+    pub version: u64,
+    pub activates_at: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReshareTarget {
+    pub peer_node_keys: Vec<String>,
+    pub threshold: u32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum RingUpdate {
+    SetPssInterval(u64),
+    ScheduleUpgrade(ScheduledUpgrade),
+    CancelUpgrade,
+    SetReporting(ReportingConfig),
+    AddRelay(String),
+    RemoveRelay(String),
+    StartReshare {
+        peer_node_keys: Option<Vec<String>>,
+        threshold: Option<u32>,
+    },
+}
+
+impl RingRecord {
+    pub fn current_settings(&self) -> RingSettings {
+        self.settings.clone().unwrap_or_else(|| RingSettings {
+            peer_node_keys: self.config.peer_node_keys.clone(),
+            threshold: self.config.threshold,
+            pss_interval: self.config.pss_interval,
+            current_version: self.config.current_version,
+            scheduled_upgrade: None,
+            reporting: self.config.reporting.clone(),
+            trusted_auth_relay_dids: self.config.trusted_auth_relay_dids.clone(),
+            pending_reshare: None,
+        })
+    }
+}
+
+impl RingSettings {
+    pub fn effective_version(&self, timestamp: u64) -> u64 {
+        self.scheduled_upgrade
+            .as_ref()
+            .filter(|upgrade| timestamp >= upgrade.activates_at)
+            .map_or(self.current_version, |upgrade| upgrade.version)
+    }
+
+    pub(super) fn normalize_upgrade(&mut self, timestamp: u64) {
+        if self
+            .scheduled_upgrade
+            .as_ref()
+            .is_some_and(|upgrade| timestamp >= upgrade.activates_at)
+        {
+            self.current_version = self
+                .scheduled_upgrade
+                .take()
+                .expect("matured upgrade")
+                .version;
+        }
+    }
+
+    fn validate(&self, record: &RingRecord) -> Result<()> {
+        let mut config = record.config.clone();
+        config.peer_node_keys.clone_from(&self.peer_node_keys);
+        config.threshold = self.threshold;
+        config.pss_interval = self.pss_interval;
+        config.current_version = self.current_version;
+        config.reporting.clone_from(&self.reporting);
+        config
+            .trusted_auth_relay_dids
+            .clone_from(&self.trusted_auth_relay_dids);
+        config.validate()?;
+        if self.current_version < record.config.current_version
+            || self.trusted_auth_relay_dids.is_some()
+                != record.config.trusted_auth_relay_dids.is_some()
+        {
+            return Err(invalid("ring version or immutable relay setting changed"));
+        }
+        if self.scheduled_upgrade.as_ref().is_some_and(|upgrade| {
+            upgrade.version <= self.current_version || upgrade.activates_at == 0
+        }) {
+            return Err(invalid("invalid scheduled ring upgrade"));
+        }
+        if let Some(target) = &self.pending_reshare {
+            keys(&target.peer_node_keys, false)?;
+            if !matches!(record.state, RingState::Active { .. })
+                || target.threshold == 0
+                || target.threshold as usize > target.peer_node_keys.len()
+                || (target.peer_node_keys == self.peer_node_keys
+                    && target.threshold == self.threshold)
+            {
+                return Err(invalid("invalid pending reshare"));
+            }
+        }
+        if !matches!(record.state, RingState::Active { .. })
+            && (self.peer_node_keys != record.config.peer_node_keys
+                || self.threshold != record.config.threshold
+                || self.pss_interval != record.config.pss_interval
+                || self.current_version != record.config.current_version
+                || self.scheduled_upgrade.is_some()
+                || self.reporting != record.config.reporting)
+        {
+            return Err(invalid("inactive ring has active service settings"));
+        }
+        Ok(())
+    }
+}
+
 /// Commands requiring an actor's delegation and ACP authority.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum RingCommand {
     Create(RingConfig),
-    Cancel { ring_id: String },
+    Update {
+        ring_id: String,
+        expected_sequence: u64,
+        update: RingUpdate,
+    },
+    Cancel {
+        ring_id: String,
+    },
 }
 
 #[derive(Clone, Debug, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
@@ -242,7 +385,7 @@ pub(super) fn sorted(values: &[String]) -> bool {
     values.windows(2).all(|pair| pair[0] < pair[1])
 }
 
-fn keys(values: &[String], empty: bool) -> Result<()> {
+pub(super) fn keys(values: &[String], empty: bool) -> Result<()> {
     if (!empty && values.is_empty()) || values.len() > MAX_RING_MEMBERS || !sorted(values) {
         return Err(invalid("node set must be bounded, sorted and unique"));
     }

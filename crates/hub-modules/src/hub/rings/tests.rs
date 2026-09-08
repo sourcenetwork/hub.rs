@@ -49,16 +49,25 @@ fn submission() -> TxExecCtx {
     }
 }
 fn token(command: &RingCommand, entropy: u8) -> String {
+    token_at(command, entropy, &context())
+}
+fn token_at(command: &RingCommand, entropy: u8, at: &BlockExecCtx) -> String {
+    token_from(command, entropy, at, &secret(1))
+}
+fn token_from(command: &RingCommand, entropy: u8, at: &BlockExecCtx, key: &SigningKey) -> String {
     let mut id = [entropy; 32];
-    id[..8].copy_from_slice(&200u64.to_be_bytes());
+    id[..8].copy_from_slice(&(at.timestamp.seconds + 100).to_be_bytes());
     let claims = JwtClaims {
-        iss: actor().to_string(),
+        iss: hub_crypto::secp256k1::did_from_secp256k1_pubkey(
+            key.verifying_key().to_sec1_bytes().as_ref(),
+        )
+        .unwrap(),
         sub: submission().signer,
-        exp: 200,
+        exp: at.timestamp.seconds + 100,
         aud: "vera:9001".into(),
         scope: DelegationScope::ManageRings,
-        iat: 100,
-        nbf: 100,
+        iat: at.timestamp.seconds,
+        nbf: at.timestamp.seconds,
         relay: None,
         request: Some(OperationClaim {
             id: OperationId(id),
@@ -71,7 +80,7 @@ fn token(command: &RingCommand, entropy: u8) -> String {
         URL_SAFE_NO_PAD.encode(r#"{"alg":"ES256K","typ":"vera-delegation-v1+jwt"}"#),
         URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap())
     );
-    let signature: Signature = secret(1).sign(message.as_bytes());
+    let signature: Signature = key.sign(message.as_bytes());
     format!("{message}.{}", URL_SAFE_NO_PAD.encode(signature.to_bytes()))
 }
 fn fixture(policy: &str) -> (HubModule, AcpModule, RingConfig) {
@@ -355,4 +364,274 @@ fn ring_configuration_and_stored_records_are_bounded_and_validated() {
         vec![0; MAX_RING_RECORD_BYTES + 1],
     );
     assert!(hub.threshold_ring(&record.id).is_err());
+}
+
+#[test]
+fn ring_updates_require_acp_authority_and_reject_stale_commands_within_one_revision() {
+    let policy = POLICY.replace("  - name: ring\n", "  - name: ring\n    relations:\n      - name: operator\n    permissions:\n      - name: update_ring\n        expr: operator\n");
+    let (mut hub, mut acp, config) = fixture(&policy);
+    let initial = apply(&mut hub, &mut acp, &RingCommand::Create(config), 1).unwrap();
+    hub.apply_ring_participant_request(&context(), &confirm(&initial.id, 2, "aabb"))
+        .unwrap();
+    let active = hub
+        .apply_ring_participant_request(&context(), &confirm(&initial.id, 3, "aabb"))
+        .unwrap();
+    let update = |sequence, update| RingCommand::Update {
+        ring_id: initial.id.clone(),
+        expected_sequence: sequence,
+        update,
+    };
+    let refresh = update(active.sequence, RingUpdate::SetPssInterval(90000));
+    let outsider = token_from(&refresh, 2, &context(), &secret(4));
+    let before = (hub.store().serialize(), acp.store().serialize());
+    assert!(
+        hub.apply_ring_command(&mut acp, &context(), &submission(), &outsider, &refresh)
+            .is_err()
+    );
+    assert_eq!((hub.store().serialize(), acp.store().serialize()), before);
+    acp.direct_policy_cmd(
+        &actor(),
+        &initial.config.policy_id,
+        PolicyCmd::SetRelationship(Relationship::with_entity(
+            "ring",
+            &initial.id,
+            "operator",
+            actor(),
+        )),
+    )
+    .unwrap();
+    let changed = apply(&mut hub, &mut acp, &refresh, 3).unwrap();
+    assert_eq!(changed.revision, active.revision);
+    assert_eq!(changed.sequence, active.sequence + 1);
+    assert_eq!(changed.id, initial.id);
+    assert_eq!(changed.config, initial.config);
+    assert_eq!(changed.current_settings().pss_interval, 90000);
+    assert!(apply(&mut hub, &mut acp, &refresh, 4).is_err());
+    let schedule = update(
+        changed.sequence,
+        RingUpdate::ScheduleUpgrade(ScheduledUpgrade {
+            version: 1,
+            activates_at: 700,
+        }),
+    );
+    let scheduled = apply(&mut hub, &mut acp, &schedule, 5).unwrap();
+    assert_eq!(scheduled.current_settings().effective_version(699), 0);
+    assert_eq!(scheduled.current_settings().effective_version(700), 1);
+    let mut later = context();
+    later.timestamp.seconds = 700;
+    later.timestamp.block_height = 3;
+    let cancel = update(scheduled.sequence, RingUpdate::CancelUpgrade);
+    let before = (hub.store().serialize(), acp.store().serialize());
+    assert!(
+        hub.apply_ring_command(
+            &mut acp,
+            &later,
+            &submission(),
+            &token_at(&cancel, 6, &later),
+            &cancel
+        )
+        .is_err()
+    );
+    assert_eq!((hub.store().serialize(), acp.store().serialize()), before);
+    let refresh = update(scheduled.sequence, RingUpdate::SetPssInterval(90001));
+    let normalized = hub
+        .apply_ring_command(
+            &mut acp,
+            &later,
+            &submission(),
+            &token_at(&refresh, 7, &later),
+            &refresh,
+        )
+        .unwrap();
+    assert_eq!(normalized.current_settings().current_version, 1);
+    assert!(normalized.current_settings().scheduled_upgrade.is_none());
+    assert_eq!(normalized.config.current_version, 0);
+    let mut old: serde_json::Value = serde_json::to_value(&initial).unwrap();
+    old.as_object_mut().unwrap().remove("settings");
+    old.as_object_mut().unwrap().remove("sequence");
+    let old: RingRecord = serde_json::from_value(old).unwrap();
+    old.validate(&old.id).unwrap();
+    assert_eq!(
+        old.current_settings().pss_interval,
+        initial.config.pss_interval
+    );
+    assert_eq!(old.sequence, 0);
+}
+
+#[test]
+fn ring_reporting_relays_and_reshare_targets_preserve_controller_constraints() {
+    let policy = POLICY.replace("  - name: ring\n", "  - name: ring\n    relations:\n      - name: operator\n    permissions:\n      - name: update_ring\n        expr: operator\n");
+    let (mut hub, mut acp, mut config) = fixture(&policy);
+    config.trusted_auth_relay_dids = Some(Vec::new());
+    let initial = apply(&mut hub, &mut acp, &RingCommand::Create(config), 1).unwrap();
+    acp.direct_policy_cmd(
+        &actor(),
+        &initial.config.policy_id,
+        PolicyCmd::SetRelationship(Relationship::with_entity(
+            "ring",
+            &initial.id,
+            "operator",
+            actor(),
+        )),
+    )
+    .unwrap();
+    let update = |sequence, update| RingCommand::Update {
+        ring_id: initial.id.clone(),
+        expected_sequence: sequence,
+        update,
+    };
+    let relay = "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH".to_string();
+    let pending = apply(
+        &mut hub,
+        &mut acp,
+        &update(initial.sequence, RingUpdate::AddRelay(relay.clone())),
+        2,
+    )
+    .unwrap();
+    assert_eq!(
+        pending.current_settings().trusted_auth_relay_dids,
+        Some(vec![relay.clone()])
+    );
+    assert!(
+        apply(
+            &mut hub,
+            &mut acp,
+            &update(pending.sequence, RingUpdate::SetPssInterval(90000)),
+            3
+        )
+        .is_err()
+    );
+    hub.apply_ring_participant_request(&context(), &confirm(&initial.id, 2, "aabb"))
+        .unwrap();
+    let active = hub
+        .apply_ring_participant_request(&context(), &confirm(&initial.id, 3, "aabb"))
+        .unwrap();
+    let before = (hub.store().serialize(), acp.store().serialize());
+    let bad = [
+        RingUpdate::AddRelay(relay.clone()),
+        RingUpdate::ScheduleUpgrade(ScheduledUpgrade {
+            version: 1,
+            activates_at: 699,
+        }),
+        RingUpdate::StartReshare {
+            peer_node_keys: Some(vec![public(&secret(2))]),
+            threshold: Some(2),
+        },
+        RingUpdate::SetReporting(ReportingConfig {
+            kick_threshold: 0,
+            ..Default::default()
+        }),
+    ];
+    for (index, change) in bad.into_iter().enumerate() {
+        assert!(
+            apply(
+                &mut hub,
+                &mut acp,
+                &update(active.sequence, change),
+                10 + index as u8
+            )
+            .is_err()
+        );
+        assert_eq!((hub.store().serialize(), acp.store().serialize()), before);
+    }
+    let request = NodeRequest {
+        deployment_root: context().genesis_id,
+        deployment_id: 9001,
+        node_key: public(&secret(3)),
+        sequence: 1,
+        expires_at: 200,
+        command: NodeCommand::Disallow(crate::hub::nodes::NodeTarget::Policy(
+            initial.config.policy_id.clone(),
+        )),
+    };
+    let signature: Signature = secret(3)
+        .sign_prehash(&request.signing_digest().unwrap())
+        .unwrap();
+    hub.apply_node_request(
+        &context(),
+        &SignedNodeRequest {
+            request,
+            signer_key: public(&secret(3)),
+            signature: hex::encode(signature.to_bytes()),
+        },
+    )
+    .unwrap();
+    assert!(
+        apply(
+            &mut hub,
+            &mut acp,
+            &update(
+                active.sequence,
+                RingUpdate::StartReshare {
+                    peer_node_keys: None,
+                    threshold: Some(1)
+                }
+            ),
+            20
+        )
+        .is_err()
+    );
+    assert!(
+        apply(
+            &mut hub,
+            &mut acp,
+            &update(
+                active.sequence,
+                RingUpdate::SetReporting(ReportingConfig {
+                    backup_node_keys: vec![public(&secret(3))],
+                    ..Default::default()
+                })
+            ),
+            21
+        )
+        .is_err()
+    );
+    let announced = apply(
+        &mut hub,
+        &mut acp,
+        &update(
+            active.sequence,
+            RingUpdate::StartReshare {
+                peer_node_keys: Some(vec![public(&secret(2))]),
+                threshold: Some(1),
+            },
+        ),
+        22,
+    )
+    .unwrap();
+    let settings = announced.current_settings();
+    assert_eq!(settings.peer_node_keys, initial.config.peer_node_keys);
+    assert_eq!(settings.threshold, 2);
+    assert_eq!(settings.pending_reshare.unwrap().threshold, 1);
+    assert!(
+        apply(
+            &mut hub,
+            &mut acp,
+            &update(
+                announced.sequence,
+                RingUpdate::StartReshare {
+                    peer_node_keys: None,
+                    threshold: Some(1)
+                }
+            ),
+            23
+        )
+        .is_err()
+    );
+    let removed = apply(
+        &mut hub,
+        &mut acp,
+        &update(announced.sequence, RingUpdate::RemoveRelay(relay)),
+        24,
+    )
+    .unwrap();
+    assert_eq!(
+        removed.current_settings().trusted_auth_relay_dids,
+        Some(Vec::new())
+    );
+    let restored = HubModule::from_store(hub.store().clone());
+    assert_eq!(
+        restored.threshold_ring(&initial.id).unwrap().unwrap(),
+        removed
+    );
 }

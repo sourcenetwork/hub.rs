@@ -5,8 +5,9 @@ use alloy_sol_types::SolCall as _;
 use hub_domain::ConsensusPublicKey;
 use hub_modules::hub::abi::IHub;
 pub use hub_modules::hub::rings::{
-    ReportingConfig, RingCommand, RingConfig, RingParticipantCommand, RingParticipantRequest,
-    RingRecord, RingState, SignedRingParticipantRequest,
+    ReportingConfig, ReshareTarget, RingCommand, RingConfig, RingParticipantCommand,
+    RingParticipantRequest, RingRecord, RingSettings, RingState, RingUpdate, ScheduledUpgrade,
+    SignedRingParticipantRequest,
 };
 use k256::ecdsa::{Signature, SigningKey, signature::hazmat::PrehashSigner as _};
 

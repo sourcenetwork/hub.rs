@@ -35,7 +35,7 @@ original recorded outcome; read the ring again to obtain its current state.
 ## Native client
 
 Use `hub_client::rings::encode_ring_command` with an `orbis:ring` delegation for
-creation or creator cancellation. Delegations use the existing expiry,
+creation, administration or creator cancellation. Delegations use the existing expiry,
 revocation, relay authorization and optional exact-operation binding checks.
 `DelegatedOperation::RingCommand` supplies the digest for a relay assertion or
 operation-bound delegation. Failed admission, including outcome-storage budget
@@ -59,6 +59,26 @@ Requests are limited to 48 KiB; records to 128 KiB; each node/relay set to 256
 entries; public-key declarations to 8 KiB of hex. The refresh interval must be at
 least one day. Reporting counters and thresholds must be positive.
 
-Resharing, refresh/upgrade administration, report processing, document and
+## Administration
+
+`RingCommand::Update` requires ACP `update_ring` permission on `ring/<ring_id>`
+and the current `expected_sequence`. Every ring mutation increments this sequence,
+including writes within one finalized revision. An outdated command fails without
+changing either the ring or delegation outcome storage. Creation parameters remain
+immutable, so administrative changes preserve the ring identifier.
+
+Active rings support refresh-interval changes, reporting configuration, scheduled
+upgrades and resharing announcements. Upgrades must increase the version and allow
+at least 600 seconds before activation. Consumers can resolve the effective version
+at a certified timestamp; later service updates materialize an activated upgrade.
+Cancellation requires an upgrade whose activation time has not arrived.
+
+Relay additions/removals also work while fresh DKG is pending. Creation with relays
+disabled is permanent. Reporting backup nodes and resharing target nodes must be
+registered and their controllers must permit the ring or its policy. A resharing
+announcement records the target committee and threshold while the current committee
+continues serving; a second announcement is rejected while one is pending.
+
+Threshold-signed resharing finalization, report processing, document and
 key-derivation services are separate pending work. This API does not import
 existing rings or choose an encrypted-record migration policy.

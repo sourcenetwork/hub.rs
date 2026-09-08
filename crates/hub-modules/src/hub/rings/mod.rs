@@ -1,5 +1,6 @@
-//! ACP-authorized ring creation and participant-authenticated fresh-DKG outcomes.
+//! ACP-authorized ring lifecycle and participant-authenticated fresh-DKG outcomes.
 
+mod administration;
 mod types;
 pub use types::*;
 
@@ -120,8 +121,15 @@ impl HubModule {
                         confirmations: Vec::new(),
                     },
                     revision: context.timestamp.clone(),
+                    settings: None,
+                    sequence: 0,
                 }
             }
+            RingCommand::Update {
+                ring_id,
+                expected_sequence,
+                update,
+            } => self.update_ring(acp, context, actor, ring_id, *expected_sequence, update)?,
             RingCommand::Cancel { ring_id } => {
                 let mut record = self
                     .threshold_ring(ring_id)?
@@ -137,6 +145,10 @@ impl HubModule {
                 record
             }
         };
+        record.sequence = record
+            .sequence
+            .checked_add(1)
+            .ok_or_else(|| invalid("ring sequence exhausted"))?;
         record.revision = context.timestamp.clone();
         let bytes = record_bytes(&record)?;
         if matches!(command, RingCommand::Create(_)) {
@@ -241,6 +253,10 @@ impl HubModule {
                 }
             }
         }
+        record.sequence = record
+            .sequence
+            .checked_add(1)
+            .ok_or_else(|| invalid("ring sequence exhausted"))?;
         record.revision = context.timestamp.clone();
         let bytes = record_bytes(&record)?;
         self.store.put(&ring_key(&record.id)?, bytes);

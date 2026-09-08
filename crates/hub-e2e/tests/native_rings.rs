@@ -17,7 +17,7 @@ use hub_modules::acp::{
 use k256::ecdsa::SigningKey;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const POLICY: &str = "name: rings\nresources:\n  - name: ring_policy\n    relations:\n      - name: creator\n    permissions:\n      - name: create_ring\n        expr: creator\n  - name: ring\n";
+const POLICY: &str = "name: rings\nresources:\n  - name: ring_policy\n    relations:\n      - name: creator\n    permissions:\n      - name: create_ring\n        expr: creator\n  - name: ring\n    relations:\n      - name: operator\n    permissions:\n      - name: update_ring\n        expr: operator\n";
 fn public(key: &SigningKey) -> String {
     hex::encode(key.verifying_key().to_sec1_bytes())
 }
@@ -293,18 +293,72 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
         true,
     )
     .await;
+    let active = reader
+        .read_threshold_ring(&ring, confirmed.block_number, &trusted)
+        .await
+        .unwrap()
+        .record
+        .unwrap();
+    let announce = RingCommand::Update {
+        ring_id: ring.clone(),
+        expected_sequence: active.sequence,
+        update: RingUpdate::StartReshare {
+            peer_node_keys: None,
+            threshold: Some(1),
+        },
+    };
+    let announced = execute(
+        &writer,
+        &reader,
+        &worker,
+        &trusted,
+        HUB_ADDRESS,
+        encode_ring_command(&announce, &token(DelegationScope::ManageRings)).unwrap(),
+        true,
+    )
+    .await;
+    execute(
+        &writer,
+        &reader,
+        &worker,
+        &trusted,
+        HUB_ADDRESS,
+        encode_ring_command(
+            &RingCommand::Update {
+                ring_id: ring.clone(),
+                expected_sequence: active.sequence,
+                update: RingUpdate::SetPssInterval(90000),
+            },
+            &token(DelegationScope::ManageRings),
+        )
+        .unwrap(),
+        false,
+    )
+    .await;
     cluster.restart_node(3).unwrap();
     cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    let recovered = reader
+        .read_threshold_ring(&ring, announced.block_number, &trusted)
+        .await
+        .unwrap()
+        .record
+        .unwrap();
     assert_eq!(
-        reader
-            .read_threshold_ring(&ring, confirmed.block_number, &trusted)
-            .await
-            .unwrap()
-            .record
-            .unwrap()
-            .state,
+        recovered.state,
         RingState::Active {
             public_key: "aabb".into()
+        }
+    );
+    assert_eq!(recovered.config, config);
+    assert_eq!(recovered.sequence, active.sequence + 1);
+    let settings = recovered.current_settings();
+    assert_eq!(settings.threshold, 2);
+    assert_eq!(settings.pss_interval, 86400);
+    assert_eq!(
+        settings.pending_reshare.unwrap(),
+        ReshareTarget {
+            peer_node_keys: config.peer_node_keys.clone(),
+            threshold: 1,
         }
     );
 
