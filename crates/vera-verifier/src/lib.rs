@@ -3,7 +3,10 @@
 use alloy_primitives::{B256, Bytes};
 use commonware_codec::DecodeExt as _;
 use hub_domain::{ConsensusPublicKey, RECEIPT_RESPONSE_BYTES, ReceiptResponse};
-use hub_permission::{ModuleId, Object, PrefixResponse, RECORD_PROOF_BYTES, RecordResponse};
+use hub_permission::{
+    AccessRequest, ModuleId, Object, PERMISSION_LIMITS, PermissionResponse, PrefixResponse,
+    RECORD_PROOF_BYTES, RecordResponse,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -24,6 +27,13 @@ enum Request {
         key: Bytes,
         minimum_height: u64,
         proof: Box<RecordResponse>,
+    },
+    Permission {
+        trusted_key: String,
+        policy_id: String,
+        request: AccessRequest,
+        minimum_height: u64,
+        proof: Box<PermissionResponse>,
     },
     ObjectOwner {
         trusted_key: String,
@@ -81,6 +91,25 @@ fn verify(input: &[u8]) -> Result<Value, String> {
             Ok(
                 json!({"height": proof.revision.height, "timestamp": proof.revision.timestamp, "value": proof.record.value}),
             )
+        }
+        Request::Permission {
+            trusted_key: key,
+            policy_id,
+            request,
+            minimum_height,
+            proof,
+        } => {
+            let allowed = proof
+                .verify(
+                    &policy_id,
+                    &request,
+                    minimum_height,
+                    &trusted_key(&key)?,
+                    PERMISSION_LIMITS,
+                )
+                .map_err(|error| error.to_string())?;
+            Ok(json!({"height": proof.revision.height,
+                "timestamp": proof.revision.timestamp, "allowed": allowed}))
         }
         Request::ObjectOwner {
             trusted_key: key,

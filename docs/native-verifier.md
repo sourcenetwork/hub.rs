@@ -1,10 +1,10 @@
 # Native client proof verification
 
-`vera-verifier` exposes receipt, current-record and live object-owner verification through the C
-interface in `crates/vera-verifier/include/vera_verifier.h`. It calls the same
-`ReceiptResponse::verify`, `RecordResponse::verify` and
-`PrefixResponse::verify_object_owner` implementations as Rust
-clients. Build the shared library with `cargo build -p vera-verifier`.
+`vera-verifier` exposes receipt, current-record, live object-owner and permission
+verification through the C interface in `crates/vera-verifier/include/vera_verifier.h`. It calls the same
+`ReceiptResponse::verify`, `RecordResponse::verify`,
+`PrefixResponse::verify_object_owner` and `PermissionResponse::verify`
+implementations as Rust clients. Build the shared library with `cargo build -p vera-verifier`.
 
 Each call takes UTF-8 JSON bytes, without a terminating NUL. The caller keeps
 the input alive until `vera_verify` returns and releases the returned buffer
@@ -52,6 +52,20 @@ registration; it does not return an archived owner as a current registration.
 Minimum height bounds the accepted revision. Callers remain responsible for any
 additional freshness requirement.
 
+Current permission request:
+
+```json
+{"kind":"permission","trusted_key":"<96-byte hex key>","policy_id":"<policy ID>","request":{"operations":[{"object":{"resource":"document","id":"report"},"permission":"read"}],"actor":"did:..."},"minimum_height":1,"proof":{}}
+```
+
+`proof` is the `hub_getCurrentPermissionProof` result. The verifier authenticates
+its revision and evidence, then evaluates the request with the shared ACP engine
+and `PERMISSION_LIMITS`. Success returns
+`{"result":{"height":0,"timestamp":0,"allowed":false}}` with verified values.
+Every requested operation must be allowed. A denial is a valid result; incomplete
+or invalid evidence is an error. The result describes the queried revision and
+does not create a stored access decision or ticket.
+
 Malformed or invalid evidence returns `{"error":"..."}` with no result. Only
 the result returned by this interface is authenticated. Consensus trust must
 come from independent provisioning, never from the response being verified.
@@ -66,6 +80,6 @@ The ignored `hub-e2e` test `native_go_client` runs a prebuilt Trust API test bin
 from `TRUST_NATIVE_TEST_BINARY`. It checks independent Go/Rust signing and
 operation commitments, concurrent provider-owned policy creation, receipt and
 record verification, object registration/archive/reactivation, altered owner
-evidence, and revoked relay authority after node restart. The current owner
-verifier rejects changed policy/object selection, minimum revision, consensus
+evidence, direct/group/wildcard permission grants and revocation, and revoked
+relay authority after node restart. The current owner verifier rejects changed policy/object selection, minimum revision, consensus
 trust, proof roots, witnesses and revision metadata.
