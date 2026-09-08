@@ -24,6 +24,18 @@ check permission references before accepting a definition. Failed compilation
 leaves the policy counter, stored records and evaluation cache unchanged.
 Malformed or exhausted counter state rejects creation.
 
+Policy definitions use strict YAML, bounded to 64 KiB. Unknown fields, duplicate
+names, invalid identifiers and unresolved references are rejected. `description`,
+resource descriptions, relation/permission `doc`, and `meta` entries are retained
+in compiled policy records. User metadata is separate from the policy description.
+Expressions are limited to 128 levels of nesting.
+
+The optional `actor.relations` namespace contains roles on DID-addressed actor
+records. Policy creators and declared managers control those roles. Actor records
+cannot be registered as ordinary objects, so registration cannot grant control
+of another identity's roles. Actor usersets participate in permission evaluation;
+an actor object subject without a relation denotes that identity directly.
+
 `spec: defra` requires `read` and `write` permissions on every resource and
 makes write access grant read access. Specification names are case-insensitive;
 unknown names are rejected. An omitted specification or `spec: none` selects

@@ -1,4 +1,4 @@
-//! C interface to the same proof verifiers used by native Rust clients.
+//! C interface to native policy compilation and proof verification.
 
 use alloy_primitives::{B256, Bytes};
 use commonware_codec::DecodeExt as _;
@@ -16,6 +16,10 @@ pub const MAX_REQUEST_BYTES: usize = RECEIPT_RESPONSE_BYTES + 4096;
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum Request {
+    ValidatePolicy {
+        definition: String,
+        format: String,
+    },
     Receipt {
         trusted_key: String,
         submission: B256,
@@ -72,6 +76,20 @@ fn verify(input: &[u8]) -> Result<Value, String> {
     }
     let request: Request = serde_json::from_slice(input).map_err(|error| error.to_string())?;
     match request {
+        Request::ValidatePolicy { definition, format } => {
+            if !format.eq_ignore_ascii_case("yaml") {
+                return Ok(
+                    json!({"valid": false, "reason": "only YAML policy format is supported"}),
+                );
+            }
+            match hub_modules::acp::AcpModule::validate_policy_definition(
+                &definition,
+                hub_modules::acp::types::PolicyMarshalingType::ShortYaml,
+            ) {
+                Ok(_) => Ok(json!({"valid": true, "reason": ""})),
+                Err(error) => Ok(json!({"valid": false, "reason": error.to_string()})),
+            }
+        }
         Request::Receipt {
             trusted_key: key,
             submission,

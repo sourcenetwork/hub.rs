@@ -443,10 +443,18 @@ impl AcpModule {
         policy: &str,
         marshal_type: PolicyMarshalingType,
     ) -> Result<(bool, String, Policy)> {
-        match Self::compile_policy(policy, &marshal_type, 0, None) {
+        match Self::validate_policy_definition(policy, marshal_type) {
             Ok(built) => Ok((true, String::new(), built)),
             Err(error) => Ok((false, error.to_string(), Policy::new("", ""))),
         }
+    }
+
+    /// Compile a policy definition without reading or changing module state.
+    pub fn validate_policy_definition(
+        policy: &str,
+        marshal_type: PolicyMarshalingType,
+    ) -> Result<Policy> {
+        Self::compile_policy(policy, &marshal_type, 0, None)
     }
 
     fn compile_policy(
@@ -957,7 +965,12 @@ impl AcpModule {
         // same accept/reject decision and don't diverge single- vs cross-node.
         // An undeclared-relation grant is inert: any access check on it fails
         // closed because the engine resolves no expression for it.
-        if policy.get_relation(&rel.resource, &rel.relation).is_some() {
+        if policy.get_relation(&rel.resource, &rel.relation).is_some()
+            || policy
+                .actor
+                .as_ref()
+                .is_some_and(|actor| actor.name == rel.resource)
+        {
             rel.validate(&policy)
                 .map_err(|e| AcpError::InvalidAccessRequest {
                     reason: e.to_string(),
@@ -1079,6 +1092,15 @@ impl AcpModule {
                 id: policy_id.to_string(),
             })?;
 
+        if policy
+            .actor
+            .as_ref()
+            .is_some_and(|actor| actor.name == obj.resource)
+        {
+            return Err(AcpError::Unauthorized {
+                reason: "actor records cannot be registered as objects".into(),
+            });
+        }
         if policy.get_resource(&obj.resource).is_none() {
             return Err(AcpError::InvalidAccessRequest {
                 reason: format!("resource '{}' not defined in policy", obj.resource),

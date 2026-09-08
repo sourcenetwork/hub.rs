@@ -310,3 +310,68 @@ fn policy_edits_preserve_defra_specification_across_restore() {
         assert_eq!(module.store().serialize(), before);
     }
 }
+
+#[test]
+fn actor_roles_require_management_authority_without_object_registration() {
+    let mut module = AcpModule::new();
+    let definition = "name: files\nactor:\n  relations:\n    - name: member\n      types: [actor]\nresources:\n  - name: file\n    relations:\n      - name: reader\n        types: [actor->member]\n    permissions:\n      - name: read\n        expr: reader\n";
+    let policy = module
+        .create_policy(&owner(), definition, PolicyMarshalingType::ShortYaml)
+        .unwrap()
+        .policy
+        .id;
+    let actor = Object {
+        resource: "actor".into(),
+        id: reader().to_string(),
+    };
+    for caller in [owner(), reader()] {
+        assert!(
+            module
+                .direct_policy_cmd(&caller, &policy, PolicyCmd::RegisterObject(actor.clone()))
+                .is_err()
+        );
+    }
+    let role = Relationship::with_entity("actor", &actor.id, "member", reader());
+    assert!(
+        module
+            .direct_policy_cmd(&reader(), &policy, PolicyCmd::SetRelationship(role.clone()))
+            .is_err()
+    );
+    module
+        .direct_policy_cmd(&owner(), &policy, PolicyCmd::SetRelationship(role.clone()))
+        .unwrap();
+    module
+        .direct_policy_cmd(&owner(), &policy, PolicyCmd::RegisterObject(object()))
+        .unwrap();
+    module
+        .direct_policy_cmd(
+            &owner(),
+            &policy,
+            PolicyCmd::SetRelationship(Relationship::new(
+                "file",
+                "report",
+                "reader",
+                acp::Subject::entity_set("actor", &actor.id, "member"),
+            )),
+        )
+        .unwrap();
+    assert!(can_read(&restore(&module), &policy));
+    assert!(
+        module
+            .direct_policy_cmd(
+                &owner(),
+                &policy,
+                PolicyCmd::SetRelationship(Relationship::with_entity(
+                    "actor",
+                    "invalid-id",
+                    "member",
+                    reader()
+                ))
+            )
+            .is_err()
+    );
+    module
+        .direct_policy_cmd(&owner(), &policy, PolicyCmd::DeleteRelationship(role))
+        .unwrap();
+    assert!(!can_read(&restore(&module), &policy));
+}

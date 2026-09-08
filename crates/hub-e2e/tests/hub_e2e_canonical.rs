@@ -37,6 +37,9 @@ const HARDHAT_KEY_1: &str = "59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f
 /// Minimal DPI-compliant ACP policy for testing.
 const TEST_POLICY_YAML: &str = "\
 name: test-policy
+meta:
+  z: last
+  a: first
 resources:
   - name: document
     relations:
