@@ -213,7 +213,7 @@ async fn run_client(binary: &str, fixture: &serde_json::Value) {
     let mut command = tokio::process::Command::new(binary);
     command
         .args([
-            "-test.run=^TestNativeCluster$",
+            "-test.run=^TestNative(Cluster|KeysCluster)$",
             "-test.v",
             "-test.timeout=60s",
         ])
