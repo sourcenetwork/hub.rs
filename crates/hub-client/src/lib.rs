@@ -24,6 +24,8 @@ mod receipt;
 mod record;
 /// Threshold-service ring commands and certified state.
 pub mod rings;
+/// Encrypted documents and signing derivations.
+pub mod threshold_objects;
 pub use hub_domain::{ExecutionReceipt, ReceiptResponse, ReceiptResponseError};
 pub use hub_permission::{
     AccessRequest, Actor, ModuleId, Object, Operation, PERMISSION_LIMITS, PermissionLimits,

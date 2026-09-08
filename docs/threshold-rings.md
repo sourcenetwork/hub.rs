@@ -137,5 +137,5 @@ backfill and standalone verification share these limits. Finality evidence allow
 certificate material; longer ancestry can still exhaust that bounded budget.
 These are safety bounds, not measured throughput or latency targets.
 
-Document and key-derivation services are separate pending work. This API does not import
+Encrypted document and signing-derivation registration is described in [threshold objects](threshold-objects.md). This API does not import
 existing rings or choose an encrypted-record migration policy.

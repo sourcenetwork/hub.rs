@@ -43,6 +43,9 @@ pub enum DelegationScope {
     /// Create and manage threshold-service rings under ACP authority.
     #[serde(rename = "orbis:ring")]
     ManageRings,
+    /// Register encrypted documents and signing derivations.
+    #[serde(rename = "orbis:object:store")]
+    StoreThresholdObject,
 }
 
 /// Verified claims extracted from a JWT bearer token.

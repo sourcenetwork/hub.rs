@@ -37,6 +37,26 @@ pub(super) fn dispatch(
     let selector: [u8; 4] = input[..4].try_into().expect("checked length above");
 
     match selector {
+        IHub::storeThresholdObjectCall::SELECTOR => {
+            if gas_limit < WRITE_GAS {
+                return Err(PrecompileError::OutOfGas);
+            }
+            let call = IHub::storeThresholdObjectCall::abi_decode(input).map_err(decode_error)?;
+            if call.request.len() > hub_modules::hub::objects::MAX_OBJECT_REQUEST_BYTES {
+                return Err(PrecompileError::Other("object request is too large".into()));
+            }
+            let object = serde_json::from_slice(&call.request)
+                .map_err(|error| PrecompileError::Other(error.to_string().into()))?;
+            match module.store_threshold_object(acp, block_ctx, tx_ctx, &call.bearerToken, &object)
+            {
+                Ok(record) => Ok(ok_dispatch(
+                    WRITE_GAS,
+                    IHub::storeThresholdObjectCall::abi_encode_returns(&json_bytes(&record)),
+                    vec![],
+                )),
+                Err(error) => Ok(err_dispatch(error)),
+            }
+        }
         IHub::applyRingCommandCall::SELECTOR => {
             if gas_limit < 500_000 {
                 return Err(PrecompileError::OutOfGas);
@@ -333,4 +353,21 @@ pub(super) fn dispatch(
             format!("unknown Hub selector: 0x{}", hex::encode(selector)).into(),
         )),
     }
+}
+
+#[test]
+fn threshold_object_requires_gas_before_decoding_or_admission() {
+    let result = dispatch(
+        &mut HubModule::new(),
+        &mut AcpModule::new(),
+        &BlockExecCtx::default(),
+        &TxExecCtx {
+            sequence: 0,
+            tx_hash: vec![],
+            signer: String::new(),
+        },
+        &IHub::storeThresholdObjectCall::SELECTOR,
+        WRITE_GAS - 1,
+    );
+    assert!(matches!(result, Err(PrecompileError::OutOfGas)));
 }

@@ -11,6 +11,8 @@ pub mod error;
 pub mod keys;
 /// Threshold-service node registration and controller authority.
 pub mod nodes;
+/// Encrypted documents and signing derivations.
+pub mod objects;
 /// Operator-authorized relay grants.
 pub mod relay;
 /// Ring lifecycle and participant attestations.

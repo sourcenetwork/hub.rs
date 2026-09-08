@@ -7,7 +7,7 @@ use crate::{
 use acp::Relationship;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use hub_crypto::{
-    jwt::{DelegationScope, JwtClaims},
+    jwt::JwtClaims,
     operation::{OperationClaim, OperationId},
 };
 use k256::ecdsa::{
@@ -55,6 +55,14 @@ fn token_at(command: &RingCommand, entropy: u8, at: &BlockExecCtx) -> String {
     token_from(command, entropy, at, &secret(1))
 }
 fn token_from(command: &RingCommand, entropy: u8, at: &BlockExecCtx, key: &SigningKey) -> String {
+    delegated_token(DelegatedOperation::RingCommand(command), entropy, at, key)
+}
+fn delegated_token(
+    operation: DelegatedOperation<'_>,
+    entropy: u8,
+    at: &BlockExecCtx,
+    key: &SigningKey,
+) -> String {
     let mut id = [entropy; 32];
     id[..8].copy_from_slice(&(at.timestamp.seconds + 100).to_be_bytes());
     let claims = JwtClaims {
@@ -65,13 +73,13 @@ fn token_from(command: &RingCommand, entropy: u8, at: &BlockExecCtx, key: &Signi
         sub: submission().signer,
         exp: at.timestamp.seconds + 100,
         aud: "vera:9001".into(),
-        scope: DelegationScope::ManageRings,
+        scope: operation.scope(),
         iat: at.timestamp.seconds,
         nbf: at.timestamp.seconds,
         relay: None,
         request: Some(OperationClaim {
             id: OperationId(id),
-            digest: DelegatedOperation::RingCommand(command).digest().unwrap(),
+            digest: operation.digest().unwrap(),
             genesis_id: context().genesis_id,
         }),
     };
@@ -962,4 +970,157 @@ fn reports_deduplicate_expire_and_schedule_replacement_atomically() {
         .is_err()
     );
     assert_eq!(hub.store().serialize(), before);
+}
+
+#[test]
+fn threshold_objects_require_active_ring_and_scoped_actor_and_rollback_on_failed_outcome() {
+    use crate::hub::objects::{
+        EncryptedDocument, KeyDerivation, ObjectKind, ThresholdObject, object_key,
+    };
+    let (mut hub, mut acp, config) = fixture(POLICY);
+    let ring = apply(&mut hub, &mut acp, &RingCommand::Create(config.clone()), 1).unwrap();
+    let object = ThresholdObject::Document(EncryptedDocument {
+        ring_id: ring.id.clone(),
+        document: r#"{"enc_cmt":[1],"encrypted_data":[2],"nonce":[3]}"#.into(),
+        proof: r#"{"challenge":[4],"response":[5]}"#.into(),
+        policy_id: config.policy_id.clone(),
+        resource: "document".into(),
+        permission: "read".into(),
+        tier: Some("gold".into()),
+        timestamp: Some(80),
+    });
+    let token = |object: &ThresholdObject, entropy| {
+        delegated_token(
+            DelegatedOperation::StoreThresholdObject(object),
+            entropy,
+            &context(),
+            &secret(1),
+        )
+    };
+    let assertion = token(&object, 5);
+    let before = (hub.store().serialize(), acp.store().serialize());
+    assert!(
+        hub.store_threshold_object(&mut acp, &context(), &submission(), &assertion, &object)
+            .is_err()
+    );
+    assert_eq!((hub.store().serialize(), acp.store().serialize()), before);
+    for n in [2, 3] {
+        hub.apply_ring_participant_request(&context(), &confirm(&ring.id, n, "aabb"))
+            .unwrap();
+    }
+    let stored = hub
+        .store_threshold_object(&mut acp, &context(), &submission(), &assertion, &object)
+        .unwrap();
+    assert_eq!(stored.id, object.id().unwrap());
+    let record = hub
+        .threshold_object(ObjectKind::Document, &stored.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.creator, actor().to_string());
+    assert_eq!(record.object, object);
+    assert_eq!(
+        hub.store_threshold_object(&mut acp, &context(), &submission(), &assertion, &object)
+            .unwrap(),
+        stored
+    );
+    assert!(
+        hub.store_threshold_object(
+            &mut acp,
+            &context(),
+            &submission(),
+            &token(&object, 6),
+            &object
+        )
+        .is_err()
+    );
+    let mut changed = object.clone();
+    if let ThresholdObject::Document(d) = &mut changed {
+        d.timestamp = None;
+    }
+    let before = (hub.store().serialize(), acp.store().serialize());
+    assert!(
+        hub.store_threshold_object(&mut acp, &context(), &submission(), &assertion, &changed)
+            .is_err()
+    );
+    assert_eq!((hub.store().serialize(), acp.store().serialize()), before);
+    let mut other_worker = submission();
+    other_worker.signer = actor().to_string();
+    assert!(
+        hub.store_threshold_object(&mut acp, &context(), &other_worker, &assertion, &object)
+            .is_err()
+    );
+    let wrong_scope = delegated_token(
+        DelegatedOperation::RingCommand(&RingCommand::Cancel {
+            ring_id: ring.id.clone(),
+        }),
+        7,
+        &context(),
+        &secret(1),
+    );
+    assert!(
+        hub.store_threshold_object(&mut acp, &context(), &submission(), &wrong_scope, &object)
+            .is_err()
+    );
+    hub.revoke_delegation(&context(), &actor(), &assertion)
+        .unwrap();
+    assert!(
+        hub.store_threshold_object(&mut acp, &context(), &submission(), &assertion, &object)
+            .is_err()
+    );
+    let mut restored = HubModule::from_store(
+        crate::kv_store::InMemoryKvStore::deserialize(&hub.store().serialize()).unwrap(),
+    );
+    assert_eq!(
+        restored
+            .threshold_object(ObjectKind::Document, &stored.id)
+            .unwrap(),
+        Some(record)
+    );
+    assert!(
+        restored
+            .threshold_object(ObjectKind::KeyDerivation, &stored.id)
+            .unwrap()
+            .is_none()
+    );
+    let derivation = ThresholdObject::KeyDerivation(KeyDerivation {
+        ring_id: ring.id,
+        derivation: "tenant/key".into(),
+        policy_id: config.policy_id,
+        resource: "document".into(),
+        permission: "sign".into(),
+    });
+    let assertion = token(&derivation, 8);
+    let mut full = acp.store().clone();
+    full.put(b"operation-bytes/v1", (64u64 << 20).to_be_bytes().to_vec());
+    let mut full = AcpModule::from_store(full);
+    let before = (restored.store().serialize(), full.store().serialize());
+    assert!(
+        restored
+            .store_threshold_object(
+                &mut full,
+                &context(),
+                &submission(),
+                &assertion,
+                &derivation
+            )
+            .is_err()
+    );
+    assert_eq!(
+        (restored.store().serialize(), full.store().serialize()),
+        before
+    );
+    let stored = restored
+        .store_threshold_object(&mut acp, &context(), &submission(), &assertion, &derivation)
+        .unwrap();
+    assert_eq!(stored.kind, ObjectKind::KeyDerivation);
+    let mut corrupt = restored.store().clone();
+    corrupt.put(
+        &object_key(stored.kind, &stored.id).unwrap(),
+        b"{}".to_vec(),
+    );
+    assert!(
+        HubModule::from_store(corrupt)
+            .threshold_object(stored.kind, &stored.id)
+            .is_err()
+    );
 }

@@ -6,6 +6,8 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 #[allow(missing_docs)]
 pub enum HubError {
+    #[error("invalid threshold object: {reason}")]
+    InvalidThresholdObject { reason: String },
     #[error("invalid ring request: {reason}")]
     InvalidRingRequest { reason: String },
     #[error("invalid node request: {reason}")]

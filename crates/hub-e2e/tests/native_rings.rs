@@ -2,6 +2,9 @@
 
 use alloy_primitives::{Address, B256, Bytes};
 use alloy_sol_types::{SolCall as _, SolEvent as _};
+use hub_client::threshold_objects::{
+    EncryptedDocument, KeyDerivation, ObjectKind, ThresholdObject, encode_threshold_object,
+};
 use hub_client::{
     ACP_ADDRESS, BlsSigner, DelegationScope, HUB_ADDRESS, HubClient, NativeReceipt,
     create_scoped_bearer_token,
@@ -322,6 +325,72 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
         .unwrap()
         .record
         .unwrap();
+    let document = ThresholdObject::Document(EncryptedDocument {
+        ring_id: ring.clone(),
+        document: r#"{"enc_cmt":[1],"encrypted_data":[2],"nonce":[3]}"#.into(),
+        proof: r#"{"challenge":[4],"response":[5]}"#.into(),
+        policy_id: config.policy_id.clone(),
+        resource: "document".into(),
+        permission: "read".into(),
+        tier: Some("gold".into()),
+        timestamp: Some(now),
+    });
+    let derivation = ThresholdObject::KeyDerivation(KeyDerivation {
+        ring_id: ring.clone(),
+        derivation: "tenant/key".into(),
+        policy_id: config.policy_id.clone(),
+        resource: "document".into(),
+        permission: "sign".into(),
+    });
+    let object_token = token(DelegationScope::StoreThresholdObject);
+    for object in [&document, &derivation] {
+        let receipt = execute(
+            &writer,
+            &reader,
+            &worker,
+            &trusted,
+            HUB_ADDRESS,
+            encode_threshold_object(object, &object_token).unwrap(),
+            true,
+        )
+        .await;
+        let record = reader
+            .read_threshold_object(
+                object.kind(),
+                &object.id().unwrap(),
+                receipt.block_number,
+                &trusted,
+            )
+            .await
+            .unwrap()
+            .record
+            .unwrap();
+        assert_eq!(&record.object, object);
+        assert_eq!(record.creator, actor);
+        execute(
+            &writer,
+            &reader,
+            &worker,
+            &trusted,
+            HUB_ADDRESS,
+            encode_threshold_object(object, &object_token).unwrap(),
+            false,
+        )
+        .await;
+    }
+    assert!(
+        reader
+            .read_threshold_object(
+                ObjectKind::KeyDerivation,
+                &document.id().unwrap(),
+                confirmed.block_number,
+                &trusted
+            )
+            .await
+            .unwrap()
+            .record
+            .is_none()
+    );
     let mut report = ReportEnvelope {
         domain: "orbis-mpc-fault-report".into(),
         report_type: "node_offline".into(),
@@ -451,6 +520,23 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
     );
     assert_eq!(recovered.config, config);
     assert_eq!(recovered.sequence, active.sequence + 1);
+    for object in [&document, &derivation] {
+        assert_eq!(
+            reader
+                .read_threshold_object(
+                    object.kind(),
+                    &object.id().unwrap(),
+                    announced.block_number,
+                    &trusted
+                )
+                .await
+                .unwrap()
+                .record
+                .unwrap()
+                .object,
+            *object
+        );
+    }
     let settings = recovered.current_settings();
     assert_eq!(settings.threshold, 2);
     assert_eq!(settings.pss_interval, 86400);

@@ -22,6 +22,8 @@ sol! {
 
         function applyNodeRequest(bytes request) external returns (bytes);
 
+        function storeThresholdObject(bytes request, string bearerToken) external returns (bytes);
+
         function applyRingCommand(bytes request, string bearerToken) external returns (bytes);
 
         function applyRingParticipantRequest(bytes request) external returns (bytes);
