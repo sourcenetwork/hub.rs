@@ -77,3 +77,9 @@ The legacy by-value query uses the same index and returns complete results only
 when they fit within 128 records and 1 MiB of stored record bytes. Larger results
 return an explicit error directing callers to certified pages; they are never
 silently truncated. Indexed record corruption is an error rather than absence.
+
+`HubClient::read_registration_commitment` returns a typed record or certified
+absence using caller-provided consensus trust and a minimum revision. The client
+checks the requested policy, commitment identifier, root width and complete record
+encoding. It preserves issuance metadata and expiry status; record presence is
+not a guarantee that a later reveal will succeed.

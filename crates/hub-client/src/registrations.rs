@@ -1,8 +1,9 @@
 use alloy_primitives::{B256, Bytes};
 use hub_domain::ConsensusPublicKey;
-use hub_modules::acp::keys;
+use hub_modules::acp::{keys, types::RegistrationsCommitment};
 use hub_permission::{
     ModuleId, PAGE_PROOF_BYTES, PAGE_RESPONSE_BYTES, PrefixPageRequest, PrefixPageResponse,
+    RECORD_PROOF_BYTES,
 };
 
 use crate::{ClientError, HubClient};
@@ -18,7 +19,54 @@ pub struct CommitmentIdPage {
     pub continuation: Option<Bytes>,
 }
 
+/// A registration commitment or certified absence at a finalized revision.
+#[derive(Clone, Debug)]
+pub struct CommitmentRecord {
+    /// Finalized revision authenticating the selected record.
+    pub revision: u64,
+    /// Execution timestamp of the selected revision.
+    pub timestamp: u64,
+    /// Stored commitment, including its issuance metadata and expiry status.
+    pub value: Option<RegistrationsCommitment>,
+}
+
 impl HubClient {
+    /// Read a commitment with certified absence and explicit policy/identifier binding.
+    /// Presence does not establish that the commitment remains usable for a reveal.
+    pub async fn read_registration_commitment(
+        &self,
+        policy: B256,
+        id: u64,
+        minimum: u64,
+        trusted: &ConsensusPublicKey,
+    ) -> Result<CommitmentRecord, ClientError> {
+        if id == 0 {
+            return Err(ClientError::InvalidResponse(
+                "invalid commitment identifier",
+            ));
+        }
+        let response = self
+            .read_current_record(
+                ModuleId::Acp,
+                &keys::commitment_key(id),
+                minimum,
+                trusted,
+                RECORD_PROOF_BYTES,
+            )
+            .await?;
+        let value = response
+            .record
+            .value
+            .as_ref()
+            .map(|bytes| decode_commitment(bytes, policy, id))
+            .transpose()?;
+        Ok(CommitmentRecord {
+            revision: response.revision.height,
+            timestamp: response.revision.timestamp,
+            value,
+        })
+    }
+
     /// Discover commitment IDs matching a root without scanning unrelated history.
     pub async fn read_registration_commitment_ids(
         &self,
@@ -55,6 +103,25 @@ impl HubClient {
             continuation: page.continuation,
         })
     }
+}
+
+fn decode_commitment(
+    bytes: &[u8],
+    policy: B256,
+    id: u64,
+) -> Result<RegistrationsCommitment, ClientError> {
+    let record: RegistrationsCommitment = borsh::from_slice(bytes)
+        .map_err(|_| ClientError::InvalidResponse("invalid registration commitment encoding"))?;
+    if id == 0
+        || record.id != id
+        || record.policy_id != hex::encode(policy)
+        || record.commitment.len() != 32
+    {
+        return Err(ClientError::InvalidResponse(
+            "registration commitment differs from selection",
+        ));
+    }
+    Ok(record)
 }
 
 fn decode_id(prefix: &[u8], key: &[u8], value: &[u8]) -> Result<u64, ClientError> {
@@ -103,5 +170,41 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn commitment_record_binds_selection_and_rejects_malformed_bytes() {
+        use hub_modules::{
+            acp::types::RecordMetadata,
+            types::{Duration, Timestamp},
+        };
+        let policy = B256::repeat_byte(7);
+        let mut record = RegistrationsCommitment {
+            id: 1,
+            policy_id: hex::encode(policy),
+            commitment: vec![9; 32],
+            expired: true,
+            validity: Duration::Seconds(600),
+            metadata: RecordMetadata {
+                creation_ts: Timestamp {
+                    seconds: 10,
+                    block_height: 2,
+                },
+                tx_hash: vec![3; 32],
+                tx_signer: "worker".into(),
+                owner_did: "owner".into(),
+            },
+        };
+        let bytes = borsh::to_vec(&record).unwrap();
+        assert_eq!(decode_commitment(&bytes, policy, 1).unwrap(), record);
+        assert!(decode_commitment(&bytes, B256::ZERO, 1).is_err());
+        assert!(decode_commitment(&bytes, policy, 2).is_err());
+        assert!(decode_commitment(&bytes, policy, 0).is_err());
+        assert!(decode_commitment(&bytes[..bytes.len() - 1], policy, 1).is_err());
+        let mut trailing = bytes;
+        trailing.push(0);
+        assert!(decode_commitment(&trailing, policy, 1).is_err());
+        record.commitment.pop();
+        assert!(decode_commitment(&borsh::to_vec(&record).unwrap(), policy, 1).is_err());
     }
 }

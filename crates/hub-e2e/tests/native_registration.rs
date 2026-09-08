@@ -91,6 +91,34 @@ async fn native_registration_preserves_commitment_priority_and_owner_proofs() {
     let (late_height, late) = submit(&client, &second, &trusted, commit()).await;
     assert!(late.success());
     let late = IAcp::RegistrationsCommitted::decode_log(&late.logs()[0]).unwrap();
+    let commitment = client
+        .read_registration_commitment(policy_id, early.data.commitmentId, late_height, &trusted)
+        .await
+        .unwrap();
+    assert!(commitment.revision >= late_height);
+    let record = commitment.value.unwrap();
+    assert_eq!(record.commitment, generated.commitment);
+    assert_eq!(record.metadata.creation_ts.block_height, early_height);
+    assert_eq!(record.metadata.owner_did, second.did());
+    assert!(
+        client
+            .read_registration_commitment(
+                B256::ZERO,
+                early.data.commitmentId,
+                late_height,
+                &trusted,
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        client
+            .read_registration_commitment(policy_id, u64::MAX, late_height, &trusted,)
+            .await
+            .unwrap()
+            .value
+            .is_none()
+    );
     let first_page = client
         .read_registration_commitment_ids(early.data.commitment, None, 1, late_height, &trusted)
         .await
