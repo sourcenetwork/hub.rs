@@ -190,7 +190,7 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         ),
     }
 
-    let executor = HubExecutor::new(chain_id);
+    let executor = HubExecutor::new(chain_id).with_membership_epochs(blocks_per_epoch);
     #[cfg(feature = "fault-injection")]
     let executor = executor.with_crash_marker(config.data_dir.join("module-commit-crash"));
     let modules = executor.modules().clone();
@@ -326,7 +326,7 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     )
     .await;
     let (fence, gate) = Fence::new(fence_epoch);
-    let participants_provider = RegistryParticipants::new();
+    let participants_provider = RegistryParticipants::new(modules.clone(), players.clone());
     let (reshare_actor, reshare_mailbox) = reshare::Actor::new(
         context.child("reshare"),
         reshare::Config {
@@ -603,7 +603,6 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     let native_databases = databases.native_databases();
     let state_set = databases.execution_databases();
     let committed_state = CommittedState::new(state_set.clone());
-    participants_provider.attach_state(committed_state.clone());
     let reshare_handle = reshare_actor.start(dkg_network);
     sink.attach_state(state_set.clone());
     {

@@ -1,42 +1,13 @@
-//! Committee selection for DKG epochs.
+//! Committee selection from execution-derived epoch rosters.
 
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, OnceLock},
-};
-
-use alloy_primitives::{Address, U256, keccak256};
+use alloy_primitives::{Address, keccak256};
 use commonware_codec::ReadExt as _;
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::ed25519;
 use commonware_glue::dkg::ParticipantsProvider;
 use commonware_utils::{ordered::Set, sequence::Unit};
 use hub_domain::PublicKey;
-use hub_executor::VALIDATOR_REGISTRY_ADDRESS;
-use hub_traits::StateDbRead as _;
-
-use crate::CommittedState;
-
-const SLOT_VALIDATOR_COUNT: U256 = U256::from_limbs([1, 0, 0, 0]);
-const SLOT_VALIDATORS_ARRAY_BASE: U256 = U256::from_limbs([2, 0, 0, 0]);
-const SLOT_VALIDATORS_MAPPING_BASE: U256 = U256::from_limbs([3, 0, 0, 0]);
-
-fn mapping_slot(key: Address) -> U256 {
-    let mut buf = [0u8; 64];
-    buf[12..32].copy_from_slice(key.as_slice());
-    buf[32..64].copy_from_slice(&SLOT_VALIDATORS_MAPPING_BASE.to_be_bytes::<32>());
-    U256::from_be_bytes(keccak256(buf).0)
-}
-
-fn array_element_slot(index: u64) -> U256 {
-    let hash = keccak256(SLOT_VALIDATORS_ARRAY_BASE.to_be_bytes::<32>());
-    U256::from_be_bytes(hash.0).wrapping_add(U256::from(index))
-}
-
-fn stored_address(value: U256) -> Address {
-    let bytes = value.to_be_bytes::<32>();
-    Address::from_slice(&bytes[12..])
-}
+use hub_executor::SharedModuleState;
 
 /// Derive a stable validator EVM address from its ed25519 consensus key.
 #[must_use]
@@ -46,70 +17,21 @@ pub fn validator_address(public_key: &PublicKey) -> Address {
     Address::from_slice(&digest[12..])
 }
 
-/// Epoch-stable DKG membership read from committed ValidatorRegistry state.
-#[derive(Clone, Debug, Default)]
+/// Future committees selected by finalized execution, independent of lookup time.
+#[derive(Clone, Debug)]
 pub struct RegistryParticipants {
-    state: Arc<OnceLock<CommittedState>>,
-    epochs: BTreeMap<Epoch, Set<PublicKey>>,
+    modules: SharedModuleState,
+    genesis_players: Set<PublicKey>,
 }
 
 impl RegistryParticipants {
-    /// Create a provider whose committed state will be attached after startup.
+    /// Genesis supplies the lookahead until the first epoch boundary is finalized.
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Attach the live committed state initialized by the stateful actor.
-    pub fn attach_state(&self, state: CommittedState) {
-        assert!(
-            self.state.set(state).is_ok(),
-            "registry participant state attached more than once"
-        );
-    }
-
-    async fn load(&self) -> Set<PublicKey> {
-        let state = self
-            .state
-            .get()
-            .expect("registry participant state must be attached before an epoch boundary");
-        let stored_count = state
-            .storage(&VALIDATOR_REGISTRY_ADDRESS, &SLOT_VALIDATOR_COUNT)
-            .await
-            .expect("validator count must be readable");
-        assert!(
-            stored_count <= U256::from(hub_domain::MAX_DKG_PARTICIPANTS.get()),
-            "membership count exceeds the protocol limit"
-        );
-        let count = stored_count.as_limbs()[0];
-        let mut players = Vec::with_capacity(count as usize);
-        for index in 0..count {
-            let address = state
-                .storage(&VALIDATOR_REGISTRY_ADDRESS, &array_element_slot(index))
-                .await
-                .expect("validator address must be readable");
-            let entry = mapping_slot(stored_address(address));
-            let packed = state
-                .storage(&VALIDATOR_REGISTRY_ADDRESS, &entry)
-                .await
-                .expect("validator entry must be readable");
-            if packed.is_zero() || packed.to_be_bytes::<32>()[20] == 0 {
-                continue;
-            }
-            let key = state
-                .storage(
-                    &VALIDATOR_REGISTRY_ADDRESS,
-                    &entry.wrapping_add(U256::from(1)),
-                )
-                .await
-                .expect("validator consensus key must be readable")
-                .to_be_bytes::<32>();
-            players.push(
-                ed25519::PublicKey::read(&mut key.as_slice())
-                    .expect("validator consensus key must be a valid ed25519 public key"),
-            );
+    pub const fn new(modules: SharedModuleState, genesis_players: Set<PublicKey>) -> Self {
+        Self {
+            modules,
+            genesis_players,
         }
-        Set::from_iter_dedup(players)
     }
 }
 
@@ -118,19 +40,123 @@ impl ParticipantsProvider for RegistryParticipants {
     type Directory = Unit;
 
     async fn participants(&mut self, epoch: Epoch) -> Set<Self::PublicKey> {
-        if let Some(players) = self.epochs.get(&epoch) {
-            return players.clone();
+        if epoch.get() <= 2 {
+            return self.genesis_players.clone();
         }
-        let players = self.load().await;
+        let modules = self.modules.read().expect("module state lock poisoned");
+        let bytes = modules
+            .hub
+            .consensus_roster(epoch.get())
+            .expect("future consensus roster must have been finalized in the previous epoch");
         assert!(
-            !players.is_empty(),
-            "validator registry returned no active participants for epoch {epoch}"
+            !bytes.is_empty()
+                && bytes.len().is_multiple_of(32)
+                && bytes.len() / 32 <= hub_domain::MAX_DKG_PARTICIPANTS.get() as usize,
+            "invalid consensus roster size"
         );
-        self.epochs.insert(epoch, players.clone());
-        players
+        let keys: Vec<_> = bytes
+            .chunks_exact(32)
+            .map(|mut bytes| {
+                ed25519::PublicKey::read(&mut bytes).expect("invalid consensus identity")
+            })
+            .collect();
+        assert!(
+            keys.windows(2).all(|pair| pair[0] < pair[1]),
+            "unordered consensus roster"
+        );
+        Set::from_iter_dedup(keys)
     }
 
     async fn directory(&mut self, _epoch: Epoch, _players: Set<Self::PublicKey>) -> Unit {
         Unit
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hub_modules::{hub::HubModule, kv_store::InMemoryKvStore};
+    use std::sync::{Arc, RwLock};
+
+    fn key(encoded: &str) -> PublicKey {
+        PublicKey::read(&mut hex::decode(encoded).unwrap().as_slice()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn roster_selection_survives_later_rosters_and_store_recovery() {
+        let first = key("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a");
+        let second = key("3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c");
+        let genesis = Set::from_iter_dedup([first.clone()]);
+        let modules = Arc::new(RwLock::new(hub_modules::ModuleState::default()));
+        let mut provider = RegistryParticipants::new(modules.clone(), genesis.clone());
+        assert_eq!(provider.participants(Epoch::new(2)).await, genesis);
+        let raw = |key: &PublicKey| -> [u8; 32] {
+            commonware_codec::Encode::encode(key)
+                .as_ref()
+                .try_into()
+                .unwrap()
+        };
+        modules
+            .write()
+            .unwrap()
+            .hub
+            .record_consensus_roster(3, &[raw(&first)])
+            .unwrap();
+        let selected = provider.participants(Epoch::new(3)).await;
+        assert!(
+            modules
+                .write()
+                .unwrap()
+                .hub
+                .record_consensus_roster(3, &[raw(&second)])
+                .is_err()
+        );
+        modules
+            .write()
+            .unwrap()
+            .hub
+            .record_consensus_roster(4, &[raw(&second)])
+            .unwrap();
+        assert_eq!(provider.participants(Epoch::new(3)).await, selected);
+        let stored = modules.read().unwrap().hub.store().serialize();
+        let recovered = hub_modules::ModuleState {
+            hub: HubModule::from_store(InMemoryKvStore::deserialize(&stored).unwrap()),
+            ..Default::default()
+        };
+        let mut restarted = RegistryParticipants::new(Arc::new(RwLock::new(recovered)), genesis);
+        assert_eq!(restarted.participants(Epoch::new(3)).await, selected);
+        assert_eq!(
+            restarted.participants(Epoch::new(4)).await,
+            Set::from_iter_dedup([second])
+        );
+        assert!(
+            modules
+                .write()
+                .unwrap()
+                .hub
+                .record_consensus_roster(3, &[raw(&first)])
+                .is_ok()
+        );
+        assert!(
+            modules
+                .write()
+                .unwrap()
+                .hub
+                .record_consensus_roster(3, &[])
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "future consensus roster must have been finalized")]
+    async fn missing_roster_does_not_fall_back_to_genesis() {
+        let genesis = Set::from_iter_dedup([key(
+            "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        )]);
+        let mut provider = RegistryParticipants::new(
+            Arc::new(RwLock::new(hub_modules::ModuleState::default())),
+            genesis,
+        );
+        provider.participants(Epoch::new(3)).await;
     }
 }

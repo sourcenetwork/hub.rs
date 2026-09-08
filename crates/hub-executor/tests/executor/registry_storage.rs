@@ -619,3 +619,84 @@ fn registry_status_checks_the_full_member_index(#[case] index: U256, #[case] suc
         assert!(changes.is_none_or(|account| account.storage.is_empty()));
     }
 }
+
+#[test]
+fn epoch_rosters_capture_the_boundary_branch_and_survive_later_changes() {
+    use std::num::NonZeroU64;
+    let (registration, actor) = native_member_call(0, native_registration());
+    let (state, executor) = authorized_actor(actor);
+    let executor = executor.with_membership_epochs(NonZeroU64::new(10).unwrap());
+    let parent = executor.snapshot().unwrap();
+    let mut context = BlockContext::new(
+        Header {
+            number: 8,
+            gas_limit: 30_000_000,
+            ..Default::default()
+        },
+        B256::ZERO,
+        B256::ZERO,
+    );
+    let (_, before) = executor
+        .execute_with_modules(
+            &state,
+            &context,
+            std::slice::from_ref(&registration),
+            parent.clone(),
+        )
+        .unwrap();
+    assert!(before.changes_from(&parent)[2].is_empty());
+    context.header.number = 9;
+    let (outcome, selected) = executor
+        .execute_with_modules(
+            &state,
+            &context,
+            std::slice::from_ref(&registration),
+            parent.clone(),
+        )
+        .unwrap();
+    let changes = selected.changes_from(&parent);
+    let roster = changes[2]
+        .iter()
+        .find(|(key, _)| key.starts_with(b"consensus_roster/"))
+        .unwrap();
+    assert_eq!(&roster.0[17..], &3u64.to_be_bytes());
+    assert_eq!(roster.1.as_ref().unwrap().len(), 32);
+    assert!(
+        executor
+            .modules()
+            .read()
+            .unwrap()
+            .hub
+            .consensus_roster(3)
+            .is_none()
+    );
+    let (_, sibling) = executor
+        .execute_with_modules(
+            &state,
+            &context,
+            &[registration, backup_member_call(1)],
+            parent.clone(),
+        )
+        .unwrap();
+    assert_ne!(selected.state_root(9), sibling.state_root(9));
+    let mut verification = context.clone();
+    verification.is_verification = true;
+    let (registration, _) = native_member_call(0, native_registration());
+    let (_, verified) = executor
+        .execute_with_modules(&state, &verification, &[registration], parent)
+        .unwrap();
+    assert_eq!(selected.state_root(9), verified.state_root(9));
+    futures::executor::block_on(state.commit(outcome.changes)).unwrap();
+    context.header.number = 19;
+    let (_, later) = executor
+        .execute_with_modules(&state, &context, &[backup_member_call(1)], selected.clone())
+        .unwrap();
+    let delta = later.changes_from(&selected);
+    let roster_changes: Vec<_> = delta[2]
+        .iter()
+        .filter(|(key, _)| key.starts_with(b"consensus_roster/"))
+        .collect();
+    assert_eq!(roster_changes.len(), 1);
+    assert_eq!(&roster_changes[0].0[17..], &4u64.to_be_bytes());
+    assert_eq!(roster_changes[0].1.as_ref().unwrap().len(), 64);
+}

@@ -9,6 +9,8 @@ mod delegation;
 pub mod error;
 /// Key prefixes and builders for Hub KV storage.
 pub mod keys;
+/// Finalized rosters selected for future consensus epochs.
+pub mod membership;
 /// Threshold-service node registration and controller authority.
 pub mod nodes;
 /// Encrypted documents and signing derivations.

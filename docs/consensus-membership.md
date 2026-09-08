@@ -23,6 +23,19 @@ signer's DID. Registration, status changes and removal use the same permission
 check. An independent native worker can submit the operator approvals; those
 approvals bind the deployment root, administrative sequence, expiry and command.
 
+Execution records the active roster at the last revision of each epoch `e` for
+selection in epoch `e + 3`. Commonware reads that immutable record while preparing
+the end of epoch `e + 1`, which gives every replica the same finalized cutoff.
+Changes after the cutoff enter a later selection. Genesis supplies the initial
+lookahead through epoch 2. A selected roster does not guarantee admission:
+the corresponding resharing ceremony must also succeed.
+
+These records participate in the native state commitment, proposal verification,
+recovery and state synchronization. The provider reads them under the committed
+module lock and retains no separate epoch cache. Records are currently retained
+for every epoch. This changes execution commitments at epoch boundaries and
+requires a fresh deployment; it is not a rolling upgrade for existing data.
+
 Membership writes use `VALIDATOR_REGISTRY_ADDRESS` with the request bindings in
 `hub_modules::validator_registry::abi`. Persist the signed submission before sending, retain its identifier,
 and use `read_receipt` with independently provisioned consensus trust to verify

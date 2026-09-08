@@ -281,6 +281,35 @@ fn load_all_validators<CTX: ContextTr>(
     Ok(validators)
 }
 
+pub(crate) fn active_consensus_keys<CTX: ContextTr>(
+    context: &mut CTX,
+) -> Result<Vec<[u8; 32]>, PrecompileError> {
+    context
+        .journal_mut()
+        .load_account(VALIDATOR_REGISTRY_ADDRESS)
+        .map_err(|error| {
+            PrecompileError::Fatal(format!("membership account read failed: {error:?}"))
+        })?;
+    let mut keys = Vec::new();
+    for member in load_all_validators(context)? {
+        if member.active {
+            let mut key = [0; 32];
+            hex::decode_to_slice(member.consensus_pubkey, &mut key)
+                .map_err(|_| PrecompileError::Fatal("invalid consensus key encoding".into()))?;
+            hub_domain::PublicKey::read(&mut key.as_slice())
+                .map_err(|_| PrecompileError::Fatal("invalid consensus key".into()))?;
+            keys.push(key);
+        }
+    }
+    keys.sort_unstable();
+    if keys.is_empty() || keys.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(PrecompileError::Fatal(
+            "empty or duplicate consensus roster".into(),
+        ));
+    }
+    Ok(keys)
+}
+
 fn removes_last_active<CTX: ContextTr>(
     context: &mut CTX,
     active: bool,

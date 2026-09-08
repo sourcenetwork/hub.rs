@@ -55,6 +55,8 @@ impl Default for BaseFeeParams {
 /// Execution configuration.
 #[derive(Clone, Debug)]
 pub struct ExecutionConfig {
+    /// Epoch length for execution-derived membership selection on native nodes.
+    pub membership_epoch_length: Option<std::num::NonZeroU64>,
     /// Genesis record identifier used to bind administrative approvals.
     pub genesis_id: [u8; 32],
     /// Chain ID for transaction validation.
@@ -72,6 +74,7 @@ impl ExecutionConfig {
     pub const fn new(chain_id: u64) -> Self {
         Self {
             chain_id,
+            membership_epoch_length: None,
             genesis_id: [0; 32],
             spec_id: SpecId::CANCUN,
             gas_limit_bounds: GasLimitBounds::DEFAULT,

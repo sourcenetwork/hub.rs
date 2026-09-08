@@ -107,6 +107,13 @@ impl HubExecutor {
         self
     }
 
+    /// Select future consensus rosters at the configured epoch boundaries.
+    #[must_use]
+    pub const fn with_membership_epochs(mut self, length: std::num::NonZeroU64) -> Self {
+        self.config.membership_epoch_length = Some(length);
+        self
+    }
+
     /// Bind administrative execution to the deployment genesis record.
     #[must_use]
     pub const fn with_genesis_id(mut self, genesis_id: [u8; 32]) -> Self {
@@ -522,6 +529,22 @@ impl HubExecutor {
         modules.acp = acp;
         modules.bulletin = bulletin;
         modules.hub = hub;
+
+        if let Some(length) = self.config.membership_epoch_length {
+            let height = context.header.number;
+            if height % length.get() == length.get() - 1 {
+                let epoch = (height / length.get()).checked_add(3).ok_or_else(|| {
+                    ExecutionError::TxExecution("membership epoch overflow".into())
+                })?;
+                let keys =
+                    crate::precompiles::validator_registry::active_consensus_keys(&mut evm.ctx)
+                        .map_err(|error| ExecutionError::TxExecution(error.to_string()))?;
+                modules
+                    .hub
+                    .record_consensus_roster(epoch, &keys)
+                    .map_err(|error| ExecutionError::TxExecution(error.to_string()))?;
+            }
+        }
 
         Self::run_end_block_hooks(&mut modules, &block_ctx);
 
