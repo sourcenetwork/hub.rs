@@ -259,7 +259,7 @@ impl<S: FinalizedSink, D: ApplicationState> Application<Ctx> for StatefulHubApp<
             }
         }
         let excluded = Self::pending_tx_ids(&pending);
-        let txs = input.provider.build(self.max_txs, &excluded);
+        let txs = input.provider.build_block(self.max_txs, &excluded);
 
         let height = parent.height + 1;
         let timestamp = now_secs().max(parent.timestamp);
@@ -303,6 +303,9 @@ impl<S: FinalizedSink, D: ApplicationState> Application<Ctx> for StatefulHubApp<
             )),
             db_targets: executed.db_targets,
         };
+        if !block.fits_wire_limits() {
+            return None;
+        }
         self.cache_execution(&block, executed.outcome.receipts);
         info!(
             block_digest = ?block.digest(),
@@ -329,6 +332,9 @@ impl<S: FinalizedSink, D: ApplicationState> Application<Ctx> for StatefulHubApp<
     ) -> Option<D::Merkleized> {
         let start = Instant::now();
         let block = ancestry.next().await?;
+        if !block.fits_wire_limits() {
+            return None;
+        }
         let parent = ancestry.next().await?;
         if !D::accepts(&parent) {
             return None;

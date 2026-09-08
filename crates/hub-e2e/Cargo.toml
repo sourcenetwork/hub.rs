@@ -20,6 +20,7 @@ required-features = ["fault-injection"]
 hub-harness.workspace = true
 
 [dev-dependencies]
+orbis-reporting = { git = "https://github.com/sourcenetwork/orbis-rs", rev = "47df2a5367c64309595b631ad95156e8fe931b32" }
 blst = "0.3"
 tempfile.workspace = true
 acp = { workspace = true, default-features = false }

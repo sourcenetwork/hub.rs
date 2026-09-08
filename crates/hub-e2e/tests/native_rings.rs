@@ -322,7 +322,7 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
         .unwrap()
         .record
         .unwrap();
-    let report = ReportEnvelope {
+    let mut report = ReportEnvelope {
         domain: "orbis-mpc-fault-report".into(),
         report_type: "node_offline".into(),
         chain_id: ring_deployment_label(root.0, deployment),
@@ -343,6 +343,32 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
         }
         .canonical_bytes(),
     };
+    report.report_type = "invalid_crypto_response".into();
+    report.payload = orbis_reporting::InvalidCryptoResponse::Sign {
+        statement: orbis_reporting::SignResponseStatement {
+            domain: orbis_reporting::SIGN_RESPONSE_DOMAIN.into(),
+            chain_id: report.chain_id.clone(),
+            ring_id: ring.clone(),
+            ring_pk: ring_public.clone(),
+            ring_state_sha256: report.ring_state_sha256.clone(),
+            protocol_version: 0,
+            request_id: report.session_id.clone(),
+            signed_at: now,
+            responder_node_key: report.accused_node_key.clone(),
+            origin_protocol: "sign".into(),
+            accused_committee_scope: CommitteeScope::Current,
+            signing_committee_scope: CommitteeScope::Current,
+            from_node_id: 2,
+            message: vec![255; 1 << 20],
+            signing_commitments: vec![255; 1 << 20],
+            derivation: None,
+            metadata: None,
+            sig_share: vec![1],
+            crypto_backend: "bls12-381".into(),
+        },
+        response_signature: vec![5; 64],
+    }
+    .canonical_bytes();
     let signed = SignedReport {
         report_id: report.report_id(),
         signature_scheme: "bls12_381_g1_pk_g2_sig_nul".into(),
@@ -358,6 +384,8 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
         report,
     };
     let encoded = encode_ring_report(&signed).unwrap();
+    assert!(encoded.len() > 8 << 20);
+    assert!(encoded.len() < hub_domain::MAX_TX_BYTES);
     let announced = execute(
         &writer,
         &reader,
@@ -404,6 +432,17 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
         .unwrap()
         .record
         .unwrap();
+    let report_receipt = reader
+        .read_receipt(announced.transaction_hash, &trusted)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        report_receipt
+            .verify(announced.transaction_hash, &trusted)
+            .unwrap()
+            .success()
+    );
     assert_eq!(
         recovered.state,
         RingState::Active {

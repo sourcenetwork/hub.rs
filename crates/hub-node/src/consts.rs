@@ -31,12 +31,7 @@ pub const IO_BUFFER_SIZE: NonZeroUsize = NZUsize!(1024 * 1024);
 pub const MAILBOX_SIZE: NonZeroUsize = NZUsize!(1024);
 /// Per-peer message quota for every P2P channel.
 pub const MESSAGE_RATE: Quota = Quota::per_second(NZU32!(1000));
-/// Maximum P2P message size in bytes.
-pub const MAX_MESSAGE_SIZE: u32 = 4 * 1024 * 1024;
-/// Maximum transactions per block.
-pub const MAX_BLOCK_TXS: usize = 64;
-/// Maximum encoded transaction size.
-pub const MAX_TX_BYTES: usize = 65_536;
+pub use hub_domain::{MAX_BLOCK_TXS, MAX_MESSAGE_BYTES as MAX_MESSAGE_SIZE, MAX_TX_BYTES};
 
 /// P2P channel carrying simplex votes.
 pub const VOTE_CHANNEL: u64 = 0;

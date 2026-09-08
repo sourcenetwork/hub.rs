@@ -27,12 +27,12 @@ use crate::{Block, BlockCfg, ConsensusDigest, PublicKey, TxCfg};
 pub const LIGHT_BLOCK_NAMESPACE: &[u8] = b"_COMMONWARE_HUB_SIMPLEX";
 /// Maximum participant count accepted from an untrusted light-block response.
 pub const LIGHT_BLOCK_MAX_PARTICIPANTS: u32 = 64;
-pub(crate) const LIGHT_BLOCK_MAX_TXS: usize = 64;
-const LIGHT_BLOCK_MAX_TX_BYTES: usize = 65_536;
+pub(crate) const LIGHT_BLOCK_MAX_TXS: usize = crate::MAX_BLOCK_TXS;
+const LIGHT_BLOCK_MAX_TX_BYTES: usize = crate::MAX_TX_BYTES;
 /// Maximum descendants linking a requested revision to a direct certificate.
 pub const LIGHT_BLOCK_MAX_DESCENDANTS: usize = 64;
 /// Combined decoded byte budget for blocks, finalization and epoch material.
-pub const LIGHT_BLOCK_MAX_ARTIFACT_BYTES: usize = 8 << 20;
+pub const LIGHT_BLOCK_MAX_ARTIFACT_BYTES: usize = 2 * crate::MAX_BLOCK_BYTES + (1 << 20);
 /// HTTP response budget including hex encoding and JSON metadata.
 pub const LIGHT_BLOCK_RESPONSE_BYTES: usize = 2 * LIGHT_BLOCK_MAX_ARTIFACT_BYTES + (64 << 10);
 

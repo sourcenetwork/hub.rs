@@ -82,6 +82,18 @@ pub struct Block {
 }
 
 impl Block {
+    /// Check wire budgets before proposing or executing an in-memory block.
+    #[must_use]
+    pub fn fits_wire_limits(&self) -> bool {
+        self.txs.len() <= crate::MAX_BLOCK_TXS
+            && self
+                .txs
+                .iter()
+                .all(|tx| tx.bytes.len() <= crate::MAX_TX_BYTES)
+            && self.txs.encode_size() <= crate::MAX_BLOCK_TX_BYTES
+            && self.encode_size() <= crate::MAX_BLOCK_BYTES
+    }
+
     /// Compute the block identifier from its encoded contents.
     pub fn id(&self) -> BlockId {
         BlockId(keccak256(self.encode()))
@@ -198,6 +210,7 @@ impl Read for Block {
     type Cfg = BlockCfg;
 
     fn read_cfg(buf: &mut impl Buf, cfg: &Self::Cfg) -> Result<Self, CodecError> {
+        let buf = &mut buf.take(crate::MAX_BLOCK_BYTES);
         let context = ConsensusContext::read(buf)?;
         let parent = BlockId::read(buf)?;
         let height = u64::read(buf)?;
@@ -205,7 +218,13 @@ impl Read for Block {
         let prevrandao = Idents::read_b256(buf)?;
         let state_root = StateRoot::read(buf)?;
         let module_state_root = Idents::read_b256(buf)?;
-        let txs = Vec::<Tx>::read_cfg(buf, &(RangeCfg::new(0..=cfg.max_txs), cfg.tx))?;
+        let txs = Vec::<Tx>::read_cfg(
+            &mut (&mut *buf).take(crate::MAX_BLOCK_TX_BYTES),
+            &(
+                RangeCfg::new(0..=cfg.max_txs.min(crate::MAX_BLOCK_TXS)),
+                cfg.tx,
+            ),
+        )?;
         // Tags 0 and 1 retain the original optional DKG payload encoding.
         let (payload, native_targets, receipt_commitment) = match u8::read(buf)? {
             0 => (None, None, None),
@@ -284,6 +303,23 @@ mod tests {
     use commonware_utils::{N3f1, TestRng, ordered::Set, sequence::Unit};
 
     use super::*;
+
+    #[test]
+    fn large_block_transaction_budget() {
+        let cfg = BlockCfg {
+            max_txs: crate::MAX_BLOCK_TXS,
+            tx: TxCfg {
+                max_tx_bytes: crate::MAX_TX_BYTES,
+            },
+        };
+        let mut block = sample_block();
+        block.txs = vec![Tx::new(vec![255; crate::MAX_TX_BYTES].into())];
+        assert_eq!(Block::decode_cfg(block.encode(), &cfg).unwrap(), block);
+        block.txs.push(block.txs[0].clone());
+        assert!(Block::decode_cfg(block.encode(), &cfg).is_err());
+        block.txs = vec![Tx::new(vec![255; crate::MAX_TX_BYTES + 1].into())];
+        assert!(Block::decode_cfg(block.encode(), &cfg).is_err());
+    }
 
     fn default_block_cfg() -> BlockCfg {
         BlockCfg {

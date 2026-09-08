@@ -125,9 +125,17 @@ all three unchanged. Demerit records use `reports::demerits_key` for certified
 record queries.
 
 Module-level evidence bounds preserve the existing per-field limits, with a
-3 MiB payload and 12 MiB JSON ceiling. The current node transport still limits
-individual submissions to 64 KiB. Larger-evidence delivery requires further work
-before report-size qualification is complete.
+3 MiB payload and 12 MiB JSON ceiling. Signed submissions allow 12 MiB plus
+4 KiB for the authorization envelope. Workers persist that same bounded request
+for retries. Admission rejects oversized requests before signature verification
+and caps pending request bytes at 64 MiB across at most 4,096 entries.
+
+Proposals contain at most 64 transactions and 16 MiB of encoded transaction data.
+The complete block limit is 17 MiB, including epoch material. RPC, gossip, block
+backfill and standalone verification share these limits. Finality evidence allows
+35 MiB of combined decoded artifacts, sufficient for two maximum-size blocks and
+certificate material; longer ancestry can still exhaust that bounded budget.
+These are safety bounds, not measured throughput or latency targets.
 
 Document and key-derivation services are separate pending work. This API does not import
 existing rings or choose an encrypted-record migration policy.

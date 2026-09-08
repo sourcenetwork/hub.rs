@@ -3906,6 +3906,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
+ "commonware-codec",
  "commonware-cryptography",
  "futures",
  "hub-config",
@@ -3992,6 +3993,7 @@ dependencies = [
  "identity",
  "jsonrpsee",
  "k256",
+ "orbis-reporting",
  "reqwest 0.12.28",
  "serde_json",
  "tempfile",

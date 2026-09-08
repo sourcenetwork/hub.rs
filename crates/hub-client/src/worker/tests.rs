@@ -33,7 +33,7 @@ fn pending_request_and_identity_survive_reopen() {
     let mut worker = keyring.open(&directory, 9001).unwrap();
     let did = worker.did().to_owned();
     assert!(keyring.open(&directory, 9001).is_err());
-    let payload = Bytes::from_static(b"request");
+    let payload = Bytes::from(vec![255; 128 << 10]);
     let wire = worker
         .prepare(Address::ZERO, payload.clone())
         .unwrap()

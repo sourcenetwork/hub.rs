@@ -65,7 +65,7 @@ workload or capacity is implied.
 current group member. It checks chunk framing, offsets, advertised size, stable
 record length and the assembly budget, then passes the complete record through
 the ancestry, receipt and finality verifier. It also transfers the existing
-`LightBlock` JSON proof under its 16 MiB plus 64 KiB response bound. Invalid
+`LightBlock` JSON proof under its 70 MiB plus 64 KiB response bound. Invalid
 records or proofs leave the durable cursor unchanged; the caller can try another peer. Commonware supplies request IDs,
 targeted retries and cancellation. Dropping the import future cancels its active
 fetch. The caller's timeout covers the asynchronous transfer; synchronous decode

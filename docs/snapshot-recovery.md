@@ -50,8 +50,8 @@ using a successful peer. If all candidates fail, startup fails with its durable
 progress retained. Synchronous verification and storage work can outlast the
 asynchronous deadline.
 
-Finality proofs retain their shared limits: 64 descendants, 8 MiB of decoded
-artifacts, and 16 MiB plus 64 KiB for the JSON response. Peer responses contain at
+Finality proofs retain their shared limits: 64 descendants, 35 MiB of decoded
+artifacts, and 70 MiB plus 64 KiB for the JSON response. Peer responses contain at
 most 64 KiB of data per chunk. These are transfer and decoding bounds; extra
 buffers, caches and storage resources contribute to process memory. Aggregate
 serving capacity and sustained catch-up throughput still require qualification.

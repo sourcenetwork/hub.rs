@@ -10,7 +10,7 @@ use hub_domain::{ConsensusPublicKey, ExecutionReceipt, NativeTx, ReceiptResponse
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-const MAX_WIRE_BYTES: usize = 65_536;
+const MAX_WIRE_BYTES: usize = hub_domain::MAX_TX_BYTES;
 const MAX_JOURNAL_BYTES: usize = 2 * MAX_WIRE_BYTES + 4096;
 
 #[cfg(test)]
