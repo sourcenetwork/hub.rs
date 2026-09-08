@@ -39,9 +39,15 @@ the corresponding resharing ceremony must also succeed.
 
 These records participate in the native state commitment, proposal verification,
 recovery and state synchronization. The provider reads them under the committed
-module lock and retains no separate epoch cache. Records are currently retained
-for every epoch. This changes execution commitments at epoch boundaries and
-requires a fresh deployment; it is not a rolling upgrade for existing data.
+module lock and retains no separate epoch cache. Live state retains three recent
+rosters. Older selections are read from their finalized epoch artifacts in the
+existing history store, including after restart. A missing or inconsistent
+historical artifact is an error; it never substitutes a newer roster. This bounds
+live roster records without adding another historical index. General finalized
+history retention is separate.
+
+This changes execution commitments at epoch boundaries and requires a fresh
+deployment; it is not a rolling upgrade for existing data.
 
 Membership writes use `VALIDATOR_REGISTRY_ADDRESS` with the request bindings in
 `hub_modules::validator_registry::abi`. Persist the signed submission before sending, retain its identifier,

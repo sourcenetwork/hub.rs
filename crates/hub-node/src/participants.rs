@@ -1,5 +1,7 @@
 //! Committee selection from execution-derived epoch rosters.
 
+use std::{num::NonZeroU64, sync::Arc};
+
 use alloy_primitives::{Address, keccak256};
 use commonware_codec::ReadExt as _;
 use commonware_consensus::types::Epoch;
@@ -22,15 +24,24 @@ pub fn validator_address(public_key: &PublicKey) -> Address {
 pub struct RegistryParticipants {
     modules: SharedModuleState,
     genesis_players: Set<PublicKey>,
+    history: Arc<crate::FinalizedHistory>,
+    epoch_length: NonZeroU64,
 }
 
 impl RegistryParticipants {
     /// Genesis supplies the lookahead until the first epoch boundary is finalized.
     #[must_use]
-    pub const fn new(modules: SharedModuleState, genesis_players: Set<PublicKey>) -> Self {
+    pub const fn new(
+        modules: SharedModuleState,
+        genesis_players: Set<PublicKey>,
+        history: Arc<crate::FinalizedHistory>,
+        epoch_length: NonZeroU64,
+    ) -> Self {
         Self {
             modules,
             genesis_players,
+            history,
+            epoch_length,
         }
     }
 }
@@ -44,10 +55,14 @@ impl ParticipantsProvider for RegistryParticipants {
             return self.genesis_players.clone();
         }
         let modules = self.modules.read().expect("module state lock poisoned");
-        let bytes = modules
-            .hub
-            .consensus_roster(epoch.get())
-            .expect("future consensus roster must have been finalized in the previous epoch");
+        let Some(bytes) = modules.hub.consensus_roster(epoch.get()) else {
+            drop(modules);
+            return self
+                .history
+                .consensus_roster(epoch, self.epoch_length)
+                .expect("historical consensus roster must be readable")
+                .expect("future consensus roster must have been finalized in the previous epoch");
+        };
         assert!(
             !bytes.is_empty()
                 && bytes.len().is_multiple_of(32)
@@ -76,7 +91,18 @@ impl ParticipantsProvider for RegistryParticipants {
 mod tests {
     use super::*;
     use hub_modules::{hub::HubModule, kv_store::InMemoryKvStore};
-    use std::sync::{Arc, RwLock};
+    use std::sync::RwLock;
+
+    fn history() -> (tempfile::TempDir, Arc<crate::FinalizedHistory>) {
+        let directory = tempfile::tempdir().unwrap();
+        let genesis = hub_app::genesis_block(
+            hub_domain::StateRoot(alloy_primitives::B256::ZERO),
+            Default::default(),
+            alloy_primitives::B256::ZERO,
+        );
+        let history = Arc::new(crate::FinalizedHistory::open(directory.path(), &genesis).unwrap());
+        (directory, history)
+    }
 
     fn key(encoded: &str) -> PublicKey {
         PublicKey::read(&mut hex::decode(encoded).unwrap().as_slice()).unwrap()
@@ -88,7 +114,13 @@ mod tests {
         let second = key("3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c");
         let genesis = Set::from_iter_dedup([first.clone()]);
         let modules = Arc::new(RwLock::new(hub_modules::ModuleState::default()));
-        let mut provider = RegistryParticipants::new(modules.clone(), genesis.clone());
+        let (_directory, history) = history();
+        let mut provider = RegistryParticipants::new(
+            modules.clone(),
+            genesis.clone(),
+            history.clone(),
+            NonZeroU64::new(20).unwrap(),
+        );
         assert_eq!(provider.participants(Epoch::new(2)).await, genesis);
         let raw = |key: &PublicKey| -> [u8; 32] {
             commonware_codec::Encode::encode(key)
@@ -123,7 +155,12 @@ mod tests {
             hub: HubModule::from_store(InMemoryKvStore::deserialize(&stored).unwrap()),
             ..Default::default()
         };
-        let mut restarted = RegistryParticipants::new(Arc::new(RwLock::new(recovered)), genesis);
+        let mut restarted = RegistryParticipants::new(
+            Arc::new(RwLock::new(recovered)),
+            genesis,
+            history,
+            NonZeroU64::new(20).unwrap(),
+        );
         assert_eq!(restarted.participants(Epoch::new(3)).await, selected);
         assert_eq!(
             restarted.participants(Epoch::new(4)).await,
@@ -153,9 +190,12 @@ mod tests {
         let genesis = Set::from_iter_dedup([key(
             "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
         )]);
+        let (_directory, history) = history();
         let mut provider = RegistryParticipants::new(
             Arc::new(RwLock::new(hub_modules::ModuleState::default())),
             genesis,
+            history,
+            NonZeroU64::new(20).unwrap(),
         );
         provider.participants(Epoch::new(3)).await;
     }

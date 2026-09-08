@@ -25,6 +25,7 @@ const FORMAT: &[u8] = b"format";
 const GENESIS: &[u8] = b"genesis";
 const HEAD: &[u8] = b"head";
 
+mod membership;
 mod peer;
 mod proof;
 mod startup;

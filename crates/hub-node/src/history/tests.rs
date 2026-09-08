@@ -440,3 +440,103 @@ fn history_proofs_reject_gaps_corruption_and_excessive_work() {
             .contains("truncated")
     );
 }
+
+#[tokio::test]
+async fn pruned_roster_selection_survives_history_and_module_reopen() {
+    use commonware_consensus::types::Epoch;
+    use commonware_cryptography::{Signer as _, ed25519};
+    use commonware_glue::dkg::ParticipantsProvider as _;
+    use commonware_utils::ordered::Set;
+    use hub_modules::{ModuleState, hub::HubModule, kv_store::InMemoryKvStore};
+    use std::{num::NonZeroU64, sync::RwLock};
+
+    let genesis_key = ed25519::PrivateKey::from_seed(7).public_key();
+    let selected = ed25519::PrivateKey::from_seed(8).public_key();
+    let newer = ed25519::PrivateKey::from_seed(9).public_key();
+    let genesis_players = Set::from_iter_dedup([genesis_key.clone()]);
+    let (mut info, _) = crate::trusted_setup(7, [genesis_key]).unwrap();
+    info.epoch = Epoch::new(2);
+    info.next_players = Set::from_iter_dedup([selected.clone()]);
+    let directory = tempfile::tempdir().unwrap();
+    let genesis = block(0, BlockId(B256::ZERO));
+    let mut last = genesis.clone();
+    let encoded_store;
+    {
+        let history = Arc::new(FinalizedHistory::open(directory.path(), &genesis).unwrap());
+        for height in 1..=7 {
+            let mut next = block(height, last.id());
+            if height == 7 {
+                next.payload = Some(Payload::EpochInfo(info.clone()));
+            }
+            history.append(&next, &[], 100).unwrap();
+            last = next;
+        }
+        let mut modules = ModuleState::default();
+        let selected_bytes: [u8; 32] = selected.encode().as_ref().try_into().unwrap();
+        modules
+            .hub
+            .record_consensus_roster(3, &[selected_bytes])
+            .unwrap();
+        let newer_bytes: [u8; 32] = newer.encode().as_ref().try_into().unwrap();
+        for epoch in 4..=100 {
+            modules = modules.clone();
+            modules
+                .hub
+                .record_consensus_roster(epoch, &[newer_bytes])
+                .unwrap();
+        }
+        assert!(modules.hub.consensus_roster(3).is_none());
+        encoded_store = modules.hub.store().serialize();
+        let mut provider = crate::RegistryParticipants::new(
+            Arc::new(RwLock::new(modules)),
+            genesis_players.clone(),
+            history,
+            NonZeroU64::new(4).unwrap(),
+        );
+        assert_eq!(
+            provider.participants(Epoch::new(3)).await,
+            Set::from_iter_dedup([selected.clone()])
+        );
+    }
+    let history = Arc::new(FinalizedHistory::open(directory.path(), &genesis).unwrap());
+    let lookup: FinalizationLookup = Arc::new(|_| Box::pin(async { None }));
+    history
+        .recover(
+            &genesis,
+            &last,
+            &BlockIndex::new(),
+            &LightBlockIndex::new(),
+            &lookup,
+        )
+        .await
+        .unwrap();
+    let modules = ModuleState {
+        hub: HubModule::from_store(InMemoryKvStore::deserialize(&encoded_store).unwrap()),
+        ..Default::default()
+    };
+    let mut restarted = crate::RegistryParticipants::new(
+        Arc::new(RwLock::new(modules)),
+        genesis_players,
+        history.clone(),
+        NonZeroU64::new(4).unwrap(),
+    );
+    assert_eq!(
+        restarted.participants(Epoch::new(3)).await,
+        Set::from_iter_dedup([selected])
+    );
+    assert_eq!(
+        restarted.participants(Epoch::new(100)).await,
+        Set::from_iter_dedup([newer])
+    );
+    assert!(
+        history
+            .consensus_roster(Epoch::new(4), NonZeroU64::new(4).unwrap())
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        history
+            .consensus_roster(Epoch::new(3), NonZeroU64::new(3).unwrap())
+            .is_err()
+    );
+}

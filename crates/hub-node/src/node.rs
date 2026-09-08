@@ -330,7 +330,16 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     )
     .await;
     let (fence, gate) = Fence::new(fence_epoch);
-    let participants_provider = RegistryParticipants::new(modules.clone(), players.clone());
+    let history = Arc::new(crate::FinalizedHistory::open(
+        config.data_dir.join("history"),
+        &genesis_block,
+    )?);
+    let participants_provider = RegistryParticipants::new(
+        modules.clone(),
+        players.clone(),
+        history.clone(),
+        blocks_per_epoch,
+    );
     let (reshare_actor, reshare_mailbox) = reshare::Actor::new(
         context.child("reshare"),
         reshare::Config {
@@ -357,10 +366,6 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
 
     // Mempool, RPC plumbing, and the application.
     let mempool = InMemoryMempool::default();
-    let history = Arc::new(crate::FinalizedHistory::open(
-        config.data_dir.join("history"),
-        &genesis_block,
-    )?);
     let (history_failures, mut history_failure_rx) = ::tokio::sync::mpsc::channel(1);
     let block_index = Arc::new(BlockIndex::new());
     let light_block_index = Arc::new(LightBlockIndex::new());
