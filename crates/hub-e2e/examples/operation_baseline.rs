@@ -1,4 +1,4 @@
-//! Four-node registration workload. Arguments: count, arrivals/sec, max outstanding.
+//! Four-node registration workload. Arguments: count, arrivals/sec, max outstanding, permission reads (0/1).
 //! Build hubd in release mode and set HUBD_BINARY to that binary before running.
 
 #[path = "operation_baseline/driver.rs"]
@@ -11,7 +11,7 @@ use alloy_primitives::FixedBytes;
 use alloy_sol_types::SolCall;
 use hub_client::{ACP_ADDRESS, BlsSigner, HubClient};
 use hub_domain::NativeTx;
-use hub_e2e::cluster::{ConsensusPreset, TestCluster};
+use hub_e2e::cluster::{ConsensusPreset, KeySet, TestCluster};
 use hub_modules::acp::abi::IAcp;
 use tokio::{sync::Semaphore, task::JoinSet, time::Instant};
 
@@ -21,8 +21,8 @@ const CHAIN_ID: u64 = 9001;
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     assert!(
-        args.len() <= 3,
-        "usage: operation_baseline [count] [arrivals/sec] [max outstanding]"
+        args.len() <= 4,
+        "usage: operation_baseline [count] [arrivals/sec] [max outstanding] [permission reads 0/1]"
     );
     let parse = |index: usize, default: usize| {
         args.get(index).map_or(default, |value| {
@@ -32,6 +32,10 @@ async fn main() {
     let count = parse(0, 200);
     let rate = parse(1, 20);
     let outstanding = parse(2, 128);
+    let permission_reads = parse(3, 1);
+    assert!(permission_reads <= 1);
+    let keys = KeySet::builder().seed(42).build().unwrap();
+    let trusted = *keys.epoch_info().output.public().public();
     assert!((1..=10_000).contains(&count) && (1..=10_000).contains(&rate));
     assert!((1..=1024).contains(&outstanding));
 
@@ -53,7 +57,7 @@ async fn main() {
         .sign_native_tx(
             ACP_ADDRESS,
             IAcp::createPolicyCall {
-                policy: b"name: baseline\nresources:\n  - name: file\n"
+                policy: b"name: baseline\nresources:\n  - name: file\n    permissions:\n      - name: read\n        expr: owner\n"
                     .to_vec()
                     .into(),
                 marshalType: 1,
@@ -75,6 +79,12 @@ async fn main() {
     let ids = client.get_policy_ids().await.unwrap();
     assert_eq!(ids.len(), 1);
     let policy_id = FixedBytes::<32>::from_slice(&hex::decode(&ids[0]).unwrap());
+
+    let reads = Arc::new(driver::ReadContext {
+        trusted,
+        policy: ids[0].clone(),
+        permissions: permission_reads == 1,
+    });
 
     let signing_start = Instant::now();
     let requests: Vec<_> = (0..count)
@@ -103,7 +113,9 @@ async fn main() {
     println!(
         "{}",
         serde_json::json!({
-            "kind": "configuration", "workload": "independent_native_registrations",
+            "kind": "configuration", "workload": "certified_native_registrations",
+            "format_version": 2, "permission_reads_per_write": permission_reads,
+            "runner_debug_assertions": cfg!(debug_assertions),
             "nodes": 4, "preset": "Normal", "count": count, "arrivals_per_second": rate,
             "max_outstanding": outstanding, "receipt_poll_ms": driver::POLL_INTERVAL.as_millis(),
             "request_timeout_ms": driver::REQUEST_TIMEOUT.as_millis(),
@@ -120,7 +132,13 @@ async fn main() {
         let scheduled = started + Duration::from_secs_f64(request.index as f64 / rate as f64);
         tokio::time::sleep_until(scheduled).await;
         let permit = limit.clone().try_acquire_owned().ok();
-        tasks.spawn(driver::observe(client.clone(), request, scheduled, permit));
+        tasks.spawn(driver::observe(
+            client.clone(),
+            request,
+            scheduled,
+            permit,
+            reads.clone(),
+        ));
     }
     let mut observations = Vec::with_capacity(count);
     while let Some(result) = tasks.join_next().await {

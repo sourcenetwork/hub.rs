@@ -1,7 +1,10 @@
 use std::{sync::Arc, time::Duration};
 
 use alloy_primitives::{B256, FixedBytes};
-use hub_client::{ClientError, HubClient, TransactionReceipt};
+use hub_client::{
+    AccessRequest, Actor, ClientError, HubClient, Object, Operation, PERMISSION_LIMITS,
+};
+use hub_domain::ConsensusPublicKey;
 use hub_e2e::cluster::TestCluster;
 use serde_json::{Value, json};
 use tokio::{sync::OwnedSemaphorePermit, time::Instant};
@@ -17,6 +20,19 @@ pub(super) struct Request {
     pub(super) raw: Vec<u8>,
 }
 
+pub(super) struct ReadContext {
+    pub(super) trusted: ConsensusPublicKey,
+    pub(super) policy: String,
+    pub(super) permissions: bool,
+}
+
+#[derive(Debug)]
+struct MeasuredReceipt {
+    block_hash: B256,
+    block_number: u64,
+    status: u64,
+}
+
 #[derive(Debug)]
 pub(super) struct Observation {
     pub(super) request: Request,
@@ -24,7 +40,9 @@ pub(super) struct Observation {
     schedule_lag_ms: f64,
     submit_ms: Option<f64>,
     receipt_ms: Option<f64>,
-    receipt: Option<TransactionReceipt>,
+    receipt: Option<MeasuredReceipt>,
+    permission_ms: Option<f64>,
+    workflow_ms: Option<f64>,
     error: Option<String>,
 }
 
@@ -33,7 +51,8 @@ impl Observation {
         json!({
             "kind": "observation", "index": self.request.index, "hash": self.request.hash,
             "outcome": self.outcome, "schedule_lag_ms": self.schedule_lag_ms,
-            "submit_rpc_ms": self.submit_ms, "scheduled_to_receipt_ms": self.receipt_ms,
+            "submit_rpc_ms": self.submit_ms, "scheduled_to_certified_receipt_ms": self.receipt_ms,
+            "permission_read_ms": self.permission_ms, "scheduled_to_workflow_ms": self.workflow_ms,
             "height": self.receipt.as_ref().map(|r| r.block_number), "error": self.error,
         })
     }
@@ -44,6 +63,7 @@ pub(super) async fn observe(
     request: Request,
     scheduled: Instant,
     permit: Option<OwnedSemaphorePermit>,
+    reads: Arc<ReadContext>,
 ) -> Observation {
     let mut observation = Observation {
         request,
@@ -52,6 +72,8 @@ pub(super) async fn observe(
         submit_ms: None,
         receipt_ms: None,
         receipt: None,
+        permission_ms: None,
+        workflow_ms: None,
         error: None,
     };
     let Some(_permit) = permit else {
@@ -74,17 +96,58 @@ pub(super) async fn observe(
         }
         loop {
             match client
-                .get_transaction_receipt(observation.request.hash)
+                .read_receipt(observation.request.hash, &reads.trusted)
                 .await
             {
-                Ok(Some(receipt)) => {
+                Ok(Some(response)) => {
+                    let receipt = response
+                        .receipts
+                        .iter()
+                        .find(|receipt| receipt.tx_hash == observation.request.hash)
+                        .expect("verified receipt selection");
+                    let success = receipt.success();
                     observation.receipt_ms = Some(scheduled.elapsed().as_secs_f64() * 1000.0);
-                    observation.outcome = if receipt.status == 1 {
-                        "confirmed"
-                    } else {
-                        "reverted"
-                    };
-                    observation.receipt = Some(receipt);
+                    observation.outcome = if success { "confirmed" } else { "reverted" };
+                    observation.receipt = Some(MeasuredReceipt {
+                        block_hash: response.revision.block_hash.parse().unwrap(),
+                        block_number: response.revision.height,
+                        status: u64::from(success),
+                    });
+                    if success && reads.permissions {
+                        let request = AccessRequest {
+                            actor: Actor(observation.request.owner.parse().unwrap()),
+                            operations: vec![Operation {
+                                object: Object {
+                                    resource: "file".into(),
+                                    id: observation.request.index.to_string(),
+                                },
+                                permission: "read".into(),
+                            }],
+                        };
+                        let started = Instant::now();
+                        let permission = client
+                            .verify_current_access(
+                                &reads.policy,
+                                &request,
+                                response.revision.height,
+                                &reads.trusted,
+                                PERMISSION_LIMITS,
+                            )
+                            .await;
+                        observation.permission_ms = Some(started.elapsed().as_secs_f64() * 1000.0);
+                        match permission {
+                            Ok((_, allowed)) => {
+                                assert!(allowed, "certified owner permission denied")
+                            }
+                            Err(error) => {
+                                observation.error = Some(error.to_string());
+                                return;
+                            }
+                        }
+                    }
+                    if success {
+                        observation.workflow_ms = Some(scheduled.elapsed().as_secs_f64() * 1000.0);
+                    }
                     return;
                 }
                 Ok(None) => {}
@@ -120,9 +183,14 @@ pub(super) fn summary(observations: &[Observation], elapsed: Duration) -> Value 
         "reverted": count("reverted"), "rejected": count("rejected"),
         "unknown": count("unknown"), "not_sent": count("not_sent"),
         "confirmed_per_second": count("confirmed") as f64 / elapsed.as_secs_f64(),
+        "completed_workflows": observations.iter().filter(|o| o.workflow_ms.is_some()).count(),
+        "completed_workflows_per_second": observations.iter().filter(|o| o.workflow_ms.is_some()).count() as f64 / elapsed.as_secs_f64(),
+        "confirmed_incomplete_workflows": observations.iter().filter(|o| o.outcome == "confirmed" && o.workflow_ms.is_none()).count(),
+        "permission_read_ms": distribution(observations.iter().filter_map(|o| o.permission_ms).collect()),
+        "scheduled_to_workflow_ms": distribution(observations.iter().filter_map(|o| o.workflow_ms).collect()),
         "schedule_lag_ms": distribution(observations.iter().map(|o| o.schedule_lag_ms).collect()),
         "submit_rpc_ms": distribution(observations.iter().filter_map(|o| o.submit_ms).collect()),
-        "scheduled_to_receipt_ms": distribution(observations.iter().filter_map(|o| o.receipt_ms).collect()),
+        "scheduled_to_certified_receipt_ms": distribution(observations.iter().filter_map(|o| o.receipt_ms).collect()),
     })
 }
 
