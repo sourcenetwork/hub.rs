@@ -245,6 +245,151 @@ fn native_membership_requires_the_configured_actor_permission() {
 }
 
 #[rstest]
+#[case(U256::from(hub_domain::MAX_DKG_PARTICIPANTS.get()), false)]
+#[case(U256::from(hub_domain::MAX_DKG_PARTICIPANTS.get() + 1), true)]
+#[case(U256::from_limbs([0, 1, 0, 0]), true)]
+#[case(U256::MAX, true)]
+fn native_membership_bounds_the_full_stored_count(#[case] count: U256, #[case] corrupt: bool) {
+    let (request, actor) = native_member_call(0, native_registration());
+    let (state, executor) = authorized_actor(actor);
+    state
+        .accounts
+        .write()
+        .unwrap()
+        .get_mut(&VALIDATOR_REGISTRY_ADDRESS)
+        .unwrap()
+        .storage
+        .insert(U256::from(1), count);
+    let context = BlockContext::new(
+        Header {
+            number: 1,
+            gas_limit: 30_000_000,
+            ..Default::default()
+        },
+        B256::ZERO,
+        B256::ZERO,
+    );
+    let result =
+        executor.execute_with_modules(&state, &context, &[request], executor.snapshot().unwrap());
+    if corrupt {
+        assert!(matches!(
+            result,
+            Err(hub_executor::ExecutionError::TxExecution(_))
+        ));
+    } else {
+        let (outcome, _) = result.unwrap();
+        assert!(!outcome.receipts[0].success());
+        assert!(
+            outcome
+                .changes
+                .accounts
+                .get(&VALIDATOR_REGISTRY_ADDRESS)
+                .is_none_or(|a| a.storage.is_empty())
+        );
+    }
+}
+
+#[test]
+fn native_membership_rejects_reusing_an_inactive_consensus_identity() {
+    let (registration, actor) = native_member_call(0, native_registration());
+    let (inactive, _) = native_member_call(
+        1,
+        IValidatorRegistry::setValidatorStatusCall {
+            evmAddr: Address::repeat_byte(0x11),
+            active: false,
+        }
+        .abi_encode(),
+    );
+    let mut duplicate =
+        IValidatorRegistry::addValidatorCall::abi_decode(&native_registration()).unwrap();
+    duplicate.evmAddr = Address::repeat_byte(0x22);
+    let (duplicate, _) = native_member_call(2, duplicate.abi_encode());
+    let (state, executor) = authorized_actor(actor);
+    let context = BlockContext::new(
+        Header {
+            number: 1,
+            gas_limit: 30_000_000,
+            ..Default::default()
+        },
+        B256::ZERO,
+        B256::ZERO,
+    );
+    let (outcome, _) = executor
+        .execute_with_modules(
+            &state,
+            &context,
+            &[registration, inactive, duplicate],
+            executor.snapshot().unwrap(),
+        )
+        .unwrap();
+    assert_eq!(
+        outcome
+            .receipts
+            .iter()
+            .map(|r| r.success())
+            .collect::<Vec<_>>(),
+        [true, true, false]
+    );
+    assert_eq!(
+        outcome.changes.accounts[&VALIDATOR_REGISTRY_ADDRESS].storage[&U256::from(1)],
+        U256::from(1)
+    );
+}
+
+#[rstest]
+#[case(2, U256::from_limbs([0, 1, 0, 0]))]
+#[case(3, U256::from(33))]
+#[case(3, U256::from_limbs([10, 1, 0, 0]))]
+fn native_membership_rejects_truncated_record_fields(#[case] offset: u64, #[case] value: U256) {
+    let (registration, actor) = native_member_call(0, native_registration());
+    let (state, executor) = authorized_actor(actor);
+    let context = BlockContext::new(
+        Header {
+            number: 1,
+            gas_limit: 30_000_000,
+            ..Default::default()
+        },
+        B256::ZERO,
+        B256::ZERO,
+    );
+    let (outcome, parent) = executor
+        .execute_with_modules(
+            &state,
+            &context,
+            &[registration],
+            executor.snapshot().unwrap(),
+        )
+        .unwrap();
+    let mut accounts = state.accounts.write().unwrap();
+    let storage = &mut accounts
+        .get_mut(&VALIDATOR_REGISTRY_ADDRESS)
+        .unwrap()
+        .storage;
+    storage.extend(
+        outcome.changes.accounts[&VALIDATOR_REGISTRY_ADDRESS]
+            .storage
+            .clone(),
+    );
+    storage.insert(
+        member_slot(Address::repeat_byte(0x11)).wrapping_add(U256::from(offset)),
+        value,
+    );
+    drop(accounts);
+    let (request, _) = native_member_call(
+        1,
+        IValidatorRegistry::setValidatorStatusCall {
+            evmAddr: Address::repeat_byte(0x11),
+            active: true,
+        }
+        .abi_encode(),
+    );
+    assert!(matches!(
+        executor.execute_with_modules(&state, &context, &[request], parent),
+        Err(hub_executor::ExecutionError::TxExecution(_))
+    ));
+}
+
+#[rstest]
 #[case(None)]
 #[case(Some(false))]
 #[case(Some(true))]

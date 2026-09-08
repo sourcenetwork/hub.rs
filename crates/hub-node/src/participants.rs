@@ -73,11 +73,15 @@ impl RegistryParticipants {
             .state
             .get()
             .expect("registry participant state must be attached before an epoch boundary");
-        let count = state
+        let stored_count = state
             .storage(&VALIDATOR_REGISTRY_ADDRESS, &SLOT_VALIDATOR_COUNT)
             .await
-            .expect("validator count must be readable")
-            .as_limbs()[0];
+            .expect("validator count must be readable");
+        assert!(
+            stored_count <= U256::from(hub_domain::MAX_DKG_PARTICIPANTS.get()),
+            "membership count exceeds the protocol limit"
+        );
+        let count = stored_count.as_limbs()[0];
         let mut players = Vec::with_capacity(count as usize);
         for index in 0..count {
             let address = state

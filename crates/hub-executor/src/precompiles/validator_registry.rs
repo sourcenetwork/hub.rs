@@ -182,6 +182,16 @@ fn validate_p2p_address(addr: &str) -> Result<(), ValidatorRegistryError> {
 
 // ── Read helpers ───────────────────────────────────────────────────────
 
+fn load_member_count<CTX: ContextTr>(context: &mut CTX) -> Result<u64, PrecompileError> {
+    let count = journal_sload(context, SLOT_VALIDATOR_COUNT)?;
+    if count > U256::from(hub_domain::MAX_DKG_PARTICIPANTS.get()) {
+        return Err(PrecompileError::Fatal(
+            "membership count exceeds the protocol limit".into(),
+        ));
+    }
+    Ok(count.as_limbs()[0])
+}
+
 type StoredValidator = (Address, [u8; 32], String, bool, u64);
 
 fn load_validator_raw<CTX: ContextTr>(
@@ -194,14 +204,42 @@ fn load_validator_raw<CTX: ContextTr>(
         return Ok(None);
     }
     let (evm_address, active) = unpack_address_active(packed);
+    let packed_bytes = packed.to_be_bytes::<32>();
+    if evm_address != addr || packed_bytes[20] > 1 || packed_bytes[21..].iter().any(|b| *b != 0) {
+        return Err(PrecompileError::Fatal(
+            "invalid membership identity or status".into(),
+        ));
+    }
     let consensus_bytes: [u8; 32] =
         journal_sload(context, entry_base.wrapping_add(U256::from(1)))?.to_be_bytes();
-    let index = journal_sload(context, entry_base.wrapping_add(U256::from(2)))?.as_limbs()[0];
-    let p2p_len =
-        journal_sload(context, entry_base.wrapping_add(U256::from(3)))?.as_limbs()[0] as usize;
+    let stored_index = journal_sload(context, entry_base.wrapping_add(U256::from(2)))?;
+    if stored_index >= U256::from(load_member_count(context)?) {
+        return Err(PrecompileError::Fatal(
+            "membership index exceeds the registry count".into(),
+        ));
+    }
+    let index = stored_index.as_limbs()[0];
+    if journal_sload(
+        context,
+        array_element_slot(SLOT_VALIDATORS_ARRAY_BASE, index),
+    )? != address_to_padded_u256(addr)
+    {
+        return Err(PrecompileError::Fatal(
+            "membership array and record disagree".into(),
+        ));
+    }
+    let stored_length = journal_sload(context, entry_base.wrapping_add(U256::from(3)))?;
+    if stored_length > U256::from(MAX_P2P_ADDRESS_LEN) {
+        return Err(PrecompileError::Fatal(
+            "membership route exceeds its storage bound".into(),
+        ));
+    }
+    let p2p_len = stored_length.as_limbs()[0] as usize;
     let p2p_data: [u8; 32] =
         journal_sload(context, entry_base.wrapping_add(U256::from(4)))?.to_be_bytes();
-    let p2p_address = String::from_utf8_lossy(&p2p_data[..p2p_len.min(32)]).to_string();
+    let p2p_address = std::str::from_utf8(&p2p_data[..p2p_len])
+        .map_err(|_| PrecompileError::Fatal("membership route is not UTF-8".into()))?
+        .to_owned();
 
     Ok(Some((
         evm_address,
@@ -225,14 +263,20 @@ fn to_validator_info(raw: StoredValidator) -> ValidatorInfo {
 fn load_all_validators<CTX: ContextTr>(
     context: &mut CTX,
 ) -> Result<Vec<ValidatorInfo>, PrecompileError> {
-    let count = journal_sload(context, SLOT_VALIDATOR_COUNT)?.as_limbs()[0];
+    let count = load_member_count(context)?;
     let mut validators = Vec::with_capacity(count as usize);
     for i in 0..count {
         let addr_slot = array_element_slot(SLOT_VALIDATORS_ARRAY_BASE, i);
         let addr = u256_to_address(journal_sload(context, addr_slot)?);
-        if let Some(raw) = load_validator_raw(context, addr)? {
-            validators.push(to_validator_info(raw));
+        let raw = load_validator_raw(context, addr)?.ok_or_else(|| {
+            PrecompileError::Fatal("membership array references a missing record".into())
+        })?;
+        if raw.0 != addr || raw.4 != i {
+            return Err(PrecompileError::Fatal(
+                "membership array and record disagree".into(),
+            ));
         }
+        validators.push(to_validator_info(raw));
     }
     Ok(validators)
 }
@@ -349,7 +393,17 @@ pub(crate) fn dispatch_with_journal<CTX: ContextTr>(
                 ));
             }
 
-            let count = journal_sload(context, SLOT_VALIDATOR_COUNT)?.as_limbs()[0];
+            let count = load_member_count(context)?;
+            if count == u64::from(hub_domain::MAX_DKG_PARTICIPANTS.get()) {
+                return Ok(err_dispatch(ValidatorRegistryError::MembershipLimit(
+                    hub_domain::MAX_DKG_PARTICIPANTS.get(),
+                )));
+            }
+            for existing in load_all_validators(context)? {
+                if existing.consensus_pubkey == hex::encode(call.consensusPubkey) {
+                    return Ok(err_dispatch(ValidatorRegistryError::DuplicateConsensusKey));
+                }
+            }
             store_validator_raw(
                 context,
                 call.evmAddr,
@@ -404,7 +458,7 @@ pub(crate) fn dispatch_with_journal<CTX: ContextTr>(
                 }
             };
 
-            let count = journal_sload(context, SLOT_VALIDATOR_COUNT)?.as_limbs()[0];
+            let count = load_member_count(context)?;
             let last_index = count - 1;
 
             if val_index != last_index {
@@ -514,7 +568,7 @@ pub(crate) fn dispatch_with_journal<CTX: ContextTr>(
                 return Ok(err_dispatch(e));
             }
 
-            let count = journal_sload(context, SLOT_VALIDATOR_COUNT)?.as_limbs()[0];
+            let count = load_member_count(context)?;
             if call.index >= U256::from(count) {
                 return Ok(err_dispatch(ValidatorRegistryError::ValidatorNotFound(
                     format!("index {} out of range (count={count})", call.index),

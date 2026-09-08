@@ -7,6 +7,12 @@ target. A rejected command consumes its submission sequence and leaves membershi
 unchanged. A storage failure aborts proposal execution; it cannot become a
 certified rejection or leave a partial member entry.
 
+The registry holds at most 64 entries, matching the current protocol's DKG
+participant bound. Inactive entries count toward that limit. A consensus public
+key can belong to only one registered entry, including inactive entries. Stored
+counts, indexes and route lengths are checked at their full encoded width;
+malformed values and inconsistent array/record links are errors.
+
 Operators first approve `InitializeMembershipPolicy` using the configured
 approval quorum. That ACP policy controls `manage` on the `registry` resource's
 `registry` object. Membership requests require that permission for the native
@@ -40,9 +46,12 @@ remain distinct configuration values.
 The `native_membership` process fixture starts four members, admits a fifth with
 no initial share, verifies its new committee evidence, and stops an original
 member. A subsequent native write finalizes with the incoming member needed for
-quorum. The fixture covers functional admission and continued finalization;
-removal, interruption during admission, restart with the new share and broader
-network/storage faults require additional qualification.
+quorum. It then kills and restarts the admitted process using its persisted share,
+deactivates and removes the unavailable original member, and verifies the reduced
+committee under the same consensus identity. Finalization continues after a
+second original process stops. Interruption during the admission ceremony,
+power-loss behavior and broader network/storage faults require additional
+qualification.
 
 ```sh
 HUBD_BINARY=/path/to/hubd cargo test -p hub-e2e --test native_membership

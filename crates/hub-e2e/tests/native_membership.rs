@@ -186,7 +186,8 @@ async fn native_member_joins_without_bootstrap_share_and_sustains_quorum() {
     assert!(!directory.join("secrets.json").exists());
     let log = fs::File::create(directory.join("node.log")).unwrap();
     drop((p2p, rpc));
-    let mut incoming = tokio::process::Command::new(hub_e2e::resolve_binary().unwrap())
+    let mut command = tokio::process::Command::new(hub_e2e::resolve_binary().unwrap());
+    command
         .arg("--config")
         .arg(directory.join("config.toml"))
         .arg("--data-dir")
@@ -209,9 +210,8 @@ async fn native_member_joins_without_bootstrap_share_and_sustains_quorum() {
         .stdout(Stdio::from(log.try_clone().unwrap()))
         .stderr(Stdio::from(log))
         .env("RUST_LOG", "info")
-        .kill_on_drop(true)
-        .spawn()
-        .unwrap();
+        .kill_on_drop(true);
+    let mut incoming = command.spawn().unwrap();
     let joining = HubClient::new(format!("http://127.0.0.1:{rpc_port}"));
     let member = Address::from_slice(&keccak256(public.encode())[12..]);
     let admitted = submit(
@@ -257,6 +257,59 @@ async fn native_member_joins_without_bootstrap_share_and_sustains_quorum() {
     .await;
     assert!(changed > active.height);
     assert!(incoming.try_wait().unwrap().is_none());
+    incoming.kill().await.unwrap();
+    incoming.wait().await.unwrap();
+    let log = fs::OpenOptions::new()
+        .append(true)
+        .open(directory.join("node.log"))
+        .unwrap();
+    command
+        .stdout(Stdio::from(log.try_clone().unwrap()))
+        .stderr(Stdio::from(log));
+    incoming = command.spawn().unwrap();
+    let resumed = membership(&joining, &trusted, changed + 1, 5).await;
+    assert!(resumed.height > changed);
+
+    let removed_key = &keys.participants()[3];
+    let removed = Address::from_slice(&keccak256(removed_key.encode())[12..]);
+    let deactivated = submit(
+        &joining,
+        &signer,
+        &trusted,
+        IValidatorRegistry::setValidatorStatusCall {
+            evmAddr: removed,
+            active: false,
+        }
+        .abi_encode(),
+    )
+    .await;
+    let reduced = membership(&joining, &trusted, deactivated + 1, 4).await;
+    let material = EpochMaterial::decode_bounded(
+        &hex::decode(reduced.epoch_material.trim_start_matches("0x")).unwrap(),
+    )
+    .unwrap();
+    assert!(!material.participants.iter().any(|key| key == removed_key));
+    assert!(material.participants.iter().any(|key| key == &public));
+    submit(
+        &joining,
+        &signer,
+        &trusted,
+        IValidatorRegistry::removeValidatorCall { evmAddr: removed }.abi_encode(),
+    )
+    .await;
+    cluster.kill_node(2);
+    let final_write = submit(
+        &joining,
+        &signer,
+        &trusted,
+        IValidatorRegistry::setValidatorStatusCall {
+            evmAddr: member,
+            active: true,
+        }
+        .abi_encode(),
+    )
+    .await;
+    assert!(final_write > reduced.height);
     incoming.kill().await.unwrap();
     incoming.wait().await.unwrap();
 }
