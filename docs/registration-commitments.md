@@ -107,3 +107,15 @@ Existing deployments with amendments created before this index require an
 explicit migration; startup does not rebuild it automatically. New index entries
 participate in the native state commitment, so this is a coordinated execution
 upgrade. The limits bound each query, not total retained history.
+
+`read_amendment_ids` discovers all amendment IDs for a policy through certified
+pages, including unflagged events. `read_amendment` binds the selected record to
+its policy and identifier, preserving both owners, issuance metadata and the
+hijack-report flag. It also supports certified absence. Pages and subsequent
+record reads can select different finalized revisions; they do not form a
+historical snapshot.
+
+The amendment’s new owner may call `native_flag_hijack_attempt`. Other actors
+are rejected by execution. A flag records that owner’s allegation; it is not an
+independent finding. Verify the submission receipt and read the event at or after
+that revision to observe the certified flag.

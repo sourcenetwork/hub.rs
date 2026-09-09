@@ -258,29 +258,61 @@ resources:
             .1
             .success()
     );
-    let index_prefix = hub_modules::acp::keys::amendment_event_policy_index_prefix(&policy);
     cluster.restart_node(0).unwrap();
     cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
-    let recovered = client
-        .read_current_prefix(
-            ModuleId::Acp,
-            &index_prefix,
-            amended_height,
-            &trusted,
-            RECORD_PROOF_BYTES,
-        )
+    let history = client
+        .read_amendment_ids(policy_id, None, 1, amended_height, &trusted)
         .await
         .unwrap();
-    let page = recovered
-        .verify(
-            ModuleId::Acp,
-            &index_prefix,
-            amended_height,
-            &trusted,
-            RECORD_PROOF_BYTES,
-        )
+    assert_eq!(history.ids.len(), 1);
+    assert!(history.continuation.is_none());
+    let event_id = history.ids[0];
+    let event = client
+        .read_amendment(policy_id, event_id, history.revision, &trusted)
+        .await
+        .unwrap()
+        .value
         .unwrap();
-    assert_eq!(page.entries.len(), 1);
-    assert_eq!(page.entries[0].key.len(), index_prefix.len() + 8);
-    assert!(page.entries[0].value.is_empty());
+    assert_eq!(event.object, object);
+    assert_eq!(event.new_owner.0.as_str(), second.did());
+    assert_eq!(event.previous_owner.0.as_str(), first.did());
+    assert_eq!(event.commitment_id, early.data.commitmentId);
+    assert!(!event.hijack_flag);
+    assert!(
+        client
+            .read_amendment(B256::ZERO, event_id, history.revision, &trusted)
+            .await
+            .is_err()
+    );
+    assert!(
+        client
+            .read_amendment(policy_id, u64::MAX, history.revision, &trusted)
+            .await
+            .unwrap()
+            .value
+            .is_none()
+    );
+    let (_, unauthorized) = submit(
+        &client,
+        &first,
+        &trusted,
+        IAcp::flagHijackAttemptCall { eventId: event_id }.abi_encode(),
+    )
+    .await;
+    assert!(!unauthorized.success());
+    let flagged = client
+        .native_flag_hijack_attempt(&second, event_id)
+        .await
+        .unwrap();
+    let (flagged_height, receipt) =
+        certified_receipt(&client, flagged.transaction_hash, &trusted).await;
+    assert!(receipt.success());
+    let reported = client
+        .read_amendment(policy_id, event_id, flagged_height, &trusted)
+        .await
+        .unwrap()
+        .value
+        .unwrap();
+    assert!(reported.hijack_flag);
+    assert_eq!(reported.metadata, event.metadata);
 }

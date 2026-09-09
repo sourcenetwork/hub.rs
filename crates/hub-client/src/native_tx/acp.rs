@@ -175,6 +175,17 @@ impl HubClient {
             .await
     }
 
+    /// Report an ownership amendment as a hijack attempt; only its new owner may report it.
+    pub async fn native_flag_hijack_attempt(
+        &self,
+        signer: &BlsSigner,
+        event_id: u64,
+    ) -> Result<TransactionReceipt, ClientError> {
+        let calldata = IAcp::flagHijackAttemptCall { eventId: event_id }.abi_encode();
+        self.send_native_precompile_tx(signer, ACP_ADDRESS, calldata.into())
+            .await
+    }
+
     /// Archive an object in an ACP policy via native BLS transaction.
     pub async fn native_archive_object(
         &self,

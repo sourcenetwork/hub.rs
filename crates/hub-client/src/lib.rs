@@ -8,6 +8,8 @@
 
 /// Operator approval types, signing and submission.
 pub mod administration;
+/// Certified ownership-amendment history.
+pub mod amendments;
 mod bearer;
 mod bls_signer;
 /// Certified bulletin records and bounded listings.
