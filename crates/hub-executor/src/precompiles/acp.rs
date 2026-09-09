@@ -756,13 +756,20 @@ pub(super) fn dispatch(
                 event_id: call.eventId,
             };
 
-            // policy_id is empty — FlagHijackAttempt looks up the amendment
-            // event by event_id; the event record itself carries the policy_id.
-            // The module implementation must ignore policy_id for this variant.
-            let result = match module.execute_policy_cmd(&creator, "", cmd, block_ctx, tx_ctx) {
-                Ok(r) => r,
+            let policy_id = match module.get_amendment_event_by_id(call.eventId) {
+                Ok(Some(event)) => event.policy_id,
+                Ok(None) => {
+                    return Ok(err_dispatch(hub_modules::acp::error::AcpError::State(
+                        format!("amendment event {} not found", call.eventId),
+                    )));
+                }
                 Err(e) => return Ok(err_dispatch(e)),
             };
+            let result =
+                match module.execute_policy_cmd(&creator, &policy_id, cmd, block_ctx, tx_ctx) {
+                    Ok(r) => r,
+                    Err(e) => return Ok(err_dispatch(e)),
+                };
 
             let event = match result {
                 hub_modules::acp::types::PolicyCmdResult::FlagHijackAttempt { event } => event,

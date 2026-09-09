@@ -118,7 +118,11 @@ hijack-report flag. It also supports certified absence. Pages and subsequent
 record reads can select different finalized revisions; they do not form a
 historical snapshot.
 
-The amendment’s new owner may call `native_flag_hijack_attempt`. Other actors
+The amendment’s new owner may call `native_flag_hijack_attempt`. That event-only
+endpoint resolves the policy from the stored event. For direct, signed and
+bearer policy commands, the supplied policy ID must match the amendment; a report cannot change another policy’s
+history by referencing its global event ID. Repeated reports preserve the event
+metadata and leave the flag set. Other actors
 are rejected by execution. A flag records that owner’s allegation; it is not an
 independent finding. Verify the submission receipt and read the event at or after
 that revision to observe the certified flag.

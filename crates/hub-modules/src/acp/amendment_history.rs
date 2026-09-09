@@ -13,7 +13,8 @@ fn decode(bytes: &[u8], id: u64) -> Result<AmendmentEvent> {
 }
 
 impl AcpModule {
-    pub(super) fn get_amendment_event_by_id(&self, id: u64) -> Result<Option<AmendmentEvent>> {
+    /// Read an amendment by its global identifier, validating the stored identity.
+    pub fn get_amendment_event_by_id(&self, id: u64) -> Result<Option<AmendmentEvent>> {
         self.store
             .get_ref(&keys::amendment_event_key(id))
             .map(|bytes| decode(bytes, id))
@@ -123,6 +124,61 @@ mod tests {
         };
         module.create_amendment_event(&mut event).unwrap();
         event
+    }
+
+    #[test]
+    fn hijack_reports_bind_policy_and_preserve_event_metadata() {
+        let mut module = AcpModule::new();
+        let event = insert(&mut module, "selected", false);
+        for restored in [false, true] {
+            if restored {
+                module = AcpModule::from_store(
+                    InMemoryKvStore::deserialize(&module.store.serialize()).unwrap(),
+                );
+            }
+            let before = module.store.serialize();
+            for (actor, policy, id) in [
+                (&event.new_owner.0, "other", event.id),
+                (&event.previous_owner.0, "selected", event.id),
+                (&event.new_owner.0, "selected", 0),
+                (&event.new_owner.0, "selected", u64::MAX),
+            ] {
+                assert!(
+                    module
+                        .direct_policy_cmd(
+                            actor,
+                            policy,
+                            PolicyCmd::FlagHijackAttempt { event_id: id }
+                        )
+                        .is_err()
+                );
+                assert_eq!(module.store.serialize(), before);
+            }
+            let PolicyCmdResult::FlagHijackAttempt { event: actual } = module
+                .direct_policy_cmd(
+                    &event.new_owner.0,
+                    "selected",
+                    PolicyCmd::FlagHijackAttempt { event_id: event.id },
+                )
+                .unwrap()
+            else {
+                panic!("expected hijack report");
+            };
+            let mut expected = event.clone();
+            expected.hijack_flag = true;
+            assert_eq!(
+                borsh::to_vec(&actual).unwrap(),
+                borsh::to_vec(&expected).unwrap()
+            );
+            if restored {
+                assert_eq!(
+                    module.store.serialize(),
+                    before,
+                    "repeated flag changed state"
+                );
+            }
+            module.validate_amendment_indexes().unwrap();
+        }
     }
 
     #[test]

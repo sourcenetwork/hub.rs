@@ -360,7 +360,7 @@ impl AcpModule {
                 self.cmd_reveal_registration(creator, policy_id, registrations_commitment_id, proof)
             }
             PolicyCmd::FlagHijackAttempt { event_id } => {
-                self.cmd_flag_hijack_attempt(creator, event_id)
+                self.cmd_flag_hijack_attempt(creator, policy_id, event_id)
             }
         }
     }
@@ -1378,12 +1378,23 @@ impl AcpModule {
         })
     }
 
-    fn cmd_flag_hijack_attempt(&mut self, creator: &Did, event_id: u64) -> Result<PolicyCmdResult> {
+    fn cmd_flag_hijack_attempt(
+        &mut self,
+        creator: &Did,
+        policy_id: &str,
+        event_id: u64,
+    ) -> Result<PolicyCmdResult> {
         let mut event = self
             .get_amendment_event_by_id(event_id)?
             .ok_or(AcpError::State(format!(
                 "amendment event {event_id} not found"
             )))?;
+
+        if event.policy_id != policy_id {
+            return Err(AcpError::Unauthorized {
+                reason: "amendment event belongs to another policy".into(),
+            });
+        }
 
         if event.new_owner.0.to_string() != creator.to_string() {
             return Err(AcpError::Unauthorized {
