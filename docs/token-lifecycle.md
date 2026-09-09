@@ -31,3 +31,13 @@ Malformed index suffixes, unexpected index values, missing records and mismatche
 record identities are errors. Account selectors must contain 1–255 bytes; DID
 selectors are also capped at 255 bytes. Token writes validate every index
 component before changing state, avoiding key-encoder panics and partial writes.
+
+`HubClient::read_token_record` returns lifecycle metadata or certified absence
+for a SHA-256 token hash at a caller-selected minimum revision. It verifies the
+certificate, record key and stored token-content hash before returning the record.
+After invalidation, read at or after the certified invalidation revision to check
+the status, invalidating identity and execution timestamp.
+
+This read does not evaluate signature claims, expiry, delegation scope, provider
+grants or the separate revocation records for unused delegations. Neither record
+presence nor absence proves that a token can authorize a new operation.

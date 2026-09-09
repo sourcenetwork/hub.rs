@@ -27,6 +27,15 @@ async fn submit(
         .sign_native_tx(ACP_ADDRESS, call.abi_encode().into())
         .unwrap();
     let id = client.send_native_tx(&wire).await.unwrap();
+    receipt(client, trusted, id, success).await
+}
+
+async fn receipt(
+    client: &HubClient,
+    trusted: &ConsensusPublicKey,
+    id: alloy_primitives::B256,
+    success: bool,
+) -> u64 {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if let Some(response) = client.read_receipt(id, trusted).await.unwrap() {
@@ -156,7 +165,14 @@ async fn actor_signed_command_rejects_substitution_and_deduplicates_across_worke
         false,
     )
     .await;
-    let registered = submit(&client, &worker, &trusted, call(signed, &command), true).await;
+    let registered = submit(
+        &client,
+        &worker,
+        &trusted,
+        call(signed.clone(), &command),
+        true,
+    )
+    .await;
     claims.sub = other.did().into();
     let retry = hub_client::create_operation_token(&key, &claims).unwrap();
     let retried = submit(&client, &other, &trusted, call(retry, &command), true).await;
@@ -194,4 +210,48 @@ async fn actor_signed_command_rejects_substitution_and_deduplicates_across_worke
         serde_json::from_slice(&records.entries[0].value).unwrap();
     assert_eq!(record.metadata.creation_ts.block_height, registered);
     assert_eq!(record.metadata.tx_signer, worker.did());
+    let hash = hub_modules::hub::keys::hash_jws_token(&signed)
+        .parse()
+        .unwrap();
+    let active = client
+        .read_token_record(hash, retried, &trusted)
+        .await
+        .unwrap()
+        .value
+        .unwrap();
+    assert_eq!(
+        active.status,
+        hub_modules::hub::types::JWSTokenStatus::Valid
+    );
+    assert_eq!(active.authorized_account, worker.did());
+    assert_eq!(active.issuer_did, actor);
+    assert!(
+        client
+            .read_token_record(alloy_primitives::B256::ZERO, retried, &trusted)
+            .await
+            .unwrap()
+            .value
+            .is_none()
+    );
+    let invalidated = client
+        .native_invalidate_jws(&worker, &hex::encode(hash))
+        .await
+        .unwrap();
+    let invalidated_height = receipt(&client, &trusted, invalidated.transaction_hash, true).await;
+    let revoked = client
+        .read_token_record(hash, invalidated_height, &trusted)
+        .await
+        .unwrap()
+        .value
+        .unwrap();
+    assert_eq!(
+        revoked.status,
+        hub_modules::hub::types::JWSTokenStatus::Invalid
+    );
+    assert_eq!(revoked.invalidated_by, worker.did());
+    assert_eq!(
+        revoked.invalidated_at.unwrap().block_height,
+        invalidated_height
+    );
+    submit(&client, &worker, &trusted, call(signed, &command), false).await;
 }

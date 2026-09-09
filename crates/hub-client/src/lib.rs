@@ -32,6 +32,8 @@ pub mod registrations;
 pub mod rings;
 /// Encrypted documents and signing derivations.
 pub mod threshold_objects;
+/// Certified token lifecycle reads.
+pub mod tokens;
 pub use hub_domain::{ExecutionReceipt, ReceiptResponse, ReceiptResponseError};
 pub use hub_permission::{
     AccessRequest, Actor, ModuleId, Object, Operation, PERMISSION_LIMITS, PermissionLimits,
