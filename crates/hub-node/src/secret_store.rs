@@ -90,6 +90,14 @@ impl FileSecretStore {
     }
 
     fn update(&self, change: impl FnOnce(&mut SecretData)) -> anyhow::Result<()> {
+        self.update_with_sync(change, fs::File::sync_all)
+    }
+
+    fn update_with_sync(
+        &self,
+        change: impl FnOnce(&mut SecretData),
+        mut sync: impl FnMut(&fs::File) -> std::io::Result<()>,
+    ) -> anyhow::Result<()> {
         let mut inner = self.inner.lock();
         let mut next = inner.clone();
         change(&mut next);
@@ -101,9 +109,9 @@ impl FileSecretStore {
         fs::create_dir_all(parent)?;
         let mut file = tempfile::NamedTempFile::new_in(parent)?;
         serde_json::to_writer_pretty(file.as_file_mut(), &next)?;
-        file.as_file().sync_all()?;
+        sync(file.as_file())?;
         file.persist(&self.path)?;
-        fs::File::open(parent)?.sync_all()?;
+        sync(&fs::File::open(parent)?)?;
         *inner = next;
         Ok(())
     }

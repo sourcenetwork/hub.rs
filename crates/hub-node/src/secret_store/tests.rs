@@ -179,3 +179,61 @@ fn missing_secret_link_target_is_not_an_empty_store() {
     fs::remove_file(&path).unwrap();
     assert!(FileSecretStore::load(&path).is_ok());
 }
+
+#[test]
+fn sync_failures_do_not_publish_unacknowledged_secret_updates() {
+    for failing_sync in [1, 2] {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("secrets.json");
+        let store = FileSecretStore::load(&path).unwrap();
+        store
+            .update(|data| {
+                data.seeds.insert(1, hex::encode([1; 32]));
+            })
+            .unwrap();
+        let reader = store.clone();
+        let original = fs::read(&path).unwrap();
+        let mut syncs = 0;
+        let error = store
+            .update_with_sync(
+                |data| {
+                    data.seeds.insert(2, hex::encode([2; 32]));
+                },
+                |file| {
+                    syncs += 1;
+                    if syncs == failing_sync {
+                        Err(std::io::Error::other("injected sync failure"))
+                    } else {
+                        file.sync_all()
+                    }
+                },
+            )
+            .unwrap_err();
+        assert_eq!(error.to_string(), "injected sync failure");
+        assert_eq!(syncs, failing_sync);
+        assert_eq!(reader.inner.lock().seeds.len(), 1);
+        let reopened = FileSecretStore::load(&path).unwrap();
+        if failing_sync == 1 {
+            assert_eq!(fs::read(&path).unwrap(), original);
+            assert_eq!(reopened.inner.lock().seeds.len(), 1);
+        } else {
+            // Replacement is visible, but its survival after power loss is unknown.
+            assert_eq!(reopened.inner.lock().seeds.len(), 2);
+        }
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+        reopened
+            .update(|data| {
+                data.seeds.insert(3, hex::encode([3; 32]));
+            })
+            .unwrap();
+        assert_eq!(
+            FileSecretStore::load(&path)
+                .unwrap()
+                .inner
+                .lock()
+                .seeds
+                .len(),
+            failing_sync + 1
+        );
+    }
+}

@@ -63,6 +63,10 @@ the destination atomically and sync the containing directory. Cloned store handl
 serialize updates and publish in-memory changes after persistence succeeds. On
 Unix, replacement files have mode `0600`. Debug output excludes private material.
 Loading validates encoded shares, seeds and dealings before making them available.
+The DKG actor treats persistence errors as fatal. A directory-sync failure can
+leave the complete replacement visible on disk without establishing durability;
+the failed update is not published to in-memory readers. Restart reloads the
+stored file rather than assuming the failed update left it unchanged.
 Malformed material or dealing keys stop startup without rewriting the file; they
 are not treated as missing shares. Only a missing file starts an empty store.
 The JSON file remains plaintext under the operating system's access controls.
