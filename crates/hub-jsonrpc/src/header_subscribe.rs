@@ -50,7 +50,10 @@ pub(crate) async fn stream_headers(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jsonrpsee::core::client::SubscriptionClientT;
+    use jsonrpsee::core::{
+        client::{ClientT, SubscriptionClientT},
+        params::BatchRequestBuilder,
+    };
     use std::time::Duration;
 
     #[tokio::test]
@@ -100,6 +103,43 @@ mod tests {
         })
         .await
         .expect("idle subscription receiver released");
+        let mut subscriptions = Vec::new();
+        for _ in 0..8 {
+            subscriptions.push(
+                client
+                    .subscribe::<GossipHeader, _>(
+                        "hub_subscribeHeaders",
+                        jsonrpsee::rpc_params![],
+                        "hub_unsubscribeHeaders",
+                    )
+                    .await
+                    .unwrap(),
+            );
+        }
+        assert!(
+            client
+                .subscribe::<GossipHeader, _>(
+                    "hub_subscribeHeaders",
+                    jsonrpsee::rpc_params![],
+                    "hub_unsubscribeHeaders",
+                )
+                .await
+                .is_err()
+        );
+        for subscription in subscriptions {
+            subscription.unsubscribe().await.unwrap();
+        }
+        let mut batch = BatchRequestBuilder::new();
+        for _ in 0..64 {
+            batch
+                .insert("net_version", jsonrpsee::rpc_params![])
+                .unwrap();
+        }
+        assert!(client.batch_request::<String>(batch.clone()).await.is_ok());
+        batch
+            .insert("net_version", jsonrpsee::rpc_params![])
+            .unwrap();
+        assert!(client.batch_request::<String>(batch).await.is_err());
         handle.stop().unwrap();
         handle.stopped().await;
     }

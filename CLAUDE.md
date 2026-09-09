@@ -210,6 +210,10 @@ share one consensus group.
 
 ### RPC surfaces
 
+`hub-jsonrpc` limits each batch to 64 calls and each connection to eight
+subscriptions and eight queued output messages. WebSocket request tasks waiting
+to enqueue responses are not bounded by that output queue.
+
 `hub-jsonrpc` serves HTTP + WebSocket JSON-RPC:
 
 | Surface | Methods | Consumer |

@@ -3,7 +3,7 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use axum::{Router, extract::State, http::StatusCode, response::IntoResponse, routing::get};
-use jsonrpsee::server::{Server, ServerHandle};
+use jsonrpsee::server::{BatchRequestConfig, Server, ServerHandle};
 use tokio::sync::broadcast;
 use tower::limit::ConcurrencyLimitLayer;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
@@ -353,6 +353,9 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
                         .max(hub_domain::RECEIPT_RESPONSE_BYTES) as u32,
                 )
                 .max_connections(max_connections)
+                .set_batch_request_config(BatchRequestConfig::Limit(64))
+                .max_subscriptions_per_connection(8)
+                .set_message_buffer_capacity(8)
                 .build(addr)
                 .await
             {
@@ -712,6 +715,9 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
                     as u32,
             )
             .max_connections(self.max_connections)
+            .set_batch_request_config(BatchRequestConfig::Limit(64))
+            .max_subscriptions_per_connection(8)
+            .set_message_buffer_capacity(8)
             .build(self.addr)
             .await
             .map_err(|e| ServerError::Build(e.to_string()))?;
