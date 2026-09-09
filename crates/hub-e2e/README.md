@@ -72,6 +72,12 @@ durable, restarts the node, and verifies receipts, sequences, module records and
 continued submission. Fault builds apply module journals sequentially to expose
 these boundaries. This checks process recovery, not power-loss durability.
 
+The fault-enabled `native_member_recovers_after_share_persistence_crash` case in
+`native_membership` exits immediately after a newly generated share is durable,
+before returning to the DKG caller. It restarts the incoming member without a
+bootstrap share, then checks quorum participation, another restart, and member
+removal. The marker is consumed before exit so recovery does not crash again.
+
 ## Harness environment and file contracts
 
 - `HUB_E2E_DIR` — base directory for run artifacts (default `target/e2e`).

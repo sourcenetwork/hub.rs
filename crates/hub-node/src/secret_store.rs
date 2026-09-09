@@ -122,6 +122,21 @@ impl dkg::SecretStore for FileSecretStore {
     async fn put_share(&mut self, epoch: Epoch, share: Share) {
         self.put_initial_share(epoch, share)
             .expect("failed to persist share");
+        #[cfg(feature = "fault-injection")]
+        {
+            let marker = self.path.with_extension("share-crash");
+            if marker.is_file() {
+                fs::remove_file(&marker).expect("remove share crash marker");
+                let parent = marker
+                    .parent()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .unwrap_or(Path::new("."));
+                fs::File::open(parent)
+                    .and_then(|file| file.sync_all())
+                    .expect("persist share crash marker removal");
+                std::process::exit(86);
+            }
+        }
     }
 
     async fn get_share(&mut self, epoch: Epoch) -> Option<Share> {

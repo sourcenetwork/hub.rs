@@ -76,15 +76,21 @@ async fn membership(
 
 #[tokio::test]
 async fn native_member_joins_without_bootstrap_share_and_sustains_quorum() {
-    admit_member(false).await;
+    admit_member(false, false).await;
 }
 
 #[tokio::test]
 async fn interrupted_member_recovers_after_admission_without_a_share() {
-    admit_member(true).await;
+    admit_member(true, false).await;
 }
 
-async fn admit_member(interrupt: bool) {
+#[cfg(feature = "fault-injection")]
+#[tokio::test]
+async fn native_member_recovers_after_share_persistence_crash() {
+    admit_member(false, true).await;
+}
+
+async fn admit_member(interrupt: bool, crash_share: bool) {
     let deployment = if interrupt { 9080 } else { 9079 };
     let keys = KeySet::builder().seed(deployment).build().unwrap();
     let trusted = *keys.epoch_info().output.public().public();
@@ -220,6 +226,10 @@ async fn admit_member(interrupt: bool) {
         .stderr(Stdio::from(log))
         .env("RUST_LOG", "info")
         .kill_on_drop(true);
+    let share_crash_marker = directory.join("secrets.share-crash");
+    if crash_share {
+        fs::write(&share_crash_marker, []).unwrap();
+    }
     let mut incoming = command.spawn().unwrap();
     let joining = HubClient::new(format!("http://127.0.0.1:{rpc_port}"));
     if interrupt {
@@ -257,6 +267,20 @@ async fn admit_member(interrupt: bool) {
     if interrupt {
         membership(&origin, &trusted, admitted + 1, 5).await;
         assert!(!directory.join("secrets.json").exists());
+    }
+    if crash_share {
+        let status = tokio::time::timeout(DEADLINE, incoming.wait())
+            .await
+            .expect("share persistence crash deadline")
+            .unwrap();
+        assert_eq!(status.code(), Some(86));
+        assert!(!share_crash_marker.exists());
+        let secrets: serde_json::Value =
+            serde_json::from_slice(&fs::read(directory.join("secrets.json")).unwrap()).unwrap();
+        assert!(secrets["shares"].get("0").is_none());
+        assert!(!secrets["shares"].as_object().unwrap().is_empty());
+    }
+    if interrupt || crash_share {
         let log = fs::OpenOptions::new()
             .append(true)
             .open(directory.join("node.log"))

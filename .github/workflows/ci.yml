@@ -261,5 +261,11 @@ jobs:
           --test module_commit_crash --test snapshot_interrupt
           -- --test-threads=1 --nocapture
 
+      - name: Recover membership after share persistence crash
+        run: >-
+          cargo test --frozen -p hub-e2e --features fault-injection
+          --test native_membership native_member_recovers_after_share_persistence_crash
+          -- --exact --nocapture
+
       - name: Build release node without fault injection
         run: cargo build --frozen --release -p hubd
