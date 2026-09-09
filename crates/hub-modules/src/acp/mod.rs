@@ -1088,18 +1088,24 @@ impl AcpModule {
         policy_id: &str,
         obj: Object,
     ) -> Result<PolicyCmdResult> {
-        let (registered, owner_rec) = self.query_object_owner(policy_id, &obj)?;
-
-        if !registered {
+        if !self.zanzibar_policies.contains_key(policy_id) {
+            return Err(AcpError::PolicyNotFound {
+                id: policy_id.into(),
+            });
+        }
+        let mut owner_rec = self
+            .registration_owner_record(policy_id, &obj)?
+            .ok_or_else(|| AcpError::ObjectNotRegistered {
+                resource: obj.resource.clone(),
+                object_id: obj.id.clone(),
+            })?;
+        if owner_rec.archived {
             return Ok(PolicyCmdResult::ArchiveObject {
-                found: false,
+                found: true,
                 relationships_removed: 0,
             });
         }
-
-        let owner_rec = owner_rec.unwrap();
-        let owner_did = &owner_rec.metadata.owner_did;
-        if owner_did != &creator.to_string() {
+        if owner_rec.metadata.owner_did != creator.to_string() {
             return Err(AcpError::Unauthorized {
                 reason: format!(
                     "{} is not the owner of '{}/{}'",
@@ -1107,34 +1113,31 @@ impl AcpModule {
                 ),
             });
         }
-
-        // Mark owner relationship as archived, delete all others.
-        let object_prefix = Relationship::object_prefix(&obj.resource, &obj.id);
-        let owner_prefix = Relationship::relation_prefix(&obj.resource, &obj.id, "owner");
-        let policy_prefix = keys::relationship_policy_prefix(policy_id);
-
-        let all_rels = self.store.prefix_scan(&policy_prefix);
-        let mut removed: u64 = 0;
-
-        for (kv_key, value) in &all_rels {
-            let storage_key_part =
-                std::str::from_utf8(&kv_key[policy_prefix.len()..]).unwrap_or("");
-            if !storage_key_part.starts_with(&object_prefix) {
-                continue;
+        let prefix = keys::relationship_storage_prefix(
+            policy_id,
+            &Relationship::object_prefix(&obj.resource, &obj.id),
+        );
+        let mut keys = Vec::new();
+        for (key, value) in self.store.prefix_iter(&prefix) {
+            let record: RelationshipRecord = serde_json::from_slice(value)
+                .map_err(|error| AcpError::State(format!("invalid relationship record: {error}")))?;
+            if record.policy_id != policy_id
+                || keys::relationship_key(policy_id, &record.relationship.storage_key()) != key
+            {
+                return Err(AcpError::State("relationship record does not match its key".into()));
             }
-            if storage_key_part.starts_with(&owner_prefix) {
-                // Archive the owner relationship.
-                if let Ok(mut rec) = serde_json::from_slice::<RelationshipRecord>(value) {
-                    rec.archived = true;
-                    let bytes = serde_json::to_vec(&rec).expect("serialize RelationshipRecord");
-                    self.store.put(kv_key, bytes);
-                }
-            } else {
-                self.store.delete(kv_key);
-                removed += 1;
+            if record.relationship.resource == obj.resource
+                && record.relationship.object_id == obj.id
+            {
+                keys.push(key.to_vec());
             }
         }
-
+        let removed = keys.len() as u64;
+        for key in keys {
+            self.store.delete(&key);
+        }
+        owner_rec.archived = true;
+        self.set_relationship(policy_id, &owner_rec.relationship.storage_key(), &owner_rec);
         Ok(PolicyCmdResult::ArchiveObject {
             found: true,
             relationships_removed: removed,
@@ -1147,6 +1150,11 @@ impl AcpModule {
         policy_id: &str,
         obj: Object,
     ) -> Result<PolicyCmdResult> {
+        if !self.zanzibar_policies.contains_key(policy_id) {
+            return Err(AcpError::PolicyNotFound {
+                id: policy_id.into(),
+            });
+        }
         let mut rec = self
             .registration_owner_record(policy_id, &obj)?
             .ok_or_else(|| AcpError::ObjectNotRegistered {

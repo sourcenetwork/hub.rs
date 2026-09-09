@@ -280,11 +280,20 @@ impl<S: RecordStore> ZanzibarStore for QmdbZanzibarStore<S> {
             &Relationship::object_prefix(resource, object_id),
         );
         let mut guard = self.store.write().unwrap();
-        let keys_to_delete: Vec<_> = guard
-            .scan_records(&prefix)?
-            .into_iter()
-            .map(|(k, _)| k)
-            .collect();
+        let mut keys_to_delete = Vec::new();
+        for (key, bytes) in guard.scan_records(&prefix)? {
+            let record: RelationshipRecord = serde_json::from_slice(&bytes)?;
+            if record.policy_id != policy_id
+                || keys::relationship_key(policy_id, &record.relationship.storage_key()) != key
+            {
+                return Err(zanzibar::error::Error::Serialization(
+                    "relationship record does not match its key".into(),
+                ));
+            }
+            if record.relationship.resource == resource && record.relationship.object_id == object_id {
+                keys_to_delete.push(key);
+            }
+        }
         for key in keys_to_delete {
             guard.remove_record(&key)?;
         }
@@ -626,7 +635,7 @@ mod tests {
             &Relationship::with_entity("document", "doc1", "owner", did(ALICE)),
         ))
         .unwrap();
-        let keep = Relationship::with_entity("document", "doc2", "reader", did(ALICE));
+        let keep = Relationship::with_entity("document", "doc1/child", "reader", did(ALICE));
         block_on(store.store_relationship(POLICY, &keep)).unwrap();
 
         block_on(store.delete_object_relationships(POLICY, "document", "doc1")).unwrap();
@@ -642,7 +651,7 @@ mod tests {
                 .is_empty()
         );
         assert!(
-            block_on(store.has_relationship(POLICY, "document", "doc2", "reader", &keep.subject))
+            block_on(store.has_relationship(POLICY, "document", "doc1/child", "reader", &keep.subject))
                 .unwrap(),
             "other objects are untouched"
         );

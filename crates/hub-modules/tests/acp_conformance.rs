@@ -478,3 +478,94 @@ fn duplicate_relationship_preserves_original_metadata() {
         assert_eq!(candidate.store().serialize(), before);
     }
 }
+
+#[test]
+fn archive_results_preserve_registration_and_object_boundaries() {
+    let (mut module, policy_id) = setup();
+    let neighbor = Object {
+        resource: "file".into(),
+        id: "report/child".into(),
+    };
+    module
+        .direct_policy_cmd(
+            &owner(),
+            &policy_id,
+            PolicyCmd::RegisterObject(neighbor.clone()),
+        )
+        .unwrap();
+    module
+        .direct_policy_cmd(
+            &owner(),
+            &policy_id,
+            PolicyCmd::SetRelationship(Relationship::with_entity(
+                "file",
+                "report",
+                "reader",
+                reader(),
+            )),
+        )
+        .unwrap();
+    let before = module.store().serialize();
+    for cmd in [
+        PolicyCmd::ArchiveObject(object()),
+        PolicyCmd::UnarchiveObject(object()),
+    ] {
+        assert!(matches!(
+            module.direct_policy_cmd(&owner(), "missing", cmd),
+            Err(AcpError::PolicyNotFound { .. })
+        ));
+    }
+    assert!(matches!(
+        module.direct_policy_cmd(
+            &owner(),
+            &policy_id,
+            PolicyCmd::ArchiveObject(Object {
+                resource: "file".into(),
+                id: "missing".into()
+            },)
+        ),
+        Err(AcpError::ObjectNotRegistered { .. })
+    ));
+    assert!(matches!(
+        module.direct_policy_cmd(&reader(), &policy_id, PolicyCmd::ArchiveObject(object())),
+        Err(AcpError::Unauthorized { .. })
+    ));
+    assert_eq!(module.store().serialize(), before);
+    assert!(matches!(
+        module
+            .direct_policy_cmd(&owner(), &policy_id, PolicyCmd::ArchiveObject(object()))
+            .unwrap(),
+        PolicyCmdResult::ArchiveObject {
+            found: true,
+            relationships_removed: 2
+        }
+    ));
+    for mut candidate in [module.clone(), restore(&module)] {
+        let before = candidate.store().serialize();
+        assert!(matches!(
+            candidate
+                .direct_policy_cmd(&owner(), &policy_id, PolicyCmd::ArchiveObject(object()))
+                .unwrap(),
+            PolicyCmdResult::ArchiveObject {
+                found: true,
+                relationships_removed: 0
+            }
+        ));
+        assert_eq!(candidate.store().serialize(), before);
+        assert!(
+            candidate
+                .query_object_owner(&policy_id, &neighbor)
+                .unwrap()
+                .0
+        );
+        for modified in [true, false] {
+            let result = candidate
+                .direct_policy_cmd(&owner(), &policy_id, PolicyCmd::UnarchiveObject(object()))
+                .unwrap();
+            assert!(
+                matches!(result, PolicyCmdResult::UnarchiveObject { relationship_modified, .. } if relationship_modified == modified)
+            );
+        }
+        assert!(!can_read(&candidate, &policy_id));
+    }
+}
