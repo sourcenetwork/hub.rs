@@ -118,7 +118,7 @@ async fn check_pruned_rosters(
     assert_eq!(selected, expected);
 }
 
-pub(super) async fn recover_replica(snapshot: bool, interrupt: bool) {
+pub(super) async fn recover_replica(snapshot: bool, interrupt: bool, pruning: bool) {
     let deployment = 9041;
     let keys = KeySet::builder().seed(deployment).build().unwrap();
     let trusted_key = *keys.epoch_info().output.public().public();
@@ -136,6 +136,16 @@ pub(super) async fn recover_replica(snapshot: bool, interrupt: bool) {
         .chain_id(deployment)
         .genesis(GenesisBuilder::devnet().blocks_per_epoch(20))
         .preset(ConsensusPreset::Normal)
+        .jmt_seeder(move |dir, _| {
+            if pruning {
+                use std::io::Write as _;
+                let mut config = fs::OpenOptions::new()
+                    .append(true)
+                    .open(dir.join("config.toml"))
+                    .unwrap();
+                writeln!(config, "\n[pruning]\nmaintenance_interval = 1\nretained_consensus_revisions = 18\nretained_state_revisions = 0").unwrap();
+            }
+        })
         .build()
         .await
         .unwrap();
@@ -238,6 +248,15 @@ pub(super) async fn recover_replica(snapshot: bool, interrupt: bool) {
     assert!(!allowed);
     eprintln!("cold replica starts at origin height {}", target.height);
 
+    if pruning {
+        for index in 0..3 {
+            let logs = fs::read_to_string(cluster.node(index).log_dir.join("stdout.log")).unwrap();
+            assert!(
+                logs.matches("pruned state journals").count() > 10,
+                "peers must prune before the empty replica starts"
+            );
+        }
+    }
     let crash_marker = directory.join("snapshot-import-crash");
     if interrupt {
         fs::write(&crash_marker, []).unwrap();

@@ -5,5 +5,5 @@ mod catchup;
 
 #[tokio::test]
 async fn interrupted_snapshot_resumes_without_an_explicit_request() {
-    catchup::recover_replica(true, true).await;
+    catchup::recover_replica(true, true, false).await;
 }

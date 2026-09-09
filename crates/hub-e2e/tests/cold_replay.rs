@@ -5,5 +5,5 @@ mod catchup;
 
 #[tokio::test]
 async fn cold_replica_replays_across_epochs() {
-    catchup::recover_replica(false, false).await;
+    catchup::recover_replica(false, false, false).await;
 }
