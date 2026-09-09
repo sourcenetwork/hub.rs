@@ -49,7 +49,14 @@ impl FileSecretStore {
         let path = path.into();
         let inner: SecretData = match fs::read_to_string(&path) {
             Ok(contents) => serde_json::from_str(&contents)?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => SecretData::default(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match fs::symlink_metadata(&path) {
+                    Err(missing) if missing.kind() == std::io::ErrorKind::NotFound => {
+                        SecretData::default()
+                    }
+                    _ => return Err(error.into()),
+                }
+            }
             Err(error) => return Err(error.into()),
         };
         for raw in inner.shares.values() {

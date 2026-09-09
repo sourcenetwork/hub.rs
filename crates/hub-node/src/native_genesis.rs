@@ -29,7 +29,7 @@ pub(super) async fn load_or_create(
 ) -> anyhow::Result<Block> {
     let fingerprint = fingerprint(genesis)?;
     let path = data_dir.join("native-genesis.bin");
-    if path.exists() {
+    if marker_exists(&path)? {
         let record = fs::read(&path)?;
         ensure!(
             record.get(..32) == Some(fingerprint.as_slice()),
@@ -47,15 +47,23 @@ pub(super) async fn load_or_create(
         return Ok(block);
     }
     ensure!(
-        !data_dir.join("genesis_block.bin").exists() && !data_dir.join("state").exists(),
+        !marker_exists(&data_dir.join("genesis_block.bin"))?
+            && !marker_exists(&data_dir.join("state"))?,
         "existing JMT state requires an explicit native-storage migration"
     );
     ensure!(
-        !data_dir.join("history").exists(),
+        !marker_exists(&data_dir.join("history"))?,
         "genesis record missing from a node with finalized history"
     );
     fs::create_dir_all(data_dir)?;
     let intent = data_dir.join("native-genesis.intent");
+    let interrupted = marker_exists(&intent)?;
+    if interrupted {
+        ensure!(
+            fs::read(&intent)? == fingerprint.as_slice(),
+            "interrupted genesis has different configuration"
+        );
+    }
     let execution = HubStateSet::init(
         context.child("genesis_execution"),
         state_set_config(super::node::PARTITION_PREFIX, cache.clone()),
@@ -66,11 +74,7 @@ pub(super) async fn load_or_create(
         native::state_config(super::node::PARTITION_PREFIX, cache.clone()),
     )
     .await;
-    if intent.exists() {
-        ensure!(
-            fs::read(&intent)? == fingerprint.as_slice(),
-            "interrupted genesis has different configuration"
-        );
+    if interrupted {
         execution
             .rewind_to_targets(HubStateSet::initial_sync_targets())
             .await;
@@ -123,6 +127,14 @@ pub(super) async fn load_or_create(
     fs::remove_file(intent)?;
     fs::File::open(data_dir)?.sync_all()?;
     Ok(block)
+}
+
+fn marker_exists(path: &Path) -> std::io::Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 fn persist(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {

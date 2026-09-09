@@ -231,3 +231,56 @@ fn legacy_state_and_missing_genesis_with_history_require_recovery() {
         });
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn inaccessible_genesis_markers_fail_before_initializing_journals() {
+    for marker in [
+        "native-genesis.bin",
+        "native-genesis.intent",
+        "genesis_block.bin",
+        "state",
+        "history",
+    ] {
+        for target in [marker, "missing-target"] {
+            let directory = tempfile::tempdir().unwrap();
+            let directory = directory.path();
+            let path = directory.join(marker);
+            std::os::unix::fs::symlink(target, &path).unwrap();
+            let storage = directory.join("commonware");
+            tokio::Runner::new(tokio::Config::new().with_storage_directory(&storage)).start(
+                |context| async move {
+                    let cache = CacheRef::from_pooler(&context, NZU16!(4084), NZUsize!(64));
+                    let entries = || {
+                        let mut names: Vec<_> = fs::read_dir(&storage)
+                            .unwrap()
+                            .map(|entry| entry.unwrap().file_name())
+                            .collect();
+                        names.sort();
+                        names
+                    };
+                    let before = entries();
+                    assert!(
+                        load_or_create(&context, directory, &configured_genesis(), &cache)
+                            .await
+                            .is_err()
+                    );
+                    assert_eq!(
+                        fs::read_link(&path).unwrap(),
+                        std::path::PathBuf::from(target)
+                    );
+                    assert_eq!(
+                        entries(),
+                        before,
+                        "failed initialization created journal entries"
+                    );
+                    for other in ["native-genesis.bin", "native-genesis.intent"] {
+                        if other != marker {
+                            assert!(!directory.join(other).exists());
+                        }
+                    }
+                },
+            );
+        }
+    }
+}

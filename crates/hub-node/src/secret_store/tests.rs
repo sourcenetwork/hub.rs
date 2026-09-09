@@ -164,3 +164,18 @@ async fn valid_material_reopens_and_invalid_dealing_keys_fail() {
         assert_eq!(fs::read(&path).unwrap(), original);
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn missing_secret_link_target_is_not_an_empty_store() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("secrets.json");
+    std::os::unix::fs::symlink("missing-target", &path).unwrap();
+    assert!(FileSecretStore::load(&path).is_err());
+    assert_eq!(
+        fs::read_link(&path).unwrap(),
+        std::path::PathBuf::from("missing-target")
+    );
+    fs::remove_file(&path).unwrap();
+    assert!(FileSecretStore::load(&path).is_ok());
+}

@@ -71,3 +71,7 @@ An existing malformed or empty secret file fails startup and is preserved.
 Recovery requires valid retained private material; the node does not silently
 replace lost shares. Process-crash checks do not establish power-loss, failed-fsync
 or disk-full guarantees for the deployment filesystem.
+
+Genesis initialization preserves existing recovery markers even when their
+symlink targets are missing or inaccessible. Filesystem errors stop initialization,
+and an existing intent must match the configuration before journals are opened.
