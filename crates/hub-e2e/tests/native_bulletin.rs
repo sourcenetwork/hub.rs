@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use alloy_sol_types::SolCall;
+use alloy_sol_types::{SolCall, SolEvent};
 use hub_client::{BULLETIN_ADDRESS, BlsSigner, HubClient};
 use hub_domain::ConsensusPublicKey;
 use hub_e2e::cluster::{ConsensusPreset, KeySet, TestCluster};
@@ -16,8 +16,14 @@ async fn submit(
     call: impl SolCall,
     success: bool,
 ) -> u64 {
+    let calldata = call.abi_encode();
+    let expected_post = if success && calldata.starts_with(&IBulletin::createPostCall::SELECTOR) {
+        Some(IBulletin::createPostCall::abi_decode(&calldata).unwrap())
+    } else {
+        None
+    };
     let wire = signer
-        .sign_native_tx(BULLETIN_ADDRESS, call.abi_encode().into())
+        .sign_native_tx(BULLETIN_ADDRESS, calldata.into())
         .unwrap();
     let id = client.send_native_tx(&wire).await.unwrap();
     tokio::time::timeout(Duration::from_secs(30), async {
@@ -30,6 +36,19 @@ async fn submit(
             if let (Some(proof), Some(_)) = (observed, local) {
                 let receipt = proof.verify(id, trusted).unwrap();
                 assert_eq!(receipt.success(), success, "{receipt:?}");
+                if let Some(post) = &expected_post {
+                    assert_eq!(receipt.logs().len(), 1);
+                    let event = IBulletin::PostCreated::decode_log(&receipt.logs()[0]).unwrap();
+                    let expected = keys::generate_post_id(
+                        &format!("bulletin/{}", post.namespace),
+                        &post.payload,
+                    );
+                    assert_eq!(
+                        event.data.postId,
+                        expected.parse::<alloy_primitives::B256>().unwrap()
+                    );
+                    assert_eq!(event.data.artifact, post.artifact);
+                }
                 break proof.revision.height;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -44,7 +63,7 @@ fn post(namespace: &str, payload: &[u8]) -> IBulletin::createPostCall {
         namespace: namespace.into(),
         payload: payload.to_vec().into(),
         proof: vec![1, 2, 3].into(),
-        artifact: String::new(),
+        artifact: "bulletin/conformance".into(),
     }
 }
 
@@ -206,15 +225,12 @@ async fn certified_bulletin_reads_follow_grants_pages_and_restart() {
     assert_eq!(collaborators.records.len(), 1);
     assert!(collaborators.continuation.is_none());
     for payload in [b"first".as_slice(), b"second"] {
-        minimum = submit(
-            &writer,
-            &reader,
-            &collaborator,
-            &trusted,
-            post("team", payload),
-            true,
-        )
-        .await;
+        let mut request = post("team", payload);
+        if payload == b"first" {
+            request.proof = Default::default();
+        }
+        let expected_proof = request.proof.clone();
+        minimum = submit(&writer, &reader, &collaborator, &trusted, request, true).await;
         let record = reader
             .read_bulletin_post(
                 "team",
@@ -227,7 +243,7 @@ async fn certified_bulletin_reads_follow_grants_pages_and_restart() {
             .value
             .unwrap();
         assert_eq!(record.payload, payload);
-        assert_eq!(record.proof, [1, 2, 3]);
+        assert_eq!(record.proof.as_slice(), expected_proof.as_ref());
         assert_eq!(record.creator_did, collaborator.did());
     }
     let first = reader

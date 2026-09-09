@@ -10,7 +10,7 @@ sol! {
         event NamespaceCreated(string indexed namespace, string owner);
         event CollaboratorAdded(string indexed namespace, string collaborator);
         event CollaboratorRemoved(string indexed namespace, string collaborator);
-        event PostCreated(string indexed namespace, bytes32 postId);
+        event PostCreated(string indexed namespace, bytes32 postId, string artifact);
 
         // ── Write methods ───────────────────────────────────────────────
 

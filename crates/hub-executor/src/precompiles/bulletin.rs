@@ -93,6 +93,7 @@ pub(super) fn dispatch(
             let event = IBulletin::PostCreated {
                 namespace: alloy_primitives::keccak256(call.namespace.as_bytes()),
                 postId: post_id,
+                artifact: call.artifact,
             };
             let ret = IBulletin::createPostCall::abi_encode_returns(&post_id);
             Ok(ok_dispatch(
@@ -341,7 +342,7 @@ mod tests {
             namespace: "posts".into(),
             payload: b"payload".to_vec().into(),
             proof: Default::default(),
-            artifact: String::new(),
+            artifact: "threshold/share".into(),
         };
         let result = dispatch(
             &mut module,
@@ -364,5 +365,6 @@ mod tests {
         assert_eq!(result.logs.len(), 1);
         let event = IBulletin::PostCreated::decode_log(&result.logs[0]).unwrap();
         assert_eq!(event.data.postId, expected);
+        assert_eq!(event.data.artifact, create.artifact);
     }
 }
