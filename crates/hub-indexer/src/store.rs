@@ -25,7 +25,6 @@ pub struct IndexedRevision {
     pub transactions: Vec<IndexedTransaction>,
     /// Indexed execution results.
     pub receipts: Vec<IndexedReceipt>,
-    logs: Vec<IndexedLog>,
     bytes: usize,
 }
 
@@ -87,15 +86,10 @@ impl BlockIndex {
         txs: Vec<IndexedTransaction>,
         receipts: Vec<IndexedReceipt>,
     ) {
-        let mut logs = Vec::new();
-        for receipt in &receipts {
-            logs.extend(receipt.logs.clone());
-        }
         let mut revision = IndexedRevision {
             block,
             transactions: txs,
             receipts,
-            logs,
             bytes: 0,
         };
         revision.bytes = revision.retained_bytes();
@@ -235,7 +229,7 @@ impl BlockIndex {
             };
             cache.revisions.get(hash).expect("indexed revision").clone()
         };
-        for log in &revision.logs {
+        for log in revision.receipts.iter().flat_map(|receipt| &receipt.logs) {
             query.push(log)?;
         }
         Ok(true)
@@ -301,7 +295,6 @@ impl IndexedRevision {
                         + receipt.signer_did.as_ref().map_or(0, String::capacity)
                 })
                 .sum::<usize>()
-            + logs_bytes(&self.logs)
     }
 }
 
@@ -331,7 +324,11 @@ mod tests {
     use super::*;
 
     fn set_logs(index: &BlockIndex, hash: B256, logs: Vec<IndexedLog>) {
-        Arc::make_mut(index.cache.write().revisions.get_mut(&hash).unwrap()).logs = logs;
+        let mut cache = index.cache.write();
+        let revision = Arc::make_mut(cache.revisions.get_mut(&hash).unwrap());
+        let mut receipt = create_test_receipt(B256::ZERO, hash, revision.block.number);
+        receipt.logs = logs;
+        revision.receipts = vec![receipt];
     }
 
     fn create_test_block(number: u64, hash: B256) -> IndexedBlock {
