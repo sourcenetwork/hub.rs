@@ -611,3 +611,66 @@ fn fresh_reveal_has_no_amendment_event() {
         AcpModule::from_store(InMemoryKvStore::deserialize(&module.store.serialize()).unwrap());
     assert!(recovered.query_object_owner(&policy, &object).unwrap().0);
 }
+
+#[test]
+fn empty_object_commands_fail_without_effects_and_opaque_ids_roundtrip() {
+    let (mut module, actor, _, policy, mut object) = setup();
+    object.id.clear();
+    let relation = Relationship::with_entity("file", "", "reader", actor.clone());
+    let commands = [
+        PolicyCmd::RegisterObject(object.clone()),
+        PolicyCmd::ArchiveObject(object.clone()),
+        PolicyCmd::UnarchiveObject(object.clone()),
+        PolicyCmd::SetRelationship(relation.clone()),
+        PolicyCmd::DeleteRelationship(relation),
+        PolicyCmd::RevealRegistration {
+            registrations_commitment_id: 1,
+            proof: RegistrationProof {
+                object: object.clone(),
+                merkle_proof: vec![],
+                leaf_count: 1,
+                leaf_index: 0,
+            },
+        },
+    ];
+    for restored in [false, true] {
+        if restored {
+            module = AcpModule::from_store(
+                InMemoryKvStore::deserialize(&module.store.serialize()).unwrap(),
+            );
+        }
+        let before = module.store.serialize();
+        for command in &commands {
+            assert!(matches!(
+                module.direct_policy_cmd(&actor, &policy, command.clone()),
+                Err(AcpError::InvalidAccessRequest { .. })
+            ));
+            assert_eq!(module.store.serialize(), before);
+        }
+        assert!(
+            AcpModule::generate_registration_commitment(
+                &policy,
+                std::slice::from_ref(&object),
+                &Actor(actor.clone())
+            )
+            .is_err()
+        );
+    }
+    for id in [" ", "folder/report", "報告", "*"] {
+        object.id = id.into();
+        let PolicyCmdResult::RegisterObject { record } = module
+            .direct_policy_cmd(&actor, &policy, PolicyCmd::RegisterObject(object.clone()))
+            .unwrap()
+        else {
+            panic!("expected registration");
+        };
+        assert_eq!(record.relationship.object_id, id);
+        let generated = AcpModule::generate_registration_commitment(
+            &policy,
+            std::slice::from_ref(&object),
+            &Actor(actor.clone()),
+        )
+        .unwrap();
+        assert_eq!(generated.proofs[0].object.id, id);
+    }
+}

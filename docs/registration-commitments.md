@@ -32,6 +32,9 @@ Successful commitment
 receipts include `RegistrationsCommitted(commitmentId, policyId, commitment)` so
 native callers can obtain the identifier from a certified receipt.
 
+Object IDs must be nonempty for policy commands and commitment generation. IDs
+are otherwise preserved as supplied, including spaces, Unicode and slashes.
+
 Commitment generation accepts 1–256 objects and at most 64 KiB of aggregate
 encoded leaf bytes, counting the repeated policy and actor strings for each leaf.
 It checks these limits before state lookups and proof allocation. Larger sets

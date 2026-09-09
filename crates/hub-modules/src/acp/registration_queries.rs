@@ -73,6 +73,11 @@ impl AcpModule {
             .saturating_add(b"vera/registration-leaf/v1\0".len() + 16);
         let mut bytes = 0usize;
         for object in objects {
+            if object.id.is_empty() {
+                return Err(AcpError::InvalidAccessRequest {
+                    reason: "object ID must not be empty".into(),
+                });
+            }
             bytes = bytes
                 .saturating_add(base)
                 .saturating_add(object.resource.len())

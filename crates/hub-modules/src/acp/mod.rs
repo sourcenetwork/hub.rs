@@ -342,6 +342,21 @@ impl AcpModule {
         policy_id: &str,
         cmd: PolicyCmd,
     ) -> Result<PolicyCmdResult> {
+        let object_id = match &cmd {
+            PolicyCmd::SetRelationship(rel) | PolicyCmd::DeleteRelationship(rel) => {
+                Some(rel.object_id.as_str())
+            }
+            PolicyCmd::RegisterObject(obj)
+            | PolicyCmd::ArchiveObject(obj)
+            | PolicyCmd::UnarchiveObject(obj) => Some(obj.id.as_str()),
+            PolicyCmd::RevealRegistration { proof, .. } => Some(proof.object.id.as_str()),
+            PolicyCmd::CommitRegistrations { .. } | PolicyCmd::FlagHijackAttempt { .. } => None,
+        };
+        if object_id == Some("") {
+            return Err(AcpError::InvalidAccessRequest {
+                reason: "object ID must not be empty".into(),
+            });
+        }
         match cmd {
             PolicyCmd::SetRelationship(rel) => self.cmd_set_relationship(creator, policy_id, rel),
             PolicyCmd::DeleteRelationship(rel) => {
