@@ -6,6 +6,10 @@ use thiserror::Error;
 /// Errors that can occur during indexing operations.
 #[derive(Debug, Error)]
 pub enum IndexerError {
+    /// Log query work or retained results exceed the service budget.
+    #[error("log query limit exceeded; narrow the range or filter")]
+    LogQueryLimit,
+
     /// Block not found by hash.
     #[error("block not found: {0}")]
     BlockNotFound(B256),

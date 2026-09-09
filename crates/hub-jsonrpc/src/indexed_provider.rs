@@ -173,7 +173,13 @@ impl<S: StateDbRead + Send + Sync + 'static> StateProvider for IndexedStateProvi
             }
         }
 
-        let indexed_logs = self.index.get_logs(&log_filter);
+        let indexed_logs = self.index.get_logs(&log_filter).map_err(|error| {
+            if matches!(error, hub_indexer::IndexerError::InvalidBlockRange { .. }) {
+                RpcError::InvalidBlockNumber(error.to_string())
+            } else {
+                RpcError::LimitExceeded(error.to_string())
+            }
+        })?;
         let logs = indexed_logs
             .into_iter()
             .map(|log| RpcLog {
@@ -393,6 +399,32 @@ mod tests {
     use hub_indexer::IndexedLog;
 
     use super::*;
+
+    #[tokio::test]
+    async fn log_query_limits_reach_rpc_clients() {
+        let provider = IndexedStateProvider::new(
+            Arc::new(BlockIndex::new()),
+            MockState,
+            1,
+            30_000_000,
+            default_modules(),
+        );
+        let filter = RpcLogFilter {
+            to_block: Some(BlockNumberOrTag::Number(U64::from(u64::MAX))),
+            ..Default::default()
+        };
+        let error: jsonrpsee::types::ErrorObjectOwned =
+            provider.get_logs(filter).await.unwrap_err().into();
+        assert_eq!(error.code(), crate::error::codes::LIMIT_EXCEEDED);
+        let filter = RpcLogFilter {
+            from_block: Some(BlockNumberOrTag::Number(U64::from(2))),
+            to_block: Some(BlockNumberOrTag::Number(U64::from(1))),
+            ..Default::default()
+        };
+        let error: jsonrpsee::types::ErrorObjectOwned =
+            provider.get_logs(filter).await.unwrap_err().into();
+        assert_eq!(error.code(), crate::error::codes::INVALID_PARAMS);
+    }
 
     fn default_modules() -> SharedModuleState {
         Arc::new(RwLock::new(ModuleState::default()))

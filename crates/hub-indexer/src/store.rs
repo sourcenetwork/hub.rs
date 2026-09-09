@@ -10,6 +10,7 @@ use parking_lot::RwLock;
 use tracing::debug;
 
 use crate::{
+    IndexerError,
     filter::LogFilter,
     types::{IndexStats, IndexedBlock, IndexedLog, IndexedReceipt, IndexedTransaction},
 };
@@ -142,12 +143,36 @@ impl BlockIndex {
         self.head_block.load(Ordering::Acquire)
     }
 
-    /// Gets logs matching the given filter.
-    pub fn get_logs(&self, filter: &LogFilter) -> Vec<IndexedLog> {
+    /// Gets matching logs, rejecting queries beyond the scan or result budgets.
+    ///
+    /// Limits: 10,000 revisions, 10,000 inspected logs, 64 alternatives per selector,
+    /// 1,000 results and 1 MiB of retained log data including record/topic storage.
+    pub fn get_logs(&self, filter: &LogFilter) -> Result<Vec<IndexedLog>, IndexerError> {
         let from_block = filter.from_block.unwrap_or(0);
         let to_block = filter.to_block.unwrap_or_else(|| self.head_block_number());
 
+        if from_block > to_block {
+            return Err(IndexerError::InvalidBlockRange {
+                from: from_block,
+                to: to_block,
+            });
+        }
+        if to_block - from_block >= 10_000
+            || filter
+                .address
+                .as_ref()
+                .is_some_and(|values| values.len() > 64)
+            || filter
+                .topics
+                .iter()
+                .flatten()
+                .any(|values| values.len() > 64)
+        {
+            return Err(IndexerError::LogQueryLimit);
+        }
         let mut result = Vec::new();
+        let mut inspected = 0;
+        let mut remaining_bytes = 1_usize << 20;
 
         let blocks_by_number = self.blocks_by_number.read();
         let logs_by_block = self.logs_by_block.read();
@@ -162,14 +187,27 @@ impl BlockIndex {
             };
 
             for log in logs {
+                inspected += 1;
+                if inspected > 10_000 {
+                    return Err(IndexerError::LogQueryLimit);
+                }
                 if !Self::matches_filter(log, filter) {
                     continue;
+                }
+                let bytes = size_of::<IndexedLog>()
+                    .saturating_add(log.topics.len().saturating_mul(size_of::<B256>()))
+                    .saturating_add(log.data.len());
+                remaining_bytes = remaining_bytes
+                    .checked_sub(bytes)
+                    .ok_or(IndexerError::LogQueryLimit)?;
+                if result.len() == 1_000 {
+                    return Err(IndexerError::LogQueryLimit);
                 }
                 result.push(log.clone());
             }
         }
 
-        result
+        Ok(result)
     }
 
     /// Returns the total number of indexed blocks.
@@ -368,17 +406,85 @@ mod tests {
         index.insert_block(create_test_block(1, block_hash), vec![], vec![receipt]);
 
         let filter = LogFilter::new().address(vec![contract_addr]);
-        let logs = index.get_logs(&filter);
+        let logs = index.get_logs(&filter).unwrap();
         assert_eq!(logs.len(), 1);
         assert_eq!(logs[0].address, contract_addr);
 
         let filter = LogFilter::new().topic(0, vec![topic]);
-        let logs = index.get_logs(&filter);
+        let logs = index.get_logs(&filter).unwrap();
         assert_eq!(logs.len(), 1);
 
         let filter = LogFilter::new().address(vec![Address::repeat_byte(0xFF)]);
-        let logs = index.get_logs(&filter);
+        let logs = index.get_logs(&filter).unwrap();
         assert!(logs.is_empty());
+    }
+
+    #[test]
+    fn log_queries_reject_excessive_work_and_results() {
+        let index = BlockIndex::new();
+        assert!(matches!(
+            index.get_logs(&LogFilter::new().to_block(u64::MAX)),
+            Err(IndexerError::LogQueryLimit)
+        ));
+        assert!(matches!(
+            index.get_logs(&LogFilter::new().from_block(2).to_block(1)),
+            Err(IndexerError::InvalidBlockRange { .. })
+        ));
+        assert!(
+            index
+                .get_logs(&LogFilter::new().to_block(9_999))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(matches!(
+            index.get_logs(&LogFilter::new().address(vec![Address::ZERO; 65])),
+            Err(IndexerError::LogQueryLimit)
+        ));
+        assert!(matches!(
+            index.get_logs(&LogFilter::new().topic(0, vec![B256::ZERO; 65])),
+            Err(IndexerError::LogQueryLimit)
+        ));
+        let hash = B256::repeat_byte(1);
+        index.insert_block(create_test_block(1, hash), vec![], vec![]);
+        let mut log = IndexedLog {
+            address: Address::ZERO,
+            topics: vec![],
+            data: Bytes::new(),
+            log_index: 0,
+            block_hash: hash,
+            block_number: 1,
+            transaction_hash: B256::ZERO,
+            transaction_index: 0,
+        };
+        index
+            .logs_by_block
+            .write()
+            .insert(hash, vec![log.clone(); 1_000]);
+        assert_eq!(index.get_logs(&LogFilter::new()).unwrap().len(), 1_000);
+        index
+            .logs_by_block
+            .write()
+            .insert(hash, vec![log.clone(); 1_001]);
+        assert!(matches!(
+            index.get_logs(&LogFilter::new()),
+            Err(IndexerError::LogQueryLimit)
+        ));
+        index
+            .logs_by_block
+            .write()
+            .insert(hash, vec![log.clone(); 10_001]);
+        let unmatched = LogFilter::new().address(vec![Address::repeat_byte(1)]);
+        assert!(matches!(
+            index.get_logs(&unmatched),
+            Err(IndexerError::LogQueryLimit)
+        ));
+        log.data = Bytes::from(vec![0; 1 << 20]);
+        index.logs_by_block.write().insert(hash, vec![log]);
+        assert!(matches!(
+            index.get_logs(&LogFilter::new()),
+            Err(IndexerError::LogQueryLimit)
+        ));
+        assert!(index.get_logs(&unmatched).unwrap().is_empty());
     }
 
     #[test]

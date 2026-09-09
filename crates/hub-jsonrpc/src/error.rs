@@ -35,6 +35,10 @@ pub mod codes {
 /// RPC-specific errors that can occur during request handling.
 #[derive(Debug, Error)]
 pub enum RpcError {
+    /// Request work or response exceeds the service budget.
+    #[error("request limit exceeded: {0}")]
+    LimitExceeded(String),
+
     /// Block not found.
     #[error("block not found")]
     BlockNotFound,
@@ -87,6 +91,7 @@ impl From<RpcError> for ErrorObjectOwned {
             }
             _ => {
                 let (code, message) = match &err {
+                    RpcError::LimitExceeded(_) => (codes::LIMIT_EXCEEDED, err.to_string()),
                     RpcError::BlockNotFound => (codes::RESOURCE_NOT_FOUND, err.to_string()),
                     RpcError::TransactionNotFound => (codes::RESOURCE_NOT_FOUND, err.to_string()),
                     RpcError::AccountNotFound(_) => (codes::RESOURCE_NOT_FOUND, err.to_string()),
