@@ -13,7 +13,12 @@ use hub_domain::{Block, BlockId, EpochMaterial};
 use hub_executor::ExecutionReceipt;
 use hub_indexer::{BlockIndex, LightBlockIndex, StoredEpochMaterial, StoredFinalization};
 use parking_lot::Mutex;
+#[cfg(not(feature = "regolith-history"))]
 use rocksdb::{DB, IteratorMode, WriteBatch, WriteOptions};
+#[cfg(feature = "regolith-history")]
+mod regolith_store;
+#[cfg(feature = "regolith-history")]
+use regolith_store::{HistoryDb as DB, WriteBatch};
 
 use crate::{FinalizationArtifacts, FinalizationLookup, index_finalized_block};
 
@@ -103,7 +108,7 @@ pub struct FinalizedHistory {
 }
 
 impl FinalizedHistory {
-    /// Non-atomic RocksDB memory counters; unsupported properties remain absent.
+    /// Non-atomic backend memory counters; unsupported properties remain absent.
     pub(crate) fn memory_usage(
         &self,
     ) -> Result<std::collections::BTreeMap<&'static str, Option<u64>>> {
@@ -119,6 +124,15 @@ impl FinalizedHistory {
 
     /// Open the history for a specific genesis identity.
     pub fn open(path: impl AsRef<Path>, genesis: &Block) -> Result<Self> {
+        let path = path.as_ref();
+        #[cfg(not(feature = "regolith-history"))]
+        match std::fs::symlink_metadata(path.join("regolith")) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+            Ok(_) => anyhow::bail!(
+                "Regolith history requires a regolith-history build; explicit migration is required"
+            ),
+        }
         let db = DB::open_default(path)?;
         match db.get(FORMAT)? {
             Some(version) => {
@@ -136,10 +150,7 @@ impl FinalizedHistory {
                 );
             }
             None => {
-                ensure!(
-                    db.iterator(IteratorMode::Start).next().is_none(),
-                    "missing finalized history format"
-                );
+                ensure!(store_is_empty(&db)?, "missing finalized history format");
                 let mut batch = WriteBatch::default();
                 batch.put(FORMAT, [1]);
                 batch.put(GENESIS, genesis.id().0);
@@ -394,11 +405,32 @@ fn key(prefix: u8, height: u64) -> [u8; 9] {
     key
 }
 
+#[cfg(not(feature = "regolith-history"))]
 fn write(db: &DB, batch: WriteBatch) -> Result<()> {
     let mut options = WriteOptions::default();
     options.set_sync(true);
     db.write_opt(batch, &options)
         .context("persist finalized history")
+}
+
+fn store_is_empty(db: &DB) -> Result<bool> {
+    #[cfg(feature = "regolith-history")]
+    {
+        db.is_empty()
+    }
+    #[cfg(not(feature = "regolith-history"))]
+    {
+        Ok(db
+            .iterator(IteratorMode::Start)
+            .next()
+            .transpose()?
+            .is_none())
+    }
+}
+
+#[cfg(feature = "regolith-history")]
+fn write(db: &DB, batch: WriteBatch) -> Result<()> {
+    db.write_sync(batch).context("persist finalized history")
 }
 
 #[cfg(test)]

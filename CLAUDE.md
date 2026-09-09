@@ -65,6 +65,9 @@ The finalization callback persists execution and certificate history together
 in one durable batch before returning to Commonware's acknowledgement path. Disk writes run
 on the blocking pool; a failed write stops the actor before acknowledgement.
 Marshal serves the certificate lookup independently of the stateful callback.
+History defaults to RocksDB; the opt-in `regolith-history` build selects Regolith
+with explicit synchronous writes and rejects the other backend's directory layout.
+See [history storage](docs/history-storage.md) for the format and qualification limits.
 Proposal transaction exclusion stops at the published finalized revision, including
 the recovered index head, so it does not fetch pruned finalized ancestors.
 
@@ -269,7 +272,7 @@ most 64 alternatives per address/topic selector, and return at most 1,000 logs.
 The result budget charges 1 MiB for record structures, topics and payload bytes.
 Ranges combine resident revisions with archive fallback under shared budgets.
 Each range holds one history-read slot and decodes at most 64 MiB of encoded
-archive records, charging each record before decoding. RocksDB must fetch the
+archive records, charging each record before decoding. The backend must fetch the
 record to determine its encoded length.
 Queries exceeding a budget fail with RPC code -32005; clients must narrow their
 range or filter. Reversed ranges fail with -32602. Results are never silently
@@ -399,7 +402,7 @@ account performs the revocation; the record retains that account in invalidated_
 Resource diagnostics are opt-in with `RUST_LOG=warn,hub_diagnostics=debug`.
 Every 30 seconds the node logs existing Commonware metrics, resident execution
 index counts and accounted revision bytes, finalization/epoch cache entries and
-buffer capacity, and RocksDB history memtable/table-reader/block-cache byte counters.
+buffer capacity, and history backend memtable/table-reader/block-cache byte counters.
 Collection runs off the async executor; disabled diagnostics start no sampler.
 Counters are non-atomic and exclude other allocations. Unsupported properties
 remain absent, and collection failures are logged rather than reported as zero.

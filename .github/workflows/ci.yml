@@ -252,6 +252,9 @@ jobs:
           --test snapshot_catchup
           -- --test-threads=1 --nocapture
 
+      - name: Regolith history invariants
+        run: cargo test --frozen -p hub-node --lib --features regolith-history history::
+
       - name: Build crash-injection node
         run: cargo build --frozen -p hubd --features fault-injection
 
