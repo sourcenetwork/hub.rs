@@ -65,14 +65,19 @@ JSONL format version 2 reports:
   arrivals and drain. `resource_configuration` maps row PIDs to node indices;
   each `resources` record retains the raw `pid,rss,time` rows. RSS is in KiB;
   CPU time uses the platform's cumulative `ps` time format, not wall time.
-- Logical data-directory bytes before and after timing, including node logs.
-  These scans do not follow symlinks and run outside the measured interval.
+- Logical data-directory bytes, allocated file bytes, and regular-file counts
+  before and after timing, including node logs. These scans do not follow
+  symlinks and run outside the measured interval. Storage rows retain
+  `logical_bytes` and add `allocated_file_bytes` and `regular_files`.
 
 Resource collection requires `ps`. Failed samples/scans carry an `error` field;
 missing measurements are not zero usage. Validate PID coverage when analyzing
 samples. One-second sampling can miss short memory peaks. Directory sizes are
-live, non-atomic observations rather than allocated disk usage or consistent
-snapshots. Process sampling runs during the workload and can perturb results.
+live, non-atomic observations. Allocated file bytes use Unix file block counts
+in 512-byte units; they exclude directory metadata and do not deduplicate hard
+links or shared filesystem extents. They measure neither physical-device writes
+nor write amplification. Sparse files can have logical sizes larger than their
+allocated size. Process sampling runs during the workload and can perturb results.
 
 Arrivals follow their schedule even under overload. When the outstanding limit
 is reached, the operation is recorded as unsent rather than delaying its arrival.

@@ -1,4 +1,4 @@
-use std::{io, path::Path, time::Duration};
+use std::{io, os::unix::fs::MetadataExt, path::Path, time::Duration};
 
 use hub_e2e::cluster::TestCluster;
 use serde_json::json;
@@ -8,41 +8,102 @@ pub(super) async fn storage(cluster: &TestCluster, phase: &str) {
     for index in 0..4 {
         let path = cluster.node(index).data_dir.clone();
         let started = Instant::now();
-        let result = tokio::task::spawn_blocking(move || logical_bytes(&path))
+        let result = tokio::task::spawn_blocking(move || storage_usage(&path))
             .await
             .expect("storage sampler task");
-        let (bytes, error) = match result {
-            Ok(bytes) => (Some(bytes), None),
+        let (usage, error) = match result {
+            Ok(usage) => (Some(usage), None),
             Err(error) => (None, Some(error.to_string())),
         };
         println!(
             "{}",
             json!({
                 "kind": "storage", "phase": phase, "node": index,
-                "logical_bytes": bytes, "error": error,
+                "logical_bytes": usage.as_ref().map(|s| s.logical_bytes),
+                "allocated_file_bytes": usage.as_ref().map(|s| s.allocated_file_bytes),
+                "regular_files": usage.as_ref().map(|s| s.regular_files),
+                "error": error,
                 "scan_ms": started.elapsed().as_secs_f64() * 1000.0,
             })
         );
     }
 }
 
-fn logical_bytes(path: &Path) -> io::Result<u64> {
-    let mut bytes = 0u64;
+#[derive(Default)]
+struct StorageUsage {
+    logical_bytes: u64,
+    allocated_file_bytes: u64,
+    regular_files: u64,
+}
+
+fn storage_usage(path: &Path) -> io::Result<StorageUsage> {
+    let mut total = StorageUsage::default();
     for entry in std::fs::read_dir(path)? {
         let entry = entry?;
         let metadata = entry.path().symlink_metadata()?;
-        let size = if metadata.is_dir() {
-            logical_bytes(&entry.path())?
+        let usage = if metadata.is_dir() {
+            storage_usage(&entry.path())?
         } else if metadata.is_file() {
-            metadata.len()
+            StorageUsage {
+                logical_bytes: metadata.len(),
+                allocated_file_bytes: metadata
+                    .blocks()
+                    .checked_mul(512)
+                    .ok_or_else(size_overflow)?,
+                regular_files: 1,
+            }
         } else {
-            0
+            continue;
         };
-        bytes = bytes
-            .checked_add(size)
-            .ok_or_else(|| io::Error::other("storage size overflow"))?;
+        total.logical_bytes = total
+            .logical_bytes
+            .checked_add(usage.logical_bytes)
+            .ok_or_else(size_overflow)?;
+        total.allocated_file_bytes = total
+            .allocated_file_bytes
+            .checked_add(usage.allocated_file_bytes)
+            .ok_or_else(size_overflow)?;
+        total.regular_files = total
+            .regular_files
+            .checked_add(usage.regular_files)
+            .ok_or_else(size_overflow)?;
     }
-    Ok(bytes)
+    Ok(total)
+}
+
+fn size_overflow() -> io::Error {
+    io::Error::other("storage size overflow")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn storage_usage_counts_nested_files_without_following_symlinks() {
+        let root = tempfile::tempdir().unwrap();
+        let nested = root.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        let first = root.path().join("record");
+        let second = nested.join("journal");
+        std::fs::write(&first, b"record").unwrap();
+        std::fs::File::create(&second)
+            .unwrap()
+            .set_len(1 << 20)
+            .unwrap();
+        std::os::unix::fs::symlink(root.path(), nested.join("cycle")).unwrap();
+        std::os::unix::fs::symlink(&first, root.path().join("alias")).unwrap();
+        let usage = storage_usage(root.path()).unwrap();
+        assert_eq!(usage.logical_bytes, 6 + (1 << 20));
+        assert_eq!(usage.regular_files, 2);
+        assert_eq!(
+            usage.allocated_file_bytes,
+            [first, second]
+                .iter()
+                .map(|path| std::fs::metadata(path).unwrap().blocks() * 512)
+                .sum::<u64>()
+        );
+    }
 }
 
 pub(super) fn start(cluster: &TestCluster) -> (oneshot::Sender<()>, JoinHandle<()>) {
