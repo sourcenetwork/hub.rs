@@ -25,7 +25,7 @@ fn native_genesis_recovers_partial_initialization_and_binds_configuration() {
             tokio::Runner::new(runtime.clone()).start(|context| async move {
                 persist(
                     &directory.join("native-genesis.intent"),
-                    crate::native_genesis::fingerprint(&genesis)
+                    crate::native_genesis::fingerprint(genesis)
                         .unwrap()
                         .as_slice(),
                 )
@@ -211,7 +211,7 @@ fn legacy_state_and_missing_genesis_with_history_require_recovery() {
         let genesis = &genesis;
         persist(
             &directory.join("native-genesis.intent"),
-            crate::native_genesis::fingerprint(&genesis)
+            crate::native_genesis::fingerprint(genesis)
                 .unwrap()
                 .as_slice(),
         )

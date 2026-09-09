@@ -62,6 +62,9 @@ Secret-store updates write a complete temporary file, sync its contents, replace
 the destination atomically and sync the containing directory. Cloned store handles
 serialize updates and publish in-memory changes after persistence succeeds. On
 Unix, replacement files have mode `0600`. Debug output excludes private material.
+Loading validates encoded shares, seeds and dealings before making them available.
+Malformed material or dealing keys stop startup without rewriting the file; they
+are not treated as missing shares. Only a missing file starts an empty store.
 The JSON file remains plaintext under the operating system's access controls.
 
 An existing malformed or empty secret file fails startup and is preserved.

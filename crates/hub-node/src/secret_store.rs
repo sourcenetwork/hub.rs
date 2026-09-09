@@ -7,7 +7,7 @@ use std::{
     sync::Arc,
 };
 
-use commonware_codec::{DecodeExt as _, Encode as _};
+use commonware_codec::{Decode, DecodeExt as _, Encode as _};
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
     PublicKey,
@@ -47,12 +47,28 @@ impl FileSecretStore {
     /// Open the store at `path`, starting empty if the file does not exist.
     pub fn load(path: impl Into<PathBuf>) -> anyhow::Result<Self> {
         let path = path.into();
-        let inner = if path.exists() {
-            let contents = fs::read_to_string(&path)?;
-            serde_json::from_str(&contents)?
-        } else {
-            SecretData::default()
+        let inner: SecretData = match fs::read_to_string(&path) {
+            Ok(contents) => serde_json::from_str(&contents)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => SecretData::default(),
+            Err(error) => return Err(error.into()),
         };
+        for raw in inner.shares.values() {
+            decode_secret::<Share>(raw)?;
+        }
+        for raw in inner.seeds.values() {
+            decode_secret::<Summary>(raw)?;
+        }
+        for (key, raw) in &inner.dealings {
+            let valid_key = key.split_once(':').is_some_and(|(epoch, dealer)| {
+                epoch
+                    .parse::<u64>()
+                    .is_ok_and(|value| value.to_string() == epoch)
+                    && hex::decode(dealer)
+                        .is_ok_and(|bytes| !bytes.is_empty() && hex::encode(bytes) == dealer)
+            });
+            anyhow::ensure!(valid_key, "invalid stored DKG dealing key");
+            decode_secret::<DealerPrivMsg>(raw)?;
+        }
         Ok(Self {
             path,
             inner: Arc::new(Mutex::new(inner)),
@@ -90,6 +106,11 @@ impl FileSecretStore {
     }
 }
 
+fn decode_secret<T: Decode<Cfg = ()>>(raw: &str) -> anyhow::Result<T> {
+    let bytes = hex::decode(raw).map_err(|_| anyhow::anyhow!("invalid stored DKG encoding"))?;
+    T::decode(bytes.as_slice()).map_err(|_| anyhow::anyhow!("invalid stored DKG material"))
+}
+
 impl dkg::SecretStore for FileSecretStore {
     async fn put_share(&mut self, epoch: Epoch, share: Share) {
         self.put_initial_share(epoch, share)
@@ -98,8 +119,7 @@ impl dkg::SecretStore for FileSecretStore {
 
     async fn get_share(&mut self, epoch: Epoch) -> Option<Share> {
         let raw = self.inner.lock().shares.get(&epoch.get()).cloned()?;
-        let bytes = hex::decode(&raw).ok()?;
-        Share::decode(bytes.as_slice()).ok()
+        Some(decode_secret(&raw).expect("validated stored DKG share"))
     }
 
     async fn put_seed(&mut self, epoch: Epoch, seed: Summary) {
@@ -111,8 +131,7 @@ impl dkg::SecretStore for FileSecretStore {
 
     async fn get_seed(&mut self, epoch: Epoch) -> Option<Summary> {
         let raw = self.inner.lock().seeds.get(&epoch.get()).cloned()?;
-        let bytes = hex::decode(&raw).ok()?;
-        Summary::decode(bytes.as_slice()).ok()
+        Some(decode_secret(&raw).expect("validated stored DKG seed"))
     }
 
     async fn put_dealing<P: PublicKey>(&mut self, epoch: Epoch, dealer: P, private: DealerPrivMsg) {
@@ -130,8 +149,7 @@ impl dkg::SecretStore for FileSecretStore {
     ) -> Option<DealerPrivMsg> {
         let key = Self::dealing_key(epoch, dealer);
         let raw = self.inner.lock().dealings.get(&key).cloned()?;
-        let bytes = hex::decode(&raw).ok()?;
-        DealerPrivMsg::decode(bytes.as_slice()).ok()
+        Some(decode_secret(&raw).expect("validated stored DKG dealing"))
     }
 
     async fn prune(&mut self, min: Epoch) {
