@@ -148,3 +148,9 @@ methods. The signed request claim binds the exact operation and genesis, and
 retries return the original successful outcome. See
 [operation-identities.md](operation-identities.md) for deadlines, resource
 budgets, verification and recovery semantics.
+
+`HubClient::read_relay_grant` verifies an issuer's operator grant against independently
+configured consensus trust and a caller-selected minimum revision. It returns
+scopes, expiry and grant generation, or certified absence before authorization or
+after revocation. Expired grants may remain stored; presence alone does not
+authorize an assertion. Consumers still check its scope, generation and lifetime.

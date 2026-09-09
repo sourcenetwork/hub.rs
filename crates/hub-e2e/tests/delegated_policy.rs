@@ -363,11 +363,24 @@ async fn native_relay_grants_bind_workers_and_survive_revocation_restart() {
         .unwrap();
     cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
     let client = HubClient::new(cluster.node(0).rpc_url());
+    cluster
+        .observe(Duration::from_millis(100))
+        .wait_for_height(3, Duration::from_secs(30))
+        .await
+        .unwrap();
     let key = SigningKey::from_slice(&[42; 32]).unwrap();
     let issuer = hub_crypto::secp256k1::did_from_secp256k1_pubkey(
         key.verifying_key().to_encoded_point(true).as_bytes(),
     )
     .unwrap();
+    assert!(
+        client
+            .read_relay_grant(&issuer, 0, &trusted)
+            .await
+            .unwrap()
+            .value
+            .is_none()
+    );
     let owner = format!("did:opk:{}", "ab".repeat(32));
     let first = BlsSigner::new(7u64.into(), deployment).unwrap();
     let second = BlsSigner::new(8u64.into(), deployment).unwrap();
@@ -500,7 +513,8 @@ async fn native_relay_grants_bind_workers_and_survive_revocation_restart() {
     );
 
     let replacement =
-        administration_support::approve(&client, AdministrativeCommand::SetRelay(grant), 1).await;
+        administration_support::approve(&client, AdministrativeCommand::SetRelay(grant.clone()), 1)
+            .await;
     assert_eq!(
         submit(
             &client,
@@ -527,6 +541,10 @@ async fn native_relay_grants_bind_workers_and_survive_revocation_restart() {
         .status,
         0
     );
+    let selected = client.read_relay_grant(&issuer, 0, &trusted).await.unwrap();
+    let state = selected.value.unwrap();
+    assert_eq!(state.grant, grant);
+    assert_eq!(state.sequence, 1);
     let replacement_token = token(&second, 1);
     assert_eq!(
         submit(
@@ -539,6 +557,23 @@ async fn native_relay_grants_bind_workers_and_survive_revocation_restart() {
         .await
         .status,
         1
+    );
+    let replica = HubClient::new(cluster.node(3).rpc_url());
+    policy(&replica, &id, selected.revision, &trusted).await;
+    let observed = replica
+        .read_relay_grant(&issuer, selected.revision, &trusted)
+        .await
+        .unwrap();
+    assert_eq!(observed.value.as_ref(), Some(&state));
+    cluster.restart_node(3).unwrap();
+    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    assert_eq!(
+        replica
+            .read_relay_grant(&issuer, observed.revision, &trusted)
+            .await
+            .unwrap()
+            .value,
+        Some(state)
     );
     let revoked = administration_support::approve(
         &client,
@@ -557,10 +592,16 @@ async fn native_relay_grants_bind_workers_and_survive_revocation_restart() {
     )
     .await;
     assert_eq!(receipt.status, 1);
-    let replica = HubClient::new(cluster.node(3).rpc_url());
     policy(&replica, &id, receipt.block_number, &trusted).await;
     cluster.restart_node(3).unwrap();
     cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    let absent = replica
+        .read_relay_grant(&issuer, receipt.block_number, &trusted)
+        .await
+        .unwrap();
+    assert!(absent.revision >= receipt.block_number);
+    assert!(absent.value.is_none());
+
     assert_eq!(
         submit(
             &replica,

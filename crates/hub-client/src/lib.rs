@@ -31,6 +31,8 @@ mod record;
 /// Certified registration commitment discovery.
 pub mod registrations;
 pub mod relationships;
+/// Certified operator relay grants.
+pub mod relays;
 /// Threshold-service ring commands and certified state.
 pub mod rings;
 /// Encrypted documents and signing derivations.
