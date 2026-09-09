@@ -161,7 +161,7 @@ impl BulletinModule {
         let policy_id = self.ensure_policy(acp)?;
         let namespace_id = format!("bulletin/{}", namespace);
 
-        if self.has_namespace(&namespace_id) {
+        if self.has_namespace(&namespace_id)? {
             return Err(BulletinError::NamespaceAlreadyExists {
                 namespace: namespace.to_string(),
             });
@@ -206,7 +206,7 @@ impl BulletinModule {
             .ok_or(BulletinError::PolicyNotInitialized)?;
         let namespace_id = format!("bulletin/{}", namespace);
 
-        if !self.has_namespace(&namespace_id) {
+        if !self.has_namespace(&namespace_id)? {
             return Err(BulletinError::NamespaceNotFound {
                 namespace: namespace.to_string(),
             });
@@ -239,7 +239,7 @@ impl BulletinModule {
 
         let post_id = Self::generate_post_id(&namespace_id, payload);
 
-        if self.get_post(&namespace_id, &post_id).is_some() {
+        if self.get_post(&namespace_id, &post_id)?.is_some() {
             return Err(BulletinError::PostAlreadyExists {
                 namespace: namespace.to_string(),
                 id: post_id,
@@ -277,14 +277,14 @@ impl BulletinModule {
             .ok_or(BulletinError::PolicyNotInitialized)?;
         let namespace_id = format!("bulletin/{}", namespace);
 
-        if !self.has_namespace(&namespace_id) {
+        if !self.has_namespace(&namespace_id)? {
             return Err(BulletinError::NamespaceNotFound {
                 namespace: namespace.to_string(),
             });
         }
 
         if self
-            .get_collaborator(&namespace_id, collaborator_did)
+            .get_collaborator(&namespace_id, collaborator_did)?
             .is_some()
         {
             return Err(BulletinError::CollaboratorAlreadyExists {
@@ -335,14 +335,14 @@ impl BulletinModule {
             .ok_or(BulletinError::PolicyNotInitialized)?;
         let namespace_id = format!("bulletin/{}", namespace);
 
-        if !self.has_namespace(&namespace_id) {
+        if !self.has_namespace(&namespace_id)? {
             return Err(BulletinError::NamespaceNotFound {
                 namespace: namespace.to_string(),
             });
         }
 
         if self
-            .get_collaborator(&namespace_id, collaborator_did)
+            .get_collaborator(&namespace_id, collaborator_did)?
             .is_none()
         {
             return Err(BulletinError::CollaboratorNotFound {
@@ -393,7 +393,7 @@ impl BulletinModule {
     /// - `"namespace/" + namespace_id`
     pub fn query_namespace(&self, namespace: &str) -> Result<Namespace> {
         let namespace_id = format!("bulletin/{}", namespace);
-        self.get_namespace(&namespace_id)
+        self.get_namespace(&namespace_id)?
             .ok_or(BulletinError::NamespaceNotFound {
                 namespace: namespace.to_string(),
             })
@@ -411,7 +411,7 @@ impl BulletinModule {
     /// List namespace collaborators within the collection work budget.
     pub fn query_namespace_collaborators(&self, namespace: &str) -> Result<Vec<Collaborator>> {
         let namespace_id = format!("bulletin/{}", namespace);
-        if !self.has_namespace(&namespace_id) {
+        if !self.has_namespace(&namespace_id)? {
             return Err(BulletinError::NamespaceNotFound {
                 namespace: namespace.to_string(),
             });
@@ -426,7 +426,7 @@ impl BulletinModule {
     /// List namespace posts within the collection work budget.
     pub fn query_namespace_posts(&self, namespace: &str) -> Result<Vec<Post>> {
         let namespace_id = format!("bulletin/{}", namespace);
-        if !self.has_namespace(&namespace_id) {
+        if !self.has_namespace(&namespace_id)? {
             return Err(BulletinError::NamespaceNotFound {
                 namespace: namespace.to_string(),
             });
@@ -457,12 +457,12 @@ impl BulletinModule {
     /// - `PostNotFound` — post not found at that key
     pub fn query_post(&self, namespace: &str, id: &str) -> Result<Post> {
         let namespace_id = format!("bulletin/{}", namespace);
-        if !self.has_namespace(&namespace_id) {
+        if !self.has_namespace(&namespace_id)? {
             return Err(BulletinError::NamespaceNotFound {
                 namespace: namespace.to_string(),
             });
         }
-        self.get_post(&namespace_id, id)
+        self.get_post(&namespace_id, id)?
             .ok_or(BulletinError::PostNotFound {
                 namespace: namespace.to_string(),
                 id: id.to_string(),
@@ -595,14 +595,14 @@ impl BulletinModule {
         self.store.put(&keys::namespace_key(&namespace.id), bytes);
     }
 
-    fn get_namespace(&self, namespace_id: &str) -> Option<Namespace> {
-        self.store
-            .get(&keys::namespace_key(namespace_id))
-            .and_then(|bytes| borsh::from_slice(&bytes).ok())
+    fn get_namespace(&self, namespace_id: &str) -> Result<Option<Namespace>> {
+        self.get_record(&keys::namespace_key(namespace_id), |record: &Namespace| {
+            keys::namespace_key(&record.id)
+        })
     }
 
-    fn has_namespace(&self, namespace_id: &str) -> bool {
-        self.store.has(&keys::namespace_key(namespace_id))
+    fn has_namespace(&self, namespace_id: &str) -> Result<bool> {
+        Ok(self.get_namespace(namespace_id)?.is_some())
     }
 
     // ── Storage — Collaborators ────────────────────────────────────────
@@ -613,10 +613,15 @@ impl BulletinModule {
         self.store.put(&key, bytes);
     }
 
-    fn get_collaborator(&self, namespace_id: &str, collaborator_did: &str) -> Option<Collaborator> {
-        self.store
-            .get(&keys::collaborator_key(namespace_id, collaborator_did))
-            .and_then(|bytes| borsh::from_slice(&bytes).ok())
+    fn get_collaborator(
+        &self,
+        namespace_id: &str,
+        collaborator_did: &str,
+    ) -> Result<Option<Collaborator>> {
+        self.get_record(
+            &keys::collaborator_key(namespace_id, collaborator_did),
+            |record: &Collaborator| keys::collaborator_key(&record.namespace, &record.did),
+        )
     }
 
     fn delete_collaborator(&mut self, namespace_id: &str, collaborator_did: &str) {
@@ -632,10 +637,10 @@ impl BulletinModule {
         self.store.put(&key, bytes);
     }
 
-    fn get_post(&self, namespace_id: &str, post_id: &str) -> Option<Post> {
-        self.store
-            .get(&keys::post_key(namespace_id, post_id))
-            .and_then(|bytes| borsh::from_slice(&bytes).ok())
+    fn get_post(&self, namespace_id: &str, post_id: &str) -> Result<Option<Post>> {
+        self.get_record(&keys::post_key(namespace_id, post_id), |record: &Post| {
+            keys::post_key(&record.namespace, &record.id)
+        })
     }
 
     // ── Storage — Utility ──────────────────────────────────────────────
@@ -889,15 +894,18 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires ACP handlers (todo!() stubs would panic)"]
-    fn register_namespace_fails_without_policy() {
+    fn register_namespace_initializes_policy() {
         let mut m = BulletinModule::default();
         let mut acp = crate::acp::AcpModule::new();
         let block_ctx = make_block_ctx(100, 10);
         let tx_ctx = make_tx_ctx("0xABCD");
         let did = make_did("did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK");
-        let result = m.register_namespace(&mut acp, &block_ctx, &tx_ctx, &did, "ns1");
-        assert!(result.is_err());
+        let namespace = m
+            .register_namespace(&mut acp, &block_ctx, &tx_ctx, &did, "ns1")
+            .unwrap();
+        assert!(m.get_policy_id().unwrap().is_some());
+        assert_eq!(m.query_namespace("ns1").unwrap(), namespace);
+        assert_eq!(namespace.owner_did, did.to_string());
     }
 
     #[test]
@@ -991,9 +999,9 @@ mod tests {
             },
         };
         m.set_namespace(&ns);
-        assert!(m.has_namespace("bulletin/test"));
-        assert_eq!(m.get_namespace("bulletin/test").unwrap(), ns);
-        assert!(m.get_namespace("missing").is_none());
+        assert!(m.has_namespace("bulletin/test").unwrap());
+        assert_eq!(m.get_namespace("bulletin/test").unwrap().unwrap(), ns);
+        assert!(m.get_namespace("missing").unwrap().is_none());
     }
 
     #[test]
@@ -1006,11 +1014,13 @@ mod tests {
         m.set_collaborator(&c);
         let got = m
             .get_collaborator("bulletin/ns1", "did:key:z6Mkabc")
+            .unwrap()
             .unwrap();
         assert_eq!(got, c);
         m.delete_collaborator("bulletin/ns1", "did:key:z6Mkabc");
         assert!(
             m.get_collaborator("bulletin/ns1", "did:key:z6Mkabc")
+                .unwrap()
                 .is_none()
         );
     }
@@ -1026,7 +1036,7 @@ mod tests {
             proof: vec![2],
         };
         m.set_post(&post);
-        let got = m.get_post("bulletin/ns1", "post1").unwrap();
+        let got = m.get_post("bulletin/ns1", "post1").unwrap().unwrap();
         assert_eq!(got, post);
     }
 }

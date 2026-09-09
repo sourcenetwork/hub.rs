@@ -11,6 +11,23 @@ fn decode<T: borsh::BorshDeserialize>(bytes: &[u8]) -> Result<T> {
 }
 
 impl BulletinModule {
+    pub(super) fn get_record<T: borsh::BorshDeserialize>(
+        &self,
+        key: &[u8],
+        record_key: impl FnOnce(&T) -> Vec<u8>,
+    ) -> Result<Option<T>> {
+        let Some(bytes) = self.store.get_ref(key) else {
+            return Ok(None);
+        };
+        let record = decode(bytes)?;
+        if record_key(&record) != key {
+            return Err(BulletinError::State(
+                "bulletin key does not match its record".into(),
+            ));
+        }
+        Ok(Some(record))
+    }
+
     /// Reject malformed records and legacy keys before publishing restored native state.
     pub fn validate_storage_keys(&self) -> Result<()> {
         for prefix in [
@@ -45,9 +62,68 @@ impl BulletinModule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kv_store::ModuleKvStore;
     use crate::bulletin::types::BulletinParams;
+    use crate::kv_store::ModuleKvStore;
     use crate::{kv_store::InMemoryKvStore, types::Timestamp};
+
+    #[test]
+    fn point_reads_reject_corruption_and_wrong_identity_without_changing_state() {
+        let namespace = Namespace {
+            id: "bulletin/other".into(),
+            creator: "signer".into(),
+            owner_did: "owner".into(),
+            created_at: Timestamp {
+                seconds: 1,
+                block_height: 1,
+            },
+        };
+        let post = Post {
+            id: "other".into(),
+            namespace: "bulletin/ns".into(),
+            creator_did: "owner".into(),
+            payload: vec![1],
+            proof: vec![],
+        };
+        let collaborator = Collaborator {
+            did: "other".into(),
+            namespace: "bulletin/ns".into(),
+        };
+        for malformed in [true, false] {
+            let encode = |value: Vec<u8>| if malformed { vec![255] } else { value };
+            let module = BulletinModule::from_store(InMemoryKvStore::from_pairs(vec![
+                (
+                    keys::namespace_key("bulletin/ns"),
+                    encode(borsh::to_vec(&namespace).unwrap()),
+                ),
+                (
+                    keys::post_key("bulletin/ns", "id"),
+                    encode(borsh::to_vec(&post).unwrap()),
+                ),
+                (
+                    keys::collaborator_key("bulletin/ns", "reader"),
+                    encode(borsh::to_vec(&collaborator).unwrap()),
+                ),
+            ]));
+            let before = module.store().serialize();
+            assert!(matches!(
+                module.query_namespace("ns"),
+                Err(BulletinError::State(_))
+            ));
+            assert!(matches!(
+                module.has_namespace("bulletin/ns"),
+                Err(BulletinError::State(_))
+            ));
+            assert!(matches!(
+                module.get_post("bulletin/ns", "id"),
+                Err(BulletinError::State(_))
+            ));
+            assert!(matches!(
+                module.get_collaborator("bulletin/ns", "reader"),
+                Err(BulletinError::State(_))
+            ));
+            assert_eq!(module.store().serialize(), before);
+        }
+    }
 
     #[test]
     fn restored_keys_reject_legacy_aliases_without_rewriting_records() {
