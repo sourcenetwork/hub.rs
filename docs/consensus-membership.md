@@ -85,3 +85,15 @@ qualification.
 ```sh
 HUBD_BINARY=/path/to/hubd cargo test -p hub-e2e --test native_membership
 ```
+
+`HubClient::read_administration` verifies the current operator configuration and
+next administrative sequence against independently configured consensus trust.
+It returns the selected revision, timestamp and decoded state, or certified
+absence if administration is not initialized. Decoding rejects malformed operator
+policies and incomplete or trailing record bytes. Use a minimum revision from a
+certified administrative receipt to observe its resulting configuration.
+
+The existing `administration` convenience method does not authenticate its RPC
+response. Use the certified read when selecting an operator policy or checking
+rotation recovery. A certified operator configuration does not grant authority to
+an unlisted signer; execution still requires the configured approval threshold.

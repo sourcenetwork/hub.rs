@@ -9,14 +9,23 @@ use hub_client::{
     BlsSigner, ClientError, EvmSigner, HubClient,
     administration::{AdministrativeCommand, OperatorPolicy, approve_administration},
 };
-use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, TestCluster};
+use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, KeySet, TestCluster};
 use hub_modules::acp::types::AcpParams;
 use k256::ecdsa::SigningKey;
 
 #[tokio::test]
 async fn operator_rotation_and_sequence_survive_replica_restart() {
+    let trusted = *KeySet::builder()
+        .seed(9099)
+        .build()
+        .unwrap()
+        .epoch_info()
+        .output
+        .public()
+        .public();
     let mut cluster = TestCluster::builder()
         .nodes(4)
+        .seed(9099)
         .genesis(GenesisBuilder::devnet().operators(support::operators()))
         .preset(ConsensusPreset::Normal)
         .build()
@@ -43,7 +52,16 @@ async fn operator_rotation_and_sequence_survive_replica_restart() {
             .await,
         Err(ClientError::TxReverted { .. })
     ));
-    assert_eq!(client.administration().await.unwrap().unwrap().sequence, 0);
+    assert_eq!(
+        client
+            .read_administration(0, &trusted)
+            .await
+            .unwrap()
+            .value
+            .unwrap()
+            .sequence,
+        0
+    );
     client
         .native_apply_administration(&submitter, &approved)
         .await
@@ -80,7 +98,12 @@ async fn operator_rotation_and_sequence_survive_replica_restart() {
         .unwrap();
     cluster.restart_node(3).unwrap();
     cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
-    let restored = replica.administration().await.unwrap().unwrap();
+    let restored = replica
+        .read_administration(receipt.block_number, &trusted)
+        .await
+        .unwrap()
+        .value
+        .unwrap();
     assert_eq!(restored.sequence, 2);
     assert_eq!(restored.policy, next_policy);
     assert!(matches!(
@@ -113,12 +136,30 @@ async fn operator_rotation_and_sequence_survive_replica_restart() {
             .await,
         Err(ClientError::TxReverted { .. })
     ));
-    assert_eq!(replica.administration().await.unwrap().unwrap().sequence, 2);
+    assert_eq!(
+        replica
+            .read_administration(receipt.block_number, &trusted)
+            .await
+            .unwrap()
+            .value
+            .unwrap()
+            .sequence,
+        2
+    );
     let applied = replica
         .native_apply_administration(&submitter, &change)
         .await
         .unwrap();
-    assert_eq!(replica.administration().await.unwrap().unwrap().sequence, 3);
+    assert_eq!(
+        replica
+            .read_administration(receipt.block_number, &trusted)
+            .await
+            .unwrap()
+            .value
+            .unwrap()
+            .sequence,
+        3
+    );
     assert_eq!(
         serde_json::from_slice::<AcpParams>(&replica.get_acp_params().await.unwrap()).unwrap(),
         AcpParams::default()

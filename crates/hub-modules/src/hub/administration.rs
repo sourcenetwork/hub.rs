@@ -8,7 +8,8 @@ use super::{HubError, HubModule, Result};
 use crate::acp::{AcpModule, types::AcpParams};
 use crate::kv_store::ModuleKvStore;
 
-const STATE_KEY: &[u8] = b"admin/v1";
+/// Native record key for the current operator policy and administrative sequence.
+pub const STATE_KEY: &[u8] = b"admin/v1";
 const SIGNING_NAMESPACE: &[u8] = b"vera/admin/v1\0";
 /// Maximum number of operator keys in one approval policy.
 pub const MAX_OPERATORS: usize = 128;
