@@ -149,9 +149,12 @@ impl AcpModule {
             metadata,
         };
 
+        let policy_id = zanzibar_policy.id.clone();
+        if self.store.has(&keys::policy_key(&policy_id)) {
+            return Err(AcpError::State("policy identifier already exists".into()));
+        }
         self.store
             .put(keys::POLICY_COUNTER_KEY, counter.to_be_bytes().to_vec());
-        let policy_id = zanzibar_policy.id.clone();
         self.set_policy_record(&policy_id, &record);
         Arc::make_mut(&mut self.zanzibar_policies).insert(policy_id, zanzibar_policy);
 
@@ -739,6 +742,9 @@ impl AcpModule {
         let next = counter
             .checked_add(1)
             .ok_or_else(|| AcpError::State("record counter exhausted".into()))?;
+        if self.store.has(&keys::commitment_key(next)) {
+            return Err(AcpError::State("commitment identifier already exists".into()));
+        }
         commitment.id = next;
         self.update_commitment(commitment)?;
         self.store
@@ -800,13 +806,16 @@ impl AcpModule {
         let next = counter
             .checked_add(1)
             .ok_or_else(|| AcpError::State("record counter exhausted".into()))?;
+        if self.store.has(&keys::amendment_event_key(next)) {
+            return Err(AcpError::State("amendment identifier already exists".into()));
+        }
+        event.id = next;
+        let bytes = borsh::to_vec(event)
+            .map_err(|e| AcpError::State(format!("serialize amendment event: {e}")))?;
         self.store.put(
             &keys::amendment_event_counter_key(),
             next.to_be_bytes().to_vec(),
         );
-        event.id = next;
-        let bytes = borsh::to_vec(event)
-            .map_err(|e| AcpError::State(format!("serialize amendment event: {e}")))?;
         self.store.put(&keys::amendment_event_key(event.id), bytes);
         self.store.put(
             &keys::amendment_event_policy_index_key(&event.policy_id, event.id),
