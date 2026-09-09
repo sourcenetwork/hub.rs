@@ -6,7 +6,25 @@ impl AcpModule {
         for (key, _) in self.store.prefix_iter(keys::POLICY_PREFIX) {
             let id = std::str::from_utf8(&key[keys::POLICY_PREFIX.len()..])
                 .map_err(|_| AcpError::State("invalid policy key".into()))?;
-            self.get_policy_record(id)?;
+            let record = self
+                .get_policy_record(id)?
+                .ok_or_else(|| AcpError::State("restored policy record is missing".into()))?;
+            let mut compiled = Self::compile_policy(
+                &record.raw_policy,
+                &record.marshal_type,
+                0,
+                Some(record.policy.specification),
+            )
+            .map_err(|error| AcpError::State(format!("invalid restored policy: {error}")))?;
+            compiled.id = id.to_owned();
+            let encode = |policy: &Policy| {
+                serde_json::to_vec(policy).map_err(|error| AcpError::State(error.to_string()))
+            };
+            if encode(&compiled)? != encode(&record.policy)? {
+                return Err(AcpError::State(
+                    "restored policy differs from its definition".into(),
+                ));
+            }
         }
         for (key, bytes) in self.store.prefix_iter(keys::RELATIONSHIP_PREFIX) {
             let record: RelationshipRecord = serde_json::from_slice(bytes)
@@ -84,6 +102,61 @@ impl AcpModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restored_policy_must_match_its_definition_after_edit() {
+        let owner = Did::new("did:key:owner").unwrap();
+        let resources = "resources:\n  - name: file\n    permissions:\n      - name: read\n        expr: owner\n      - name: write\n        expr: owner\n";
+        for specification in ["", "spec: defra\n"] {
+            let mut module = AcpModule::new();
+            let record = module
+                .create_policy(
+                    &owner,
+                    &format!("name: original\n{specification}{resources}"),
+                    PolicyMarshalingType::ShortYaml,
+                )
+                .unwrap();
+            let id = record.policy.id;
+            module
+                .edit_policy(
+                    &owner,
+                    &id,
+                    &format!("name: edited\n{resources}"),
+                    PolicyMarshalingType::ShortYaml,
+                )
+                .unwrap();
+            let restored = AcpModule::from_store(module.store.clone());
+            restored.validate_restored_state().unwrap();
+            let record = restored.query_policy(&id).unwrap();
+            let mut changed_graph = record.clone();
+            changed_graph.policy.resources.clear();
+            let mut changed_source = record.clone();
+            changed_source.raw_policy = format!("name: another\n{resources}");
+            let mut invalid_source = record.clone();
+            invalid_source.raw_policy = "not a policy".into();
+            let mut unknown_encoding = record;
+            unknown_encoding.marshal_type = PolicyMarshalingType::Unknown;
+            for invalid in [
+                changed_graph,
+                changed_source,
+                invalid_source,
+                unknown_encoding,
+            ] {
+                let mut store = module.store.clone();
+                store.put(
+                    &keys::policy_key(&id),
+                    serde_json::to_vec(&invalid).unwrap(),
+                );
+                let restored = AcpModule::from_store(store);
+                let before = restored.store.serialize();
+                assert!(matches!(
+                    restored.validate_restored_state(),
+                    Err(AcpError::State(_))
+                ));
+                assert_eq!(restored.store.serialize(), before);
+            }
+        }
+    }
 
     fn check_record_indexes(
         module: &AcpModule,
