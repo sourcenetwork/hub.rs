@@ -180,3 +180,76 @@ jobs:
           git config --global --remove-section "url.https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/" 2>/dev/null || true
           git checkout -- .
           git clean -fd
+
+  linux-native:
+    name: Linux native service
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      CARGO_BUILD_JOBS: 2
+      HUBD_BINARY: ${{ github.workspace }}/target/debug/hubd
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-dev cmake pkg-config libssl-dev protobuf-compiler
+
+      - name: Install pinned toolchain
+        run: |
+          rustc --version
+          cargo --version
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-native-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+
+      - name: Fetch locked dependencies
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: url.https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/.insteadOf
+          GIT_CONFIG_VALUE_0: https://github.com/sourcenetwork/
+        run: cargo fetch --locked
+
+      - name: Native module and storage checks
+        run: |
+          cargo test --frozen -p hub-modules --lib
+          cargo test --frozen -p hub-backend --test native_state --test native_hydration
+
+      - name: Build native node
+        run: cargo build --frozen -p hubd
+
+      - name: Native lifecycle and recovery
+        run: >-
+          cargo test --frozen -p hub-e2e
+          --test native_permission
+          --test native_signed_operation
+          --test native_bulletin
+          --test native_registration
+          --test native_membership
+          --test quorum_recovery
+          --test cold_replay
+          --test snapshot_catchup
+          -- --test-threads=1 --nocapture
+
+      - name: Build crash-injection node
+        run: cargo build --frozen -p hubd --features fault-injection
+
+      - name: Interrupted commit and snapshot recovery
+        run: >-
+          cargo test --frozen -p hub-e2e --features fault-injection
+          --test module_commit_crash --test snapshot_interrupt
+          -- --test-threads=1 --nocapture
+
+      - name: Build release node without fault injection
+        run: cargo build --frozen --release -p hubd

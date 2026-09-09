@@ -25,6 +25,10 @@ All repos follow gopath convention at `/Users/johnzampolin/go/src/github.com/{or
 | Simplex consensus, REVM executor, e2e harness | bankd-commonware | Consensus, EVM execution, testing |
 | BLS12-381 threshold crypto | commonware monorepo | Block signing, native tx verification |
 
+The development toolchain is pinned to Rust 1.98.0 in `rust-toolchain.toml`.
+Linux native-service CI covers module/storage checks, native lifecycle and
+recovery, crash injection, and a normal release build.
+
 ## Architecture
 
 ### Node assembly (`hub-node`)
