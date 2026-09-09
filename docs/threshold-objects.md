@@ -41,5 +41,7 @@ revision using caller-provisioned consensus trust. It validates the returned
 kind, content-derived ID, creator and revision. Document and derivation keys use
 separate namespaces. Orbis's native adapter preserves the payload shapes used by
 its existing PRE and signing protocols, with durable preparation and certified
-reads. Live native protocol startup and distributed signing remain separate
-integration work.
+reads. The native distributed threshold workflow covers startup, signing, encrypted
+secret recovery, revocation and membership changes. See
+[the capability comparison](threshold-capabilities.md) for the boundary between
+Commonware consensus keys and Orbis application protocols.
