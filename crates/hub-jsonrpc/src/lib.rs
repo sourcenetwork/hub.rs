@@ -42,3 +42,6 @@ pub use types::{
     RpcLogFilter, RpcNativeReceipt, RpcTransaction, RpcTransactionReceipt, SyncInfo, SyncStatus,
     TopicFilter,
 };
+
+#[cfg(test)]
+mod transport_tests;

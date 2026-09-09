@@ -18,6 +18,7 @@ tower-http.workspace = true
 
 # JSON-RPC
 jsonrpsee.workspace = true
+jsonrpsee-server = { path = "../../vendor/jsonrpsee-server" }
 
 # Alloy types
 alloy-primitives = { workspace = true, features = ["serde"] }

@@ -4112,6 +4112,7 @@ dependencies = [
  "hub-permission",
  "hub-traits",
  "jsonrpsee",
+ "jsonrpsee-server",
  "parking_lot",
  "serde",
  "serde_json",
@@ -4809,10 +4810,8 @@ checksum = "e281ae70cc3b98dac15fced3366a880949e65fc66e345ce857a5682d152f3e62"
 dependencies = [
  "jsonrpsee-core",
  "jsonrpsee-proc-macros",
- "jsonrpsee-server",
  "jsonrpsee-types",
  "jsonrpsee-ws-client",
- "tokio",
  "tracing",
 ]
 
@@ -4881,8 +4880,6 @@ dependencies = [
 [[package]]
 name = "jsonrpsee-server"
 version = "0.24.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21429bcdda37dcf2d43b68621b994adede0e28061f816b038b0f18c70c143d51"
 dependencies = [
  "futures-util",
  "http",

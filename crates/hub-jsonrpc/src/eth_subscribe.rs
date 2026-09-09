@@ -259,7 +259,7 @@ mod tests {
     /// Returns the server handle, the bound address, and the broadcast senders
     /// for heads and logs.
     async fn setup_test_server() -> (
-        jsonrpsee::server::ServerHandle,
+        jsonrpsee_server::ServerHandle,
         std::net::SocketAddr,
         broadcast::Sender<RpcBlock>,
         broadcast::Sender<Vec<RpcLog>>,

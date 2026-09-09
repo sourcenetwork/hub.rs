@@ -3,7 +3,7 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use axum::{Router, extract::State, http::StatusCode, response::IntoResponse, routing::get};
-use jsonrpsee::server::{BatchRequestConfig, Server, ServerHandle};
+use jsonrpsee_server::{BatchRequestConfig, Server, ServerHandle};
 use tokio::sync::broadcast;
 use tower::limit::ConcurrencyLimitLayer;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
