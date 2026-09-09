@@ -34,6 +34,10 @@ use crate::{
 /// Durable light-block lookup, executed outside the asynchronous RPC worker.
 pub type LightBlockLookup = Arc<dyn Fn(u64) -> Result<LightBlock, String> + Send + Sync>;
 
+/// Durable receipt evidence lookup, executed on a bounded blocking worker.
+pub type ReceiptProofLookup =
+    Arc<dyn Fn(B256) -> Result<Option<hub_domain::ReceiptResponse>, String> + Send + Sync>;
+
 /// Hub-specific JSON-RPC API trait.
 ///
 /// Provides methods specific to hub node operations.
@@ -151,6 +155,7 @@ pub struct HubApiImpl {
     native_modules: Option<hub_backend::native::NativeStateSet>,
     light_block_index: Option<Arc<LightBlockIndex>>,
     light_block_lookup: Option<LightBlockLookup>,
+    receipt_proof_lookup: Option<ReceiptProofLookup>,
 }
 
 impl std::fmt::Debug for HubApiImpl {
@@ -181,6 +186,7 @@ impl HubApiImpl {
             native_modules: None,
             light_block_index: None,
             light_block_lookup: None,
+            receipt_proof_lookup: None,
         }
     }
 
@@ -228,6 +234,13 @@ impl HubApiImpl {
         self.light_block_lookup = Some(lookup);
         self
     }
+
+    /// Configure durable receipt evidence for submissions absent from the memory index.
+    pub fn with_receipt_proof_lookup(mut self, lookup: ReceiptProofLookup) -> Self {
+        self.receipt_proof_lookup = Some(lookup);
+        self
+    }
+
 }
 
 #[jsonrpsee::core::async_trait]

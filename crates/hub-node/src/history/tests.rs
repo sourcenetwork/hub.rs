@@ -283,6 +283,13 @@ async fn indirect_proof_survives_reopen_and_uses_the_rpc_history_lookup() {
     info.epoch = commonware_consensus::types::Epoch::new(1);
     let mut first = block(1, genesis.id());
     first.payload = Some(Payload::EpochInfo(info));
+    first.txs.push(Tx::new(vec![1].into()));
+    let receipt = ExecutionReceipt::new(B256::repeat_byte(42), false, 3, 3, vec![], None);
+    first.receipt_commitment = Some(hub_executor::receipt_commitment(
+        100,
+        std::slice::from_ref(&receipt),
+    ));
+
     let mut second = block(2, first.id());
     second.context.round = commonware_consensus::types::Round::new(
         commonware_consensus::types::Epoch::new(1),
@@ -310,7 +317,12 @@ async fn indirect_proof_survives_reopen_and_uses_the_rpc_history_lookup() {
     {
         let history = FinalizedHistory::open(dir.path(), &genesis).unwrap();
         for block in [&first, &second, &third] {
-            history.append(block, &[], 100).unwrap();
+            let receipts = if block.height == 1 {
+                std::slice::from_ref(&receipt)
+            } else {
+                &[]
+            };
+            history.append(block, receipts, 100).unwrap();
             history.store_finalization(block.height, None).unwrap();
         }
         assert!(history.light_block(1, &epochs).is_err());
@@ -405,6 +417,39 @@ async fn indirect_proof_survives_reopen_and_uses_the_rpc_history_lookup() {
     assert_eq!(evicted, direct);
     verify_light_block(&evicted, &trusted).unwrap();
     assert_eq!(calls.load(Ordering::Relaxed), 3);
+    let archive_api = HubApiImpl::new(Arc::new(NodeState::new(1, 0, 1)), None)
+        .with_index_and_modules(
+            Arc::new(BlockIndex::new()),
+            Arc::new(std::sync::RwLock::new(hub_modules::ModuleState::default())),
+        )
+        .with_receipt_proof_lookup({
+            let history = history.clone();
+            let epochs = epochs.clone();
+            Arc::new(move |hash| {
+                history
+                    .receipt_proof(hash, &epochs)
+                    .map_err(|error| error.to_string())
+            })
+        });
+    let archived = archive_api
+        .get_receipt_proof(receipt.tx_hash)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        !archived
+            .verify(receipt.tx_hash, &trusted)
+            .unwrap()
+            .success()
+    );
+    assert!(archived.verify(B256::ZERO, &trusted).is_err());
+    assert!(
+        archive_api
+            .get_receipt_proof(B256::ZERO)
+            .await
+            .unwrap()
+            .is_none()
+    );
 
     assert!(
         api.get_light_block(alloy_primitives::U64::from(4))

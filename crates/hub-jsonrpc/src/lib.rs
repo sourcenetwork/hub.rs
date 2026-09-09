@@ -22,7 +22,7 @@ pub use eth_subscribe::{EthSubscriptionApiImpl, EthSubscriptionApiServer};
 mod header_subscribe;
 
 mod hub_api;
-pub use hub_api::{HubApiImpl, HubApiServer, LightBlockLookup};
+pub use hub_api::{HubApiImpl, HubApiServer, LightBlockLookup, ReceiptProofLookup};
 
 mod server;
 pub use server::{JsonRpcServer, RpcServer, RpcServerHandle, ServerError};

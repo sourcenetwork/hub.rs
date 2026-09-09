@@ -143,3 +143,49 @@ async fn receipt_poll_does_not_wait_for_a_missing_certificate() {
             .contains("corrupt certificate")
     );
 }
+
+#[tokio::test]
+async fn cancelled_archive_receipt_keeps_blocking_lookup_bounded() {
+    let state = Arc::new(NodeState::new(1, 0, 1));
+    let _held: Vec<_> = (0..7)
+        .map(|_| state.light_lookup_permit().unwrap())
+        .collect();
+    let (release, receiver) = std::sync::mpsc::channel();
+    let receiver = std::sync::Mutex::new(receiver);
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let signal = entered.clone();
+    let mut api =
+        HubApiImpl::new(state.clone(), None).with_receipt_proof_lookup(Arc::new(move |_| {
+            signal.notify_one();
+            receiver
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+            Ok(None)
+        }));
+    api.index = Some(Arc::new(BlockIndex::new()));
+    let api = Arc::new(api);
+    let running = api.clone();
+    let task = tokio::spawn(async move { running.get_receipt_proof(B256::ZERO).await });
+    tokio::time::timeout(Duration::from_secs(2), entered.notified())
+        .await
+        .unwrap();
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    assert_eq!(
+        api.get_receipt_proof(B256::ZERO).await.unwrap_err().code(),
+        codes::RESOURCE_UNAVAILABLE
+    );
+    release.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if state.light_lookup_permit().is_ok() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+}

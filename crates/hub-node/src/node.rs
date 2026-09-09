@@ -649,6 +649,13 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         .with_headers_subscription(headers_tx)
         .with_hub_index_and_modules(block_index, modules.clone())
         .with_hub_native_modules(native_databases, modules)
+        .with_hub_receipt_proof_lookup({
+            let history = history.clone();
+            let epochs = light_block_index.clone();
+            Arc::new(move |hash| {
+                history.receipt_proof(hash, &epochs).map_err(|error| error.to_string())
+            })
+        })
         .with_hub_light_block_lookup({
             let epochs = light_block_index.clone();
             Arc::new(move |height| {

@@ -250,6 +250,12 @@ time out after ten seconds, and socket closure after one second.
 
 ### Light-client material
 
+Native receipt-proof requests consult durable execution history when a
+submission is absent from the memory index. Archive reads and response-size
+checks share the bounded blocking-history slots; cancellation retains the slot
+until the blocking work finishes. The response keeps the same receipt
+commitment and finality verification contract as the memory-index path.
+
 The direct-finalization cache retains at most 1,024 entries and 64 MiB of
 encoded payload buffer capacity. FIFO eviction removes only cached artifacts;
 RPC reads fall back to durable history; clients verify the resulting proof.

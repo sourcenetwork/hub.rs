@@ -15,7 +15,7 @@ impl HubApiImpl {
             .as_ref()
             .ok_or_else(|| error("receipt index unavailable"))?;
         let Some(block_hash) = index.receipt_block_hash(&hash) else {
-            return Ok(None);
+            return self.archived_receipt(hash).await;
         };
         let _permit = self.state.proof_permit()?;
         let block = index
@@ -61,13 +61,35 @@ impl HubApiImpl {
                 )
             })
             .collect::<Vec<_>>();
-        encoded_size(&receipts, 8 << 20).map_err(request_error)?;
         let response = ReceiptResponse {
             revision,
             gas_limit: block.gas_limit,
             receipts,
         };
-        encoded_size(&response, RECEIPT_RESPONSE_BYTES - 1024).map_err(request_error)?;
+        validate_size(&response)?;
         Ok(Some(response))
     }
+
+    async fn archived_receipt(&self, hash: B256) -> RpcResult<Option<ReceiptResponse>> {
+        let Some(lookup) = self.receipt_proof_lookup.clone() else {
+            return Ok(None);
+        };
+        let permit = self.state.light_lookup_permit()?;
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let response = lookup(hash).map_err(error)?;
+            if let Some(response) = &response {
+                validate_size(response)?;
+            }
+            Ok(response)
+        })
+        .await
+        .map_err(error)?
+    }
+}
+
+fn validate_size(response: &ReceiptResponse) -> RpcResult<()> {
+    encoded_size(&response.receipts, 8 << 20).map_err(request_error)?;
+    encoded_size(response, RECEIPT_RESPONSE_BYTES - 1024).map_err(request_error)?;
+    Ok(())
 }

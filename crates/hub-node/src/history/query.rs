@@ -29,6 +29,37 @@ pub(super) fn index_execution(batch: &mut WriteBatch, block: &Block, receipts: &
 }
 
 impl FinalizedHistory {
+    /// Assemble complete receipt evidence from durable execution and finality records.
+    pub fn receipt_proof(
+        &self,
+        hash: B256,
+        epochs: &LightBlockIndex,
+    ) -> Result<Option<hub_domain::ReceiptResponse>> {
+        let Some(execution) = self.execution_by_submission(hash)? else {
+            return Ok(None);
+        };
+        let revision = match self.light_block(execution.block.height, epochs) {
+            Ok(revision) => revision,
+            Err(error)
+                if error
+                    .to_string()
+                    .starts_with("finalization certificate not found for height ") =>
+            {
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        };
+        ensure!(
+            revision.block_hash.parse::<B256>()? == execution.block.id().0,
+            "receipt finality differs from execution record"
+        );
+        Ok(Some(hub_domain::ReceiptResponse {
+            revision,
+            gas_limit: execution.gas_limit,
+            receipts: execution.receipts,
+        }))
+    }
+
     /// Read an execution by revision hash after startup has reconciled history.
     pub fn execution_by_hash(&self, hash: B256) -> Result<Option<HistoricalExecution>> {
         self.query_execution(BLOCK_HASH, hash)
