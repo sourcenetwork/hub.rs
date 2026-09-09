@@ -68,7 +68,7 @@ async fn native_registration_preserves_commitment_priority_and_owner_proofs() {
     assert!(empty.continuation.is_none());
     let first = BlsSigner::new(7u64.into(), deployment).unwrap();
     let second = BlsSigner::new(8u64.into(), deployment).unwrap();
-    let created = client.native_create_policy(&first, b"name: registrations\nresources:\n  - name: file\n    permissions:\n      - name: read\n        expr: owner\n", 1).await.unwrap();
+    let created = client.native_create_policy(&first, br#"{"name":"registrations","resources":[{"name":"file","permissions":[{"name":"read","expr":"owner"}]}]}"#, 2).await.unwrap();
     let page = client
         .read_policy_page(None, 1, created.block_number, &trusted)
         .await
@@ -375,7 +375,10 @@ resources:
     assert!(archived.archived);
     assert_eq!(archived.metadata.owner_did, second.did());
     assert_eq!(archived.metadata.creation_ts.block_height, early_height);
-    assert_eq!(last_relationships.records[0].relationship.object_id, "second");
+    assert_eq!(
+        last_relationships.records[0].relationship.object_id,
+        "second"
+    );
     assert!(!last_relationships.records[0].archived);
     let history = client
         .read_amendment_ids(policy_id, None, 1, amended_height, &trusted)

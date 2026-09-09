@@ -19,12 +19,12 @@ Delegations use signed ES256K tokens with a worker DID in `sub`, deployment in
 `DelegationScope::EditPolicy` for lifecycle operations. A creation token cannot
 edit policies, and an existing command token cannot create or edit them.
 
-Creation, editing and validation compile the same supported YAML format and
+Creation, editing and validation compile YAML and JSON through the same policy builder and
 check permission references before accepting a definition. Failed compilation
 leaves the policy counter, stored records and evaluation cache unchanged.
 Malformed or exhausted counter state rejects creation.
 
-Policy definitions use strict YAML, bounded to 64 KiB. Unknown fields, duplicate
+Policy definitions use strict YAML or JSON, bounded to 64 KiB. Unknown fields, duplicate
 names, invalid identifiers and unresolved references are rejected. `description`,
 resource descriptions, relation/permission `doc`, and `meta` entries are retained
 in compiled policy records. User metadata is separate from the policy description.
@@ -56,7 +56,7 @@ bearerCreatePolicy(bearerToken, policy, marshalType)
 bearerEditPolicy(bearerToken, policyId, policy, marshalType)
 ```
 
-`marshalType = 1` selects the supported YAML policy format. These calls can be
+`marshalType = 1` selects YAML; `marshalType = 2` selects JSON with the same policy fields. These calls can be
 encoded as native submission payloads and sent through `hub_sendNativeTx`.
 Every consensus member must run a version supporting the new calls and scopes
 before operators enable their use.

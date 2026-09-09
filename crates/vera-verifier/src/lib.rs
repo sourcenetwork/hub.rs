@@ -112,15 +112,16 @@ fn verify(input: &[u8]) -> Result<Value, String> {
             )
         }
         Request::ValidatePolicy { definition, format } => {
-            if !format.eq_ignore_ascii_case("yaml") {
-                return Ok(
-                    json!({"valid": false, "reason": "only YAML policy format is supported"}),
-                );
-            }
-            match hub_modules::acp::AcpModule::validate_policy_definition(
-                &definition,
-                hub_modules::acp::types::PolicyMarshalingType::ShortYaml,
-            ) {
+            use hub_modules::acp::types::PolicyMarshalingType;
+            let marshal_type = if format.eq_ignore_ascii_case("yaml") {
+                PolicyMarshalingType::ShortYaml
+            } else if format.eq_ignore_ascii_case("json") {
+                PolicyMarshalingType::ShortJson
+            } else {
+                PolicyMarshalingType::Unknown
+            };
+            match hub_modules::acp::AcpModule::validate_policy_definition(&definition, marshal_type)
+            {
                 Ok(_) => Ok(json!({"valid": true, "reason": ""})),
                 Err(error) => Ok(json!({"valid": false, "reason": error.to_string()})),
             }
@@ -286,6 +287,31 @@ pub unsafe extern "C" fn vera_buffer_free(buffer: VeraBuffer) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn policy_validation_selects_json_or_yaml_without_fallback() {
+        for (definition, format, expected) in [
+            (
+                r#"{"name":"sample","resources":[{"name":"file"}]}"#,
+                "JSON",
+                true,
+            ),
+            ("name: sample\nresources:\n  - name: file\n", "yaml", true),
+            ("name: sample\nresources:\n  - name: file\n", "json", false),
+            (r#"{"name":"sample","extra":true}"#, "json", false),
+            ("{}", "unknown", false),
+        ] {
+            let input = serde_json::to_vec(
+                &json!({"kind":"validate_policy", "definition":definition, "format":format}),
+            )
+            .unwrap();
+            let output = unsafe { vera_verify(input.as_ptr(), input.len()) };
+            let bytes = unsafe { std::slice::from_raw_parts(output.data, output.len) };
+            let response: Value = serde_json::from_slice(bytes).unwrap();
+            unsafe { vera_buffer_free(output) };
+            assert_eq!(response["result"]["valid"], expected, "{response}");
+        }
+    }
 
     #[test]
     fn invalid_foreign_inputs_return_owned_errors() {

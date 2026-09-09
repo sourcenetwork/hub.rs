@@ -460,13 +460,27 @@ impl AcpModule {
         counter: u64,
         original_specification: Option<PolicySpecification>,
     ) -> Result<Policy> {
-        if *marshal_type != PolicyMarshalingType::ShortYaml {
+        if policy.len() > 64 * 1024 {
             return Err(AcpError::InvalidPolicy {
-                reason: "only ShortYaml marshal type is supported".into(),
+                reason: "policy definition exceeds 64 KiB".into(),
             });
         }
-        let mut parsed = policy_yaml::parse_policy_yaml(policy)
-            .map_err(|reason| AcpError::InvalidPolicy { reason })?;
+        let mut parsed = match marshal_type {
+            PolicyMarshalingType::ShortYaml => policy_yaml::parse_policy_yaml(policy)
+                .map_err(|reason| AcpError::InvalidPolicy { reason })?,
+            PolicyMarshalingType::ShortJson => {
+                serde_json::from_str::<policy_yaml::ParsedPolicy>(policy).map_err(|error| {
+                    AcpError::InvalidPolicy {
+                        reason: format!("invalid policy JSON: {error}"),
+                    }
+                })?
+            }
+            PolicyMarshalingType::Unknown => {
+                return Err(AcpError::InvalidPolicy {
+                    reason: "unknown policy marshal type".into(),
+                });
+            }
+        };
         if let Some(specification) = original_specification {
             parsed.spec = specification;
         }

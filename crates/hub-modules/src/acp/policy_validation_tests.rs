@@ -88,3 +88,54 @@ fn creation_rejects_invalid_counter_state_without_mutation() {
         assert!(module.zanzibar_policies.is_empty());
     }
 }
+
+#[test]
+fn json_policy_uses_shared_semantics_for_creation_and_editing() {
+    let json = r#"{"name":"files","resources":[{"name":"file","relations":[{"name":"reader"}],"permissions":[{"name":"read","expr":"reader"}]}]}"#;
+    let yaml_policy =
+        AcpModule::validate_policy_definition(VALID, PolicyMarshalingType::ShortYaml).unwrap();
+    let json_policy =
+        AcpModule::validate_policy_definition(json, PolicyMarshalingType::ShortJson).unwrap();
+    assert_eq!(
+        serde_json::to_value(yaml_policy).unwrap(),
+        serde_json::to_value(json_policy).unwrap()
+    );
+    let owner = Did::new("did:key:owner").unwrap();
+    let mut module = AcpModule::new();
+    let record = module
+        .create_policy(&owner, json, PolicyMarshalingType::ShortJson)
+        .unwrap();
+    assert_eq!(record.marshal_type, PolicyMarshalingType::ShortJson);
+    let id = record.policy.id;
+    module
+        .edit_policy(
+            &owner,
+            &id,
+            &json.replace("reader", "editor"),
+            PolicyMarshalingType::ShortJson,
+        )
+        .unwrap();
+    let before = module.store.serialize();
+    for invalid in [
+        json.replace("\"expr\":\"reader\"", "\"expr\":\"missing\""),
+        json.replace(
+            "\"name\":\"files\"",
+            "\"name\":\"files\",\"name\":\"duplicate\"",
+        ),
+        format!("{json} trailing"),
+        format!("{}{}", " ".repeat(64 * 1024), json),
+    ] {
+        assert!(
+            module
+                .edit_policy(&owner, &id, &invalid, PolicyMarshalingType::ShortJson)
+                .is_err()
+        );
+        assert_eq!(module.store.serialize(), before);
+    }
+    let restored = AcpModule::from_store(InMemoryKvStore::deserialize(&before).unwrap());
+    restored.validate_restored_state().unwrap();
+    assert_eq!(
+        restored.query_policy(&id).unwrap().marshal_type,
+        PolicyMarshalingType::ShortJson
+    );
+}
