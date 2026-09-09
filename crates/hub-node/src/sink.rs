@@ -147,9 +147,16 @@ impl FinalizedSink for NodeSink {
     }
 
     async fn finalized(&self, block: &Block, receipts: Vec<ExecutionReceipt>) {
-        self.history
-            .append(block, &receipts, self.gas_limit)
-            .expect("persist finalized execution before publication");
+        let history = self.history.clone();
+        let persisted = block.clone();
+        let gas_limit = self.gas_limit;
+        let receipts = ::tokio::task::spawn_blocking(move || {
+            history.append(&persisted, &receipts, gas_limit)?;
+            Ok::<_, anyhow::Error>(receipts)
+        })
+        .await
+        .expect("finalized history writer stopped")
+        .expect("persist finalized execution before publication");
         self.node_state.inc_finalized();
         self.node_state.set_view(block.context.round.view().get());
         self.node_state.set_backfilling(false);

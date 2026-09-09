@@ -121,6 +121,10 @@ See `docs/operation-identities.md`.
 
 ### State and recovery
 
+Finalized execution appends run on the blocking pool and are awaited before
+index/status publication. Writer failure stops finalization; the persistence
+ordering and atomic history batch are unchanged.
+
 Finalized history writes derived revision-hash and submission-hash mappings in
 the same atomic batch as execution records. Historical lookups require the query
 index head to match the durable history head and validate the selected record
