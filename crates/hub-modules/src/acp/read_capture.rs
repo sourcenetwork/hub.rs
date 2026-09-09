@@ -30,6 +30,13 @@ pub struct ReadLimits {
     pub bytes: usize,
 }
 
+/// Shared execution and proof-evaluation read budget.
+pub const PERMISSION_READ_LIMITS: ReadLimits = ReadLimits {
+    reads: 256,
+    records: 4096,
+    bytes: 1 << 20,
+};
+
 #[derive(Debug)]
 struct Capture {
     remaining: ReadLimits,

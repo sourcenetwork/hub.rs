@@ -48,14 +48,12 @@ fn amendment_moves_the_owner_key_and_revokes_the_previous_owner() {
     module
         .direct_policy_cmd(&first, &policy, PolicyCmd::RegisterObject(object.clone()))
         .unwrap();
-    assert!(module.check_permission(
-        &policy,
-        &module.zanzibar_policies[&policy],
-        "file",
-        "report",
-        "read",
-        &first
-    ));
+    assert!(
+        module
+            .permission_engine(&module.zanzibar_policies[&policy])
+            .check_blocking(&policy, "file", "report", "read", &first)
+            .unwrap()
+    );
     let PolicyCmdResult::RevealRegistration { record, event } = module
         .direct_policy_cmd(
             &second,
@@ -92,22 +90,18 @@ fn amendment_moves_the_owner_key_and_revokes_the_previous_owner() {
         .unwrap(),
         serde_json::to_value(&record).unwrap()
     );
-    assert!(module.check_permission(
-        &policy,
-        &module.zanzibar_policies[&policy],
-        "file",
-        "report",
-        "read",
-        &second
-    ));
-    assert!(!module.check_permission(
-        &policy,
-        &module.zanzibar_policies[&policy],
-        "file",
-        "report",
-        "read",
-        &first
-    ));
+    assert!(
+        module
+            .permission_engine(&module.zanzibar_policies[&policy])
+            .check_blocking(&policy, "file", "report", "read", &second)
+            .unwrap()
+    );
+    assert!(
+        !module
+            .permission_engine(&module.zanzibar_policies[&policy])
+            .check_blocking(&policy, "file", "report", "read", &first)
+            .unwrap()
+    );
     assert!(
         module
             .direct_policy_cmd(&first, &policy, PolicyCmd::ArchiveObject(object.clone()))

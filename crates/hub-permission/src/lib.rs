@@ -40,11 +40,7 @@ pub use response::{PERMISSION_RESPONSE_BYTES, PermissionResponse};
 
 /// Shared service limits; consumers may impose tighter limits.
 pub const PERMISSION_LIMITS: PermissionLimits = PermissionLimits {
-    reads: ReadLimits {
-        reads: 256,
-        records: 4096,
-        bytes: 1 << 20,
-    },
+    reads: hub_modules::acp::read_capture::PERMISSION_READ_LIMITS,
     proof_bytes: 4 << 20,
     operations: 64,
     request_bytes: 64 << 10,

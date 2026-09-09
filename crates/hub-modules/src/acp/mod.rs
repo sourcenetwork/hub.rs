@@ -286,16 +286,20 @@ impl AcpModule {
             })?;
 
         let actor_did = &access_request.actor.0;
+        let engine = self.permission_engine(&policy);
 
         for op in &access_request.operations {
-            let granted = self.check_permission(
-                policy_id,
-                &policy,
-                &op.object.resource,
-                &op.object.id,
-                &op.permission,
-                actor_did,
-            );
+            let granted = engine
+                .check_blocking(
+                    policy_id,
+                    &op.object.resource,
+                    &op.object.id,
+                    &op.permission,
+                    actor_did,
+                )
+                .map_err(|error| {
+                    AcpError::State(format!("permission evaluation failed: {error}"))
+                })?;
             if !granted {
                 return Err(AcpError::Unauthorized {
                     reason: format!(
@@ -426,16 +430,20 @@ impl AcpModule {
         };
 
         let actor_did = &access_request.actor.0;
+        let engine = self.permission_engine(policy);
 
         for op in &access_request.operations {
-            let granted = self.check_permission(
-                policy_id,
-                policy,
-                &op.object.resource,
-                &op.object.id,
-                &op.permission,
-                actor_did,
-            );
+            let granted = engine
+                .check_blocking(
+                    policy_id,
+                    &op.object.resource,
+                    &op.object.id,
+                    &op.permission,
+                    actor_did,
+                )
+                .map_err(|error| {
+                    AcpError::State(format!("permission evaluation failed: {error}"))
+                })?;
             if !granted {
                 return Ok(false);
             }
@@ -1354,32 +1362,18 @@ impl AcpModule {
 
     // ── Permission evaluation ────────────────────────────────────────────
 
-    /// Evaluate whether `subject` has `permission` on `resource:object_id` by
-    /// running the policy's relation expressions through the Lean-proven
-    /// zanzibar [`PermissionEngine`] over a [`QmdbZanzibarStore`] view of module
-    /// state. This resolves `TupleToUserset` (cross-object inheritance) and all
-    /// other rewrite rules through one shared evaluator. Errors — e.g. an
-    /// unknown policy or relation — fail closed (deny).
-    ///
-    /// Uses [`PermissionEngine::check_blocking`], whose determinism contract
-    /// (all-Ready, side-effect-free, order-stable store) is satisfied by the
-    /// ordered module store: identical inputs yield the identical
-    /// decision on every validator.
-    fn check_permission(
+    /// Pin one bounded module snapshot for every operation in the request.
+    fn permission_engine(
         &self,
-        policy_id: &str,
         policy: &Policy,
-        resource: &str,
-        object_id: &str,
-        relation: &str,
-        subject: &Did,
-    ) -> bool {
-        let store = Arc::new(QmdbZanzibarStore::new(self.store.clone()));
-        let mut engine = PermissionEngine::new(store);
+    ) -> PermissionEngine<QmdbZanzibarStore<read_capture::ReadCapture>> {
+        let capture = read_capture::ReadCapture::new(
+            self.store.clone(),
+            read_capture::PERMISSION_READ_LIMITS,
+        );
+        let mut engine = PermissionEngine::new(Arc::new(QmdbZanzibarStore::new(capture)));
         engine.add_policy(policy);
         engine
-            .check_blocking(policy_id, resource, object_id, relation, subject)
-            .unwrap_or(false)
     }
 
     /// Check if creator is authorized to manage the given relation on an object.
@@ -1773,6 +1767,57 @@ resources:
             tx_hash: vec![1; 32],
             signer: creator.to_string(),
         }
+    }
+
+    #[test]
+    fn permission_materialization_errors_do_not_issue_decisions() {
+        let mut module = AcpModule::new();
+        let creator = alice();
+        let policy = module
+            .create_policy(&creator, SIMPLE_POLICY, PolicyMarshalingType::ShortYaml)
+            .unwrap();
+        let relationship =
+            Relationship::with_entity("document", "large", "reader", creator.clone());
+        module.store.put(
+            &keys::relationship_key(&policy.policy.id, &relationship.storage_key()),
+            vec![b' '; read_capture::PERMISSION_READ_LIMITS.bytes + 1],
+        );
+        let mut request = AccessRequest {
+            operations: vec![types::Operation {
+                object: Object {
+                    resource: "document".into(),
+                    id: "large".into(),
+                },
+                permission: "read".into(),
+            }],
+            actor: Actor(creator.clone()),
+        };
+        let before = module.store.serialize();
+        for result in [
+            module
+                .query_verify_access_request(&policy.policy.id, &request)
+                .map(|_| ()),
+            module
+                .check_access(
+                    &creator,
+                    &policy.policy.id,
+                    &request,
+                    &decision_block(),
+                    &decision_tx(&creator),
+                )
+                .map(|_| ()),
+        ] {
+            assert!(
+                matches!(result, Err(AcpError::State(ref message)) if message.contains("read budget exceeded")),
+                "{result:?}"
+            );
+        }
+        request.actor = Actor(bob());
+        assert!(
+            matches!(module.query_verify_access_request(&policy.policy.id, &request),
+            Err(AcpError::State(ref message)) if message.contains("read budget exceeded"))
+        );
+        assert_eq!(module.store.serialize(), before);
     }
 
     #[test]
