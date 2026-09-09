@@ -17,7 +17,7 @@ pub use light_block_store::{
 };
 
 mod store;
-pub use store::BlockIndex;
+pub use store::{BlockIndex, LogQuery};
 
 mod types;
 pub use types::{

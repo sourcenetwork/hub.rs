@@ -26,6 +26,82 @@ pub struct BlockIndex {
     head_block: AtomicU64,
 }
 
+/// Whole-query scan and result accounting, shared by memory and archive reads.
+#[derive(Debug)]
+pub struct LogQuery {
+    /// First requested revision, inclusive.
+    pub from: u64,
+    /// Last requested revision, inclusive.
+    pub to: u64,
+    filter: LogFilter,
+    result: Vec<IndexedLog>,
+    inspected: usize,
+    remaining_bytes: usize,
+}
+
+impl LogQuery {
+    /// Validate selectors before any archive work begins.
+    pub fn new(filter: LogFilter, head: u64) -> Result<Self, IndexerError> {
+        let from_block = filter.from_block.unwrap_or(0);
+        let to_block = filter.to_block.unwrap_or(head);
+
+        if from_block > to_block {
+            return Err(IndexerError::InvalidBlockRange {
+                from: from_block,
+                to: to_block,
+            });
+        }
+        if to_block - from_block >= 10_000
+            || filter
+                .address
+                .as_ref()
+                .is_some_and(|values| values.len() > 64)
+            || filter
+                .topics
+                .iter()
+                .flatten()
+                .any(|values| values.len() > 64)
+        {
+            return Err(IndexerError::LogQueryLimit);
+        }
+        Ok(Self {
+            from: from_block,
+            to: to_block,
+            filter,
+            result: Vec::new(),
+            inspected: 0,
+            remaining_bytes: 1 << 20,
+        })
+    }
+
+    fn push(&mut self, log: &IndexedLog) -> Result<(), IndexerError> {
+        self.inspected += 1;
+        if self.inspected > 10_000 {
+            return Err(IndexerError::LogQueryLimit);
+        }
+        if !BlockIndex::matches_filter(log, &self.filter) {
+            return Ok(());
+        }
+        let bytes = size_of::<IndexedLog>()
+            .saturating_add(log.topics.len().saturating_mul(size_of::<B256>()))
+            .saturating_add(log.data.len());
+        self.remaining_bytes = self
+            .remaining_bytes
+            .checked_sub(bytes)
+            .ok_or(IndexerError::LogQueryLimit)?;
+        if self.result.len() == 1_000 {
+            return Err(IndexerError::LogQueryLimit);
+        }
+        self.result.push(log.clone());
+        Ok(())
+    }
+
+    /// Return results only after every requested revision was processed.
+    pub fn finish(self) -> Vec<IndexedLog> {
+        self.result
+    }
+}
+
 impl Default for BlockIndex {
     fn default() -> Self {
         Self::new()
@@ -148,66 +224,32 @@ impl BlockIndex {
     /// Limits: 10,000 revisions, 10,000 inspected logs, 64 alternatives per selector,
     /// 1,000 results and 1 MiB of retained log data including record/topic storage.
     pub fn get_logs(&self, filter: &LogFilter) -> Result<Vec<IndexedLog>, IndexerError> {
-        let from_block = filter.from_block.unwrap_or(0);
-        let to_block = filter.to_block.unwrap_or_else(|| self.head_block_number());
-
-        if from_block > to_block {
-            return Err(IndexerError::InvalidBlockRange {
-                from: from_block,
-                to: to_block,
-            });
+        let mut query = LogQuery::new(filter.clone(), self.head_block_number())?;
+        for height in query.from..=query.to {
+            self.collect_revision_logs(height, &mut query)?;
         }
-        if to_block - from_block >= 10_000
-            || filter
-                .address
-                .as_ref()
-                .is_some_and(|values| values.len() > 64)
-            || filter
-                .topics
-                .iter()
-                .flatten()
-                .any(|values| values.len() > 64)
-        {
-            return Err(IndexerError::LogQueryLimit);
+        Ok(query.finish())
+    }
+
+    /// Collect one resident revision under the query's shared budgets.
+    /// Returns false when the revision must be read from history.
+    pub fn collect_revision_logs(
+        &self,
+        height: u64,
+        query: &mut LogQuery,
+    ) -> Result<bool, IndexerError> {
+        let numbers = self.blocks_by_number.read();
+        let Some(hash) = numbers.get(&height) else {
+            return Ok(false);
+        };
+        let logs = self.logs_by_block.read();
+        let Some(logs) = logs.get(hash) else {
+            return Ok(false);
+        };
+        for log in logs {
+            query.push(log)?;
         }
-        let mut result = Vec::new();
-        let mut inspected = 0;
-        let mut remaining_bytes = 1_usize << 20;
-
-        let blocks_by_number = self.blocks_by_number.read();
-        let logs_by_block = self.logs_by_block.read();
-
-        for block_num in from_block..=to_block {
-            let Some(block_hash) = blocks_by_number.get(&block_num) else {
-                continue;
-            };
-
-            let Some(logs) = logs_by_block.get(block_hash) else {
-                continue;
-            };
-
-            for log in logs {
-                inspected += 1;
-                if inspected > 10_000 {
-                    return Err(IndexerError::LogQueryLimit);
-                }
-                if !Self::matches_filter(log, filter) {
-                    continue;
-                }
-                let bytes = size_of::<IndexedLog>()
-                    .saturating_add(log.topics.len().saturating_mul(size_of::<B256>()))
-                    .saturating_add(log.data.len());
-                remaining_bytes = remaining_bytes
-                    .checked_sub(bytes)
-                    .ok_or(IndexerError::LogQueryLimit)?;
-                if result.len() == 1_000 {
-                    return Err(IndexerError::LogQueryLimit);
-                }
-                result.push(log.clone());
-            }
-        }
-
-        Ok(result)
+        Ok(true)
     }
 
     /// Returns the total number of indexed blocks.

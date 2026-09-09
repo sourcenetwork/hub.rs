@@ -235,6 +235,10 @@ occupied history-read slots return a retryable -32002 response.
 Log queries inspect at most 10,000 revisions and 10,000 log entries, accept at
 most 64 alternatives per address/topic selector, and return at most 1,000 logs.
 The result budget charges 1 MiB for record structures, topics and payload bytes.
+Ranges combine resident revisions with archive fallback under shared budgets.
+Each range holds one history-read slot and decodes at most 64 MiB of encoded
+archive records, charging each record before decoding. RocksDB must fetch the
+record to determine its encoded length.
 Queries exceeding a budget fail with RPC code -32005; clients must narrow their
 range or filter. Reversed ranges fail with -32602. Results are never silently
 truncated. These limits also apply when compatibility methods are enabled on a

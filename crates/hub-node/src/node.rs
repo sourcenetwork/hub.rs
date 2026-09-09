@@ -637,10 +637,17 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     });
     let archive = hub_jsonrpc::ArchiveReader::new(node_state.clone(), {
         let history = history.clone();
-        Arc::new(move |query| {
-            let Some(execution) = history
-                .execution(query)
-                .map_err(|error| error.to_string())?
+        Arc::new(move |query, remaining_bytes| {
+            let Some(execution) =
+                history
+                    .execution_bounded(query, remaining_bytes)
+                    .map_err(|error| {
+                        if error.downcast_ref::<hub_indexer::IndexerError>().is_some() {
+                            hub_jsonrpc::RpcError::LimitExceeded(error.to_string())
+                        } else {
+                            hub_jsonrpc::RpcError::StateError(error.to_string())
+                        }
+                    })?
             else {
                 return Ok(None);
             };
@@ -660,7 +667,9 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
             if let hub_indexer::IndexQuery::Submission(hash) = query
                 && (index.get_receipt(&hash).is_none() || index.get_transaction(&hash).is_none())
             {
-                return Err("historical submission cannot be indexed".into());
+                return Err(hub_jsonrpc::RpcError::StateError(
+                    "historical submission cannot be indexed".into(),
+                ));
             }
             Ok(Some(index))
         })

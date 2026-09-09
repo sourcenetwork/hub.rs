@@ -1,14 +1,14 @@
-//! Bounded point reads from durable execution history.
+//! Bounded reads from durable execution history.
 
 use crate::{NodeState, RpcError};
-use hub_indexer::{BlockIndex, IndexQuery};
+use hub_indexer::{BlockIndex, IndexQuery, IndexedLog, IndexerError, LogFilter, LogQuery};
 use std::sync::Arc;
 
-/// Reconstruct the index entries for one retained revision.
+/// Reconstruct one retained revision, charging encoded bytes before decoding.
 pub type IndexLookup =
-    Arc<dyn Fn(IndexQuery) -> Result<Option<Arc<BlockIndex>>, String> + Send + Sync>;
+    Arc<dyn Fn(IndexQuery, &mut usize) -> Result<Option<Arc<BlockIndex>>, RpcError> + Send + Sync>;
 
-/// Archive point reader sharing the node-wide blocking-history admission limit.
+/// Archive reader sharing the node-wide blocking-history admission limit.
 #[derive(Clone)]
 pub struct ArchiveReader {
     state: NodeState,
@@ -36,9 +36,57 @@ impl ArchiveReader {
         let lookup = self.lookup.clone();
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            lookup(query).map_err(RpcError::StateError)
+            let mut remaining_bytes = usize::MAX;
+            lookup(query, &mut remaining_bytes)
         })
         .await
         .map_err(|error| RpcError::Internal(error.to_string()))?
+    }
+
+    /// Read a range with shared scan/result budgets, decoding at most 64 MiB of
+    /// encoded archive records. One admission permit covers the complete query.
+    pub async fn logs(
+        &self,
+        index: Arc<BlockIndex>,
+        filter: LogFilter,
+    ) -> Result<Vec<IndexedLog>, RpcError> {
+        let mut query = LogQuery::new(filter, index.head_block_number()).map_err(log_error)?;
+        let permit = self
+            .state
+            .light_lookup_permit()
+            .map_err(|_| RpcError::HistoryBusy)?;
+        let lookup = self.lookup.clone();
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let mut remaining_bytes = 64 << 20;
+            for height in query.from..=query.to {
+                if index
+                    .collect_revision_logs(height, &mut query)
+                    .map_err(log_error)?
+                {
+                    continue;
+                }
+                if let Some(retained) = lookup(IndexQuery::Revision(height), &mut remaining_bytes)?
+                    && !retained
+                        .collect_revision_logs(height, &mut query)
+                        .map_err(log_error)?
+                {
+                    return Err(RpcError::StateError(
+                        "historical revision cannot be indexed".into(),
+                    ));
+                }
+            }
+            Ok(query.finish())
+        })
+        .await
+        .map_err(|error| RpcError::Internal(error.to_string()))?
+    }
+}
+
+pub(crate) fn log_error(error: IndexerError) -> RpcError {
+    if matches!(error, IndexerError::InvalidBlockRange { .. }) {
+        RpcError::InvalidBlockNumber(error.to_string())
+    } else {
+        RpcError::LimitExceeded(error.to_string())
     }
 }

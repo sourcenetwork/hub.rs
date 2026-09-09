@@ -73,6 +73,16 @@ impl FinalizedHistory {
 
     /// Read a retained execution by revision or hash.
     pub fn execution(&self, query: IndexQuery) -> Result<Option<HistoricalExecution>> {
+        let mut remaining_bytes = usize::MAX;
+        self.execution_bounded(query, &mut remaining_bytes)
+    }
+
+    /// Charge encoded record bytes before decoding, across a caller's whole query.
+    pub fn execution_bounded(
+        &self,
+        query: IndexQuery,
+        remaining_bytes: &mut usize,
+    ) -> Result<Option<HistoricalExecution>> {
         let snapshot = self.db.snapshot();
         ensure!(
             snapshot.get(transfer::IMPORT)?.is_none(),
@@ -115,6 +125,9 @@ impl FinalizedHistory {
         let bytes = snapshot
             .get_pinned(key(RECORD, height))?
             .context("missing indexed execution record")?;
+        *remaining_bytes = remaining_bytes
+            .checked_sub(bytes.len())
+            .ok_or(hub_indexer::IndexerError::LogQueryLimit)?;
         let record: Record = borsh::from_slice(&bytes)?;
         let (block, receipts) = record.decode()?;
         ensure!(block.height == height, "indexed execution height mismatch");
@@ -184,6 +197,28 @@ mod tests {
                 .execution(IndexQuery::Revision(u64::MAX))
                 .unwrap()
                 .is_none()
+        );
+        let first_size = history.db.get(key(RECORD, 1)).unwrap().unwrap().len();
+        let mut budget = first_size;
+        assert!(
+            history
+                .execution_bounded(IndexQuery::Revision(1), &mut budget)
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(budget, 0);
+        assert!(
+            history
+                .execution_bounded(IndexQuery::Revision(2), &mut budget)
+                .unwrap_err()
+                .downcast_ref::<hub_indexer::IndexerError>()
+                .is_some()
+        );
+        let mut short = first_size - 1;
+        assert!(
+            history
+                .execution_bounded(IndexQuery::Revision(1), &mut short)
+                .is_err()
         );
         let restored = history
             .execution_by_submission(receipt.tx_hash)
