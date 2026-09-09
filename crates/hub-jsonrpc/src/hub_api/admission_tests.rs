@@ -145,6 +145,61 @@ async fn receipt_poll_does_not_wait_for_a_missing_certificate() {
 }
 
 #[tokio::test]
+async fn archived_receipt_waits_for_published_revision() {
+    let state = Arc::new(NodeState::new(1, 0, 1));
+    let index = Arc::new(BlockIndex::new());
+    let mut api = HubApiImpl::new(state, None).with_receipt_proof_lookup(Arc::new(|_| {
+        Ok(Some(hub_domain::ReceiptResponse {
+            revision: hub_domain::LightBlock {
+                block_hash: String::new(),
+                parent_hash: String::new(),
+                height: 1,
+                timestamp: 1,
+                state_root: String::new(),
+                module_state_root: String::new(),
+                epoch: 0,
+                view: 0,
+                parent_view: 0,
+                block: String::new(),
+                descendants: vec![],
+                finalization: String::new(),
+                epoch_material: String::new(),
+            },
+            gas_limit: 100,
+            receipts: vec![],
+        }))
+    }));
+    api.index = Some(index.clone());
+    assert!(api.get_receipt_proof(B256::ZERO).await.unwrap().is_none());
+    index.insert_block(
+        hub_indexer::IndexedBlock {
+            hash: B256::repeat_byte(1),
+            number: 1,
+            parent_hash: B256::ZERO,
+            state_root: B256::ZERO,
+            module_state_root: B256::ZERO,
+            timestamp: 1,
+            gas_limit: 100,
+            gas_used: 0,
+            base_fee_per_gas: None,
+            prevrandao: B256::ZERO,
+            transaction_hashes: vec![],
+        },
+        vec![],
+        vec![],
+    );
+    assert_eq!(
+        api.get_receipt_proof(B256::ZERO)
+            .await
+            .unwrap()
+            .unwrap()
+            .revision
+            .height,
+        1
+    );
+}
+
+#[tokio::test]
 async fn cancelled_archive_receipt_keeps_blocking_lookup_bounded() {
     let state = Arc::new(NodeState::new(1, 0, 1));
     let _held: Vec<_> = (0..7)

@@ -27,6 +27,10 @@ reconciles stored history before serving requests. The focused write-failure
 regression checks both absent and visible batches for each backend using injected
 errors; it does not qualify device-level write or synchronization failures.
 
+Archived receipt polling returns pending while the receipt's revision is ahead
+of the live published index. This prevents a receipt from becoming available in
+the interval between its durable history write and publication of query state.
+
 Each build rejects the other backend's history layout before initializing its
 own store. There is no automatic on-disk conversion. Keep an existing node on its
 original backend, or use a separate node directory and authenticated snapshot

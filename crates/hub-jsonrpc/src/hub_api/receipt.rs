@@ -76,11 +76,19 @@ impl HubApiImpl {
         let Some(lookup) = self.receipt_proof_lookup.clone() else {
             return Ok(None);
         };
+        let index = self
+            .index
+            .clone()
+            .ok_or_else(|| error("receipt index unavailable"))?;
         let permit = self.state.light_lookup_permit()?;
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
             let response = lookup(hash).map_err(error)?;
             if let Some(response) = &response {
+                // History commits before the live query state is published.
+                if response.revision.height > index.head_block_number() {
+                    return Ok(None);
+                }
                 validate_size(response)?;
             }
             Ok(response)
