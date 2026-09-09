@@ -319,9 +319,7 @@ fn cancellation_conflict_revocation_and_bad_signatures_cannot_reuse_a_ring() {
     config.nonce = [10; 32];
     let create = RingCommand::Create(config);
     let record = apply(&mut hub, &mut acp, &create, 3).unwrap();
-    let cancel = RingCommand::Cancel {
-        ring_id: record.id.clone(),
-    };
+    let cancel = RingCommand::Cancel { ring_id: record.id };
     hub.revoke_delegation(&context(), &actor(), &token(&cancel, 4))
         .unwrap();
     let before = (hub.store().serialize(), acp.store().serialize());

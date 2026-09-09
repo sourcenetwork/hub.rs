@@ -98,7 +98,7 @@ mod tests {
         for account in ["".to_string(), "a".repeat(256)] {
             assert!(hub.get_jws_tokens_by_account(&account).is_err());
         }
-        let did = Did::new(&format!("did:key:{}", "a".repeat(256))).unwrap();
+        let did = Did::new(format!("did:key:{}", "a".repeat(256))).unwrap();
         assert!(hub.get_jws_tokens_by_did(&did).is_err());
         for field in 0..3 {
             let mut token = record("hash");

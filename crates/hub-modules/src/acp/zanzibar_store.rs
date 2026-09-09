@@ -367,7 +367,7 @@ mod tests {
         };
         let bytes = serde_json::to_vec(&record).unwrap();
         store.put(
-            &keys::relationship_key(POLICY, &keys::relationship_storage_key(&rel)),
+            &keys::relationship_key(POLICY, &keys::relationship_storage_key(rel)),
             bytes,
         );
     }

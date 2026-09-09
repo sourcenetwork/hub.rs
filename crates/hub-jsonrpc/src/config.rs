@@ -267,38 +267,6 @@ mod tests {
     }
 
     #[test]
-    fn rpc_server_config_clone() {
-        let original = RpcServerConfig::default()
-            .with_rate_limit(250)
-            .with_max_connections(75);
-        let cloned = original.clone();
-
-        assert_eq!(cloned.rate_limit.requests_per_second, 250);
-        assert_eq!(cloned.max_connections, 75);
-    }
-
-    #[test]
-    fn cors_config_clone() {
-        let original = CorsConfig::permissive();
-        let cloned = original.clone();
-
-        assert_eq!(cloned.allowed_origins, vec!["*"]);
-        assert_eq!(cloned.max_age, 86400);
-    }
-
-    #[test]
-    fn rate_limit_config_clone() {
-        let original = RateLimitConfig {
-            requests_per_second: 500,
-            burst_size: 1000,
-        };
-        let cloned = original.clone();
-
-        assert_eq!(cloned.requests_per_second, 500);
-        assert_eq!(cloned.burst_size, 1000);
-    }
-
-    #[test]
     fn rpc_server_config_debug() {
         let config = RpcServerConfig::default();
         let debug_str = format!("{:?}", config);

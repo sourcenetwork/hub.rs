@@ -207,8 +207,10 @@ mod tests {
         let event = insert(&mut module, "policy", true);
         let original = module.store.serialize();
         for value in [vec![0], {
-            let mut wrong = event.clone();
-            wrong.id += 1;
+            let wrong = AmendmentEvent {
+                id: event.id + 1,
+                ..event
+            };
             borsh::to_vec(&wrong).unwrap()
         }] {
             module

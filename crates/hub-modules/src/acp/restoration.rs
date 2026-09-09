@@ -95,10 +95,10 @@ mod tests {
         let amendment = keys::amendment_event_policy_index_key(&event.policy_id, event.id);
         for key in [
             keys::commitment_key(commitment.id),
-            root.clone(),
+            root,
             expiry.clone(),
             keys::amendment_event_key(event.id),
-            amendment.clone(),
+            amendment,
         ] {
             for value in [None, Some(vec![0])] {
                 let mut store = module.store.clone();
