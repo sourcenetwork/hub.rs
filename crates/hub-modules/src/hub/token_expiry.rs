@@ -77,6 +77,62 @@ mod tests {
     }
 
     #[test]
+    fn deleting_tokens_removes_deadlines_before_recovery() {
+        let mut hub = HubModule::new();
+        for (name, expiry, invalidate) in [
+            ("active", 150, false),
+            ("invalid", 150, true),
+            ("permanent", 0, false),
+        ] {
+            let hash = token(&mut hub, name, expiry);
+            if invalidate {
+                hub.update_jws_token_status(
+                    &context(110),
+                    &hash,
+                    JWSTokenStatus::Invalid,
+                    "operator",
+                )
+                .unwrap();
+            }
+            hub.delete_jws_token(&hash).unwrap();
+            assert!(hub.get_jws_token(&hash).unwrap().is_none());
+            assert_eq!(
+                hub.store.prefix_iter(keys::JWS_TOKEN_EXPIRY_PREFIX).count(),
+                0
+            );
+            assert!(
+                hub.get_jws_tokens_by_did(&Did::new("did:key:issuer").unwrap())
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(hub.get_jws_tokens_by_account("account").unwrap().is_empty());
+            let before = hub.store.serialize();
+            assert!(matches!(
+                hub.delete_jws_token(&hash),
+                Err(HubError::TokenNotFound { .. })
+            ));
+            assert_eq!(hub.store.serialize(), before);
+        }
+        let due = token(&mut hub, "remaining", 150);
+        let mut restored =
+            HubModule::from_store(InMemoryKvStore::deserialize(&hub.store.serialize()).unwrap());
+        restored
+            .check_and_update_expired_tokens(&context(151))
+            .unwrap();
+        assert_eq!(
+            restored.get_jws_token(&due).unwrap().unwrap().status,
+            JWSTokenStatus::Invalid
+        );
+        assert_eq!(
+            restored
+                .store
+                .prefix_iter(keys::JWS_TOKEN_EXPIRY_PREFIX)
+                .count(),
+            0
+        );
+    }
+
+    #[test]
     fn token_expiry_retains_history_and_recovers_active_deadlines() {
         let mut hub = HubModule::new();
         for id in 0..2000 {

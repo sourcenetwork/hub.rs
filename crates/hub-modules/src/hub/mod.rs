@@ -5,6 +5,7 @@ pub mod abi;
 /// Operator approvals and administrative state transitions.
 pub mod administration;
 mod delegation;
+mod restoration;
 mod token_expiry;
 mod token_queries;
 /// Hub error types.
@@ -494,6 +495,9 @@ impl HubModule {
             .ok_or_else(|| HubError::TokenNotFound {
                 token_hash: token_hash.to_string(),
             })?;
+        if let Some(key) = Self::token_expiry_key(&record) {
+            self.store.delete(&key);
+        }
         self.store.delete(&keys::jws_token_key(token_hash));
         self.store
             .delete(&keys::jws_token_by_did_key(&record.issuer_did, token_hash));

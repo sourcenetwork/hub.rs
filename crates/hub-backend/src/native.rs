@@ -197,7 +197,7 @@ pub async fn load_modules(set: &NativeStateSet) -> Result<ModuleState, BackendEr
         .map_err(|e| BackendError::Storage(e.to_string()))?;
     modules
         .hub
-        .query_params()
+        .validate_restored_tokens()
         .map_err(|e| BackendError::Storage(e.to_string()))?;
     Ok(modules)
 }

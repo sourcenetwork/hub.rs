@@ -119,3 +119,27 @@ fn hydration_ignores_inactive_records_after_prune_delete_and_rewind() {
         );
     });
 }
+
+#[test]
+fn hydration_rejects_orphaned_token_indexes() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = tokio::Config::new().with_storage_directory(directory.path());
+    tokio::Runner::new(runtime).start(|context| async move {
+        let cache = CacheRef::from_pooler(&context, NZU16!(4084), NZUsize!(64));
+        let set = NativeStateSet::init(
+            context.child("native"),
+            native::state_config("token-index", cache),
+        )
+        .await;
+        let key = hub_modules::hub::keys::jws_token_by_did_key("did:key:issuer", "missing");
+        let mut changes: ModuleChanges = std::array::from_fn(|_| Vec::new());
+        changes[2].push((key, Some(vec![1])));
+        let batch = native::prepare(set.new_batches().await, changes).await.unwrap();
+        set.apply(batch).await;
+        assert!(set.finalize().await.durable().await);
+        assert!(matches!(
+            native::load_modules(&set).await,
+            Err(hub_backend::BackendError::Storage(message)) if message.contains("token index has no record")
+        ));
+    });
+}
