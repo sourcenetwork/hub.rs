@@ -33,6 +33,7 @@ struct NodeStateInner {
     snapshot_revision: AtomicU64,
     proof_requests: Arc<tokio::sync::Semaphore>,
     light_lookups: Arc<tokio::sync::Semaphore>,
+    proof_progress: tokio::sync::watch::Sender<()>,
 }
 
 fn acquire(
@@ -67,6 +68,7 @@ impl NodeState {
                 snapshot_revision: AtomicU64::new(0),
                 proof_requests: Arc::new(tokio::sync::Semaphore::new(8)),
                 light_lookups: Arc::new(tokio::sync::Semaphore::new(8)),
+                proof_progress: tokio::sync::watch::channel(()).0,
             }),
         }
     }
@@ -81,6 +83,15 @@ impl NodeState {
         &self,
     ) -> jsonrpsee::core::RpcResult<tokio::sync::OwnedSemaphorePermit> {
         acquire(&self.inner.light_lookups)
+    }
+
+    /// Wake proof readers after publishing an execution index or finality evidence.
+    pub fn notify_proof_progress(&self) {
+        self.inner.proof_progress.send_replace(());
+    }
+
+    pub(crate) fn proof_updates(&self) -> tokio::sync::watch::Receiver<()> {
+        self.inner.proof_progress.subscribe()
     }
 
     /// Update the current view.

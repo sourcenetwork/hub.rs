@@ -50,6 +50,7 @@ impl HubApiImpl {
             .index
             .as_ref()
             .ok_or_else(|| error("finalized revision index unavailable"))?;
+        let mut updates = self.state.proof_updates();
         tokio::time::timeout(Duration::from_secs(2), async {
             let (selected, proof) = loop {
                 let captured = {
@@ -90,7 +91,7 @@ impl HubApiImpl {
                     break captured;
                 }
                 // Release every read guard so an in-flight finalization can publish its index.
-                tokio::time::sleep(Duration::from_millis(5)).await;
+                super::record::wait_for_proof_progress(&mut updates).await;
             };
             let revision = self.captured_revision(&selected).await?;
             let response = PermissionResponse { revision, proof };

@@ -197,6 +197,11 @@ activity bitmap, reading at most 32 operations at a time under partition read
 locks. This bounds temporary hydration buffers; all live query maps remain in
 memory. Keys sharing their first 256 bytes scan one index bucket.
 
+Current proof requests subscribe before checking for progress and wake when the
+node publishes an execution index or finality evidence. A 50 ms fallback handles
+custom publishers without notifications. Readers release storage guards before
+waiting; existing proof admission and two-second request deadlines still apply.
+
 `hub_getCurrentPermissionProof` returns a selected finalized revision with its
 Commonware membership, absence and complete-prefix witnesses. Generation holds
 all four native partition read locks and applies aggregate record and byte

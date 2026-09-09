@@ -163,6 +163,7 @@ impl FinalizedSink for NodeSink {
 
         let gas_used = receipts.iter().map(|r| r.gas_used).sum();
         index_finalized_block(&self.index, block, self.gas_limit, &receipts, gas_used);
+        self.node_state.notify_proof_progress();
         let (rpc_block, rpc_logs) = subscription_data(block, self.gas_limit, &receipts, gas_used);
         if self.heads.send(rpc_block).is_err() {
             trace!(height = block.height, "no newHeads subscribers");
@@ -183,6 +184,7 @@ impl FinalizedSink for NodeSink {
         let headers = self.headers.clone();
         let history = self.history.clone();
         let failures = self.failures.clone();
+        let node_state = self.node_state.clone();
         ::tokio::spawn(async move {
             let artifacts = lookup(height).await;
             if let Err(error) = history.store_finalization(height, artifacts.as_ref()) {
@@ -205,6 +207,7 @@ impl FinalizedSink for NodeSink {
             } else {
                 trace!(height, "no direct finalization certificate in marshal");
             }
+            node_state.notify_proof_progress();
         });
 
         let Some(set) = self.state.get() else {
