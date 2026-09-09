@@ -61,3 +61,11 @@ must carry nonzero, eight-byte IDs. Creation also rejects an already occupied
 policy, commitment or amendment ID before changing stored state. Counter repair
 is an explicit recovery operation; normal execution never resets counters or
 replaces a retained record to resolve a collision.
+
+Commitment recovery checks complete record decoding, nonzero ID/key agreement,
+32-byte roots and policy existence. Every retained commitment requires its root
+index; active commitments also require the exact expiry index. Reverse checks
+reject dangling or aliased root, expiry and amendment-policy indexes, unexpected
+index values, and expiry entries for already expired commitments. Missing or
+inconsistent indexes require explicit recovery or migration; startup does not
+rebuild them silently.

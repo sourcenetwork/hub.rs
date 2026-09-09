@@ -1,7 +1,7 @@
 use super::*;
 
-const SECONDS_PREFIX: &[u8] = b"commitment_expiry/seconds/";
-const HEIGHT_PREFIX: &[u8] = b"commitment_expiry/height/";
+pub(super) const SECONDS_PREFIX: &[u8] = b"commitment_expiry/seconds/";
+pub(super) const HEIGHT_PREFIX: &[u8] = b"commitment_expiry/height/";
 
 impl AcpModule {
     pub(super) fn commitment_expiry_key(commitment: &RegistrationsCommitment) -> Vec<u8> {

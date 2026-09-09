@@ -52,7 +52,8 @@ impl AcpModule {
             }
             self.validate_counter(&counter_key, maximum)?;
         }
-        self.validate_amendment_indexes()
+        self.validate_amendment_indexes()?;
+        self.validate_record_indexes()
     }
 
     fn validate_counter(&self, key: &[u8], minimum: u64) -> Result<()> {
@@ -79,6 +80,87 @@ impl AcpModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn check_record_indexes(
+        module: &AcpModule,
+        commitment: &RegistrationsCommitment,
+        event: &AmendmentEvent,
+    ) {
+        let root = keys::commitment_by_commitment_index_key(&commitment.commitment, commitment.id);
+        let expiry = AcpModule::commitment_expiry_key(commitment);
+        let amendment = keys::amendment_event_policy_index_key(&event.policy_id, event.id);
+        for key in [
+            keys::commitment_key(commitment.id),
+            root.clone(),
+            expiry.clone(),
+            keys::amendment_event_key(event.id),
+            amendment.clone(),
+        ] {
+            for value in [None, Some(vec![0])] {
+                let mut store = module.store.clone();
+                match value {
+                    None => store.delete(&key),
+                    Some(bytes) => store.put(&key, bytes),
+                }
+                assert!(
+                    AcpModule::from_store(store)
+                        .validate_restored_state()
+                        .is_err(),
+                    "{key:?}"
+                );
+            }
+        }
+        for key in [
+            keys::commitment_by_commitment_index_key(&[8; 32], commitment.id),
+            keys::commitment_by_commitment_index_key(&commitment.commitment, 99),
+            keys::amendment_event_policy_index_key("wrong", event.id),
+            keys::amendment_event_policy_index_key(&event.policy_id, 99),
+            {
+                let mut key = expiry.clone();
+                key.push(0);
+                key
+            },
+        ] {
+            let mut store = module.store.clone();
+            store.put(&key, vec![]);
+            assert!(
+                AcpModule::from_store(store)
+                    .validate_restored_state()
+                    .is_err()
+            );
+        }
+        let mut expired = AcpModule::from_store(module.store.clone());
+        let mut record = commitment.clone();
+        record.expired = true;
+        expired.update_commitment(&record).unwrap();
+        expired.validate_restored_state().unwrap();
+        expired.store.put(&expiry, vec![]);
+        assert!(expired.validate_restored_state().is_err());
+        for bad in [
+            {
+                let mut r = commitment.clone();
+                r.id += 1;
+                r
+            },
+            {
+                let mut r = commitment.clone();
+                r.commitment.pop();
+                r
+            },
+        ] {
+            let mut restored = AcpModule::from_store(module.store.clone());
+            restored.store.put(
+                &keys::commitment_key(commitment.id),
+                borsh::to_vec(&bad).unwrap(),
+            );
+            assert!(
+                restored
+                    .query_registrations_commitment(commitment.id)
+                    .is_err()
+            );
+            assert!(restored.validate_restored_state().is_err());
+        }
+    }
 
     #[test]
     fn stale_counters_cannot_reuse_retained_identifiers() {
@@ -119,6 +201,7 @@ mod tests {
         };
         module.create_amendment_event(&mut event).unwrap();
         module.validate_restored_state().unwrap();
+        check_record_indexes(&module, &commitment, &event);
         let original = module.store.clone();
         for key in [
             keys::POLICY_COUNTER_KEY.to_vec(),

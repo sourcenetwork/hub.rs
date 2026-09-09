@@ -9,6 +9,7 @@ mod commitment_lookup;
 mod registration_queries;
 mod relationship_queries;
 mod restoration;
+mod index_validation;
 pub use registration_queries::{MAX_REGISTRATION_LEAF_BYTES, MAX_REGISTRATION_OBJECTS};
 pub mod decision;
 pub mod delegated_operation;
@@ -773,13 +774,16 @@ impl AcpModule {
         Ok(())
     }
 
-    #[allow(unused_variables)]
     fn get_commitment_by_id(&self, id: u64) -> Result<Option<RegistrationsCommitment>> {
         self.store
-            .get(&keys::commitment_key(id))
+            .get_ref(&keys::commitment_key(id))
             .map(|bytes| {
-                borsh::from_slice(&bytes)
-                    .map_err(|error| AcpError::State(format!("invalid commitment: {error}")))
+                let record: RegistrationsCommitment = borsh::from_slice(bytes)
+                    .map_err(|error| AcpError::State(format!("invalid commitment: {error}")))?;
+                if id == 0 || record.id != id || record.commitment.len() != 32 {
+                    return Err(AcpError::State("commitment identity or root mismatch".into()));
+                }
+                Ok(record)
             })
             .transpose()
     }
