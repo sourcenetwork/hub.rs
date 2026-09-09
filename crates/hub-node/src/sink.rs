@@ -187,10 +187,22 @@ impl FinalizedSink for NodeSink {
         let node_state = self.node_state.clone();
         ::tokio::spawn(async move {
             let artifacts = lookup(height).await;
-            if let Err(error) = history.store_finalization(height, artifacts.as_ref()) {
-                let _ = failures.try_send(error);
-                return;
-            }
+            let persisted = ::tokio::task::spawn_blocking(move || {
+                history.store_finalization(height, artifacts.as_ref())?;
+                Ok::<_, anyhow::Error>(artifacts)
+            })
+            .await;
+            let artifacts = match persisted {
+                Ok(Ok(artifacts)) => artifacts,
+                Ok(Err(error)) => {
+                    let _ = failures.try_send(error);
+                    return;
+                }
+                Err(error) => {
+                    let _ = failures.try_send(error.into());
+                    return;
+                }
+            };
             if let Some(artifacts) = artifacts {
                 header.set_signature(&artifacts.certificate);
                 light_index.insert_finalization(
