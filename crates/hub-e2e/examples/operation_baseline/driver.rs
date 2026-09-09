@@ -44,7 +44,8 @@ pub(super) struct Observation {
     workflow_ms: Option<f64>,
     error: Option<String>,
     verification_failure: bool,
-    read_throttles: u64,
+    receipt_throttles: u64,
+    permission_throttles: u64,
     diagnostic_revision: Option<LightBlock>,
     diagnostic_error: Option<String>,
 }
@@ -58,7 +59,9 @@ impl Observation {
             "permission_read_ms": self.permission_ms, "scheduled_to_workflow_ms": self.workflow_ms,
             "height": self.receipt.as_ref().map(|r| r.block_number), "error": self.error,
             "verification_failure": self.verification_failure,
-            "read_throttles": self.read_throttles,
+            "read_throttles": self.receipt_throttles + self.permission_throttles,
+            "receipt_throttles": self.receipt_throttles,
+            "permission_throttles": self.permission_throttles,
             "diagnostic_refetched_revision": self.diagnostic_revision,
             "diagnostic_refetch_error": self.diagnostic_error,
         })
@@ -83,7 +86,8 @@ pub(super) async fn observe(
         workflow_ms: None,
         error: None,
         verification_failure: false,
-        read_throttles: 0,
+        receipt_throttles: 0,
+        permission_throttles: 0,
         diagnostic_revision: None,
         diagnostic_error: None,
     };
@@ -147,7 +151,7 @@ pub(super) async fn observe(
                                 )
                                 .await;
                             if result.as_ref().is_err_and(is_throttled) {
-                                observation.read_throttles += 1;
+                                observation.permission_throttles += 1;
                                 tokio::time::sleep(Duration::from_millis(250)).await;
                                 continue;
                             }
@@ -177,7 +181,7 @@ pub(super) async fn observe(
                 }
                 Ok(None) => {}
                 Err(error) if is_throttled(&error) => {
-                    observation.read_throttles += 1;
+                    observation.receipt_throttles += 1;
                     tokio::time::sleep(Duration::from_millis(250)).await;
                     continue;
                 }
@@ -232,7 +236,9 @@ pub(super) fn summary(observations: &[Observation], elapsed: Duration) -> Value 
         "offered": observations.len(), "confirmed": count("confirmed"),
         "reverted": count("reverted"), "rejected": count("rejected"),
         "unknown": count("unknown"), "not_sent": count("not_sent"),
-        "read_throttles": observations.iter().map(|o| o.read_throttles).sum::<u64>(),
+        "read_throttles": observations.iter().map(|o| o.receipt_throttles + o.permission_throttles).sum::<u64>(),
+        "receipt_throttles": observations.iter().map(|o| o.receipt_throttles).sum::<u64>(),
+        "permission_throttles": observations.iter().map(|o| o.permission_throttles).sum::<u64>(),
         "verification_failures": observations.iter().filter(|o| o.verification_failure).count(),
         "confirmed_per_second": count("confirmed") as f64 / elapsed.as_secs_f64(),
         "completed_workflows": observations.iter().filter(|o| o.workflow_ms.is_some()).count(),

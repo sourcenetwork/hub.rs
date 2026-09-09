@@ -38,6 +38,8 @@ consensus key. With permission reads enabled, it then verifies current ACP acces
 for the registered owner at a revision no earlier than that receipt. A certified
 denial is a correctness failure. HTTP 429 on read requests is retried after
 250 ms within the existing workflow deadline and counted as `read_throttles`.
+`receipt_throttles` and `permission_throttles` split that total by read stage in
+each observation and the summary.
 Submission HTTP 429 is recorded as rejected; submissions are never retried. Any receipt or permission proof verification
 failure also fails the run, even if later replica checks agree. On a receipt
 verification failure, the driver records a separately fetched proof and its
