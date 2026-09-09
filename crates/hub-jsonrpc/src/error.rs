@@ -35,6 +35,9 @@ pub mod codes {
 /// RPC-specific errors that can occur during request handling.
 #[derive(Debug, Error)]
 pub enum RpcError {
+    /// All blocking history readers are occupied.
+    #[error("history service busy; retry later")]
+    HistoryBusy,
     /// Request work or response exceeds the service budget.
     #[error("request limit exceeded: {0}")]
     LimitExceeded(String),
@@ -86,6 +89,11 @@ pub enum RpcError {
 impl From<RpcError> for ErrorObjectOwned {
     fn from(err: RpcError) -> Self {
         match &err {
+            RpcError::HistoryBusy => ErrorObjectOwned::owned(
+                codes::RESOURCE_UNAVAILABLE,
+                err.to_string(),
+                Some(serde_json::json!({"retryable": true})),
+            ),
             RpcError::ExecutionReverted { data } => {
                 ErrorObjectOwned::owned(codes::EXECUTION_ERROR, err.to_string(), Some(data.clone()))
             }
@@ -101,7 +109,7 @@ impl From<RpcError> for ErrorObjectOwned {
                     RpcError::StateError(_) => (codes::INTERNAL_ERROR, err.to_string()),
                     RpcError::Internal(_) => (codes::INTERNAL_ERROR, err.to_string()),
                     RpcError::NotImplemented => (codes::METHOD_NOT_SUPPORTED, err.to_string()),
-                    RpcError::ExecutionReverted { .. } => unreachable!(),
+                    RpcError::ExecutionReverted { .. } | RpcError::HistoryBusy => unreachable!(),
                 };
                 ErrorObjectOwned::owned(code, message, None::<()>)
             }

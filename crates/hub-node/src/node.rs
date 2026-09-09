@@ -635,13 +635,44 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         let gossip = gossip.clone();
         Box::pin(async move { gossip.submit(bytes).await })
     });
+    let archive = hub_jsonrpc::ArchiveReader::new(node_state.clone(), {
+        let history = history.clone();
+        Arc::new(move |query| {
+            let Some(execution) = history
+                .execution(query)
+                .map_err(|error| error.to_string())?
+            else {
+                return Ok(None);
+            };
+            let index = Arc::new(BlockIndex::new());
+            let gas_used = execution
+                .receipts
+                .iter()
+                .map(|receipt| receipt.gas_used)
+                .sum();
+            crate::index_finalized_block(
+                &index,
+                &execution.block,
+                execution.gas_limit,
+                &execution.receipts,
+                gas_used,
+            );
+            if let hub_indexer::IndexQuery::Submission(hash) = query
+                && (index.get_receipt(&hash).is_none() || index.get_transaction(&hash).is_none())
+            {
+                return Err("historical submission cannot be indexed".into());
+            }
+            Ok(Some(index))
+        })
+    });
     let state_provider = IndexedStateProvider::new(
         block_index.clone(),
         committed_state,
         chain_id,
         gas_limit,
         modules.clone(),
-    );
+    )
+    .with_archive(archive.clone());
     let rpc_handle = RpcServer::with_state_provider(node_state, rpc_addr, chain_id, state_provider)
         .with_max_connections(config.rpc.max_connections.get())
         .with_tx_submit(tx_submit)
@@ -649,11 +680,14 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         .with_headers_subscription(headers_tx)
         .with_hub_index_and_modules(block_index, modules.clone())
         .with_hub_native_modules(native_databases, modules)
+        .with_hub_archive(archive)
         .with_hub_receipt_proof_lookup({
             let history = history.clone();
             let epochs = light_block_index.clone();
             Arc::new(move |hash| {
-                history.receipt_proof(hash, &epochs).map_err(|error| error.to_string())
+                history
+                    .receipt_proof(hash, &epochs)
+                    .map_err(|error| error.to_string())
             })
         })
         .with_hub_light_block_lookup({

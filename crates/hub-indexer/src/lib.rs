@@ -20,4 +20,6 @@ mod store;
 pub use store::BlockIndex;
 
 mod types;
-pub use types::{IndexStats, IndexedBlock, IndexedLog, IndexedReceipt, IndexedTransaction};
+pub use types::{
+    IndexQuery, IndexStats, IndexedBlock, IndexedLog, IndexedReceipt, IndexedTransaction,
+};

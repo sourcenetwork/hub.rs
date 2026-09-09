@@ -107,6 +107,7 @@ pub struct RpcServer<S: StateProvider = NoopStateProvider> {
     hub_light_block_index: Option<Arc<LightBlockIndex>>,
     hub_light_block_lookup: Option<LightBlockLookup>,
     hub_receipt_proof_lookup: Option<ReceiptProofLookup>,
+    hub_archive: Option<crate::ArchiveReader>,
 }
 
 impl<S: StateProvider> std::fmt::Debug for RpcServer<S> {
@@ -143,6 +144,7 @@ impl RpcServer<NoopStateProvider> {
             hub_light_block_index: None,
             hub_light_block_lookup: None,
             hub_receipt_proof_lookup: None,
+            hub_archive: None,
         }
     }
 
@@ -167,6 +169,7 @@ impl RpcServer<NoopStateProvider> {
             hub_light_block_index: None,
             hub_light_block_lookup: None,
             hub_receipt_proof_lookup: None,
+            hub_archive: None,
         }
     }
 }
@@ -198,6 +201,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             hub_light_block_index: None,
             hub_light_block_lookup: None,
             hub_receipt_proof_lookup: None,
+            hub_archive: None,
         }
     }
 
@@ -294,6 +298,12 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
         self
     }
 
+    /// Enable durable point reads for native receipts.
+    pub fn with_hub_archive(mut self, archive: crate::ArchiveReader) -> Self {
+        self.hub_archive = Some(archive);
+        self
+    }
+
     /// Set the light block index for `hub_getLightBlock` queries.
     #[must_use]
     pub fn with_hub_light_block_index(mut self, index: Arc<LightBlockIndex>) -> Self {
@@ -322,6 +332,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             hub_light_block_index: None,
             hub_light_block_lookup: None,
             hub_receipt_proof_lookup: None,
+            hub_archive: None,
         }
     }
 
@@ -347,6 +358,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
         let hub_light_block_index = self.hub_light_block_index;
         let hub_light_block_lookup = self.hub_light_block_lookup;
         let hub_receipt_proof_lookup = self.hub_receipt_proof_lookup;
+        let hub_archive = self.hub_archive;
 
         // Signal from the JSON-RPC task to the HTTP task indicating whether it
         // successfully bound the port. The HTTP status server waits for this
@@ -400,6 +412,9 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
                 }
                 if let Some((databases, modules)) = hub_native_modules {
                     api = api.with_native_modules(databases, modules);
+                }
+                if let Some(archive) = hub_archive {
+                    api = api.with_archive(archive);
                 }
                 if let Some(lookup) = hub_receipt_proof_lookup {
                     api = api.with_receipt_proof_lookup(lookup);
@@ -567,6 +582,7 @@ pub struct JsonRpcServer<S: StateProvider = NoopStateProvider> {
     hub_light_block_index: Option<Arc<LightBlockIndex>>,
     hub_light_block_lookup: Option<LightBlockLookup>,
     hub_receipt_proof_lookup: Option<ReceiptProofLookup>,
+    hub_archive: Option<crate::ArchiveReader>,
 }
 
 impl<S: StateProvider> std::fmt::Debug for JsonRpcServer<S> {
@@ -600,6 +616,7 @@ impl JsonRpcServer<NoopStateProvider> {
             hub_light_block_index: None,
             hub_light_block_lookup: None,
             hub_receipt_proof_lookup: None,
+            hub_archive: None,
         }
     }
 }
@@ -625,6 +642,7 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
             hub_light_block_index: None,
             hub_light_block_lookup: None,
             hub_receipt_proof_lookup: None,
+            hub_archive: None,
         }
     }
 
@@ -721,6 +739,12 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
         self
     }
 
+    /// Enable durable point reads for native receipts.
+    pub fn with_hub_archive(mut self, archive: crate::ArchiveReader) -> Self {
+        self.hub_archive = Some(archive);
+        self
+    }
+
     /// Set the light block index for `hub_getLightBlock` queries.
     #[must_use]
     pub fn with_hub_light_block_index(mut self, index: Arc<LightBlockIndex>) -> Self {
@@ -785,6 +809,9 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
                 }
                 if let Some((databases, modules)) = self.hub_native_modules {
                     api = api.with_native_modules(databases, modules);
+                }
+                if let Some(archive) = self.hub_archive {
+                    api = api.with_archive(archive);
                 }
                 if let Some(lookup) = self.hub_receipt_proof_lookup {
                     api = api.with_receipt_proof_lookup(lookup);

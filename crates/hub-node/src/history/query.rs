@@ -1,6 +1,7 @@
 //! Durable hash lookups over finalized execution history.
 
 use super::*;
+use hub_indexer::IndexQuery;
 
 /// One retained revision and its execution results.
 /// Finality evidence must be obtained and verified separately.
@@ -62,15 +63,16 @@ impl FinalizedHistory {
 
     /// Read an execution by revision hash after startup has reconciled history.
     pub fn execution_by_hash(&self, hash: B256) -> Result<Option<HistoricalExecution>> {
-        self.query_execution(BLOCK_HASH, hash)
+        self.execution(IndexQuery::RevisionHash(hash))
     }
 
     /// Read the revision containing a submission, including unsuccessful execution.
     pub fn execution_by_submission(&self, hash: B256) -> Result<Option<HistoricalExecution>> {
-        self.query_execution(SUBMISSION_HASH, hash)
+        self.execution(IndexQuery::Submission(hash))
     }
 
-    fn query_execution(&self, prefix: u8, hash: B256) -> Result<Option<HistoricalExecution>> {
+    /// Read a retained execution by revision or hash.
+    pub fn execution(&self, query: IndexQuery) -> Result<Option<HistoricalExecution>> {
         let snapshot = self.db.snapshot();
         ensure!(
             snapshot.get(transfer::IMPORT)?.is_none(),
@@ -81,16 +83,31 @@ impl FinalizedHistory {
             snapshot.get(QUERY_HEAD)?.as_deref() == Some(head.as_slice()),
             "history query index requires recovery"
         );
-        let Some(height) = snapshot.get(hash_key(prefix, &hash.0))? else {
-            return Ok(None);
-        };
-        let height = u64::from_be_bytes(
-            height
-                .as_slice()
-                .try_into()
-                .context("invalid history query height")?,
-        );
         let (maximum, _): (u64, [u8; 32]) = borsh::from_slice(&head)?;
+        let height = match query {
+            IndexQuery::Revision(height) => {
+                if height == 0 || height > maximum {
+                    return Ok(None);
+                }
+                height
+            }
+            IndexQuery::RevisionHash(hash) | IndexQuery::Submission(hash) => {
+                let prefix = if matches!(query, IndexQuery::RevisionHash(_)) {
+                    BLOCK_HASH
+                } else {
+                    SUBMISSION_HASH
+                };
+                let Some(height) = snapshot.get(hash_key(prefix, &hash.0))? else {
+                    return Ok(None);
+                };
+                u64::from_be_bytes(
+                    height
+                        .as_slice()
+                        .try_into()
+                        .context("invalid history query height")?,
+                )
+            }
+        };
         ensure!(
             height > 0 && height <= maximum,
             "history query exceeds published head"
@@ -101,10 +118,10 @@ impl FinalizedHistory {
         let record: Record = borsh::from_slice(&bytes)?;
         let (block, receipts) = record.decode()?;
         ensure!(block.height == height, "indexed execution height mismatch");
-        let matches = if prefix == BLOCK_HASH {
-            block.id().0 == hash
-        } else {
-            receipts.iter().any(|receipt| receipt.tx_hash == hash)
+        let matches = match query {
+            IndexQuery::Revision(_) => true,
+            IndexQuery::RevisionHash(hash) => block.id().0 == hash,
+            IndexQuery::Submission(hash) => receipts.iter().any(|receipt| receipt.tx_hash == hash),
         };
         ensure!(matches, "execution record differs from its query key");
         Ok(Some(HistoricalExecution {
@@ -148,6 +165,26 @@ mod tests {
             history.append(&second, &[], 100).unwrap();
         }
         let history = FinalizedHistory::open(dir.path(), &genesis).unwrap();
+        assert_eq!(
+            history
+                .execution(IndexQuery::Revision(1))
+                .unwrap()
+                .unwrap()
+                .block,
+            first
+        );
+        assert!(
+            history
+                .execution(IndexQuery::Revision(0))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            history
+                .execution(IndexQuery::Revision(u64::MAX))
+                .unwrap()
+                .is_none()
+        );
         let restored = history
             .execution_by_submission(receipt.tx_hash)
             .unwrap()

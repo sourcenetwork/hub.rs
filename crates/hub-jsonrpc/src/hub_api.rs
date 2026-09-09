@@ -156,6 +156,7 @@ pub struct HubApiImpl {
     light_block_index: Option<Arc<LightBlockIndex>>,
     light_block_lookup: Option<LightBlockLookup>,
     receipt_proof_lookup: Option<ReceiptProofLookup>,
+    archive: Option<crate::ArchiveReader>,
 }
 
 impl std::fmt::Debug for HubApiImpl {
@@ -187,6 +188,7 @@ impl HubApiImpl {
             light_block_index: None,
             light_block_lookup: None,
             receipt_proof_lookup: None,
+            archive: None,
         }
     }
 
@@ -241,6 +243,11 @@ impl HubApiImpl {
         self
     }
 
+    /// Enable durable point reads for receipts absent from memory.
+    pub fn with_archive(mut self, archive: crate::ArchiveReader) -> Self {
+        self.archive = Some(archive);
+        self
+    }
 }
 
 #[jsonrpsee::core::async_trait]
@@ -285,11 +292,21 @@ impl HubApiServer for HubApiImpl {
             return Err(RpcError::Internal("block index not available".into()).into());
         };
 
-        let Some(receipt) = index.get_receipt(&hash) else {
+        let mut selected = index.clone();
+        let mut receipt = selected.get_receipt(&hash);
+        if receipt.is_none()
+            && let Some(archive) = &self.archive
+            && let Some(index) = archive
+                .read(hub_indexer::IndexQuery::Submission(hash))
+                .await?
+        {
+            receipt = index.get_receipt(&hash);
+            selected = index;
+        }
+        let Some(receipt) = receipt else {
             return Ok(None);
         };
-
-        let tx = index.get_transaction(&hash);
+        let tx = selected.get_transaction(&hash);
         let native_nonce = tx.as_ref().and_then(|t| {
             if receipt.signer_did.is_some() {
                 Some(U64::from(t.nonce))

@@ -225,6 +225,13 @@ share one consensus group.
 
 ### RPC surfaces
 
+Revision number/hash, transaction and receipt point queries use bounded archive
+reads when absent from memory. The native receipt endpoint uses the same
+conversion for recent and historical data, including signer identity and nonce.
+Archive reconstruction uses one retained revision and the existing index builder;
+it does not populate the global memory index. Archive errors propagate, and
+occupied history-read slots return a retryable -32002 response.
+
 Log queries inspect at most 10,000 revisions and 10,000 log entries, accept at
 most 64 alternatives per address/topic selector, and return at most 1,000 logs.
 The result budget charges 1 MiB for record structures, topics and payload bytes.

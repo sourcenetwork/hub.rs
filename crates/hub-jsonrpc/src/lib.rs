@@ -4,6 +4,9 @@
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
+mod archive;
+pub use archive::{ArchiveReader, IndexLookup};
+
 mod config;
 pub use config::{CorsConfig, RateLimitConfig, RpcServerConfig};
 
