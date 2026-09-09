@@ -38,6 +38,11 @@ certificate, record key and stored token-content hash before returning the recor
 After invalidation, read at or after the certified invalidation revision to check
 the status, invalidating identity and execution timestamp.
 
-This read does not evaluate signature claims, expiry, delegation scope, provider
-grants or the separate revocation records for unused delegations. Neither record
-presence nor absence proves that a token can authorize a new operation.
+Revoking an unused delegation creates an invalid token record with no first-use
+or last-use timestamp. The same certified read verifies that record. Invalidation
+by hash requires an existing record; `native_revoke_delegation` accepts the signed
+token and can revoke it before first use.
+
+This read does not evaluate signature claims, expiry, delegation scope or provider
+grants. Neither record presence nor absence proves that a token can authorize a
+new operation.

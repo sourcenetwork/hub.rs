@@ -54,7 +54,7 @@ async fn actor_signed_command_rejects_substitution_and_deduplicates_across_worke
     let deployment = 9085;
     let keys = KeySet::builder().seed(deployment).build().unwrap();
     let trusted = *keys.epoch_info().output.public().public();
-    let cluster = TestCluster::builder()
+    let mut cluster = TestCluster::builder()
         .nodes(4)
         .seed(deployment)
         .chain_id(deployment)
@@ -254,4 +254,80 @@ async fn actor_signed_command_rejects_substitution_and_deduplicates_across_worke
         invalidated_height
     );
     submit(&client, &worker, &trusted, call(signed, &command), false).await;
+    let unused_object = Object {
+        resource: "file".into(),
+        id: "unused".into(),
+    };
+    let unused_command = PolicyCmd::RegisterObject(unused_object.clone());
+    claims.sub = worker.did().into();
+    let request = claims.request.as_mut().unwrap();
+    request.id.0[8..].fill(2);
+    request.digest = DelegatedOperation::PolicyCommand(&policy.policy.id, &unused_command)
+        .digest()
+        .unwrap();
+    let unused = hub_client::create_operation_token(&key, &claims).unwrap();
+    let unused_hash = hub_modules::hub::keys::hash_jws_token(&unused)
+        .parse()
+        .unwrap();
+    assert!(matches!(
+        client
+            .native_revoke_delegation(&other, &unused)
+            .await
+            .unwrap_err(),
+        hub_client::ClientError::TxReverted { .. }
+    ));
+    assert!(
+        client
+            .read_token_record(unused_hash, invalidated_height, &trusted)
+            .await
+            .unwrap()
+            .value
+            .is_none()
+    );
+    let revoked = client
+        .native_revoke_delegation(&worker, &unused)
+        .await
+        .unwrap();
+    let revoked_height = receipt(&client, &trusted, revoked.transaction_hash, true).await;
+    cluster.restart_node(0).unwrap();
+    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    let record = client
+        .read_token_record(unused_hash, revoked_height, &trusted)
+        .await
+        .unwrap()
+        .value
+        .unwrap();
+    assert_eq!(
+        record.status,
+        hub_modules::hub::types::JWSTokenStatus::Invalid
+    );
+    assert!(record.first_used_at.is_none());
+    assert!(record.last_used_at.is_none());
+    assert_eq!(record.invalidated_at.unwrap().block_height, revoked_height);
+    assert_eq!(record.invalidated_by, worker.did());
+    let rejected = submit(
+        &client,
+        &worker,
+        &trusted,
+        call(unused, &unused_command),
+        false,
+    )
+    .await;
+    let prefix = hub_client::object_owner_prefix(&policy.policy.id, &unused_object).unwrap();
+    let absent = client
+        .read_current_prefix(
+            ModuleId::Acp,
+            &prefix,
+            rejected,
+            &trusted,
+            RECORD_PROOF_BYTES,
+        )
+        .await
+        .unwrap();
+    assert!(
+        absent
+            .verify_object_owner(&policy.policy.id, &unused_object, rejected, &trusted)
+            .unwrap()
+            .is_none()
+    );
 }
