@@ -31,6 +31,66 @@ fn artifacts(height: u64) -> FinalizationArtifacts {
 }
 
 #[tokio::test]
+async fn failed_finalized_write_preserves_head_and_recovers_visible_batch() {
+    for visible in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let genesis = block(0, BlockId(B256::ZERO));
+        let first = block(1, genesis.id());
+        let second = block(2, first.id());
+        {
+            let history = FinalizedHistory::open(dir.path(), &genesis).unwrap();
+            history.append_finalized(&first, &[], 100, None).unwrap();
+            let error = history
+                .append_batch_with_write(
+                    &second,
+                    &[],
+                    100,
+                    FinalizedHistory::finalization_batch(2, Some(&artifacts(2))).unwrap(),
+                    |db, batch| {
+                        if visible {
+                            write(db, batch)?;
+                        }
+                        Err(std::io::Error::other("injected history write failure").into())
+                    },
+                )
+                .unwrap_err();
+            assert!(error.to_string().contains("injected history write failure"));
+            assert_eq!(*history.head.lock(), (1, first.id()));
+            for prefix in [RECORD, CERTIFICATE] {
+                assert_eq!(history.db.get(key(prefix, 2)).unwrap().is_some(), visible);
+            }
+            let expected = if visible { &second } else { &first };
+            let head = borsh::to_vec(&(expected.height, expected.id().0.0)).unwrap();
+            assert_eq!(history.db.get(HEAD).unwrap().unwrap(), head);
+            assert_eq!(history.db.get(QUERY_HEAD).unwrap().unwrap(), head);
+            if visible {
+                assert!(history.append_finalized(&second, &[], 100, None).is_err());
+            }
+        }
+        let history = FinalizedHistory::open(dir.path(), &genesis).unwrap();
+        let selected = if visible { &second } else { &first };
+        let index = BlockIndex::new();
+        let light = LightBlockIndex::new(std::num::NonZeroU64::new(20).unwrap());
+        let lookup: FinalizationLookup =
+            Arc::new(|_| panic!("persisted certificate lookup must not be repeated"));
+        history
+            .recover(&genesis, selected, &index, &light, &lookup)
+            .await
+            .unwrap();
+        assert_eq!(index.head_block_number(), selected.height);
+        if visible {
+            assert_eq!(
+                light.get_finalization(&second.digest().0).unwrap().bytes,
+                artifacts(2).finalization
+            );
+        }
+        let next = block(selected.height + 1, selected.id());
+        history.append_finalized(&next, &[], 100, None).unwrap();
+        assert_eq!(*history.head.lock(), (next.height, next.id()));
+    }
+}
+
+#[tokio::test]
 async fn finalized_batch_preserves_execution_and_certificate_on_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let genesis = block(0, BlockId(B256::ZERO));

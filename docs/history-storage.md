@@ -20,6 +20,13 @@ status separately from exhaustion so errors cannot appear as empty history.
 Recovery batches retain the existing flush threshold, using a running payload
 estimate for the Regolith batch.
 
+A history-write error stops finalization before updating the in-memory head or
+acknowledging execution. An error does not establish that the batch is absent:
+if a complete batch is visible, its stored head can be ahead of memory. Startup
+reconciles stored history before serving requests. The focused write-failure
+regression checks both absent and visible batches for each backend using injected
+errors; it does not qualify device-level write or synchronization failures.
+
 Each build rejects the other backend's history layout before initializing its
 own store. There is no automatic on-disk conversion. Keep an existing node on its
 original backend, or use a separate node directory and authenticated snapshot

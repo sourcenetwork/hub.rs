@@ -199,7 +199,18 @@ impl FinalizedHistory {
         block: &Block,
         receipts: &[ExecutionReceipt],
         gas_limit: u64,
+        batch: WriteBatch,
+    ) -> Result<()> {
+        self.append_batch_with_write(block, receipts, gas_limit, batch, write)
+    }
+
+    fn append_batch_with_write(
+        &self,
+        block: &Block,
+        receipts: &[ExecutionReceipt],
+        gas_limit: u64,
         mut batch: WriteBatch,
+        persist: impl FnOnce(&DB, WriteBatch) -> Result<()>,
     ) -> Result<()> {
         ensure!(
             receipts.len() == block.txs.len(),
@@ -238,7 +249,7 @@ impl FinalizedHistory {
                 "conflicting finalized history record"
             );
             if !batch.is_empty() {
-                write(&self.db, batch)?;
+                persist(&self.db, batch)?;
             }
             return Ok(());
         }
@@ -258,7 +269,7 @@ impl FinalizedHistory {
         let head_bytes = borsh::to_vec(&(block.height, block.id().0.0))?;
         batch.put(HEAD, &head_bytes);
         batch.put(QUERY_HEAD, &head_bytes);
-        write(&self.db, batch)?;
+        persist(&self.db, batch)?;
         *head = (block.height, block.id());
         Ok(())
     }
