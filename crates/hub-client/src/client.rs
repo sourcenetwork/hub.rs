@@ -82,13 +82,7 @@ impl HubClient {
             .await?;
 
         if let Some(error) = resp.get("error") {
-            let code = error.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
-            let message = error
-                .get("message")
-                .and_then(|m| m.as_str())
-                .unwrap_or("unknown")
-                .to_string();
-            return Err(ClientError::Rpc { code, message });
+            return Err(ClientError::from_rpc(error));
         }
 
         resp.get("result")
@@ -145,17 +139,7 @@ impl HubClient {
             ));
         }
         if let Some(error) = value.get("error") {
-            return Err(ClientError::Rpc {
-                code: error
-                    .get("code")
-                    .and_then(serde_json::Value::as_i64)
-                    .unwrap_or(0),
-                message: error
-                    .get("message")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("unknown")
-                    .into(),
-            });
+            return Err(ClientError::from_rpc(error));
         }
         let result = value
             .get_mut("result")

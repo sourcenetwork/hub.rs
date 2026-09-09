@@ -14,6 +14,10 @@ pub enum ClientError {
         message: String,
     },
 
+    /// The server explicitly rejected work because temporary capacity is exhausted.
+    #[error("RPC service busy: {0}")]
+    ResourceBusy(String),
+
     /// ABI decoding failed on a precompile response.
     #[error("ABI decode error: {0}")]
     AbiDecode(String),
@@ -79,9 +83,59 @@ pub enum ClientError {
     Json(#[from] serde_json::Error),
 }
 
+impl ClientError {
+    /// Whether a request was rejected for temporary capacity exhaustion.
+    ///
+    /// Callers must still bound retries and preserve submission identity.
+    #[must_use]
+    pub fn is_throttled(&self) -> bool {
+        matches!(self, Self::ResourceBusy(_))
+            || matches!(self, Self::Transport(error) if error.status() == Some(reqwest::StatusCode::TOO_MANY_REQUESTS))
+    }
+
+    pub(crate) fn from_rpc(error: &serde_json::Value) -> Self {
+        let code = error
+            .get("code")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0);
+        let message = error
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown")
+            .to_owned();
+        if code == -32002
+            && error.get("data").and_then(|data| data.get("retryable"))
+                == Some(&serde_json::Value::Bool(true))
+        {
+            Self::ResourceBusy(message)
+        } else {
+            Self::Rpc { code, message }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_explicit_capacity_errors_are_throttled() {
+        for (code, data, expected) in [
+            (-32002, serde_json::json!({"retryable": true}), true),
+            (-32002, serde_json::json!({"retryable": false}), false),
+            (-32002, serde_json::json!({"retryable": "true"}), false),
+            (-32002, serde_json::Value::Null, false),
+            (-32602, serde_json::json!({"retryable": true}), false),
+        ] {
+            let error = ClientError::from_rpc(&serde_json::json!({
+                "code": code, "message": "unavailable", "data": data,
+            }));
+            assert_eq!(error.is_throttled(), expected);
+            if !expected {
+                assert!(matches!(error, ClientError::Rpc { code: actual, .. } if actual == code));
+            }
+        }
+    }
 
     #[test]
     fn rpc_error_display() {

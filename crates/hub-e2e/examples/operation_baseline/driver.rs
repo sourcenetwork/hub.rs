@@ -366,5 +366,5 @@ pub(super) fn assert_no_verification_failures(observations: &[Observation]) {
 }
 
 fn is_throttled(error: &ClientError) -> bool {
-    matches!(error, ClientError::Transport(error) if error.status() == Some(reqwest::StatusCode::TOO_MANY_REQUESTS))
+    error.is_throttled()
 }
