@@ -1,5 +1,7 @@
 use super::*;
 
+const EXPIRY_BATCH_SIZE: usize = 128;
+
 pub(super) const SECONDS_PREFIX: &[u8] = b"commitment_expiry/seconds/";
 pub(super) const HEIGHT_PREFIX: &[u8] = b"commitment_expiry/height/";
 
@@ -40,7 +42,7 @@ impl AcpModule {
             (SECONDS_PREFIX, now.seconds),
             (HEIGHT_PREFIX, now.block_height),
         ] {
-            for (index, value) in self.store.prefix_iter(prefix) {
+            for (index, value) in self.store.prefix_iter(prefix).take(EXPIRY_BATCH_SIZE) {
                 if index.len() != prefix.len() + 16 || !value.is_empty() {
                     return Err(AcpError::State("invalid commitment expiry index".into()));
                 }
@@ -91,6 +93,46 @@ mod tests {
                 },
             })
             .unwrap();
+    }
+
+    #[test]
+    fn expiry_batches_bound_both_deadline_indexes_and_resume_after_restore() {
+        let mut module = AcpModule::new();
+        let count = EXPIRY_BATCH_SIZE * 2 + 1;
+        for id in 1..=count {
+            insert(&mut module, id as u64, Duration::Seconds(5), false);
+            insert(&mut module, (count + id) as u64, Duration::Blocks(5), false);
+        }
+        let now = Timestamp {
+            seconds: 106,
+            block_height: 16,
+        };
+        let expired = module.expire_commitments(&now).unwrap();
+        assert_eq!(expired.len(), EXPIRY_BATCH_SIZE * 2);
+        for prefix in [SECONDS_PREFIX, HEIGHT_PREFIX] {
+            assert_eq!(
+                module.store.prefix_iter(prefix).count(),
+                EXPIRY_BATCH_SIZE + 1
+            );
+        }
+        let mut restored =
+            AcpModule::from_store(InMemoryKvStore::deserialize(&module.store.serialize()).unwrap());
+        for remaining in [1, 0] {
+            let expired = restored.expire_commitments(&now).unwrap();
+            assert!(expired.len() <= EXPIRY_BATCH_SIZE * 2);
+            for prefix in [SECONDS_PREFIX, HEIGHT_PREFIX] {
+                assert_eq!(restored.store.prefix_iter(prefix).count(), remaining);
+            }
+        }
+        for id in 1..=(count * 2) {
+            assert!(
+                restored
+                    .get_commitment_by_id(id as u64)
+                    .unwrap()
+                    .unwrap()
+                    .expired
+            );
+        }
     }
 
     #[test]

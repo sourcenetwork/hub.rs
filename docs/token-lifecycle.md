@@ -7,9 +7,10 @@ its value is empty. The primary record and existing issuer/account indexes retai
 their formats.
 
 Every token write updates the expiry index. Usage updates retain one entry;
-revocation removes it. The end-of-revision sweep visits due entries and stops at
-the first deadline greater than or equal to the execution time. A token remains
-valid at its exact deadline. A zero timestamp means no expiry and has no index
+revocation removes it. The end-of-revision sweep visits at most 128 due entries
+and stops at the first deadline greater than or equal to the execution time.
+The stored status remains unchanged at the exact deadline; authorization also
+checks the signed token claims. A zero timestamp means no expiry and has no index
 entry. Automatic invalidation records its execution timestamp; later sweeps do
 not overwrite an operator's invalidation metadata.
 
@@ -21,8 +22,10 @@ Proposal-local failures cannot publish partially updated module state.
 Indexes persist with Hub state and recover with its snapshots. Existing stores
 require an explicit migration that builds indexes for active, expiring tokens;
 startup does not automatically migrate them. This change removes scans of token
-history from each revision. It does not cap retained history or the number of
-tokens that can expire at the same instant.
+history from each revision. When more than 128 tokens are due, later revisions
+continue from the remaining ordered entries, including after restart. The stored
+status may await maintenance; authorization and usage checks still enforce the
+actual deadline. This does not cap retained history.
 
 Token collection queries inspect at most 128 records and 1 MiB of combined
 index, primary-key and record bytes. Larger results return errors instead of

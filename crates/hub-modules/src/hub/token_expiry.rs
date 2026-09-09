@@ -1,5 +1,7 @@
 use super::*;
 
+const EXPIRY_BATCH_SIZE: usize = 128;
+
 impl HubModule {
     pub(super) fn token_expiry_key(record: &JWSTokenRecord) -> Option<Vec<u8>> {
         if record.status == JWSTokenStatus::Invalid || record.expires_at == Timestamp::default() {
@@ -19,7 +21,7 @@ impl HubModule {
     pub fn check_and_update_expired_tokens(&mut self, block_ctx: &BlockExecCtx) -> Result<()> {
         let prefix = keys::JWS_TOKEN_EXPIRY_PREFIX;
         let mut expired = Vec::new();
-        for (index, value) in self.store.prefix_iter(prefix) {
+        for (index, value) in self.store.prefix_iter(prefix).take(EXPIRY_BATCH_SIZE) {
             if index.len() <= prefix.len() + 8 || !value.is_empty() {
                 return Err(HubError::State("invalid token expiry index".into()));
             }
@@ -74,6 +76,59 @@ mod tests {
         )
         .unwrap();
         keys::hash_jws_token(name)
+    }
+
+    #[test]
+    fn expiry_batches_resume_after_restore_without_extending_token_validity() {
+        let mut hub = HubModule::new();
+        for id in 0..(EXPIRY_BATCH_SIZE * 2 + 1) {
+            token(&mut hub, &id.to_string(), 150);
+        }
+        hub.check_and_update_expired_tokens(&context(151)).unwrap();
+        assert_eq!(
+            hub.store.prefix_iter(keys::JWS_TOKEN_EXPIRY_PREFIX).count(),
+            EXPIRY_BATCH_SIZE + 1
+        );
+        let pending = hub
+            .store
+            .prefix_iter(keys::JWS_TOKEN_EXPIRY_PREFIX)
+            .next()
+            .unwrap()
+            .0;
+        let hash = std::str::from_utf8(&pending[keys::JWS_TOKEN_EXPIRY_PREFIX.len() + 8..])
+            .unwrap()
+            .to_owned();
+        assert_eq!(
+            hub.get_jws_token(&hash).unwrap().unwrap().status,
+            JWSTokenStatus::Valid
+        );
+        assert!(matches!(
+            hub.record_jws_token_usage(&context(151), &hash),
+            Err(HubError::InvalidJws { .. })
+        ));
+        let mut restored =
+            HubModule::from_store(InMemoryKvStore::deserialize(&hub.store.serialize()).unwrap());
+        restored.validate_restored_tokens().unwrap();
+        for remaining in [1, 0] {
+            restored
+                .check_and_update_expired_tokens(&context(152))
+                .unwrap();
+            assert_eq!(
+                restored
+                    .store
+                    .prefix_iter(keys::JWS_TOKEN_EXPIRY_PREFIX)
+                    .count(),
+                remaining
+            );
+        }
+        assert_eq!(
+            restored.store.prefix_iter(keys::JWS_TOKEN_PREFIX).count(),
+            EXPIRY_BATCH_SIZE * 2 + 1
+        );
+        assert_eq!(
+            restored.get_jws_token(&hash).unwrap().unwrap().status,
+            JWSTokenStatus::Invalid
+        );
     }
 
     #[test]

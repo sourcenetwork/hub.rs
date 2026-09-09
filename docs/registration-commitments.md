@@ -17,13 +17,16 @@ Commitments belong to one policy and expire after ten minutes by default, matchi
 the Go service. The end-of-revision hook marks them expired once the current time
 exceeds their creation time plus the configured lifetime. Reveals independently
 check that deadline at execution, so a time jump cannot make an expired commitment
-usable before the cleanup hook. The deadline itself remains inclusive. Expiry maintains separate ordered indexes for time and revision deadlines. The
-hook reads due entries and stops at the first future deadline in each index;
-expired records remain queryable without staying in the active indexes. Indexes
-are persisted in ACP state and restored with it. A batch's cost is proportional
-to the commitments expiring in that batch; this is not a fixed per-revision work
-limit. Index inconsistencies return an error before any records in the batch are
-expired.
+usable before the cleanup hook. The deadline itself remains inclusive.
+
+Expiry maintains separate ordered indexes for time and revision deadlines. The
+hook processes at most 128 due entries from each index per revision and stops
+at the first future deadline. Expired records remain queryable without staying
+in the active indexes. Indexes persist in ACP state and restore with it.
+Remaining entries are processed in later revisions; no cursor is lost on restart.
+Separate budgets prevent a backlog of time deadlines from blocking revision
+deadlines. Index inconsistencies return an error before any records in the
+batch are expired.
 
 Successful commitment
 receipts include `RegistrationsCommitted(commitmentId, policyId, commitment)` so
@@ -123,3 +126,8 @@ that revision to observe the certified flag.
 A successful reveal returns the registration record and an optional amendment
 event. A fresh registration has `event: null` and creates no amendment history.
 An ownership amendment returns its persisted event with a nonzero ID.
+
+Expiry batch limits are deterministic execution rules. All consensus members
+must run the same rules; changing the limits requires a coordinated protocol
+upgrade. Delayed maintenance never extends the deadline accepted by reveal
+execution. The limits bound record count, not retained history or total node RSS.
