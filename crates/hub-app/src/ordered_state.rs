@@ -410,6 +410,8 @@ impl DatabaseSet<Ctx> for OrderedState {
     }
 
     async fn apply(&self, batches: OrderedSealed) {
+        let started = tracing::enabled!(target: "hub_diagnostics", tracing::Level::DEBUG)
+            .then(std::time::Instant::now);
         #[cfg(feature = "fault-injection")]
         let changed = batches
             .modules
@@ -420,13 +422,27 @@ impl DatabaseSet<Ctx> for OrderedState {
         Box::pin(self.apply_with_faults(batches.databases, batches.height, changed)).await;
         #[cfg(not(feature = "fault-injection"))]
         Box::pin(self.databases.apply(batches.databases)).await;
+        let applied = started.map(|started| started.elapsed());
         self.executor
             .commit_snapshot(batches.height, batches.modules)
             .expect("publish applied module state");
+        if let Some((started, applied)) = started.zip(applied) {
+            tracing::debug!(target: "hub_diagnostics", height = batches.height,
+                database_apply_us = applied.as_micros(),
+                publication_us = (started.elapsed() - applied).as_micros(),
+                "finalized state apply");
+        }
     }
 
     async fn finalize(&self) -> Barrier {
-        Box::pin(self.databases.finalize()).await
+        let started = tracing::enabled!(target: "hub_diagnostics", tracing::Level::DEBUG)
+            .then(std::time::Instant::now);
+        let barrier = Box::pin(self.databases.finalize()).await;
+        if let Some(started) = started {
+            tracing::debug!(target: "hub_diagnostics", sync_start_us = started.elapsed().as_micros(),
+                "finalized state synchronization started");
+        }
+        barrier
     }
 
     async fn prune(&self, targets: &Self::SyncTargets) {

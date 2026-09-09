@@ -382,3 +382,8 @@ index counts, and RocksDB history memtable/table-reader/block-cache byte counter
 Collection runs off the async executor; disabled diagnostics start no sampler.
 Counters are non-atomic and exclude other allocations. Unsupported properties
 remain absent, and collection failures are logged rather than reported as zero.
+
+The same diagnostics target logs per-revision database-apply and query-state
+publication times, plus synchronization startup time. Startup ends when the
+Commonware durability handle is returned; it is not completion of that handle.
+These elapsed times include lock waits and executor scheduling.
