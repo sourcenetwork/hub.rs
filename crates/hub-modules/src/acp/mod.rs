@@ -8,6 +8,7 @@ mod commitment_expiry;
 mod commitment_lookup;
 mod registration_queries;
 mod relationship_queries;
+mod restoration;
 pub use registration_queries::{MAX_REGISTRATION_LEAF_BYTES, MAX_REGISTRATION_OBJECTS};
 pub mod decision;
 pub mod delegated_operation;
@@ -99,9 +100,9 @@ impl AcpModule {
     /// Reconstruct from a deserialized store, rebuilding the zanzibar cache.
     pub fn from_store(store: InMemoryKvStore) -> Self {
         let mut zanzibar_policies = HashMap::new();
-        for (_, value) in store.prefix_scan(keys::POLICY_PREFIX) {
-            if let Ok(record) = serde_json::from_slice::<PolicyRecord>(&value) {
-                zanzibar_policies.insert(record.policy.id.clone(), record.policy.clone());
+        for (_, value) in store.prefix_iter(keys::POLICY_PREFIX) {
+            if let Ok(record) = serde_json::from_slice::<PolicyRecord>(value) {
+                zanzibar_policies.insert(record.policy.id.clone(), record.policy);
             }
         }
         Self {

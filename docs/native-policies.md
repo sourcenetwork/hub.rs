@@ -44,3 +44,12 @@ or manager records encountered during authorization. Relationship set/delete
 validate the existing target before mutation, including when the policy owner
 submits the command. These paths preserve damaged records for explicit recovery
 instead of treating them as absent or silently overwriting them.
+
+Native state loading validates retained policy and relationship encodings and key
+identities, rejects relationships whose policy is missing, and checks stored ACP
+parameters and access-decision encodings before publishing query state. Amendment
+index validation remains part of this check. Validation borrows the retained
+store rather than materializing a second prefix copy; it does not repair records
+or re-evaluate historical access decisions. The standalone `AcpModule::from_store`
+constructor still requires an explicit `validate_restored_state` call when used
+outside native state loading.

@@ -189,7 +189,7 @@ pub async fn load_modules(set: &NativeStateSet) -> Result<ModuleState, BackendEr
     let modules = ModuleState::from_stores([acp, bulletin, hub, nonces]);
     modules
         .acp
-        .validate_amendment_indexes()
+        .validate_restored_state()
         .map_err(|e| BackendError::Storage(e.to_string()))?;
     modules
         .bulletin
