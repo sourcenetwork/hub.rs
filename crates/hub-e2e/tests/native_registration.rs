@@ -78,6 +78,23 @@ async fn native_registration_preserves_commitment_priority_and_owner_proofs() {
     assert_eq!(page.records[0].metadata.owner_did, first.did());
     let policy = page.records[0].policy.id.clone();
     let policy_id: B256 = policy.parse().unwrap();
+    let selected = client
+        .read_policy(policy_id, page.revision, &trusted)
+        .await
+        .unwrap();
+    assert!(selected.revision >= page.revision);
+    assert_eq!(
+        serde_json::to_value(selected.value.as_ref().unwrap()).unwrap(),
+        serde_json::to_value(&page.records[0]).unwrap()
+    );
+    assert!(
+        client
+            .read_policy(B256::ZERO, selected.revision, &trusted)
+            .await
+            .unwrap()
+            .value
+            .is_none()
+    );
     let extra = client
         .native_create_policy(
             &first,
@@ -260,6 +277,14 @@ resources:
     );
     cluster.restart_node(0).unwrap();
     cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    let restored_policy = client
+        .read_policy(policy_id, amended_height, &trusted)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(restored_policy.value).unwrap(),
+        serde_json::to_value(selected.value).unwrap()
+    );
     let history = client
         .read_amendment_ids(policy_id, None, 1, amended_height, &trusted)
         .await

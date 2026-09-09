@@ -1,10 +1,11 @@
-//! Policy discovery from certified native prefix pages.
+//! Policy lookup and discovery from certified native state.
 
-use alloy_primitives::Bytes;
+use alloy_primitives::{B256, Bytes};
 use hub_domain::ConsensusPublicKey;
 use hub_modules::acp::{keys, types::PolicyRecord};
 use hub_permission::{
     ModuleId, PAGE_PROOF_BYTES, PAGE_RESPONSE_BYTES, PrefixPageRequest, PrefixPageResponse,
+    RECORD_PROOF_BYTES,
 };
 
 use crate::{ClientError, HubClient};
@@ -22,7 +23,42 @@ pub struct PolicyPage {
     pub continuation: Option<Bytes>,
 }
 
+/// A policy or certified absence at one finalized revision.
+#[derive(Clone, Debug)]
+pub struct CertifiedPolicyRecord {
+    /// Finalized revision authenticating this record.
+    pub revision: u64,
+    /// Execution timestamp of that revision.
+    pub timestamp: u64,
+    /// Policy definition and creation metadata, if present.
+    pub value: Option<PolicyRecord>,
+}
+
 impl HubClient {
+    /// Read a policy by ID with certified presence or absence and identity binding.
+    pub async fn read_policy(
+        &self,
+        policy: B256,
+        minimum: u64,
+        trusted: &ConsensusPublicKey,
+    ) -> Result<CertifiedPolicyRecord, ClientError> {
+        let key = keys::policy_key(&hex::encode(policy));
+        let response = self
+            .read_current_record(ModuleId::Acp, &key, minimum, trusted, RECORD_PROOF_BYTES)
+            .await?;
+        let value = response
+            .record
+            .value
+            .as_ref()
+            .map(|bytes| decode(&key, bytes))
+            .transpose()?;
+        Ok(CertifiedPolicyRecord {
+            revision: response.revision.height,
+            timestamp: response.revision.timestamp,
+            value,
+        })
+    }
+
     /// Discover policies using bounded, complete pages authenticated by consensus trust.
     pub async fn read_policy_page(
         &self,

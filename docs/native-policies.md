@@ -1,4 +1,4 @@
-# Native policy discovery
+# Native policy reads
 
 `HubClient::read_policy_page` returns policy records and creation metadata from
 certified native state. Callers supply the trusted consensus key, a minimum
@@ -16,3 +16,8 @@ newer state, so enumeration does not provide a historical snapshot across pages.
 Pass the previous revision as the next minimum to prevent moving backward.
 Policy presence alone does not grant access; evaluate permissions using the
 certified permission APIs.
+
+`HubClient::read_policy` selects one policy by its 32-byte ID. It verifies the
+record proof and ID binding with the same decoder used by discovery pages,
+returning the policy definition and creation metadata or certified absence.
+The returned revision and timestamp identify the state used for the read.
