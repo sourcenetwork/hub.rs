@@ -5,9 +5,6 @@ pub mod abi;
 /// Operator approvals and administrative state transitions.
 pub mod administration;
 mod delegation;
-mod restoration;
-mod token_expiry;
-mod token_queries;
 /// Hub error types.
 pub mod error;
 /// Key prefixes and builders for Hub KV storage.
@@ -20,8 +17,11 @@ pub mod nodes;
 pub mod objects;
 /// Operator-authorized relay grants.
 pub mod relay;
+mod restoration;
 /// Ring lifecycle and participant attestations.
 pub mod rings;
+mod token_expiry;
+mod token_queries;
 /// Hub domain types.
 pub mod types;
 

@@ -35,7 +35,10 @@ fn read(records: &[RelationshipRecord]) -> Result<Option<Actor>, PermissionError
         .iter()
         .map(|record| {
             (
-                keys::relationship_key(&record.policy_id, &keys::relationship_storage_key(&record.relationship)),
+                keys::relationship_key(
+                    &record.policy_id,
+                    &keys::relationship_storage_key(&record.relationship),
+                ),
                 serde_json::to_vec(record).unwrap(),
             )
         })

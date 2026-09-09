@@ -24,7 +24,10 @@ impl AcpModule {
             let record: RelationshipRecord = serde_json::from_slice(value)
                 .map_err(|e| AcpError::State(format!("invalid relationship record: {e}")))?;
             if record.policy_id != policy_id
-                || keys::relationship_key(policy_id, &keys::relationship_storage_key(&record.relationship)) != key
+                || keys::relationship_key(
+                    policy_id,
+                    &keys::relationship_storage_key(&record.relationship),
+                ) != key
             {
                 return Err(AcpError::State(
                     "relationship record identity mismatch".into(),
@@ -63,7 +66,10 @@ mod tests {
                 owner_did: "did:key:owner".into(),
             },
         };
-        let key = keys::relationship_key(policy, &keys::relationship_storage_key(&record.relationship));
+        let key = keys::relationship_key(
+            policy,
+            &keys::relationship_storage_key(&record.relationship),
+        );
         module.store.put(&key, serde_json::to_vec(&record).unwrap());
         key
     }

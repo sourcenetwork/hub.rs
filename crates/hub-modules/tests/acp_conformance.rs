@@ -387,15 +387,19 @@ fn access_query_distinguishes_missing_policy_from_denial() {
         }],
     };
     let before = module.store().serialize();
-    assert!(!module
-        .query_verify_access_request(&policy_id, &request)
-        .unwrap());
+    assert!(
+        !module
+            .query_verify_access_request(&policy_id, &request)
+            .unwrap()
+    );
     for empty in [false, true] {
         if empty {
             request.operations.clear();
-            assert!(module
-                .query_verify_access_request(&policy_id, &request)
-                .unwrap());
+            assert!(
+                module
+                    .query_verify_access_request(&policy_id, &request)
+                    .unwrap()
+            );
         }
         assert!(matches!(
             module.query_verify_access_request("missing-policy", &request),
@@ -421,7 +425,7 @@ fn duplicate_relationship_preserves_original_metadata() {
     let mut submission = TxExecCtx {
         signer: owner().to_string(),
         tx_hash: vec![1; 32],
-        sequence: 1
+        sequence: 1,
     };
     let original = module
         .execute_policy_cmd(

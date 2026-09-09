@@ -65,7 +65,10 @@ impl HubClient {
 fn decode(policy: &str, key: &[u8], value: &[u8]) -> Result<RelationshipRecord, ClientError> {
     let record: RelationshipRecord = serde_json::from_slice(value)?;
     if record.policy_id != policy
-        || keys::relationship_key(policy, &keys::relationship_storage_key(&record.relationship)) != key
+        || keys::relationship_key(
+            policy,
+            &keys::relationship_storage_key(&record.relationship),
+        ) != key
     {
         return Err(ClientError::InvalidResponse(
             "relationship record differs from selection",
@@ -107,7 +110,10 @@ mod tests {
             .unwrap()
             .1
             .unwrap();
-        let key = keys::relationship_key(&policy, &keys::relationship_storage_key(&record.relationship));
+        let key = keys::relationship_key(
+            &policy,
+            &keys::relationship_storage_key(&record.relationship),
+        );
         let bytes = serde_json::to_vec(&record).unwrap();
         assert_eq!(
             decode(&policy, &key, &bytes).unwrap().relationship,

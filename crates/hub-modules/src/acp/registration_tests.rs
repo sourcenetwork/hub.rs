@@ -265,7 +265,8 @@ fn registration_priority_uses_committed_revisions_and_survives_amendment() {
         },
         32,
     )
-    .unwrap() else {
+    .unwrap()
+    else {
         panic!("expected amendment")
     };
     assert_eq!(record.metadata.creation_ts.block_height, 10);

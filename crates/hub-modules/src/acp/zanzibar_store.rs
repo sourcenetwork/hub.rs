@@ -87,7 +87,10 @@ impl<S: RecordStore> QmdbZanzibarStore<S> {
         for (key, bytes) in self.store.read().unwrap().scan_records(&scan)? {
             let record: RelationshipRecord = serde_json::from_slice(&bytes)?;
             if record.policy_id != policy_id
-                || keys::relationship_key(policy_id, &keys::relationship_storage_key(&record.relationship)) != key
+                || keys::relationship_key(
+                    policy_id,
+                    &keys::relationship_storage_key(&record.relationship),
+                ) != key
             {
                 return Err(zanzibar::error::Error::Serialization(
                     "relationship record does not match its key".into(),
@@ -109,7 +112,10 @@ impl<S: RecordStore> QmdbZanzibarStore<S> {
             .store
             .read()
             .unwrap()
-            .read_record(&keys::relationship_key(policy_id, &keys::relationship_storage_key(rel)))?
+            .read_record(&keys::relationship_key(
+                policy_id,
+                &keys::relationship_storage_key(rel),
+            ))?
         else {
             return Ok(false);
         };
@@ -306,22 +312,25 @@ impl<S: RecordStore> ZanzibarStore for QmdbZanzibarStore<S> {
         resource: &str,
         object_id: &str,
     ) -> Result<()> {
-        let prefix = keys::relationship_storage_prefix(
-            policy_id,
-            &keys::object_prefix(resource, object_id),
-        );
+        let prefix =
+            keys::relationship_storage_prefix(policy_id, &keys::object_prefix(resource, object_id));
         let mut guard = self.store.write().unwrap();
         let mut keys_to_delete = Vec::new();
         for (key, bytes) in guard.scan_records(&prefix)? {
             let record: RelationshipRecord = serde_json::from_slice(&bytes)?;
             if record.policy_id != policy_id
-                || keys::relationship_key(policy_id, &keys::relationship_storage_key(&record.relationship)) != key
+                || keys::relationship_key(
+                    policy_id,
+                    &keys::relationship_storage_key(&record.relationship),
+                ) != key
             {
                 return Err(zanzibar::error::Error::Serialization(
                     "relationship record does not match its key".into(),
                 ));
             }
-            if record.relationship.resource == resource && record.relationship.object_id == object_id {
+            if record.relationship.resource == resource
+                && record.relationship.object_id == object_id
+            {
                 keys_to_delete.push(key);
             }
         }
@@ -357,7 +366,10 @@ mod tests {
             metadata: default_metadata(),
         };
         let bytes = serde_json::to_vec(&record).unwrap();
-        store.put(&keys::relationship_key(POLICY, &keys::relationship_storage_key(&rel)), bytes);
+        store.put(
+            &keys::relationship_key(POLICY, &keys::relationship_storage_key(&rel)),
+            bytes,
+        );
     }
 
     #[test]
@@ -442,7 +454,10 @@ mod tests {
         let requested = Relationship::with_entity("document", "doc", "reader", did(ALICE));
         seed(&mut kv, &stored, false);
         let bytes = kv
-            .get(&keys::relationship_key(POLICY, &keys::relationship_storage_key(&stored)))
+            .get(&keys::relationship_key(
+                POLICY,
+                &keys::relationship_storage_key(&stored),
+            ))
             .unwrap();
         kv.put(
             &keys::relationship_key(POLICY, &keys::relationship_storage_key(&requested)),
@@ -797,8 +812,14 @@ mod tests {
                 .is_empty()
         );
         assert!(
-            block_on(store.has_relationship(POLICY, "document", "doc1/child", "reader", &keep.subject))
-                .unwrap(),
+            block_on(store.has_relationship(
+                POLICY,
+                "document",
+                "doc1/child",
+                "reader",
+                &keep.subject
+            ))
+            .unwrap(),
             "other objects are untouched"
         );
     }

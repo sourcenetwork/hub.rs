@@ -347,7 +347,7 @@ cargo check                        # type-check workspace
 cargo build -p hubd                # build binary
 cargo test --workspace --exclude hub-e2e  # run non-e2e tests
 cargo clippy --all -- -D warnings  # lint
-cargo fmt --all                    # format
+cargo fmt                    # format
 ```
 
 ## Development Principles
@@ -371,7 +371,7 @@ Borrowed from [defradb.rs](https://github.com/sourcenetwork/defradb.rs):
 1. `cargo check` passes
 2. `cargo test --workspace --exclude hub-e2e` passes
 3. `cargo clippy --all -- -D warnings` clean
-4. `cargo fmt --all` applied
+4. `cargo fmt` applied
 5. `cargo test -p hub-e2e --test hub_e2e_canonical` passes (requires `cargo build -p hubd` first)
 
 The e2e test (`hub_e2e_canonical`) is the baseline gate. It exercises both EVM and BLS transaction paths through a 4-node cluster: create policies, verify receipts, query state back, check cross-node consistency, and assert cluster health. Any change that breaks this test has broken the core pipeline.

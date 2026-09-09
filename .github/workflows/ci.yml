@@ -48,7 +48,7 @@ jobs:
         run: PYTHONDONTWRITEBYTECODE=1 python3 .github/scripts/test_stop_test_nodes.py
 
       - name: Format
-        run: cargo fmt --all -- --check
+        run: cargo fmt -- --check
 
       - name: Clippy
         run: cargo clippy --frozen --all -- -D warnings

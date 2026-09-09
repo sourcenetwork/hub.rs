@@ -67,7 +67,7 @@ fn owner<'a>(
             || relation.resource != object.resource
             || relation.object_id != object.id
             || relation.relation != "owner"
-            || keys::relationship_key(policy, &keys::relationship_storage_key(&relation)) != key
+            || keys::relationship_key(policy, &keys::relationship_storage_key(relation)) != key
         {
             return Err(PermissionError::Invalid(
                 "owner record differs from its key",

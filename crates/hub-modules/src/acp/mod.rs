@@ -6,10 +6,10 @@ mod amendment_history;
 mod command_context;
 mod commitment_expiry;
 mod commitment_lookup;
+mod index_validation;
 mod registration_queries;
 mod relationship_queries;
 mod restoration;
-mod index_validation;
 pub use registration_queries::{MAX_REGISTRATION_LEAF_BYTES, MAX_REGISTRATION_OBJECTS};
 pub mod decision;
 pub mod delegated_operation;
@@ -171,11 +171,11 @@ impl AcpModule {
         policy: &str,
         marshal_type: PolicyMarshalingType,
     ) -> Result<(u64, PolicyRecord)> {
-        let existing = self
-            .get_policy_record(policy_id)?
-            .ok_or_else(|| AcpError::PolicyNotFound {
-                id: policy_id.to_string(),
-            })?;
+        let existing =
+            self.get_policy_record(policy_id)?
+                .ok_or_else(|| AcpError::PolicyNotFound {
+                    id: policy_id.to_string(),
+                })?;
 
         if existing.metadata.owner_did != creator.to_string() {
             return Err(AcpError::Unauthorized {
@@ -220,7 +220,8 @@ impl AcpModule {
             })?;
             let relationship = &record.relationship;
             if record.policy_id != policy_id
-                || keys::relationship_key(policy_id, &keys::relationship_storage_key(relationship)) != *kv_key
+                || keys::relationship_key(policy_id, &keys::relationship_storage_key(relationship))
+                    != *kv_key
             {
                 return Err(AcpError::State(
                     "relationship record differs from its key".into(),
@@ -406,7 +407,9 @@ impl AcpModule {
             }
             let id = &key[prefix.len()..];
             if id.len() != 64
-                || !id.iter().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b))
+                || !id
+                    .iter()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b))
             {
                 return Err(AcpError::State("invalid stored policy identifier".into()));
             }
@@ -425,12 +428,12 @@ impl AcpModule {
         policy_id: &str,
         access_request: &AccessRequest,
     ) -> Result<bool> {
-        let policy = self
-            .zanzibar_policies
-            .get(policy_id)
-            .ok_or_else(|| AcpError::PolicyNotFound {
-                id: policy_id.to_string(),
-            })?;
+        let policy =
+            self.zanzibar_policies
+                .get(policy_id)
+                .ok_or_else(|| AcpError::PolicyNotFound {
+                    id: policy_id.to_string(),
+                })?;
 
         let actor_did = &access_request.actor.0;
         let engine = self.permission_engine(policy);
@@ -781,7 +784,9 @@ impl AcpModule {
             .checked_add(1)
             .ok_or_else(|| AcpError::State("record counter exhausted".into()))?;
         if self.store.has(&keys::commitment_key(next)) {
-            return Err(AcpError::State("commitment identifier already exists".into()));
+            return Err(AcpError::State(
+                "commitment identifier already exists".into(),
+            ));
         }
         commitment.id = next;
         self.update_commitment(commitment)?;
@@ -796,7 +801,8 @@ impl AcpModule {
         if let Some(previous) = self.get_commitment_by_id(commitment.id)? {
             self.store.delete(&Self::commitment_expiry_key(&previous));
             self.store.delete(&keys::commitment_by_commitment_index_key(
-                &previous.commitment, previous.id,
+                &previous.commitment,
+                previous.id,
             ));
         }
         if !commitment.expired {
@@ -818,7 +824,9 @@ impl AcpModule {
                 let record: RegistrationsCommitment = borsh::from_slice(bytes)
                     .map_err(|error| AcpError::State(format!("invalid commitment: {error}")))?;
                 if id == 0 || record.id != id || record.commitment.len() != 32 {
-                    return Err(AcpError::State("commitment identity or root mismatch".into()));
+                    return Err(AcpError::State(
+                        "commitment identity or root mismatch".into(),
+                    ));
                 }
                 Ok(record)
             })
@@ -848,7 +856,9 @@ impl AcpModule {
             .checked_add(1)
             .ok_or_else(|| AcpError::State("record counter exhausted".into()))?;
         if self.store.has(&keys::amendment_event_key(next)) {
-            return Err(AcpError::State("amendment identifier already exists".into()));
+            return Err(AcpError::State(
+                "amendment identifier already exists".into(),
+            ));
         }
         event.id = next;
         let bytes = borsh::to_vec(event)
@@ -1026,12 +1036,12 @@ impl AcpModule {
     }
 
     fn validate_registration_object(&self, policy_id: &str, obj: &Object) -> Result<()> {
-        let policy = self
-            .zanzibar_policies
-            .get(policy_id)
-            .ok_or_else(|| AcpError::PolicyNotFound {
-                id: policy_id.to_string(),
-            })?;
+        let policy =
+            self.zanzibar_policies
+                .get(policy_id)
+                .ok_or_else(|| AcpError::PolicyNotFound {
+                    id: policy_id.to_string(),
+                })?;
 
         if policy
             .actor
@@ -1120,12 +1130,18 @@ impl AcpModule {
         );
         let mut keys = Vec::new();
         for (key, value) in self.store.prefix_iter(&prefix) {
-            let record: RelationshipRecord = serde_json::from_slice(value)
-                .map_err(|error| AcpError::State(format!("invalid relationship record: {error}")))?;
+            let record: RelationshipRecord = serde_json::from_slice(value).map_err(|error| {
+                AcpError::State(format!("invalid relationship record: {error}"))
+            })?;
             if record.policy_id != policy_id
-                || keys::relationship_key(policy_id, &keys::relationship_storage_key(&record.relationship)) != key
+                || keys::relationship_key(
+                    policy_id,
+                    &keys::relationship_storage_key(&record.relationship),
+                ) != key
             {
-                return Err(AcpError::State("relationship record does not match its key".into()));
+                return Err(AcpError::State(
+                    "relationship record does not match its key".into(),
+                ));
             }
             if record.relationship.resource == obj.resource
                 && record.relationship.object_id == obj.id
@@ -1138,7 +1154,11 @@ impl AcpModule {
             self.store.delete(&key);
         }
         owner_rec.archived = true;
-        self.set_relationship(policy_id, &keys::relationship_storage_key(&owner_rec.relationship), &owner_rec);
+        self.set_relationship(
+            policy_id,
+            &keys::relationship_storage_key(&owner_rec.relationship),
+            &owner_rec,
+        );
         Ok(PolicyCmdResult::ArchiveObject {
             found: true,
             relationships_removed: removed,
@@ -1177,7 +1197,10 @@ impl AcpModule {
 
         let bytes = serde_json::to_vec(&rec).expect("serialize RelationshipRecord");
         self.store.put(
-            &keys::relationship_storage_prefix(policy_id, &keys::relationship_storage_key(&rec.relationship)),
+            &keys::relationship_storage_prefix(
+                policy_id,
+                &keys::relationship_storage_key(&rec.relationship),
+            ),
             bytes,
         );
 
@@ -1337,8 +1360,15 @@ impl AcpModule {
         };
 
         self.create_amendment_event(&mut event)?;
-        self.delete_relationship(policy_id, &keys::relationship_storage_key(&existing.relationship));
-        self.set_relationship(policy_id, &keys::relationship_storage_key(&record.relationship), &record);
+        self.delete_relationship(
+            policy_id,
+            &keys::relationship_storage_key(&existing.relationship),
+        );
+        self.set_relationship(
+            policy_id,
+            &keys::relationship_storage_key(&record.relationship),
+            &record,
+        );
 
         Ok(PolicyCmdResult::RevealRegistration {
             record,
@@ -1693,7 +1723,9 @@ resources:
                 PolicyCmd::SetRelationship(collision.clone()),
                 PolicyCmd::DeleteRelationship(collision.clone()),
             ] {
-                candidate.direct_policy_cmd(&alice(), &policy, command).unwrap();
+                candidate
+                    .direct_policy_cmd(&alice(), &policy, command)
+                    .unwrap();
             }
             assert_eq!(candidate.store.serialize(), before);
         }
@@ -1825,7 +1857,10 @@ resources:
         let relationship =
             Relationship::with_entity("document", "large", "reader", creator.clone());
         module.store.put(
-            &keys::relationship_key(&policy.policy.id, &keys::relationship_storage_key(&relationship)),
+            &keys::relationship_key(
+                &policy.policy.id,
+                &keys::relationship_storage_key(&relationship),
+            ),
             vec![b' '; read_capture::PERMISSION_READ_LIMITS.bytes + 1],
         );
         let mut request = AccessRequest {
