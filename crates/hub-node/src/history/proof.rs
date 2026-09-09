@@ -96,41 +96,30 @@ impl FinalizedHistory {
         );
         let last = height.saturating_add(LIGHT_BLOCK_MAX_DESCENDANTS as u64);
         let mut blocks = Vec::new();
-        let mut previous = None;
         let mut remaining = LIGHT_BLOCK_MAX_ARTIFACT_BYTES;
         for current in height..=last {
             let record;
             let mut encoded;
-            let length;
-            if current <= head {
+            let length = if current <= head {
                 record = snapshot
                     .get_pinned(key(RECORD, current))?
                     .context("missing finalized history block")?;
                 encoded = record.as_ref();
-                length = u32::deserialize(&mut encoded)? as usize;
+                u32::deserialize(&mut encoded)? as usize
             } else {
                 let Some(bytes) = snapshot.get_pinned(key(PROOF_BLOCK, current))? else {
                     break;
                 };
                 record = bytes;
                 encoded = record.as_ref();
-                length = encoded.len();
-            }
+                encoded.len()
+            };
             remaining = remaining
                 .checked_sub(length)
                 .context("light block proof exceeds artifact limits")?;
             let encoded = encoded
                 .get(..length)
                 .context("truncated finalized history block")?;
-            let block = Block::decode_cfg(encoded, &crate::node::block_cfg())?;
-            ensure!(block.height == current, "finalized history height mismatch");
-            if let Some(parent) = previous {
-                ensure!(
-                    block.parent == parent,
-                    "finalized history ancestry mismatch"
-                );
-            }
-            previous = Some(block.id());
             blocks.push(encoded.to_vec());
             let imported = snapshot
                 .get(key(IMPORTED_FINALITY, current))?
@@ -141,6 +130,28 @@ impl FinalizedHistory {
                 .map(|bytes| borsh::from_slice::<Option<(u64, Vec<u8>)>>(&bytes))
                 .transpose()?
                 .flatten();
+            // Pending finality is polled frequently; decode ancestry only when evidence exists.
+            if imported.is_none() && certificate.is_none() {
+                continue;
+            }
+            let mut previous = None;
+            let mut certified = None;
+            for (offset, encoded) in blocks.iter().enumerate() {
+                let block = Block::decode_cfg(encoded.as_slice(), &crate::node::block_cfg())?;
+                ensure!(
+                    block.height == height + offset as u64,
+                    "finalized history height mismatch"
+                );
+                if let Some(parent) = previous {
+                    ensure!(
+                        block.parent == parent,
+                        "finalized history ancestry mismatch"
+                    );
+                }
+                previous = Some(block.id());
+                certified = Some(block);
+            }
+            let block = certified.expect("requested block is retained");
             let artifacts = if let Some(imported) = imported {
                 ensure!(
                     imported.block == block.id().0.0,
