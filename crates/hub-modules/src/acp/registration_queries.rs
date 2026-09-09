@@ -237,4 +237,32 @@ mod tests {
             assert_eq!(module.store.serialize(), before);
         }
     }
+
+    #[test]
+    fn malformed_parameters_cannot_fall_back_to_default_commitment_lifetime() {
+        let (mut module, actor, policy, _) = fixture();
+        assert_eq!(module.query_params().unwrap(), AcpParams::default());
+        let valid = borsh::to_vec(&AcpParams::default()).unwrap();
+        for length in 0..valid.len() {
+            module.store.put(keys::PARAMS_KEY, valid[..length].to_vec());
+            let before = module.store.serialize();
+            assert!(module.query_params().is_err());
+            assert!(
+                module
+                    .direct_policy_cmd(
+                        &actor,
+                        &policy,
+                        PolicyCmd::CommitRegistrations {
+                            commitment: vec![1; 32]
+                        }
+                    )
+                    .is_err()
+            );
+            assert_eq!(module.store.serialize(), before);
+        }
+        let mut trailing = valid;
+        trailing.push(0);
+        module.store.put(keys::PARAMS_KEY, trailing);
+        assert!(module.query_params().is_err());
+    }
 }

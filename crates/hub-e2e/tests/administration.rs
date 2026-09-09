@@ -62,12 +62,19 @@ async fn operator_rotation_and_sequence_survive_replica_restart() {
             .sequence,
         0
     );
-    client
+    let initial = client.read_acp_parameters(0, &trusted).await.unwrap();
+    assert!(initial.value.is_none());
+    let changed = client
         .native_apply_administration(&submitter, &approved)
         .await
         .unwrap();
     assert_eq!(
-        serde_json::from_slice::<AcpParams>(&client.get_acp_params().await.unwrap()).unwrap(),
+        client
+            .read_acp_parameters(changed.block_number, &trusted)
+            .await
+            .unwrap()
+            .value
+            .unwrap(),
         parameters
     );
 
@@ -106,6 +113,15 @@ async fn operator_rotation_and_sequence_survive_replica_restart() {
         .unwrap();
     assert_eq!(restored.sequence, 2);
     assert_eq!(restored.policy, next_policy);
+    assert_eq!(
+        replica
+            .read_acp_parameters(receipt.block_number, &trusted)
+            .await
+            .unwrap()
+            .value
+            .unwrap(),
+        parameters
+    );
     assert!(matches!(
         replica
             .native_apply_administration(&submitter, &approved)
@@ -161,7 +177,12 @@ async fn operator_rotation_and_sequence_survive_replica_restart() {
         3
     );
     assert_eq!(
-        serde_json::from_slice::<AcpParams>(&replica.get_acp_params().await.unwrap()).unwrap(),
+        replica
+            .read_acp_parameters(applied.block_number, &trusted)
+            .await
+            .unwrap()
+            .value
+            .unwrap(),
         AcpParams::default()
     );
     for index in 0..cluster.node_count() {

@@ -50,7 +50,49 @@ fn decode_state(bytes: &[u8]) -> Result<AdministrationState, ClientError> {
     Ok(state)
 }
 
+/// ACP configuration or certified absence at a finalized revision.
+#[derive(Clone, Debug)]
+pub struct AcpParameterRecord {
+    /// Revision authenticating this configuration.
+    pub revision: u64,
+    /// Execution timestamp of that revision.
+    pub timestamp: u64,
+    /// Stored parameters; absence selects `AcpParams::default()` during execution.
+    pub value: Option<hub_modules::acp::types::AcpParams>,
+}
+
 impl HubClient {
+    /// Read ACP parameters from certified native state, distinguishing absence from corruption.
+    pub async fn read_acp_parameters(
+        &self,
+        minimum: u64,
+        trusted: &hub_domain::ConsensusPublicKey,
+    ) -> Result<AcpParameterRecord, ClientError> {
+        let response = self
+            .read_current_record(
+                hub_permission::ModuleId::Acp,
+                hub_modules::acp::keys::PARAMS_KEY,
+                minimum,
+                trusted,
+                hub_permission::RECORD_PROOF_BYTES,
+            )
+            .await?;
+        let value = response
+            .record
+            .value
+            .as_ref()
+            .map(|bytes| {
+                borsh::from_slice(bytes)
+                    .map_err(|_| ClientError::InvalidResponse("invalid ACP parameter encoding"))
+            })
+            .transpose()?;
+        Ok(AcpParameterRecord {
+            revision: response.revision.height,
+            timestamp: response.revision.timestamp,
+            value,
+        })
+    }
+
     /// Verify the current operator policy and sequence using independently configured consensus trust.
     pub async fn read_administration(
         &self,

@@ -560,7 +560,7 @@ impl AcpModule {
 
     /// Return current module parameters.
     pub fn query_params(&self) -> Result<AcpParams> {
-        Ok(self.get_params())
+        self.get_params()
     }
 
     // ── Lifecycle hooks ─────────────────────────────────────────────────
@@ -644,11 +644,14 @@ impl AcpModule {
 
     // ── Storage — Params ─────────────────────────────────────────────────
 
-    fn get_params(&self) -> AcpParams {
-        self.store
-            .get(keys::PARAMS_KEY)
-            .and_then(|bytes| borsh::from_slice(&bytes).ok())
-            .unwrap_or_default()
+    fn get_params(&self) -> Result<AcpParams> {
+        self.store.get_ref(keys::PARAMS_KEY).map_or_else(
+            || Ok(AcpParams::default()),
+            |bytes| {
+                borsh::from_slice(bytes)
+                    .map_err(|e| AcpError::State(format!("invalid ACP parameters: {e}")))
+            },
+        )
     }
 
     #[allow(unused_variables)]
@@ -1165,7 +1168,7 @@ impl AcpModule {
             });
         }
 
-        let params = self.get_params();
+        let params = self.get_params()?;
 
         let metadata = RecordMetadata {
             creation_ts: Timestamp::default(),

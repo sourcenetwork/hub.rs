@@ -97,3 +97,10 @@ The existing `administration` convenience method does not authenticate its RPC
 response. Use the certified read when selecting an operator policy or checking
 rotation recovery. A certified operator configuration does not grant authority to
 an unlisted signer; execution still requires the configured approval threshold.
+
+`HubClient::read_acp_parameters` authenticates the ACP parameter record separately
+from operator configuration. Its value is absent until parameters are explicitly
+stored; execution then uses `AcpParams::default()`. Malformed stored bytes are
+errors and never select defaults. Parameter-dependent registration commitments
+also reject malformed configuration before changing state. After an approved
+parameter update, use its certified revision as the minimum for the read.
