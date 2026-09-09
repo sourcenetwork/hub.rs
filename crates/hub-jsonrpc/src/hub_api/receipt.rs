@@ -14,13 +14,10 @@ impl HubApiImpl {
             .index
             .as_ref()
             .ok_or_else(|| error("receipt index unavailable"))?;
-        let Some(_) = index.receipt_block_hash(&hash) else {
-            return self.archived_receipt(hash).await;
-        };
-        let _permit = self.state.proof_permit()?;
         let Some(execution) = index.receipt_revision(&hash) else {
             return self.archived_receipt(hash).await;
         };
+        let _permit = self.state.proof_permit()?;
         let block = &execution.block;
         let Some(revision) = tokio::time::timeout(
             std::time::Duration::from_secs(2),
@@ -44,11 +41,12 @@ impl HubApiImpl {
         {
             return Err(error("incomplete receipt index"));
         }
-        let mut receipts = execution.receipts.clone();
         // Execution groups native submissions first while preserving order within each group.
-        receipts.sort_by_key(|receipt| receipt.signer_did.is_none());
+        let receipts = execution.receipts.iter();
         let receipts = receipts
-            .into_iter()
+            .clone()
+            .filter(|receipt| receipt.signer_did.is_some())
+            .chain(receipts.filter(|receipt| receipt.signer_did.is_none()))
             .map(|r| {
                 ExecutionReceipt::new(
                     r.transaction_hash,
@@ -56,8 +54,8 @@ impl HubApiImpl {
                     r.gas_used,
                     r.cumulative_gas_used,
                     r.logs
-                        .into_iter()
-                        .map(|l| Log::new_unchecked(l.address, l.topics, l.data))
+                        .iter()
+                        .map(|l| Log::new_unchecked(l.address, l.topics.clone(), l.data.clone()))
                         .collect(),
                     r.contract_address,
                 )
