@@ -7,6 +7,7 @@ mod command_context;
 mod commitment_expiry;
 mod commitment_lookup;
 mod registration_queries;
+mod relationship_queries;
 pub use registration_queries::{MAX_REGISTRATION_LEAF_BYTES, MAX_REGISTRATION_OBJECTS};
 pub mod decision;
 pub mod delegated_operation;
@@ -397,22 +398,6 @@ impl AcpModule {
         Ok(ids)
     }
 
-    /// Filter relationships within a policy using a selector.
-    #[allow(unused_variables)]
-    pub fn query_filter_relationships(
-        &self,
-        policy_id: &str,
-        selector: &RelationshipSelector,
-    ) -> Result<Vec<RelationshipRecord>> {
-        let results = self
-            .scan_policy_relationships(policy_id)
-            .into_iter()
-            .filter(|rec| self.matches_selector(rec, selector))
-            .collect();
-
-        Ok(results)
-    }
-
     /// Verify an access request without recording a decision.
     #[allow(unused_variables)]
     pub fn query_verify_access_request(
@@ -632,14 +617,6 @@ impl AcpModule {
     fn has_relationship(&self, policy_id: &str, storage_key: &str) -> bool {
         self.store
             .has(&keys::relationship_key(policy_id, storage_key))
-    }
-
-    fn scan_policy_relationships(&self, policy_id: &str) -> Vec<RelationshipRecord> {
-        self.store
-            .prefix_scan(&keys::relationship_policy_prefix(policy_id))
-            .into_iter()
-            .filter_map(|(_, v)| serde_json::from_slice(&v).ok())
-            .collect()
     }
 
     // ── Storage — Params ─────────────────────────────────────────────────
