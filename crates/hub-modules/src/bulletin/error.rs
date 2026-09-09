@@ -6,6 +6,9 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 #[allow(missing_docs)]
 pub enum BulletinError {
+    #[error("namespace must be nonempty")]
+    InvalidNamespace,
+
     #[error("namespace not found: {namespace}")]
     NamespaceNotFound { namespace: String },
 

@@ -98,6 +98,33 @@ async fn certified_bulletin_reads_follow_grants_pages_and_restart() {
             .value
             .is_none()
     );
+    let rejected = submit(
+        &writer,
+        &reader,
+        &owner,
+        &trusted,
+        IBulletin::registerNamespaceCall {
+            namespace: String::new(),
+        },
+        false,
+    )
+    .await;
+    assert!(
+        reader
+            .read_bulletin_policy_id(rejected, &trusted)
+            .await
+            .unwrap()
+            .value
+            .is_none()
+    );
+    assert!(
+        reader
+            .list_bulletin_namespaces(None, 1, rejected, &trusted)
+            .await
+            .unwrap()
+            .records
+            .is_empty()
+    );
     let mut minimum = submit(
         &writer,
         &reader,

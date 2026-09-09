@@ -48,3 +48,5 @@ bulletin state. Posting and collaborator management use the same fallible reader
 Bulletin and core parameter reads also return decoding errors for corrupt stored
 bytes; defaults apply only to missing keys. Native recovery checks these values
 before publishing query state.
+
+Namespace registration, posting, and collaborator changes reject empty namespace names before reading or mutating policy state. Failed empty-name registration does not initialize the bulletin policy.

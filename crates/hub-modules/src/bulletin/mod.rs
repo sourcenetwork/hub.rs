@@ -157,6 +157,7 @@ impl BulletinModule {
         creator: &Did,
         namespace: &str,
     ) -> Result<Namespace> {
+        validate_namespace(namespace)?;
         let policy_id = self.ensure_policy(acp)?;
         let namespace_id = format!("bulletin/{}", namespace);
 
@@ -247,6 +248,7 @@ impl BulletinModule {
         proof: &[u8],
         _artifact: &str,
     ) -> Result<()> {
+        validate_namespace(namespace)?;
         let policy_id = self
             .get_policy_id()?
             .ok_or(BulletinError::PolicyNotInitialized)?;
@@ -321,6 +323,7 @@ impl BulletinModule {
         namespace: &str,
         collaborator_did: &str,
     ) -> Result<String> {
+        validate_namespace(namespace)?;
         let policy_id = self
             .get_policy_id()?
             .ok_or(BulletinError::PolicyNotInitialized)?;
@@ -378,6 +381,7 @@ impl BulletinModule {
         namespace: &str,
         collaborator_did: &str,
     ) -> Result<String> {
+        validate_namespace(namespace)?;
         let policy_id = self
             .get_policy_id()?
             .ok_or(BulletinError::PolicyNotInitialized)?;
@@ -578,8 +582,9 @@ impl BulletinModule {
         self.store
             .get_ref(keys::POLICY_ID_KEY)
             .map(|bytes| {
-                let id = std::str::from_utf8(bytes)
-                    .map_err(|e| BulletinError::State(format!("invalid bulletin policy ID: {e}")))?;
+                let id = std::str::from_utf8(bytes).map_err(|e| {
+                    BulletinError::State(format!("invalid bulletin policy ID: {e}"))
+                })?;
                 if id.is_empty() {
                     return Err(BulletinError::State("empty bulletin policy ID".into()));
                 }
@@ -713,6 +718,13 @@ fn glob_match(pattern: &str, value: &str) -> bool {
     true
 }
 
+const fn validate_namespace(namespace: &str) -> Result<()> {
+    if namespace.is_empty() {
+        return Err(BulletinError::InvalidNamespace);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod glob_tests;
 
@@ -720,6 +732,43 @@ mod glob_tests;
 mod tests {
     use super::*;
     use crate::types::Timestamp;
+
+    #[test]
+    fn empty_namespace_writes_leave_bulletin_and_acp_unchanged() {
+        for initialized in [false, true] {
+            let mut module = BulletinModule::new();
+            let mut acp = super::super::acp::AcpModule::new();
+            let owner = make_did("did:key:owner");
+            let block = make_block_ctx(100, 10);
+            let tx = make_tx_ctx(owner.as_str());
+            if initialized {
+                module
+                    .register_namespace(&mut acp, &block, &tx, &owner, "valid")
+                    .unwrap();
+            }
+            let before = (module.store().serialize(), acp.store().serialize());
+            assert!(matches!(
+                module.register_namespace(&mut acp, &block, &tx, &owner, ""),
+                Err(BulletinError::InvalidNamespace)
+            ));
+            assert!(matches!(
+                module.create_post(&acp, &tx, &owner, "", b"payload", b"proof", ""),
+                Err(BulletinError::InvalidNamespace)
+            ));
+            assert!(matches!(
+                module.add_collaborator(&mut acp, &tx, &owner, "", owner.as_str()),
+                Err(BulletinError::InvalidNamespace)
+            ));
+            assert!(matches!(
+                module.remove_collaborator(&mut acp, &tx, &owner, "", owner.as_str()),
+                Err(BulletinError::InvalidNamespace)
+            ));
+            assert_eq!(
+                (module.store().serialize(), acp.store().serialize()),
+                before
+            );
+        }
+    }
 
     fn make_did(s: &str) -> Did {
         Did::new(s).expect("valid did")
