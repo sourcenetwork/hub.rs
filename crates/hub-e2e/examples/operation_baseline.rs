@@ -28,8 +28,8 @@ const CHAIN_ID: u64 = 9001;
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     assert!(
-        args.len() <= 9,
-        "usage: operation_baseline [count] [arrivals/sec] [max outstanding] [permission reads 0/1] [fast|normal|stress] [RPC connections] [epoch revisions] [retention minimum revision] [fixed update objects, 0 for registrations]"
+        args.len() <= 10,
+        "usage: operation_baseline [count] [arrivals/sec] [max outstanding] [permission reads 0/1] [fast|normal|stress] [RPC connections] [epoch revisions] [retention minimum revision] [fixed update objects, 0 for registrations] [retained consensus revisions, 0 disables pruning]"
     );
     let parse = |index: usize, default: usize| {
         args.get(index).map_or(default, |value| {
@@ -66,6 +66,16 @@ async fn main() {
         update_objects == 0 || permission_reads == 1,
         "updates require permission verification"
     );
+    let retained_consensus = parse(9, 0);
+    if retained_consensus > 0 {
+        let window = retained_consensus
+            .checked_add(2)
+            .expect("retention window overflow");
+        assert!(
+            window as u128 >= epoch_length.get() as u128,
+            "consensus retention must cover a complete DKG epoch"
+        );
+    }
     let timing = preset.params();
     let keys = KeySet::builder().seed(42).build().unwrap();
     let trusted = *keys.epoch_info().output.public().public();
@@ -86,6 +96,14 @@ async fn main() {
         .chain_id(CHAIN_ID)
         .preset(preset)
         .rpc_max_connections(rpc_connections)
+        .jmt_seeder(move |dir, _| {
+            if retained_consensus > 0 {
+                use std::io::Write as _;
+                let mut config = std::fs::OpenOptions::new().append(true)
+                    .open(dir.join("config.toml")).unwrap();
+                writeln!(config, "\n[pruning]\nmaintenance_interval = 64\nretained_consensus_revisions = {retained_consensus}\nretained_state_revisions = 0").unwrap();
+            }
+        })
         .build()
         .await
         .expect("start cluster");
@@ -193,6 +211,11 @@ async fn main() {
         serde_json::json!({
             "kind": "configuration", "workload": if update_objects == 0 { "certified_native_registrations" } else { "certified_native_object_updates" },
             "fixed_update_objects": update_objects,
+            "pruning": (retained_consensus > 0).then(|| serde_json::json!({
+                "maintenance_interval": 64,
+                "retained_consensus_revisions": retained_consensus,
+                "retained_state_revisions": 0,
+            })),
             "arrival_model": if update_objects == 0 { "scheduled_drop_when_full" } else { "scheduled_wait_for_previous_per_object" },
             "format_version": 2, "permission_reads_per_write": permission_reads,
             "runner_debug_assertions": cfg!(debug_assertions),

@@ -121,3 +121,12 @@ final active/archived state with its update count. Application objects and signe
 records stay fixed in number, while sequences, revisions and retained history
 continue advancing. This separates growing application cardinality from cache,
 history and allocator behavior; it does not make total disk usage constant.
+
+A tenth argument enables journal pruning with the supplied consensus retention
+count; zero (default) disables it. The runner uses a 64-revision maintenance
+interval and zero additional state retention. Consensus retention plus the two
+safety revisions must cover a full epoch. The JSON configuration records these
+settings as `pruning`, or null when disabled. Keep epoch length and retention
+settings identical when comparing runs; changing epoch length also changes DKG
+frequency. A run must advance far enough for maintenance before it provides
+pruning evidence; use node diagnostics to confirm archive pruning occurred.
