@@ -56,48 +56,21 @@ impl HubClient {
 
     // ── Low-level transport ─────────────────────────────────────────
 
-    /// Send a raw JSON-RPC request and return the `result` field.
-    async fn rpc_call(
-        &self,
-        method: &str,
-        params: serde_json::Value,
-    ) -> Result<serde_json::Value, ClientError> {
-        let body = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": params,
-            "id": self.next_id(),
-        });
-
-        debug!(method, "JSON-RPC request");
-
-        let resp: serde_json::Value = self
-            .http
-            .post(&self.rpc_url)
-            .json(&body)
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
-
-        if let Some(error) = resp.get("error") {
-            return Err(ClientError::from_rpc(error));
-        }
-
-        resp.get("result")
-            .cloned()
-            .ok_or(ClientError::MissingResult)
-    }
-
     /// Send a JSON-RPC request and deserialize the `result` into `T`.
+    ///
+    /// Responses must match the request ID and protocol version, fit within the
+    /// server's largest response budget, and arrive within ten seconds.
     pub async fn rpc_call_typed<T: DeserializeOwned>(
         &self,
         method: &str,
         params: serde_json::Value,
     ) -> Result<T, ClientError> {
-        let value = self.rpc_call(method, params).await?;
-        Ok(serde_json::from_value(value)?)
+        self.rpc_call_bounded(
+            method,
+            params,
+            hub_permission::PERMISSION_RESPONSE_BYTES.max(hub_domain::RECEIPT_RESPONSE_BYTES),
+        )
+        .await
     }
 
     pub(crate) async fn rpc_call_bounded<T: DeserializeOwned>(
@@ -106,6 +79,7 @@ impl HubClient {
         params: serde_json::Value,
         maximum: usize,
     ) -> Result<T, ClientError> {
+        debug!(method, "JSON-RPC request");
         let id = self.next_id();
         let mut response = self
             .http
@@ -220,18 +194,11 @@ impl HubClient {
         &self,
         tx_hash: B256,
     ) -> Result<Option<TransactionReceipt>, ClientError> {
-        let result = self
-            .rpc_call(
-                "eth_getTransactionReceipt",
-                serde_json::json!([format!("{tx_hash:?}")]),
-            )
-            .await?;
-
-        if result.is_null() {
-            return Ok(None);
-        }
-
-        Ok(Some(serde_json::from_value(result)?))
+        self.rpc_call_typed(
+            "eth_getTransactionReceipt",
+            serde_json::json!([format!("{tx_hash:?}")]),
+        )
+        .await
     }
 
     /// Return the current gas price (`eth_gasPrice`).
@@ -268,18 +235,11 @@ impl HubClient {
         &self,
         tx_hash: B256,
     ) -> Result<Option<NativeReceipt>, ClientError> {
-        let result = self
-            .rpc_call(
-                "hub_getTransactionReceipt",
-                serde_json::json!([format!("{tx_hash:?}")]),
-            )
-            .await?;
-
-        if result.is_null() {
-            return Ok(None);
-        }
-
-        Ok(Some(serde_json::from_value(result)?))
+        self.rpc_call_typed(
+            "hub_getTransactionReceipt",
+            serde_json::json!([format!("{tx_hash:?}")]),
+        )
+        .await
     }
 
     /// Fetch the on-chain native nonce for a BLS identity (`hub_getNativeNonce`).
