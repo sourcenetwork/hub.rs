@@ -11,7 +11,9 @@ mod filter;
 pub use filter::LogFilter;
 
 mod light_block_store;
-pub use light_block_store::{LightBlockIndex, StoredEpochMaterial, StoredFinalization};
+pub use light_block_store::{
+    LightBlockIndex, MAX_CACHED_FINALIZATIONS, StoredEpochMaterial, StoredFinalization,
+};
 
 mod store;
 pub use store::BlockIndex;

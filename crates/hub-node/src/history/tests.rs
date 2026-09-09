@@ -365,6 +365,28 @@ async fn indirect_proof_survives_reopen_and_uses_the_rpc_history_lookup() {
         1,
         "direct proofs must use the existing index"
     );
+    for number in 0..hub_indexer::MAX_CACHED_FINALIZATIONS {
+        let mut digest = [0; 32];
+        digest[..8].copy_from_slice(&(number as u64).to_be_bytes());
+        assert_ne!(digest, third.digest().0);
+        epochs.insert_finalization(
+            digest,
+            StoredFinalization {
+                epoch: 0,
+                bytes: vec![],
+                block: vec![],
+            },
+        );
+    }
+    assert!(epochs.get_finalization(&third.digest().0).is_none());
+    let evicted = api
+        .get_light_block(alloy_primitives::U64::from(3))
+        .await
+        .unwrap();
+    assert_eq!(evicted, direct);
+    verify_light_block(&evicted, &trusted).unwrap();
+    assert_eq!(calls.load(Ordering::Relaxed), 2);
+
     assert!(
         api.get_light_block(alloy_primitives::U64::from(4))
             .await

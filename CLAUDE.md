@@ -242,6 +242,12 @@ time out after ten seconds, and socket closure after one second.
 
 ### Light-client material
 
+The direct-finalization cache retains at most 1,024 entries and 64 MiB of
+encoded payload buffer capacity. FIFO eviction removes only cached artifacts;
+RPC reads fall back to durable history; clients verify the resulting proof.
+Oversized artifacts bypass the cache. Epoch verifier material remains available
+for historical proofs; this cache limit does not bound total node history.
+
 A `LightBlock` carries the canonical block, the BLS threshold finalization
 certificate, and the epoch's group public key; `hub_domain::verify_light_block`
 verifies it with one aggregate signature. `ModuleStateProof`s verify module
