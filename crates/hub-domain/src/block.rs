@@ -305,6 +305,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn block_transaction_count_respects_protocol_and_caller_limits() {
+        let mut block = sample_block();
+        block.txs = vec![block.txs[0].clone(); crate::MAX_BLOCK_TXS];
+        let mut cfg = default_block_cfg();
+        cfg.max_txs = usize::MAX;
+        assert!(block.fits_wire_limits());
+        assert_eq!(Block::decode_cfg(block.encode(), &cfg).unwrap(), block);
+        cfg.max_txs = crate::MAX_BLOCK_TXS - 1;
+        assert!(Block::decode_cfg(block.encode(), &cfg).is_err());
+        cfg.max_txs = usize::MAX;
+        block.txs.push(block.txs[0].clone());
+        assert!(!block.fits_wire_limits());
+        assert!(Block::decode_cfg(block.encode(), &cfg).is_err());
+    }
+
+    #[test]
     fn large_block_transaction_budget() {
         let cfg = BlockCfg {
             max_txs: crate::MAX_BLOCK_TXS,

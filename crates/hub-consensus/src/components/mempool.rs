@@ -133,6 +133,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn proposal_count_respects_protocol_and_caller_limits() {
+        let pool = InMemoryMempool::new();
+        let txs: Vec<_> = (0..hub_domain::MAX_BLOCK_TXS + 1)
+            .map(|i| Tx::new(i.to_be_bytes().to_vec().into()))
+            .collect();
+        for tx in &txs {
+            assert!(pool.insert(tx.clone()));
+        }
+        let selected = pool.build_block(usize::MAX, &Default::default());
+        assert_eq!(selected, txs[..hub_domain::MAX_BLOCK_TXS]);
+        assert_eq!(pool.build_block(17, &Default::default()), txs[..17]);
+        let excluded = txs[..1].iter().map(Tx::id).collect();
+        assert_eq!(pool.build_block(usize::MAX, &excluded), txs[1..]);
+    }
+
+    #[test]
     fn large_requests_respect_proposal_and_pending_budgets() {
         let pool = InMemoryMempool::new();
         let txs: Vec<_> = (0..6)

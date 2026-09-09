@@ -3,7 +3,7 @@
 /// Maximum signed request, including its authorization envelope.
 pub const MAX_TX_BYTES: usize = (12 << 20) + 4096;
 /// Maximum transactions in one block.
-pub const MAX_BLOCK_TXS: usize = 64;
+pub const MAX_BLOCK_TXS: usize = 256;
 /// Combined encoded transactions, including their vector length prefix.
 pub const MAX_BLOCK_TX_BYTES: usize = 16 << 20;
 /// Encoded block budget, reserving space for consensus and epoch material.

@@ -130,12 +130,17 @@ Module-level evidence bounds preserve the existing per-field limits, with a
 for retries. Admission rejects oversized requests before signature verification
 and caps pending request bytes at 64 MiB across at most 4,096 entries.
 
-Proposals contain at most 64 transactions and 16 MiB of encoded transaction data.
+Proposals contain at most 256 operations and 16 MiB of encoded operation data.
 The complete block limit is 17 MiB, including epoch material. RPC, gossip, block
 backfill and standalone verification share these limits. Finality evidence allows
 35 MiB of combined decoded artifacts, sufficient for two maximum-size blocks and
 certificate material; longer ancestry can still exhaust that bounded budget.
 These are safety bounds, not measured throughput or latency targets.
+
+The 256-operation limit requires updated nodes and standalone verifiers. Older
+builds capped at 64 reject larger revisions; upgrade the entire member group and
+verified consumers before using this protocol limit. Previously valid revisions
+remain within the new bounds.
 
 Encrypted document and signing-derivation registration is described in [threshold objects](threshold-objects.md). This API does not import
 existing rings or choose an encrypted-record migration policy.
