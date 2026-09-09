@@ -366,7 +366,6 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
 
     // Mempool, RPC plumbing, and the application.
     let mempool = InMemoryMempool::default();
-    let (history_failures, mut history_failure_rx) = ::tokio::sync::mpsc::channel(1);
     let block_index = Arc::new(BlockIndex::new());
     let light_block_index = Arc::new(LightBlockIndex::new(blocks_per_epoch));
     let initial_material = EpochMaterial::new(
@@ -420,7 +419,6 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     });
     let sink = NodeSink::new(SinkParts {
         history: history.clone(),
-        failures: history_failures,
         index: block_index.clone(),
         light_index: light_block_index.clone(),
         heads: heads_tx.clone(),
@@ -735,10 +733,9 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         stateful_handle,
         history_peer_handle,
     ]);
-    ::tokio::select! {
-        failure = history_failure_rx.recv() => Err(failure.unwrap_or_else(|| anyhow::anyhow!("history failure channel closed"))),
-        result = Handle::select(state_resolver_handles) => result.map_err(|e| anyhow::anyhow!("validator actor failed: {e:?}")),
-    }
+    Handle::select(state_resolver_handles)
+        .await
+        .map_err(|e| anyhow::anyhow!("validator actor failed: {e:?}"))
 }
 
 pub(crate) const fn block_cfg() -> hub_domain::BlockCfg {

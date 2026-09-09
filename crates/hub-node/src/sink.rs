@@ -49,7 +49,6 @@ pub type FinalizationLookup = Arc<
 #[derive(Clone)]
 pub struct NodeSink {
     history: Arc<FinalizedHistory>,
-    failures: tokio::sync::mpsc::Sender<anyhow::Error>,
     index: Arc<BlockIndex>,
     light_index: Arc<LightBlockIndex>,
     heads: broadcast::Sender<RpcBlock>,
@@ -76,8 +75,6 @@ impl std::fmt::Debug for NodeSink {
 pub struct SinkParts {
     /// Durable execution history used to restore the query indexes.
     pub history: Arc<FinalizedHistory>,
-    /// Fatal failures from asynchronous finalization persistence.
-    pub failures: tokio::sync::mpsc::Sender<anyhow::Error>,
     /// Block, transaction, and receipt index served over RPC.
     pub index: Arc<BlockIndex>,
     /// Public consensus artifacts served to light clients.
@@ -117,7 +114,6 @@ impl NodeSink {
     pub fn new(parts: SinkParts) -> Self {
         Self {
             history: parts.history,
-            failures: parts.failures,
             index: parts.index,
             light_index: parts.light_index,
             heads: parts.heads,
@@ -172,55 +168,36 @@ impl FinalizedSink for NodeSink {
             trace!(height = block.height, "no logs subscribers");
         }
         restore_epoch(&self.light_index, block);
-        // Marshal invokes reporters while processing this finalization, so it
-        // cannot answer its own mailbox until the callback returns. Finish the
-        // lookup, indexing, and header publication in a detached task.
-        let mut header = GossipHeader::from_block(block, self.chain_id, self.publisher_index);
-        let height = block.height;
-        let digest = block.digest().0;
-        let block_bytes = block.encode().to_vec();
-        let lookup = self.finalization_lookup.clone();
-        let light_index = self.light_index.clone();
-        let headers = self.headers.clone();
+        // The stateful reporter enqueues work, so marshal can answer this
+        // lookup before we release the finalized block's acknowledgement.
+        let artifacts = (self.finalization_lookup)(block.height).await;
         let history = self.history.clone();
-        let failures = self.failures.clone();
-        let node_state = self.node_state.clone();
-        ::tokio::spawn(async move {
-            let artifacts = lookup(height).await;
-            let persisted = ::tokio::task::spawn_blocking(move || {
-                history.store_finalization(height, artifacts.as_ref())?;
-                Ok::<_, anyhow::Error>(artifacts)
-            })
-            .await;
-            let artifacts = match persisted {
-                Ok(Ok(artifacts)) => artifacts,
-                Ok(Err(error)) => {
-                    let _ = failures.try_send(error);
-                    return;
-                }
-                Err(error) => {
-                    let _ = failures.try_send(error.into());
-                    return;
-                }
-            };
-            if let Some(artifacts) = artifacts {
-                header.set_signature(&artifacts.certificate);
-                light_index.insert_finalization(
-                    digest,
-                    StoredFinalization {
-                        epoch: artifacts.epoch,
-                        bytes: artifacts.finalization,
-                        block: block_bytes,
-                    },
-                );
-                if headers.send(header).is_err() {
-                    trace!(height, "no headers subscribers");
-                }
-            } else {
-                trace!(height, "no direct finalization certificate in marshal");
+        let height = block.height;
+        let artifacts = ::tokio::task::spawn_blocking(move || {
+            history.store_finalization(height, artifacts.as_ref())?;
+            Ok::<_, anyhow::Error>(artifacts)
+        })
+        .await
+        .expect("finalized certificate writer stopped")
+        .expect("persist finalized certificate before acknowledgement");
+        if let Some(artifacts) = artifacts {
+            let mut header = GossipHeader::from_block(block, self.chain_id, self.publisher_index);
+            header.set_signature(&artifacts.certificate);
+            self.light_index.insert_finalization(
+                block.digest().0,
+                StoredFinalization {
+                    epoch: artifacts.epoch,
+                    bytes: artifacts.finalization,
+                    block: block.encode().to_vec(),
+                },
+            );
+            if self.headers.send(header).is_err() {
+                trace!(height, "no headers subscribers");
             }
-            node_state.notify_proof_progress();
-        });
+        } else {
+            trace!(height, "no direct finalization certificate in marshal");
+        }
+        self.node_state.notify_proof_progress();
 
         let Some(set) = self.state.get() else {
             return;
