@@ -36,3 +36,9 @@ consensus trust and a minimum revision. The result includes the selected revisio
 and timestamp, with either a valid decision or certified absence. Invalid or
 expired records return errors. Callers still enforce freshness appropriate to
 usage; this method does not prove that an earlier permission remains granted.
+
+The module's decision lookup distinguishes missing keys from invalid records.
+Stored values must decode completely within 128 KiB and their decision ID must
+match the queried key. Corruption returns an error rather than absence. This
+lookup can return expired historical records; current validity requires the
+request-bound verification described above.

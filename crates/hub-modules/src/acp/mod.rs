@@ -680,40 +680,17 @@ impl AcpModule {
         Ok(())
     }
 
-    #[allow(unused_variables)]
     fn get_access_decision(&self, id: &str) -> Result<Option<AccessDecision>> {
-        Ok(self
-            .store
-            .get(&keys::access_decision_key(id))
-            .and_then(|bytes| borsh::from_slice(&bytes).ok()))
-    }
-
-    #[allow(unused_variables)]
-    fn delete_access_decision(&mut self, id: &str) -> Result<()> {
-        self.store.delete(&keys::access_decision_key(id));
-        Ok(())
-    }
-
-    fn list_access_decision_ids(&self) -> Result<Vec<String>> {
-        let prefix = keys::ACCESS_DECISION_PREFIX;
-        let ids = self
-            .store
-            .prefix_scan(prefix)
-            .into_iter()
-            .map(|(k, _)| {
-                String::from_utf8(k[prefix.len()..].to_vec()).expect("decision ID is valid UTF-8")
+        self.store
+            .get_ref(&keys::access_decision_key(id))
+            .map(|bytes| {
+                let decision = AccessDecision::decode_record(bytes)?;
+                if decision.id != id {
+                    return Err(AcpError::State("access decision identity mismatch".into()));
+                }
+                Ok(decision)
             })
-            .collect();
-        Ok(ids)
-    }
-
-    fn list_access_decisions(&self) -> Result<Vec<AccessDecision>> {
-        Ok(self
-            .store
-            .prefix_scan(keys::ACCESS_DECISION_PREFIX)
-            .into_iter()
-            .filter_map(|(_, v)| borsh::from_slice(&v).ok())
-            .collect())
+            .transpose()
     }
 
     // ── Storage — Commitments ────────────────────────────────────────────

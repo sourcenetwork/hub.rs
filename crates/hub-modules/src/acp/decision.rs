@@ -202,6 +202,41 @@ mod tests {
         assert!(oversized.id().is_err());
     }
 
+    fn check_stored_decision(decision: &AccessDecision) {
+        use crate::{
+            acp::{AcpModule, keys},
+            kv_store::ModuleKvStore,
+        };
+
+        let mut module = AcpModule::new();
+        let key = keys::access_decision_key(&decision.id);
+        assert!(
+            module
+                .query_access_decision(&decision.id)
+                .unwrap()
+                .is_none()
+        );
+        let bytes = borsh::to_vec(decision).unwrap();
+        module.store.put(&key, bytes.clone());
+        assert_eq!(
+            module.query_access_decision(&decision.id).unwrap().as_ref(),
+            Some(decision)
+        );
+        for length in 0..bytes.len() {
+            module.store.put(&key, bytes[..length].to_vec());
+            assert!(module.query_access_decision(&decision.id).is_err());
+        }
+        let mut trailing = bytes.clone();
+        trailing.push(0);
+        module.store.put(&key, trailing);
+        assert!(module.query_access_decision(&decision.id).is_err());
+        module.store.put(&key, vec![0; (128 << 10) + 1]);
+        assert!(module.query_access_decision(&decision.id).is_err());
+        let other_key = keys::access_decision_key("other");
+        module.store.put(&other_key, bytes);
+        assert!(module.query_access_decision("other").is_err());
+    }
+
     #[test]
     fn decision_contents_and_expiration_are_bound_to_the_request() {
         let request = request();
@@ -224,6 +259,7 @@ mod tests {
             creation_time: at.clone(),
             issued_height: at.block_height,
         };
+        check_stored_decision(&decision);
         let verify = |value: &AccessDecision, at: &Timestamp| {
             request.verify_record(&borsh::to_vec(value).unwrap(), at)
         };
