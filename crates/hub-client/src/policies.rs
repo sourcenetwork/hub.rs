@@ -1,0 +1,112 @@
+//! Policy discovery from certified native prefix pages.
+
+use alloy_primitives::Bytes;
+use hub_domain::ConsensusPublicKey;
+use hub_modules::acp::{keys, types::PolicyRecord};
+use hub_permission::{
+    ModuleId, PAGE_PROOF_BYTES, PAGE_RESPONSE_BYTES, PrefixPageRequest, PrefixPageResponse,
+};
+
+use crate::{ClientError, HubClient};
+
+/// Policies at one finalized revision; subsequent pages may select newer state.
+#[derive(Clone, Debug)]
+pub struct PolicyPage {
+    /// Finalized revision authenticating this page.
+    pub revision: u64,
+    /// Execution timestamp of that revision.
+    pub timestamp: u64,
+    /// Policies and their creation metadata in storage-key order.
+    pub records: Vec<PolicyRecord>,
+    /// Inclusive start of the next page, or the end of the policy prefix.
+    pub continuation: Option<Bytes>,
+}
+
+impl HubClient {
+    /// Discover policies using bounded, complete pages authenticated by consensus trust.
+    pub async fn read_policy_page(
+        &self,
+        cursor: Option<Bytes>,
+        limit: u16,
+        minimum: u64,
+        trusted: &ConsensusPublicKey,
+    ) -> Result<PolicyPage, ClientError> {
+        let prefix = Bytes::from_static(keys::POLICY_PREFIX);
+        let request = PrefixPageRequest {
+            module: ModuleId::Acp,
+            start: cursor.unwrap_or_else(|| prefix.clone()),
+            prefix,
+            limit,
+        };
+        request.validate()?;
+        let response: PrefixPageResponse = self
+            .rpc_call_bounded(
+                "hub_getCurrentPrefixPageProof",
+                serde_json::json!([request, minimum]),
+                PAGE_RESPONSE_BYTES,
+            )
+            .await?;
+        let page = response.verify(&request, minimum, trusted, PAGE_PROOF_BYTES)?;
+        let records = page
+            .entries
+            .iter()
+            .map(|entry| decode(&entry.key, &entry.value))
+            .collect::<Result<_, _>>()?;
+        Ok(PolicyPage {
+            revision: response.revision.height,
+            timestamp: response.revision.timestamp,
+            records,
+            continuation: page.continuation,
+        })
+    }
+}
+
+fn decode(key: &[u8], value: &[u8]) -> Result<PolicyRecord, ClientError> {
+    let record: PolicyRecord = serde_json::from_slice(value)?;
+    let id = &record.policy.id;
+    if id.len() != 64
+        || !id
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        || keys::policy_key(id) != key
+    {
+        return Err(ClientError::InvalidResponse(
+            "policy record differs from selection",
+        ));
+    }
+    Ok(record)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hub_modules::acp::{AcpModule, types::PolicyMarshalingType};
+
+    #[test]
+    fn policy_records_bind_identity_and_require_complete_json() {
+        let mut module = AcpModule::new();
+        let mut record = module
+            .create_policy(
+                &"did:key:owner".parse().unwrap(),
+                "name: policy\nresources:\n  - name: file\n",
+                PolicyMarshalingType::ShortYaml,
+            )
+            .unwrap();
+        let key = keys::policy_key(&record.policy.id);
+        let bytes = serde_json::to_vec(&record).unwrap();
+        assert_eq!(decode(&key, &bytes).unwrap().policy.id, record.policy.id);
+        assert!(decode(&keys::policy_key(&"0".repeat(64)), &bytes).is_err());
+        assert!(decode(&key, &bytes[..bytes.len() - 1]).is_err());
+        let mut trailing = bytes;
+        trailing.push(b'!');
+        assert!(decode(&key, &trailing).is_err());
+        record.policy.id = "A".repeat(64);
+        assert!(
+            decode(
+                &keys::policy_key(&record.policy.id),
+                &serde_json::to_vec(&record).unwrap()
+            )
+            .is_err()
+        );
+    }
+}

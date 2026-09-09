@@ -19,6 +19,8 @@ mod native_tx;
 /// Signed threshold-service node commands and certified records.
 pub mod nodes;
 mod permission;
+/// Certified native policy discovery.
+pub mod policies;
 mod query;
 mod receipt;
 mod record;

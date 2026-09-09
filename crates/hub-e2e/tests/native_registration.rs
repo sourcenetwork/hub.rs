@@ -58,11 +58,52 @@ async fn native_registration_preserves_commitment_priority_and_owner_proofs() {
         .unwrap();
     cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
     let client = HubClient::new(cluster.node(0).rpc_url());
+    cluster
+        .observe(Duration::from_millis(100))
+        .wait_for_height(3, Duration::from_secs(30))
+        .await
+        .unwrap();
+    let empty = client.read_policy_page(None, 1, 0, &trusted).await.unwrap();
+    assert!(empty.records.is_empty());
+    assert!(empty.continuation.is_none());
     let first = BlsSigner::new(7u64.into(), deployment).unwrap();
     let second = BlsSigner::new(8u64.into(), deployment).unwrap();
-    client.native_create_policy(&first, b"name: registrations\nresources:\n  - name: file\n    permissions:\n      - name: read\n        expr: owner\n", 1).await.unwrap();
-    let policy = client.get_policy_ids().await.unwrap().pop().unwrap();
+    let created = client.native_create_policy(&first, b"name: registrations\nresources:\n  - name: file\n    permissions:\n      - name: read\n        expr: owner\n", 1).await.unwrap();
+    let page = client
+        .read_policy_page(None, 1, created.block_number, &trusted)
+        .await
+        .unwrap();
+    assert!(page.continuation.is_none());
+    assert_eq!(page.records.len(), 1);
+    assert_eq!(page.records[0].metadata.owner_did, first.did());
+    let policy = page.records[0].policy.id.clone();
     let policy_id: B256 = policy.parse().unwrap();
+    let extra = client
+        .native_create_policy(
+            &first,
+            b"name: another
+resources:
+  - name: file
+",
+            1,
+        )
+        .await
+        .unwrap();
+    let first_page = client
+        .read_policy_page(None, 1, extra.block_number, &trusted)
+        .await
+        .unwrap();
+    assert_eq!(first_page.records.len(), 1);
+    assert!(first_page.continuation.is_some());
+    let last_page = client
+        .read_policy_page(first_page.continuation, 1, first_page.revision, &trusted)
+        .await
+        .unwrap();
+    assert_eq!(last_page.records.len(), 1);
+    assert!(last_page.continuation.is_none());
+    assert!(first_page.records[0].policy.id < last_page.records[0].policy.id);
+    assert!(first_page.records[0].policy.id == policy || last_page.records[0].policy.id == policy);
+
     let generated = hub_client::registrations::generate_registration_commitment(
         policy_id,
         &[Object {
