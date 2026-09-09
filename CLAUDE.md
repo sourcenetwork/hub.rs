@@ -57,6 +57,11 @@ stops:
   validators. There is no leader prediction.
 - **RPC:** the `hub-jsonrpc` server over the live committed state (below).
 
+The application retires cached proposal randomness for rounds behind finalized
+execution. The finalized round and newer rounds remain available, and late
+elector callbacks cannot reinsert retired seeds. This follows finality progress;
+it does not impose a cap on rounds accumulated while finality is stalled.
+
 ### Execution (`hub-app` + `hub-executor`)
 
 `StatefulHubApp` implements `commonware_glue::stateful::Application`: it builds

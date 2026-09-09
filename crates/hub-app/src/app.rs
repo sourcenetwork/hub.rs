@@ -2,11 +2,11 @@
 
 use std::{
     collections::{BTreeSet, HashMap},
-    sync::{Arc, RwLock},
+    sync::Arc,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-use crate::{ApplicationState, VeraStateSet};
+use crate::{ApplicationState, VeraStateSet, VrfSeedCache};
 use alloy_consensus::Header;
 use alloy_primitives::{Address, B256};
 use commonware_consensus::marshal::ancestry::Ancestry;
@@ -30,34 +30,6 @@ const MAX_PENDING_ANCESTORS: usize = 64;
 struct PendingExecution {
     height: u64,
     receipts: Vec<ExecutionReceipt>,
-}
-
-/// VRF randomness recovered by consensus while it unlocks each proposal round.
-///
-/// Simplex keeps the unlocking certificate outside the application context, so
-/// the node's elector records its canonical threshold seed here before asking
-/// the application to build or verify the round's block.
-#[derive(Clone, Debug, Default)]
-pub struct VrfSeedCache(Arc<RwLock<HashMap<Round, B256>>>);
-
-impl VrfSeedCache {
-    /// Record the 32-byte EVM randomness derived from a round's unlocking VRF seed.
-    pub fn insert(&self, round: Round, prevrandao: B256) {
-        self.0
-            .write()
-            .expect("VRF seed cache lock poisoned")
-            .insert(round, prevrandao);
-    }
-
-    /// Return the randomness that must be committed by a block in `round`.
-    #[must_use]
-    pub fn get(&self, round: Round) -> Option<B256> {
-        self.0
-            .read()
-            .expect("VRF seed cache lock poisoned")
-            .get(&round)
-            .copied()
-    }
 }
 
 /// Hub block production and verification on top of glue-managed state.
@@ -437,6 +409,7 @@ impl<S: FinalizedSink, D: ApplicationState> Application<Ctx> for StatefulHubApp<
         let ids: Vec<TxId> = block.txs.iter().map(hub_domain::Tx::id).collect();
         self.mempool.prune(&ids);
         self.sink.finalized(block, captured).await;
+        self.vrf_seeds.finalized(block.context.round);
         self.pending
             .lock()
             .retain(|_, execution| execution.height >= block.height);

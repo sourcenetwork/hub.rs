@@ -1,6 +1,9 @@
 use super::*;
 use crate::{NoopSink, ReshareInput, StatefulHubApp};
-use commonware_consensus::marshal::ancestry;
+use commonware_consensus::{
+    marshal::ancestry,
+    types::{Epoch, Round, View},
+};
 use commonware_glue::stateful::{Application, Input};
 use hub_consensus::{Mempool as _, components::InMemoryMempool};
 
@@ -36,12 +39,11 @@ fn native_proposals_bind_every_target_and_isolate_competing_execution() {
                     64,
                     30_000_000,
                 );
+                let mut proposal_context = hub_domain::Block::genesis_context();
+                proposal_context.round = Round::new(Epoch::new(0), View::new(1));
                 let proposal = app
                     .propose(
-                        (
-                            context.child("propose"),
-                            hub_domain::Block::genesis_context(),
-                        ),
+                        (context.child("propose"), proposal_context.clone()),
                         ancestry::from_iter([Arc::new(genesis.clone())]),
                         set.new_batches().await,
                         Input {
@@ -99,10 +101,7 @@ fn native_proposals_bind_every_target_and_isolate_competing_execution() {
                 )));
                 let competing = app
                     .propose(
-                        (
-                            context.child("competing"),
-                            hub_domain::Block::genesis_context(),
-                        ),
+                        (context.child("competing"), proposal_context.clone()),
                         ancestry::from_iter([Arc::new(genesis.clone())]),
                         set.new_batches().await,
                         Input {
@@ -139,6 +138,21 @@ fn native_proposals_bind_every_target_and_isolate_competing_execution() {
                 assert!(receipts[0].success());
                 set.apply(verified).await;
                 assert!(set.finalize().await.durable().await);
+                let seeds = app.vrf_seed_cache();
+                let old_round = Round::new(Epoch::new(0), View::new(0));
+                let pending_round = Round::new(Epoch::new(0), View::new(2));
+                seeds.insert(old_round, B256::ZERO);
+                seeds.insert(pending_round, B256::repeat_byte(7));
+                app.finalized(
+                    (context.child("finalized"), proposal.block.context.clone()),
+                    &proposal.block,
+                    receipts,
+                    set.readers(),
+                )
+                .await;
+                assert!(seeds.get(old_round).is_none());
+                assert_eq!(seeds.get(pending_round), Some(B256::repeat_byte(7)));
+
                 assert_eq!(
                     set.committed_targets().await,
                     App::sync_targets(&proposal.block)

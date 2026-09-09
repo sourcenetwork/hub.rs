@@ -12,7 +12,10 @@ mod app_state;
 pub use app_state::{ApplicationState, StateExecution};
 
 mod app;
-pub use app::{StatefulHubApp, VrfSeedCache};
+pub use app::StatefulHubApp;
+
+mod vrf_cache;
+pub use vrf_cache::VrfSeedCache;
 
 mod error;
 pub use error::AppError;
