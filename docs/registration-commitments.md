@@ -95,3 +95,15 @@ Use `native_commit_registrations` to submit the 32-byte root and
 the native signer and submission path. Their transaction receipts are transport
 responses; use `read_receipt` with independently configured consensus trust when
 acting on a certified outcome.
+
+Ownership amendments write an empty policy-index entry keyed by policy and
+ascending amendment ID. Hijack-history lookup inspects at most 128 indexed
+amendments and 1 MiB of combined index, key and record bytes, including unflagged
+events. Exceeding either limit returns an error rather than a partial history.
+Malformed records, mismatched identities and dangling indexes are errors.
+
+Native recovery requires a matching policy index for every retained amendment.
+Existing deployments with amendments created before this index require an
+explicit migration; startup does not rebuild it automatically. New index entries
+participate in the native state commitment, so this is a coordinated execution
+upgrade. The limits bound each query, not total retained history.

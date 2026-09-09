@@ -188,6 +188,10 @@ pub async fn load_modules(set: &NativeStateSet) -> Result<ModuleState, BackendEr
         futures::try_join!(load(&set.0), load(&set.1), load(&set.2), load(&set.3))?;
     let modules = ModuleState::from_stores([acp, bulletin, hub, nonces]);
     modules
+        .acp
+        .validate_amendment_indexes()
+        .map_err(|e| BackendError::Storage(e.to_string()))?;
+    modules
         .bulletin
         .validate_storage_keys()
         .map_err(|e| BackendError::Storage(e.to_string()))?;

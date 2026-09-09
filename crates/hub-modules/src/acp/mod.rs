@@ -2,6 +2,7 @@
 
 /// Solidity ABI interface for the ACP precompile.
 pub mod abi;
+mod amendment_history;
 mod command_context;
 mod commitment_expiry;
 mod commitment_lookup;
@@ -827,6 +828,10 @@ impl AcpModule {
         let bytes = borsh::to_vec(event)
             .map_err(|e| AcpError::State(format!("serialize amendment event: {e}")))?;
         self.store.put(&keys::amendment_event_key(event.id), bytes);
+        self.store.put(
+            &keys::amendment_event_policy_index_key(&event.policy_id, event.id),
+            Vec::new(),
+        );
         Ok(())
     }
 
@@ -836,38 +841,6 @@ impl AcpModule {
             .map_err(|e| AcpError::State(format!("serialize amendment event: {e}")))?;
         self.store.put(&keys::amendment_event_key(event.id), bytes);
         Ok(())
-    }
-
-    #[allow(unused_variables)]
-    fn get_amendment_event_by_id(&self, id: u64) -> Result<Option<AmendmentEvent>> {
-        Ok(self
-            .store
-            .get(&keys::amendment_event_key(id))
-            .and_then(|bytes| borsh::from_slice(&bytes).ok()))
-    }
-
-    #[allow(unused_variables)]
-    fn list_events_by_policy(&self, policy_id: &str) -> Result<Vec<AmendmentEvent>> {
-        let results = self
-            .store
-            .prefix_scan(&Self::amendment_event_objs_prefix())
-            .into_iter()
-            .filter_map(|(_, v)| borsh::from_slice::<AmendmentEvent>(&v).ok())
-            .filter(|e| e.policy_id == policy_id)
-            .collect();
-        Ok(results)
-    }
-
-    #[allow(unused_variables)]
-    fn list_hijack_events_by_policy(&self, policy_id: &str) -> Result<Vec<AmendmentEvent>> {
-        let results = self
-            .store
-            .prefix_scan(&Self::amendment_event_objs_prefix())
-            .into_iter()
-            .filter_map(|(_, v)| borsh::from_slice::<AmendmentEvent>(&v).ok())
-            .filter(|e| e.policy_id == policy_id && e.hijack_flag)
-            .collect();
-        Ok(results)
     }
 
     // ── Engine factory ───────────────────────────────────────────────────

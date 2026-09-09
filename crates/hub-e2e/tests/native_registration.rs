@@ -47,7 +47,7 @@ async fn native_registration_preserves_commitment_priority_and_owner_proofs() {
     let deployment = 9083;
     let keys = KeySet::builder().seed(deployment).build().unwrap();
     let trusted = *keys.epoch_info().output.public().public();
-    let cluster = TestCluster::builder()
+    let mut cluster = TestCluster::builder()
         .binary(hub_e2e::resolve_binary().unwrap())
         .nodes(4)
         .seed(deployment)
@@ -258,4 +258,29 @@ resources:
             .1
             .success()
     );
+    let index_prefix = hub_modules::acp::keys::amendment_event_policy_index_prefix(&policy);
+    cluster.restart_node(0).unwrap();
+    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    let recovered = client
+        .read_current_prefix(
+            ModuleId::Acp,
+            &index_prefix,
+            amended_height,
+            &trusted,
+            RECORD_PROOF_BYTES,
+        )
+        .await
+        .unwrap();
+    let page = recovered
+        .verify(
+            ModuleId::Acp,
+            &index_prefix,
+            amended_height,
+            &trusted,
+            RECORD_PROOF_BYTES,
+        )
+        .unwrap();
+    assert_eq!(page.entries.len(), 1);
+    assert_eq!(page.entries[0].key.len(), index_prefix.len() + 8);
+    assert!(page.entries[0].value.is_empty());
 }
