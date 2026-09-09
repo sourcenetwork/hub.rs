@@ -79,8 +79,8 @@ impl AcpModule {
             PolicyCmdResult::RevealRegistration { record, event } => {
                 record.metadata = metadata;
                 self.set_relationship(policy_id, &record.relationship.storage_key(), record);
-                event.metadata = event_metadata;
-                if event.id != 0 {
+                if let Some(event) = event {
+                    event.metadata = event_metadata;
                     self.update_amendment_event(event)?;
                 }
             }

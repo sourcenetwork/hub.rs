@@ -119,3 +119,7 @@ The amendment’s new owner may call `native_flag_hijack_attempt`. Other actors
 are rejected by execution. A flag records that owner’s allegation; it is not an
 independent finding. Verify the submission receipt and read the event at or after
 that revision to observe the certified flag.
+
+A successful reveal returns the registration record and an optional amendment
+event. A fresh registration has `event: null` and creates no amendment history.
+An ownership amendment returns its persisted event with a nonzero ID.

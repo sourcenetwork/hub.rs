@@ -1291,24 +1291,9 @@ impl AcpModule {
             };
             self.set_relationship(policy_id, &storage_key, &record);
 
-            let empty_event = AmendmentEvent {
-                id: 0,
-                policy_id: policy_id.to_string(),
-                object: proof.object,
-                new_owner: Actor(creator.clone()),
-                previous_owner: Actor(creator.clone()),
-                commitment_id,
-                hijack_flag: false,
-                metadata: RecordMetadata {
-                    creation_ts: Timestamp::default(),
-                    tx_hash: Vec::new(),
-                    tx_signer: String::new(),
-                    owner_did: creator.to_string(),
-                },
-            };
             return Ok(PolicyCmdResult::RevealRegistration {
                 record,
-                event: empty_event,
+                event: None,
             });
         }
 
@@ -1355,7 +1340,10 @@ impl AcpModule {
         self.delete_relationship(policy_id, &existing.relationship.storage_key());
         self.set_relationship(policy_id, &record.relationship.storage_key(), &record);
 
-        Ok(PolicyCmdResult::RevealRegistration { record, event })
+        Ok(PolicyCmdResult::RevealRegistration {
+            record,
+            event: Some(event),
+        })
     }
 
     fn cmd_flag_hijack_attempt(&mut self, creator: &Did, event_id: u64) -> Result<PolicyCmdResult> {

@@ -131,7 +131,7 @@ pub enum PolicyCmdResult {
     },
     RevealRegistration {
         record: RelationshipRecord,
-        event: AmendmentEvent,
+        event: Option<AmendmentEvent>,
     },
     FlagHijackAttempt {
         event: AmendmentEvent,

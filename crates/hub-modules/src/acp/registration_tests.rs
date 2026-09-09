@@ -54,7 +54,10 @@ fn amendment_moves_the_owner_key_and_revokes_the_previous_owner() {
             .check_blocking(&policy, "file", "report", "read", &first)
             .unwrap()
     );
-    let PolicyCmdResult::RevealRegistration { record, event } = module
+    let PolicyCmdResult::RevealRegistration {
+        record,
+        event: Some(event),
+    } = module
         .direct_policy_cmd(
             &second,
             &policy,
@@ -249,7 +252,10 @@ fn registration_priority_uses_committed_revisions_and_survives_amendment() {
         Err(AcpError::InvalidProof { .. })
     ));
     assert_eq!(module.store.serialize(), before);
-    let PolicyCmdResult::RevealRegistration { record, event } = execute(
+    let PolicyCmdResult::RevealRegistration {
+        record,
+        event: Some(event),
+    } = execute(
         &mut module,
         &second,
         &policy,
@@ -539,4 +545,68 @@ fn corrupt_policy_and_relationship_records_cannot_authorize_or_be_overwritten() 
             assert_eq!(module.store.serialize(), before);
         }
     }
+}
+
+#[test]
+fn fresh_reveal_has_no_amendment_event() {
+    let (mut module, actor, _, policy, object) = setup();
+    let generated = module
+        .query_generate_commitment(
+            &policy,
+            std::slice::from_ref(&object),
+            &Actor(actor.clone()),
+        )
+        .unwrap();
+    let PolicyCmdResult::CommitRegistrations {
+        registrations_commitment,
+    } = execute(
+        &mut module,
+        &actor,
+        &policy,
+        PolicyCmd::CommitRegistrations {
+            commitment: generated.commitment,
+        },
+        10,
+    )
+    .unwrap()
+    else {
+        panic!("expected commitment");
+    };
+    let result = execute(
+        &mut module,
+        &actor,
+        &policy,
+        PolicyCmd::RevealRegistration {
+            registrations_commitment_id: registrations_commitment.id,
+            proof: generated.proofs[0].clone(),
+        },
+        20,
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(&result).unwrap()["RevealRegistration"]
+            .as_object()
+            .unwrap()
+            .get("event"),
+        Some(&serde_json::Value::Null)
+    );
+    let PolicyCmdResult::RevealRegistration {
+        record,
+        event: None,
+    } = result
+    else {
+        panic!("fresh registration must not produce an amendment");
+    };
+    assert_eq!(record.metadata.creation_ts.block_height, 10);
+    assert_eq!(record.metadata.tx_hash, vec![20; 32]);
+    assert!(
+        module
+            .store
+            .prefix_iter(keys::AMENDMENT_EVENT_PREFIX)
+            .next()
+            .is_none()
+    );
+    let recovered =
+        AcpModule::from_store(InMemoryKvStore::deserialize(&module.store.serialize()).unwrap());
+    assert!(recovered.query_object_owner(&policy, &object).unwrap().0);
 }
