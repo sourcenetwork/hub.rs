@@ -195,6 +195,10 @@ pub async fn load_modules(set: &NativeStateSet) -> Result<ModuleState, BackendEr
         .bulletin
         .validate_storage_keys()
         .map_err(|e| BackendError::Storage(e.to_string()))?;
+    modules
+        .hub
+        .query_params()
+        .map_err(|e| BackendError::Storage(e.to_string()))?;
     Ok(modules)
 }
 

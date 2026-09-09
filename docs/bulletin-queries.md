@@ -41,3 +41,10 @@ lowercase hexadecimal strings and are returned as 32-byte values. Use
 policy definition. The two reads may select different finalized revisions;
 policy presence does not itself grant permission to create posts or manage
 collaborators.
+
+Bulletin policy initialization distinguishes absence from invalid stored IDs.
+Empty or non-UTF-8 values return errors before creating an ACP policy or changing
+bulletin state. Posting and collaborator management use the same fallible reader.
+Bulletin and core parameter reads also return decoding errors for corrupt stored
+bytes; defaults apply only to missing keys. Native recovery checks these values
+before publishing query state.

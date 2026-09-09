@@ -248,7 +248,7 @@ impl BulletinModule {
         _artifact: &str,
     ) -> Result<()> {
         let policy_id = self
-            .get_policy_id()
+            .get_policy_id()?
             .ok_or(BulletinError::PolicyNotInitialized)?;
         let namespace_id = format!("bulletin/{}", namespace);
 
@@ -322,7 +322,7 @@ impl BulletinModule {
         collaborator_did: &str,
     ) -> Result<String> {
         let policy_id = self
-            .get_policy_id()
+            .get_policy_id()?
             .ok_or(BulletinError::PolicyNotInitialized)?;
         let namespace_id = format!("bulletin/{}", namespace);
 
@@ -379,7 +379,7 @@ impl BulletinModule {
         collaborator_did: &str,
     ) -> Result<String> {
         let policy_id = self
-            .get_policy_id()
+            .get_policy_id()?
             .ok_or(BulletinError::PolicyNotInitialized)?;
         let namespace_id = format!("bulletin/{}", namespace);
 
@@ -558,7 +558,7 @@ impl BulletinModule {
     /// # Reads
     /// - `"p_bulletin"`
     pub fn query_params(&self) -> Result<BulletinParams> {
-        Ok(self.get_params())
+        self.get_params()
     }
 
     // ── Storage access methods ──────────────────────────────────────────
@@ -574,10 +574,18 @@ impl BulletinModule {
     // ── Storage — Policy ID (singleton) ────────────────────────────────
 
     /// Read the module's ACP policy ID.
-    fn get_policy_id(&self) -> Option<String> {
+    fn get_policy_id(&self) -> Result<Option<String>> {
         self.store
-            .get(keys::POLICY_ID_KEY)
-            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .get_ref(keys::POLICY_ID_KEY)
+            .map(|bytes| {
+                let id = std::str::from_utf8(bytes)
+                    .map_err(|e| BulletinError::State(format!("invalid bulletin policy ID: {e}")))?;
+                if id.is_empty() {
+                    return Err(BulletinError::State("empty bulletin policy ID".into()));
+                }
+                Ok(id.to_owned())
+            })
+            .transpose()
     }
 
     /// Write the module's ACP policy ID.
@@ -586,15 +594,10 @@ impl BulletinModule {
             .put(keys::POLICY_ID_KEY, policy_id.as_bytes().to_vec());
     }
 
-    /// Check if the module's ACP policy has been initialized.
-    fn has_policy(&self) -> bool {
-        self.store.has(keys::POLICY_ID_KEY)
-    }
-
     /// Lazily initialize the module's ACP policy.
     fn ensure_policy(&mut self, acp: &mut super::acp::AcpModule) -> Result<String> {
-        if self.has_policy() {
-            return Ok(self.get_policy_id().expect("has_policy implies Some"));
+        if let Some(id) = self.get_policy_id()? {
+            return Ok(id);
         }
 
         let module_did =
@@ -615,11 +618,14 @@ impl BulletinModule {
 
     // ── Storage — Params ───────────────────────────────────────────────
 
-    fn get_params(&self) -> BulletinParams {
-        self.store
-            .get(keys::PARAMS_KEY)
-            .map(|bytes| borsh::from_slice(&bytes).expect("corrupt BulletinParams"))
-            .unwrap_or_default()
+    fn get_params(&self) -> Result<BulletinParams> {
+        self.store.get_ref(keys::PARAMS_KEY).map_or_else(
+            || Ok(BulletinParams::default()),
+            |bytes| {
+                borsh::from_slice(bytes)
+                    .map_err(|e| BulletinError::State(format!("invalid bulletin parameters: {e}")))
+            },
+        )
     }
 
     fn set_params(&mut self, params: &BulletinParams) -> Result<()> {

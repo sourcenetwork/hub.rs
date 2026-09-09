@@ -174,7 +174,7 @@ impl HubModule {
     /// # Reads
     /// - `"p_hub"`
     pub fn query_params(&self) -> Result<HubParams> {
-        Ok(self.get_params())
+        self.get_params()
     }
 
     // ── Internal keeper methods ─────────────────────────────────────────
@@ -627,13 +627,14 @@ impl HubModule {
     /// Value: serialized `HubParams`
     /// Direction: read-only
     ///
-    /// Panics on corrupt stored data (Go: `MustUnmarshal`).
-    fn get_params(&self) -> HubParams {
-        self.store
-            .get(keys::PARAMS_KEY)
-            .map_or_else(HubParams::default, |bytes| {
-                borsh::from_slice(&bytes).expect("corrupt HubParams in store")
-            })
+    fn get_params(&self) -> Result<HubParams> {
+        self.store.get_ref(keys::PARAMS_KEY).map_or_else(
+            || Ok(HubParams::default()),
+            |bytes| {
+                borsh::from_slice(bytes)
+                    .map_err(|e| HubError::State(format!("invalid hub parameters: {e}")))
+            },
+        )
     }
 
     /// Write module parameters to the KV store.
@@ -757,12 +758,19 @@ mod tests {
     }
 
     #[test]
+    fn malformed_parameters_return_errors() {
+        let mut hub = HubModule::default();
+        hub.store.put(keys::PARAMS_KEY, vec![0]);
+        assert!(hub.query_params().is_err());
+    }
+
+    #[test]
     fn set_and_get_params() {
         let mut hub = HubModule::new();
-        assert_eq!(hub.get_params(), HubParams::default());
+        assert_eq!(hub.get_params().unwrap(), HubParams::default());
         let params = HubParams {};
         hub.set_params(&params).unwrap();
-        assert_eq!(hub.get_params(), params);
+        assert_eq!(hub.get_params().unwrap(), params);
     }
 
     #[test]
@@ -1116,7 +1124,7 @@ mod tests {
         let mut hub = HubModule::new();
         let authority = make_did("did:key:z6MkGov");
         assert!(hub.update_params(&authority, HubParams {}).is_err());
-        assert_eq!(hub.get_params(), HubParams {});
+        assert_eq!(hub.get_params().unwrap(), HubParams {});
     }
 
     #[test]
