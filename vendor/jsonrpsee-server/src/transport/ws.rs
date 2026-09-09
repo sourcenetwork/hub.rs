@@ -79,7 +79,7 @@ where
 	let ServerConfig { ping_config, batch_requests_config, max_request_body_size, max_response_body_size, .. } =
 		server_cfg;
 
-	let (conn_tx, conn_rx) = oneshot::channel();
+	let (mut conn_tx, conn_rx) = oneshot::channel();
 
 	// Spawn another task that sends out the responses on the Websocket.
 	let send_task_handle = tokio::spawn(send_task(rx, ws_sender, ping_config, conn_rx));
@@ -112,9 +112,14 @@ where
 			tokio::select! {
 				_ = &mut stopped => break 'connection Ok(Shutdown::Stopped),
 				_ = calls.join_next() => {},
+				_ = conn_tx.closed() => break 'connection Ok(Shutdown::ConnectionClosed),
 			}
 		}
-		let data = match try_recv(&mut ws_stream, stopped, ping_config, &mut missed_pings).await {
+		let received = tokio::select! {
+			result = try_recv(&mut ws_stream, stopped, ping_config, &mut missed_pings) => result,
+			_ = conn_tx.closed() => break Ok(Shutdown::ConnectionClosed),
+		};
+		let data = match received {
 			Receive::ConnectionClosed => break Ok(Shutdown::ConnectionClosed),
 			Receive::Stopped => break Ok(Shutdown::Stopped),
 			Receive::Ok(data, stop) => {
@@ -241,8 +246,11 @@ async fn send_task(
 			// Received message.
 			Either::Left((Some(response), not_ready)) => {
 				// If websocket message send fail then terminate the connection.
-				if let Err(err) = send_message(&mut ws_sender, response).await {
-					tracing::debug!(target: LOG_TARGET, "WS send error: {}", err);
+				if !matches!(
+					tokio::time::timeout(std::time::Duration::from_secs(10), send_message(&mut ws_sender, response)).await,
+					Ok(Ok(()))
+				) {
+					tracing::debug!(target: LOG_TARGET, "WS send failed or timed out");
 					break;
 				}
 
@@ -258,8 +266,11 @@ async fn send_task(
 			// Handle timer intervals.
 			Either::Right((Either::Left((_instant, _stopped)), next_rx)) => {
 				stop = _stopped;
-				if let Err(err) = send_ping(&mut ws_sender).await {
-					tracing::debug!(target: LOG_TARGET, "WS send ping error: {}", err);
+				if !matches!(
+					tokio::time::timeout(std::time::Duration::from_secs(10), send_ping(&mut ws_sender)).await,
+					Ok(Ok(()))
+				) {
+					tracing::debug!(target: LOG_TARGET, "WS ping failed or timed out");
 					break;
 				}
 
@@ -274,7 +285,7 @@ async fn send_task(
 	}
 
 	// Terminate connection and send close message.
-	let _ = ws_sender.close().await;
+	let _ = tokio::time::timeout(std::time::Duration::from_secs(1), ws_sender.close()).await;
 	rx.close();
 }
 

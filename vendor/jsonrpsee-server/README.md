@@ -10,7 +10,11 @@ connection-owned JoinSet. Its size is limited by message_buffer_capacity;
 the receive loop waits for a task to finish before accepting another message.
 The slot covers parsing, method execution and response enqueueing. On an
 observed disconnect, outstanding tasks are aborted and joined. Server shutdown
-retains the existing graceful completion behavior.
+retains graceful completion behavior. Response and ping writes have a ten-second
+deadline; failed or timed-out writes terminate the connection. Closing the
+socket has a one-second deadline so a non-reading peer cannot hold shutdown
+open indefinitely. The receive loop observes writer termination, including
+while dispatch is full, and releases the connection slot.
 
 Vera uses a direct path dependency so downstream Git builds retain this patch.
 The focused regression is hub-jsonrpc's websocket_dispatch_applies_backpressure.

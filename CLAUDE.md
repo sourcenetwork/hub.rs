@@ -213,7 +213,8 @@ share one consensus group.
 `hub-jsonrpc` limits each batch to 64 calls and each connection to eight
 subscriptions, eight queued output messages and eight WebSocket request tasks.
 The receive loop stops accepting messages at the task limit; each task retains
-its slot until its response enters the output queue.
+its slot until its response enters the output queue. Response and ping writes
+time out after ten seconds, and socket closure after one second.
 
 `hub-jsonrpc` serves HTTP + WebSocket JSON-RPC:
 
