@@ -447,6 +447,7 @@ impl DatabaseSet<Ctx> for OrderedState {
 
     async fn prune(&self, targets: &Self::SyncTargets) {
         self.databases.prune(targets).await;
+        tracing::info!(target: "hub_storage", "pruned state journals");
     }
 
     async fn committed_targets(&self) -> Self::SyncTargets {

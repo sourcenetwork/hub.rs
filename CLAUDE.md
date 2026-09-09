@@ -65,6 +65,8 @@ The finalization callback awaits durable execution history and certificate
 history before returning to Commonware's acknowledgement path. Disk writes run
 on the blocking pool; a failed write stops the actor before acknowledgement.
 Marshal serves the certificate lookup independently of the stateful callback.
+Proposal transaction exclusion stops at the published finalized revision, including
+the recovered index head, so it does not fetch pruned finalized ancestors.
 
 The application retires cached proposal randomness for rounds behind finalized
 execution. The finalized round and newer rounds remain available, and late

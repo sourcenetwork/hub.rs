@@ -138,6 +138,10 @@ impl NodeSink {
 }
 
 impl FinalizedSink for NodeSink {
+    fn finalized_height(&self) -> u64 {
+        self.index.head_block_number()
+    }
+
     fn proposed(&self, _block: &Block) {
         self.node_state.inc_proposed();
     }

@@ -224,7 +224,12 @@ impl<S: FinalizedSink, D: ApplicationState> Application<Ctx> for StatefulHubApp<
             return None;
         }
         let mut pending = vec![parent.clone()];
-        while pending.len() < MAX_PENDING_ANCESTORS {
+        let finalized_height = self.sink.finalized_height();
+        while pending.len() < MAX_PENDING_ANCESTORS
+            && pending
+                .last()
+                .is_some_and(|block| block.height > finalized_height)
+        {
             match ancestry.next().await {
                 Some(block) => pending.push(block),
                 None => break,

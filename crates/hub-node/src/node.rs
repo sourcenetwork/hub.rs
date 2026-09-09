@@ -90,6 +90,22 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         snapshot.record_bytes > 0 && snapshot.peer_timeout_ms > 0,
         "snapshot byte limit and peer deadline must be positive"
     );
+    let blocks_per_epoch = std::num::NonZeroU64::new(genesis.blocks_per_epoch)
+        .ok_or_else(|| anyhow::anyhow!("genesis blocks_per_epoch must be non-zero"))?;
+    let prune_config = config
+        .pruning
+        .as_ref()
+        .map(|pruning| {
+            pruning
+                .validate(blocks_per_epoch)
+                .map_err(anyhow::Error::msg)?;
+            Ok::<_, anyhow::Error>(commonware_glue::stateful::PruneConfig {
+                maintenance_interval: pruning.maintenance_interval,
+                retained_marshal_blocks: pruning.retained_consensus_revisions,
+                retained_qmdb_blocks: pruning.retained_state_revisions,
+            })
+        })
+        .transpose()?;
     let signing_key = config.validator_key()?;
     let local = signing_key.public_key();
     let validator_index = peers
@@ -97,8 +113,6 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         .iter()
         .position(|pk| *pk == local)
         .ok_or_else(|| anyhow::anyhow!("validator key is not in peers.json"))?;
-    let blocks_per_epoch = std::num::NonZeroU64::new(genesis.blocks_per_epoch)
-        .ok_or_else(|| anyhow::anyhow!("genesis blocks_per_epoch must be non-zero"))?;
     let epoch_info = genesis
         .decode_epoch_info()?
         .ok_or_else(|| anyhow::anyhow!("genesis.json is missing epoch_info"))?;
@@ -513,7 +527,7 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
             plan,
             resolvers: state_resolvers,
             sync_config: sync_config(),
-            prune_config: None,
+            prune_config,
         },
     );
 

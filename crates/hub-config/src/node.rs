@@ -35,6 +35,33 @@ impl Default for SnapshotConfig {
     }
 }
 
+/// Coordinated consensus archive and state journal retention.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PruningConfig {
+    /// Finalized revisions between maintenance attempts.
+    pub maintenance_interval: std::num::NonZeroUsize,
+    /// Consensus revisions retained beyond the acknowledgement safety window.
+    pub retained_consensus_revisions: usize,
+    /// State revisions retained beyond the acknowledgement safety window.
+    pub retained_state_revisions: usize,
+}
+
+impl PruningConfig {
+    /// Validate retention ordering and room for the acknowledgement safety window.
+    pub const fn validate(&self, epoch_length: std::num::NonZeroU64) -> Result<(), &'static str> {
+        if self.retained_consensus_revisions < self.retained_state_revisions {
+            return Err("consensus retention must cover state retention");
+        }
+        let Some(window) = self.retained_consensus_revisions.checked_add(2) else {
+            return Err("retention exceeds the acknowledgement window limit");
+        };
+        if (window as u128) < epoch_length.get() as u128 {
+            return Err("consensus retention must cover a complete DKG epoch");
+        }
+        Ok(())
+    }
+}
+
 /// Complete node configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NodeConfig {
@@ -61,6 +88,10 @@ pub struct NodeConfig {
     /// Request initial authenticated snapshot catch-up. Omit for retained-history replay.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot: Option<SnapshotConfig>,
+
+    /// Enable coordinated journal pruning; omission retains consensus history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pruning: Option<PruningConfig>,
 }
 
 impl Default for NodeConfig {
@@ -72,6 +103,7 @@ impl Default for NodeConfig {
             execution: ExecutionConfig::default(),
             rpc: RpcConfig::default(),
             snapshot: None,
+            pruning: None,
         }
     }
 }
@@ -200,6 +232,32 @@ fn default_data_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pruning_requires_valid_explicit_limits() {
+        assert!(NodeConfig::from_toml("").unwrap().pruning.is_none());
+        let text = "[pruning]\nmaintenance_interval = 1\nretained_consensus_revisions = 18\nretained_state_revisions = 0";
+        let config = NodeConfig::from_toml(text).unwrap();
+        let mut pruning = config.pruning.clone().unwrap();
+        let epoch_length = std::num::NonZeroU64::new(20).unwrap();
+        pruning.validate(epoch_length).unwrap();
+        pruning.retained_consensus_revisions = 17;
+        assert!(pruning.validate(epoch_length).is_err());
+        pruning.retained_consensus_revisions = 18;
+        assert_eq!(
+            NodeConfig::from_json(&config.to_json().unwrap()).unwrap(),
+            config
+        );
+        assert_eq!(
+            NodeConfig::from_toml(&config.to_toml().unwrap()).unwrap(),
+            config
+        );
+        assert!(NodeConfig::from_toml(&text.replace("interval = 1", "interval = 0")).is_err());
+        pruning.retained_state_revisions = 19;
+        assert!(pruning.validate(epoch_length).is_err());
+        pruning.retained_consensus_revisions = usize::MAX;
+        assert!(pruning.validate(epoch_length).is_err());
+    }
 
     #[test]
     fn test_default_config() {

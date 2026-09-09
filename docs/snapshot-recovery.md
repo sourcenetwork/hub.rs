@@ -75,3 +75,30 @@ or disk-full guarantees for the deployment filesystem.
 Genesis initialization preserves existing recovery markers even when their
 symlink targets are missing or inaccessible. Filesystem errors stop initialization,
 and an existing intent must match the configuration before journals are opened.
+
+## Journal retention
+
+Omitting `[pruning]` retains the consensus archives and state journals. To enable
+coordinated pruning, configure all three limits in `config.toml`, for example:
+
+```toml
+[pruning]
+maintenance_interval = 64
+retained_consensus_revisions = 4096
+retained_state_revisions = 128
+```
+
+These are revision counts, not durations or byte limits. Consensus retention must
+be at least state retention; the maintenance interval must be positive. The total
+consensus window (configured retention plus two safety revisions) must also cover
+at least one full DKG epoch. Startup rejects a smaller window because it can remove
+the boundary needed to recover the active epoch. Commonware
+adds its acknowledgement safety window to both counts and schedules maintenance
+at a randomized phase. The example is not a qualified deployment sizing target.
+
+Execution and certificate history remain available in the separate history store.
+Pruning waits for durable state and completed application callbacks. A node that
+falls behind the consensus archive window may need authenticated snapshot catch-up;
+size the window for expected downtime and observed revision rate. Increasing a
+limit later does not restore deleted journals. This does not bound total disk or
+resident memory use.

@@ -44,6 +44,15 @@ async fn certified_receipt(
 
 #[tokio::test]
 async fn native_registration_preserves_commitment_priority_and_owner_proofs() {
+    registration_workflow(false).await;
+}
+
+#[tokio::test]
+async fn native_registration_survives_journal_pruning() {
+    registration_workflow(true).await;
+}
+
+async fn registration_workflow(pruning: bool) {
     let deployment = 9083;
     let keys = KeySet::builder().seed(deployment).build().unwrap();
     let trusted = *keys.epoch_info().output.public().public();
@@ -53,6 +62,14 @@ async fn native_registration_preserves_commitment_priority_and_owner_proofs() {
         .seed(deployment)
         .chain_id(deployment)
         .preset(ConsensusPreset::Normal)
+        .jmt_seeder(move |dir, _| {
+            if pruning {
+                use std::io::Write as _;
+                let mut config = std::fs::OpenOptions::new().append(true)
+                    .open(dir.join("config.toml")).unwrap();
+                writeln!(config, "\n[pruning]\nmaintenance_interval = 1\nretained_consensus_revisions = 18\nretained_state_revisions = 0").unwrap();
+            }
+        })
         .build()
         .await
         .unwrap();
@@ -281,6 +298,21 @@ resources:
             .1
             .success()
     );
+    if pruning {
+        cluster
+            .observe(Duration::from_millis(100))
+            .wait_for_height(300, Duration::from_secs(180))
+            .await
+            .unwrap();
+        for index in 0..cluster.node_count() {
+            let node = cluster.node(index);
+            let logs = std::fs::read_to_string(node.log_dir.join("stdout.log")).unwrap();
+            assert!(
+                logs.matches("pruned state journals").count() > 10,
+                "expected repeated completed pruning on every replica"
+            );
+        }
+    }
     cluster.restart_node(0).unwrap();
     cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
     let restored_policy = client

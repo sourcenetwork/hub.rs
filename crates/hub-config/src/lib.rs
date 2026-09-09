@@ -13,7 +13,7 @@ mod network;
 pub use network::{DEFAULT_LISTEN_ADDR, NetworkConfig};
 
 mod node;
-pub use node::{DEFAULT_CHAIN_ID, DEFAULT_DATA_DIR, NodeConfig, SnapshotConfig};
+pub use node::{DEFAULT_CHAIN_ID, DEFAULT_DATA_DIR, NodeConfig, PruningConfig, SnapshotConfig};
 
 mod rpc;
 pub use rpc::{DEFAULT_HTTP_ADDR, DEFAULT_WS_ADDR, RpcConfig};
