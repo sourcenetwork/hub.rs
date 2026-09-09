@@ -66,6 +66,74 @@ fn setup() -> (AcpModule, String) {
     (module, policy.policy.id)
 }
 
+#[test]
+fn registration_errors_preserve_state_and_object_identity_after_restore() {
+    let (module, policy) = setup();
+    for mut candidate in [module.clone(), restore(&module)] {
+        let before = candidate.store().serialize();
+        for (resource, id) in [("file", ""), ("", "report"), ("missing", "report")] {
+            assert!(matches!(
+                candidate.direct_policy_cmd(
+                    &reader(),
+                    &policy,
+                    PolicyCmd::RegisterObject(Object {
+                        resource: resource.into(),
+                        id: id.into(),
+                    }),
+                ),
+                Err(AcpError::InvalidAccessRequest { .. })
+            ));
+            assert_eq!(candidate.store().serialize(), before);
+        }
+        assert!(matches!(
+            candidate.direct_policy_cmd(
+                &reader(),
+                &policy,
+                PolicyCmd::RegisterObject(Object {
+                    resource: "actor".into(),
+                    id: reader().to_string(),
+                }),
+            ),
+            Err(AcpError::Unauthorized { .. })
+        ));
+        assert_eq!(candidate.store().serialize(), before);
+        assert!(matches!(
+            candidate.direct_policy_cmd(
+                &reader(),
+                "missing-policy",
+                PolicyCmd::RegisterObject(object()),
+            ),
+            Err(AcpError::PolicyNotFound { .. })
+        ));
+        assert_eq!(candidate.store().serialize(), before);
+        for actor in [owner(), reader()] {
+            assert!(
+                candidate
+                    .direct_policy_cmd(&actor, &policy, PolicyCmd::RegisterObject(object()))
+                    .is_err()
+            );
+            assert_eq!(candidate.store().serialize(), before);
+        }
+        let distinct = Object {
+            resource: "file".into(),
+            id: "report/child:α".into(),
+        };
+        candidate
+            .direct_policy_cmd(
+                &reader(),
+                &policy,
+                PolicyCmd::RegisterObject(distinct.clone()),
+            )
+            .unwrap();
+        let restored = restore(&candidate);
+        for (object, actor) in [(object(), owner()), (distinct, reader())] {
+            let (registered, record) = restored.query_object_owner(&policy, &object).unwrap();
+            assert!(registered);
+            assert_eq!(record.unwrap().metadata.owner_did, actor.to_string());
+        }
+    }
+}
+
 fn can_read(module: &AcpModule, policy_id: &str) -> bool {
     module
         .query_verify_access_request(
