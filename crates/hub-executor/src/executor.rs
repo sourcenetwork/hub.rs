@@ -727,6 +727,88 @@ mod tests {
     }
 
     #[test]
+    fn expiry_batches_match_proposal_verification_and_leave_parent_unchanged() {
+        use hub_modules::{hub::keys::JWS_TOKEN_EXPIRY_PREFIX, kv_store::InMemoryKvStore};
+
+        let executor = test_executor();
+        let mut modules = ModuleState::default();
+        let issued = test_block_ctx();
+        let issuer = identity::Did::new("did:key:issuer").unwrap();
+        for id in 0..257 {
+            modules
+                .hub
+                .store_or_update_jws_token(
+                    &issued,
+                    &id.to_string(),
+                    &issuer,
+                    "account",
+                    issued.timestamp.clone(),
+                    Timestamp {
+                        seconds: issued.timestamp.seconds + 1,
+                        block_height: 0,
+                    },
+                )
+                .unwrap();
+        }
+        let mut parent = ModuleSnapshot {
+            modules,
+            trees: None,
+        };
+        let published = executor.snapshot().unwrap().modules.serialize_stores();
+        for (offset, remaining) in [129, 1, 0].into_iter().enumerate() {
+            let before = parent.modules.serialize_stores();
+            let context = BlockContext::new(
+                alloy_consensus::Header {
+                    number: offset as u64 + 2,
+                    timestamp: issued.timestamp.seconds + offset as u64 + 2,
+                    gas_limit: 30_000_000,
+                    base_fee_per_gas: Some(0),
+                    ..Default::default()
+                },
+                B256::ZERO,
+                B256::ZERO,
+            );
+            let (proposed, next) = executor
+                .execute_with_modules(&MockStateDb, &context, &[], parent.clone())
+                .unwrap();
+            let mut verification =
+                context.with_expected_module_state_root(proposed.module_state_root);
+            verification.is_verification = true;
+            let (verified, verified_state) = executor
+                .execute_with_modules(&MockStateDb, &verification, &[], parent.clone())
+                .unwrap();
+            assert_eq!(verified.module_state_root, proposed.module_state_root);
+            assert_eq!(
+                verified_state.modules.serialize_stores(),
+                next.modules.serialize_stores()
+            );
+            assert_eq!(
+                next.modules
+                    .hub
+                    .store()
+                    .prefix_iter(JWS_TOKEN_EXPIRY_PREFIX)
+                    .count(),
+                remaining
+            );
+            assert!(proposed.receipts.is_empty());
+            assert_eq!(parent.modules.serialize_stores(), before);
+            assert_eq!(
+                executor.snapshot().unwrap().modules.serialize_stores(),
+                published
+            );
+            let stores = next
+                .modules
+                .serialize_stores()
+                .map(|bytes| InMemoryKvStore::deserialize(&bytes).unwrap());
+            parent = ModuleSnapshot {
+                modules: ModuleState::from_stores(stores),
+                trees: None,
+            };
+            parent.modules.hub.validate_restored_tokens().unwrap();
+        }
+    }
+
+    #[test]
     fn lifecycle_corruption_rejects_proposals_and_preserves_parent() {
         use hub_modules::kv_store::{InMemoryKvStore, ModuleKvStore};
         for (partition, key, expected) in [
