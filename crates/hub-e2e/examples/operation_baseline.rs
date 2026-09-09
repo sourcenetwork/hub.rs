@@ -5,6 +5,8 @@
 mod driver;
 #[path = "operation_baseline/resources.rs"]
 mod resources;
+#[path = "operation_baseline/retention.rs"]
+mod retention;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,8 +25,8 @@ const CHAIN_ID: u64 = 9001;
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     assert!(
-        args.len() <= 7,
-        "usage: operation_baseline [count] [arrivals/sec] [max outstanding] [permission reads 0/1] [fast|normal|stress] [RPC connections] [epoch revisions]"
+        args.len() <= 8,
+        "usage: operation_baseline [count] [arrivals/sec] [max outstanding] [permission reads 0/1] [fast|normal|stress] [RPC connections] [epoch revisions] [retention minimum revision]"
     );
     let parse = |index: usize, default: usize| {
         args.get(index).map_or(default, |value| {
@@ -54,6 +56,7 @@ async fn main() {
         hub_domain::max_epoch_participants(epoch_length) >= 4,
         "epoch is too short for four participants"
     );
+    let retention_height = u64::try_from(parse(7, 0)).expect("retention revision within u64");
     let timing = preset.params();
     let keys = KeySet::builder().seed(42).build().unwrap();
     let trusted = *keys.epoch_info().output.public().public();
@@ -109,6 +112,19 @@ async fn main() {
         permissions: permission_reads == 1,
     });
 
+    let historical = if retention_height > 0 {
+        Some(
+            retention::Probe::capture(
+                &client,
+                setup_receipt.transaction_hash,
+                setup_receipt.block_number,
+                setup_receipt.block_hash,
+            )
+            .await,
+        )
+    } else {
+        None
+    };
     let signing_start = Instant::now();
     let requests: Vec<_> = (0..count)
         .map(|index| {
@@ -140,6 +156,7 @@ async fn main() {
             "format_version": 2, "permission_reads_per_write": permission_reads,
             "runner_debug_assertions": cfg!(debug_assertions),
             "revisions_per_epoch": epoch_length.get(),
+            "retention_minimum_revision": retention_height,
             "max_operations_per_revision": hub_domain::MAX_BLOCK_TXS,
             "max_encoded_operation_bytes_per_revision": hub_domain::MAX_BLOCK_TX_BYTES,
             "max_encoded_revision_bytes": hub_domain::MAX_BLOCK_BYTES,
@@ -212,6 +229,28 @@ async fn main() {
         "unresolved outcomes prevent a complete baseline"
     );
 
+    if let Some(probe) = &historical {
+        println!(
+            "{}",
+            serde_json::json!({"kind": "retention_wait", "minimum_revision": retention_height})
+        );
+        retention::wait(&replica_clients, retention_height).await;
+        for replica in &replica_clients {
+            probe.check(replica).await;
+            replica
+                .read_receipt(setup_receipt.transaction_hash, &trusted)
+                .await
+                .unwrap()
+                .expect("historical certified receipt");
+        }
+        println!(
+            "{}",
+            serde_json::json!({"kind": "retention", "replicas": 4,
+            "selected_revision": setup_receipt.block_number, "minimum_head": retention_height,
+            "queries_per_replica": 6, "certified_receipts": 4})
+        );
+    }
+
     cluster.kill_node(3);
     let probe = setup
         .sign_native_tx(
@@ -259,6 +298,18 @@ async fn main() {
     assert!(registered);
     let owner: serde_json::Value = serde_json::from_slice(&owner).unwrap();
     assert_eq!(owner["metadata"]["owner_did"], setup.did());
+    if let Some(probe) = &historical {
+        probe.check(&recovered).await;
+        recovered
+            .read_receipt(setup_receipt.transaction_hash, &trusted)
+            .await
+            .unwrap()
+            .expect("recovered historical certified receipt");
+        println!(
+            "{}",
+            serde_json::json!({"kind": "retention_recovery", "queries": 6, "certified_receipts": 1})
+        );
+    }
     let recovery_ms = restart.elapsed().as_secs_f64() * 1000.0;
     let mut receipt_mismatches = 0;
     let mut state_mismatches = 0;

@@ -22,7 +22,14 @@ node TOML; it must be a positive u32. A higher connection limit increases server
 resource exposure and is not a throughput guarantee. The seventh argument sets
 revisions per epoch (default 20); values too short for four participants are
 rejected before node startup. The output records this value and the protocol's
-operation-count and encoded-byte limits.
+operation-count and encoded-byte limits. An eighth argument optionally sets a
+minimum revision for post-workload historical checks (default 0 disables them).
+Choose a value beyond the execution cache's retained window, such as 1,100.
+After timing and reconciliation, all replicas must reach it within ten minutes.
+The driver compares six early revision/submission/receipt/log responses with
+captured values and verifies the early receipt against the trusted consensus key.
+It repeats these checks on the hard-restarted replica. This waiting and checking
+is outside timing and does not extend the timed resource samples.
 
 Use the same epoch length when comparing timing presets or implementation
 changes. Short epochs exercise frequent DKG transitions. A run that finishes
