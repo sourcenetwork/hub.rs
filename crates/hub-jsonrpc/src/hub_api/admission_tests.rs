@@ -128,6 +128,11 @@ async fn receipt_poll_does_not_wait_for_a_missing_certificate() {
     );
     assert_eq!(lookups.load(Ordering::Relaxed), 1);
     let permits: Vec<_> = (0..8).map(|_| state.proof_permit().unwrap()).collect();
+    assert!(api.get_receipt_proof(B256::ZERO).await.unwrap().is_none());
+    let busy = api.get_receipt_proof(hash).await.unwrap_err();
+    assert_eq!(busy.code(), codes::RESOURCE_UNAVAILABLE);
+    assert_eq!(busy.data().unwrap().get(), r#"{"retryable":true}"#);
+    assert_eq!(lookups.load(Ordering::Relaxed), 1);
     drop(permits);
     api.light_block_lookup = Some(Arc::new(|_| Err("corrupt certificate".into())));
     assert!(

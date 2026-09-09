@@ -329,7 +329,6 @@ impl HubApiServer for HubApiImpl {
         &self,
         hash: B256,
     ) -> RpcResult<Option<hub_domain::ReceiptResponse>> {
-        let _permit = self.state.proof_permit()?;
         self.receipt_proof(hash).await
     }
 

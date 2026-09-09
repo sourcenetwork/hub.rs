@@ -127,6 +127,15 @@ impl BlockIndex {
         self.receipts.read().get(hash).cloned()
     }
 
+    /// Find a receipt's revision without cloning its logs.
+    #[must_use]
+    pub fn receipt_block_hash(&self, hash: &B256) -> Option<B256> {
+        self.receipts
+            .read()
+            .get(hash)
+            .map(|receipt| receipt.block_hash)
+    }
+
     /// Returns the current head block number.
     #[must_use]
     pub fn head_block_number(&self) -> u64 {

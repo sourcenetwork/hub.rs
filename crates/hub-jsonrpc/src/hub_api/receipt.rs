@@ -14,11 +14,12 @@ impl HubApiImpl {
             .index
             .as_ref()
             .ok_or_else(|| error("receipt index unavailable"))?;
-        let Some(requested) = index.get_receipt(&hash) else {
+        let Some(block_hash) = index.receipt_block_hash(&hash) else {
             return Ok(None);
         };
+        let _permit = self.state.proof_permit()?;
         let block = index
-            .get_block_by_hash(&requested.block_hash)
+            .get_block_by_hash(&block_hash)
             .ok_or_else(|| error("receipt revision unavailable"))?;
         let Some(revision) = tokio::time::timeout(
             std::time::Duration::from_secs(2),
