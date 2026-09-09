@@ -47,6 +47,7 @@ pub(super) struct Observation {
     workflow_ms: Option<f64>,
     error: Option<String>,
     verification_failure: bool,
+    submit_throttles: u64,
     receipt_throttles: u64,
     permission_throttles: u64,
     diagnostic_revision: Option<LightBlock>,
@@ -71,6 +72,7 @@ impl Observation {
             "permission_read_ms": self.permission_ms, "scheduled_to_workflow_ms": self.workflow_ms,
             "height": self.receipt.as_ref().map(|r| r.block_number), "error": self.error,
             "verification_failure": self.verification_failure,
+            "submit_throttles": self.submit_throttles,
             "read_throttles": self.receipt_throttles + self.permission_throttles,
             "receipt_throttles": self.receipt_throttles,
             "permission_throttles": self.permission_throttles,
@@ -98,6 +100,7 @@ pub(super) async fn observe(
         workflow_ms: None,
         error: None,
         verification_failure: false,
+        submit_throttles: 0,
         receipt_throttles: 0,
         permission_throttles: 0,
         diagnostic_revision: None,
@@ -109,7 +112,15 @@ pub(super) async fn observe(
     observation.outcome = "unknown";
     let completed = tokio::time::timeout(REQUEST_TIMEOUT, async {
         let submit_start = Instant::now();
-        let result = client.send_native_tx(&observation.request.raw).await;
+        let result = loop {
+            let result = client.send_native_tx(&observation.request.raw).await;
+            if result.as_ref().is_err_and(is_throttled) {
+                observation.submit_throttles += 1;
+                tokio::time::sleep(POLL_INTERVAL).await;
+                continue;
+            }
+            break result;
+        };
         observation.submit_ms = Some(submit_start.elapsed().as_secs_f64() * 1000.0);
         match result {
             Ok(hash) => assert_eq!(hash, observation.request.hash, "submission hash mismatch"),
@@ -251,6 +262,7 @@ pub(super) fn summary(observations: &[Observation], elapsed: Duration) -> Value 
         "offered": observations.len(), "confirmed": count("confirmed"),
         "reverted": count("reverted"), "rejected": count("rejected"),
         "unknown": count("unknown"), "not_sent": count("not_sent"),
+        "submit_throttles": observations.iter().map(|o| o.submit_throttles).sum::<u64>(),
         "read_throttles": observations.iter().map(|o| o.receipt_throttles + o.permission_throttles).sum::<u64>(),
         "receipt_throttles": observations.iter().map(|o| o.receipt_throttles).sum::<u64>(),
         "permission_throttles": observations.iter().map(|o| o.permission_throttles).sum::<u64>(),

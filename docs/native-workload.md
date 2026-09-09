@@ -15,6 +15,12 @@ checks process at most eight operations concurrently, reduced to the configured
 per-node connection limit when lower. Every operation is still checked; these
 checks run outside the measured load interval.
 
+Throttled submissions retry the same signed operation every 50 ms within the
+workflow's 30-second deadline. Per-operation and summary `submit_throttles`
+counters record these retries separately from read throttles. Submission and
+scheduled workflow latencies include retry delays. Permanent submission errors
+are not retried.
+
 Arguments are operation count (1–100,000), offered arrivals per second (1–10,000),
 maximum outstanding workflows (1–1,024) and permission reads per write (0 or 1).
 The count ceiling bounds the runner's retained requests and observations; it is
