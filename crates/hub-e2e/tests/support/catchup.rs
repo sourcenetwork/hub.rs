@@ -13,6 +13,7 @@ use hub_domain::{
 use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, KeySet, TestCluster};
 use serde_json::json;
 
+const OBJECT: &str = "doc/child";
 const POLL: Duration = Duration::from_millis(100);
 const DEADLINE: Duration = Duration::from_secs(90);
 const READER: &str = "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH";
@@ -186,13 +187,13 @@ pub(super) async fn recover_replica(snapshot: bool, interrupt: bool) {
     let policy = policies[0].parse().unwrap();
     receipts.push(
         origin
-            .native_register_object(&signer, policy, "doc", "file")
+            .native_register_object(&signer, policy, OBJECT, "file")
             .await
             .unwrap(),
     );
     receipts.push(
         origin
-            .native_set_relationship(&signer, policy, "file", "doc", "reader", READER)
+            .native_set_relationship(&signer, policy, "file", OBJECT, "reader", READER)
             .await
             .unwrap(),
     );
@@ -201,7 +202,7 @@ pub(super) async fn recover_replica(snapshot: bool, interrupt: bool) {
         operations: vec![Operation {
             object: Object {
                 resource: "file".into(),
-                id: "doc".into(),
+                id: OBJECT.into(),
             },
             permission: "read".into(),
         }],
@@ -217,7 +218,7 @@ pub(super) async fn recover_replica(snapshot: bool, interrupt: bool) {
     assert!(allowed);
     receipts.push(
         origin
-            .native_delete_relationship(&signer, policy, "file", "doc", "reader", READER)
+            .native_delete_relationship(&signer, policy, "file", OBJECT, "reader", READER)
             .await
             .unwrap(),
     );
