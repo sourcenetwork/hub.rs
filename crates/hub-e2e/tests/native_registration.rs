@@ -95,6 +95,12 @@ async fn native_registration_preserves_commitment_priority_and_owner_proofs() {
             .value
             .is_none()
     );
+    let empty_relationships = client
+        .read_relationship_page(policy_id, None, 1, selected.revision, &trusted)
+        .await
+        .unwrap();
+    assert!(empty_relationships.records.is_empty());
+    assert!(empty_relationships.continuation.is_none());
     let extra = client
         .native_create_policy(
             &first,
@@ -285,6 +291,35 @@ resources:
         serde_json::to_value(restored_policy.value).unwrap(),
         serde_json::to_value(selected.value).unwrap()
     );
+    let added = client
+        .native_register_object(&second, policy_id, "second", "file")
+        .await
+        .unwrap();
+    let first_relationships = client
+        .read_relationship_page(policy_id, None, 1, added.block_number, &trusted)
+        .await
+        .unwrap();
+    assert_eq!(first_relationships.records.len(), 1);
+    assert!(first_relationships.continuation.is_some());
+    let last_relationships = client
+        .read_relationship_page(
+            policy_id,
+            first_relationships.continuation,
+            1,
+            first_relationships.revision,
+            &trusted,
+        )
+        .await
+        .unwrap();
+    assert_eq!(last_relationships.records.len(), 1);
+    assert!(last_relationships.continuation.is_none());
+    let archived = &first_relationships.records[0];
+    assert_eq!(archived.relationship.object_id, "report");
+    assert!(archived.archived);
+    assert_eq!(archived.metadata.owner_did, second.did());
+    assert_eq!(archived.metadata.creation_ts.block_height, early_height);
+    assert_eq!(last_relationships.records[0].relationship.object_id, "second");
+    assert!(!last_relationships.records[0].archived);
     let history = client
         .read_amendment_ids(policy_id, None, 1, amended_height, &trusted)
         .await

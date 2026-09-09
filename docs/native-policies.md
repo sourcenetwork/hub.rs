@@ -29,3 +29,11 @@ error, never a truncated result. Every inspected record must decode completely
 and match its policy and relationship storage key. Larger enumerations use
 `hub_getCurrentPrefixPageProof` with the policy's relationship prefix and verify
 each page before applying selectors locally.
+
+`HubClient::read_relationship_page` provides typed, verified pages for that
+relationship prefix. Each record includes the relationship, archive status and
+issuance metadata. Apply object, relation, subject and archive filters locally
+after verification, and continue until the cursor is absent even if no records
+in a page match. An empty prefix proves no relationships, not policy existence.
+Pages may select newer revisions; pass the previous revision as the next minimum.
+Enumeration is not a permission decision or a historical snapshot across pages.
