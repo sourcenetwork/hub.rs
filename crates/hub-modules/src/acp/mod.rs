@@ -430,10 +430,10 @@ impl AcpModule {
             {
                 return Err(AcpError::State("invalid stored policy identifier".into()));
             }
-            ids.push(
-                String::from_utf8(id.to_vec())
-                    .map_err(|_| AcpError::State("invalid stored policy identifier".into()))?,
-            );
+            let id = String::from_utf8(id.to_vec())
+                .map_err(|_| AcpError::State("invalid stored policy identifier".into()))?;
+            self.get_policy_record(&id)?;
+            ids.push(id);
         }
         Ok(ids)
     }

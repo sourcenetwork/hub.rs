@@ -143,10 +143,17 @@ fn json_policy_uses_shared_semantics_for_creation_and_editing() {
 #[test]
 fn policy_id_listing_is_bounded_and_rejects_invalid_keys() {
     let mut module = AcpModule::new();
+    let mut record = module
+        .create_policy(
+            &Did::new("did:key:owner").unwrap(),
+            VALID,
+            PolicyMarshalingType::ShortYaml,
+        )
+        .unwrap();
+    module.store.delete(&keys::policy_key(&record.policy.id));
     for n in 0..128u64 {
-        module
-            .store
-            .put(&keys::policy_key(&format!("{n:064x}")), vec![0; 8192]);
+        record.policy.id = format!("{n:064x}");
+        module.set_policy_record(&record.policy.id, &record);
     }
     let ids = module.query_policy_ids().unwrap();
     assert_eq!(ids.len(), 128);
@@ -166,4 +173,43 @@ fn policy_id_listing_is_bounded_and_rejects_invalid_keys() {
         module.store.put(&key, Vec::new());
         assert!(matches!(module.query_policy_ids(), Err(AcpError::State(_))));
     }
+}
+
+#[test]
+fn policy_id_listing_rejects_corrupt_records_after_restore() {
+    let mut module = AcpModule::new();
+    let record = module
+        .create_policy(
+            &Did::new("did:key:owner").unwrap(),
+            VALID,
+            PolicyMarshalingType::ShortYaml,
+        )
+        .unwrap();
+    let id = record.policy.id.clone();
+    let valid = serde_json::to_vec(&record).unwrap();
+    let mut foreign = record;
+    foreign.policy.id = "ab".repeat(32);
+    for invalid in [
+        valid[..valid.len() - 1].to_vec(),
+        serde_json::to_vec(&foreign).unwrap(),
+    ] {
+        module.store.put(&keys::policy_key(&id), invalid);
+        let before = module.store.serialize();
+        for candidate in [
+            module.clone(),
+            AcpModule::from_store(InMemoryKvStore::deserialize(&before).unwrap()),
+        ] {
+            assert!(matches!(
+                candidate.query_policy_ids(),
+                Err(AcpError::State(_))
+            ));
+            assert!(matches!(
+                candidate.query_policy(&id),
+                Err(AcpError::State(_))
+            ));
+            assert_eq!(candidate.store.serialize(), before);
+        }
+    }
+    module.store.put(&keys::policy_key(&id), valid);
+    assert_eq!(module.query_policy_ids().unwrap(), vec![id]);
 }
