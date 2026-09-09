@@ -116,6 +116,14 @@ See `docs/operation-identities.md`.
 
 ### State and recovery
 
+Finalized history writes derived revision-hash and submission-hash mappings in
+the same atomic batch as execution records. Historical lookups require the query
+index head to match the durable history head and validate the selected record
+against the requested hash. Recovery rebuilds missing or rewound mappings in
+batches, publishing their head only after completion; normal recovery reuses
+a matching index. These reads return execution data, with finality verified
+separately by proof consumers.
+
 The node uses `hub-app::OrderedState`: three execution partitions (accounts,
 storage, code) and four ordered Commonware current-QMDB partitions (ACP, bulletin,
 hub, native sequences). `StatefulHubApp` seals all seven targets into each proposal

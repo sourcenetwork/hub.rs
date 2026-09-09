@@ -21,11 +21,16 @@ const RECORD: u8 = 1;
 const CERTIFICATE: u8 = 2;
 const IMPORTED_FINALITY: u8 = 3;
 const PROOF_BLOCK: u8 = 4;
+const BLOCK_HASH: u8 = 5;
+const SUBMISSION_HASH: u8 = 6;
+const QUERY_HEAD: &[u8] = b"query_head";
 const FORMAT: &[u8] = b"format";
 const GENESIS: &[u8] = b"genesis";
 const HEAD: &[u8] = b"head";
 
 mod membership;
+mod query;
+pub use query::HistoricalExecution;
 mod peer;
 mod proof;
 mod startup;
@@ -124,7 +129,9 @@ impl FinalizedHistory {
                 let mut batch = WriteBatch::default();
                 batch.put(FORMAT, [1]);
                 batch.put(GENESIS, genesis.id().0);
-                batch.put(HEAD, borsh::to_vec(&(0u64, genesis.id().0.0))?);
+                let head = borsh::to_vec(&(0u64, genesis.id().0.0))?;
+                batch.put(HEAD, &head);
+                batch.put(QUERY_HEAD, &head);
                 write(&db, batch)?;
             }
         }
@@ -169,6 +176,11 @@ impl FinalizedHistory {
             self.db.get(transfer::IMPORT)?.is_none(),
             "history import is pending"
         );
+        ensure!(
+            self.db.get(QUERY_HEAD)?.as_deref()
+                == Some(borsh::to_vec(&(head.0, head.1.0.0))?.as_slice()),
+            "history query index requires recovery"
+        );
         if block.height <= head.0 {
             ensure!(
                 self.db.get(key(RECORD, block.height))?.as_deref() == Some(bytes.as_slice()),
@@ -187,9 +199,12 @@ impl FinalizedHistory {
             );
         }
         let mut batch = WriteBatch::default();
+        query::index_execution(&mut batch, block, &record.receipts);
         batch.put(key(RECORD, block.height), bytes);
         batch.delete(key(PROOF_BLOCK, block.height));
-        batch.put(HEAD, borsh::to_vec(&(block.height, block.id().0.0))?);
+        let head_bytes = borsh::to_vec(&(block.height, block.id().0.0))?;
+        batch.put(HEAD, &head_bytes);
+        batch.put(QUERY_HEAD, &head_bytes);
         write(&self.db, batch)?;
         *head = (block.height, block.id());
         Ok(())
@@ -221,6 +236,14 @@ impl FinalizedHistory {
         lookup: &FinalizationLookup,
     ) -> Result<()> {
         self.check_import_recovery(anchor)?;
+        let anchor_bytes = borsh::to_vec(&(anchor.height, anchor.id().0.0))?;
+        let rebuild_queries = self.db.get(QUERY_HEAD)?.as_deref() != Some(anchor_bytes.as_slice());
+        let mut query_batch = WriteBatch::default();
+        if rebuild_queries {
+            query_batch.delete_range([BLOCK_HASH], [SUBMISSION_HASH + 1]);
+            query_batch.delete(QUERY_HEAD);
+            write(&self.db, std::mem::take(&mut query_batch))?;
+        }
         let mut previous = genesis.id();
         for height in 1..=anchor.height {
             let bytes = self
@@ -238,6 +261,12 @@ impl FinalizedHistory {
                     block.id() == anchor.id(),
                     "finalized history does not match recovery anchor"
                 );
+            }
+            if rebuild_queries {
+                query::index_execution(&mut query_batch, &block, &record.receipts);
+                if query_batch.size_in_bytes() >= 1 << 20 {
+                    write(&self.db, std::mem::take(&mut query_batch))?;
+                }
             }
             let gas_used = receipts.iter().map(|r| r.gas_used).sum();
             index_finalized_block(index, &block, record.gas_limit, &receipts, gas_used);
@@ -267,7 +296,8 @@ impl FinalizedHistory {
             head.0 >= anchor.height,
             "finalized history is behind application state"
         );
-        let mut batch = WriteBatch::default();
+        let mut batch = query_batch;
+        batch.put(QUERY_HEAD, &anchor_bytes);
         self.retain_proof_suffix(anchor.height, head.0, &mut batch)?;
         for prefix in [RECORD, CERTIFICATE] {
             if let Some(next) = anchor.height.checked_add(1) {
