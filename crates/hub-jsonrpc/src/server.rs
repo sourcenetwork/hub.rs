@@ -14,6 +14,8 @@ use hub_indexer::{BlockIndex, LightBlockIndex};
 
 use hub_domain::GossipHeader;
 
+use crate::header_subscribe::{HeaderSubscriptionApiImpl, HeaderSubscriptionApiServer};
+
 use crate::{
     config::{CorsConfig, RpcServerConfig},
     eth::{
@@ -228,7 +230,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
         self
     }
 
-    /// Enable gossip header subscriptions via `eth_subscribe("headers")`.
+    /// Enable native finalized-header subscriptions via `hub_subscribeHeaders`.
     #[must_use]
     pub fn with_headers_subscription(
         mut self,
@@ -411,6 +413,13 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             }
             if let Err(e) = module.merge(hub_api.into_rpc()) {
                 error!(error = %e, "Failed to merge hub API");
+                let _ = jsonrpc_ready_tx.send(false);
+                return None;
+            }
+            if let Some(headers) = subscription_headers.as_ref()
+                && let Err(e) = module.merge(HeaderSubscriptionApiImpl(headers.clone()).into_rpc())
+            {
+                error!(error = %e, "Failed to merge header subscription API");
                 let _ = jsonrpc_ready_tx.send(false);
                 return None;
             }
@@ -631,7 +640,7 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
         self
     }
 
-    /// Enable gossip header subscriptions via `eth_subscribe("headers")`.
+    /// Enable native finalized-header subscriptions via `hub_subscribeHeaders`.
     #[must_use]
     pub fn with_headers_subscription(
         mut self,
@@ -756,6 +765,9 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
                 api
             };
             module.merge(hub_api.into_rpc())?;
+        }
+        if let Some(headers) = self.subscription_headers.as_ref() {
+            module.merge(HeaderSubscriptionApiImpl(headers.clone()).into_rpc())?;
         }
         if let (Some(heads_tx), Some(logs_tx)) = (self.subscription_heads, self.subscription_logs) {
             let mut sub_api = EthSubscriptionApiImpl::new(heads_tx, logs_tx);

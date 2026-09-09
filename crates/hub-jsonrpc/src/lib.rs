@@ -19,6 +19,8 @@ pub use eth::{
 mod eth_subscribe;
 pub use eth_subscribe::{EthSubscriptionApiImpl, EthSubscriptionApiServer};
 
+mod header_subscribe;
+
 mod hub_api;
 pub use hub_api::{HubApiImpl, HubApiServer, LightBlockLookup};
 

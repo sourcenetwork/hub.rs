@@ -212,6 +212,7 @@ share one consensus group.
 |----------|---------|----------|
 | `eth_*` | `eth_sendRawTransaction`, `eth_call`, `eth_getStorageAt`, `eth_getTransactionReceipt`, … | defradb.rs, MetaMask, wallets |
 | `eth_subscribe` | `newHeads`, `logs` | Indexers, light clients |
+| `hub_subscribeHeaders` | `hub_header` notifications; `hub_unsubscribeHeaders` cancellation | Native verified consumers |
 | `hub_*` | `hub_nodeStatus`, `hub_sendNativeTx`, `hub_getTransactionReceipt`, `hub_getNativeNonce`, `hub_getStateProof`, `hub_getLightBlock` | orbis-rs, BLS identities, light clients |
 
 ### Light-client material
@@ -220,8 +221,10 @@ A `LightBlock` carries the canonical block, the BLS threshold finalization
 certificate, and the epoch's group public key; `hub_domain::verify_light_block`
 verifies it with one aggregate signature. `ModuleStateProof`s verify module
 state against the header's `module_state_root`. Both are served over the `hub_*`
-RPC methods above, and signed `GossipHeader`s stream to `eth_subscribe("headers")`
-subscribers as blocks finalize.
+RPC methods above, and signed `GossipHeader`s stream through `hub_subscribeHeaders` as blocks finalize.
+The native stream is available with only the header broadcaster configured.
+Consumers authenticate headers against their configured finality trust; receiving a
+notification alone does not establish its authority.
 
 ## Crate Structure
 

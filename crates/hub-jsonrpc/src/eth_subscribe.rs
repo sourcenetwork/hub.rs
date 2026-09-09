@@ -111,7 +111,7 @@ impl EthSubscriptionApiImpl {
         }
     }
 
-    /// Enable gossip header subscriptions via `hub_subscribe("headers")`.
+    /// Enable gossip header subscriptions via `eth_subscribe("headers")`.
     #[must_use]
     pub fn with_headers(mut self, tx: broadcast::Sender<GossipHeader>) -> Self {
         self.headers_tx = Some(tx);
@@ -174,39 +174,7 @@ impl EthSubscriptionApiServer for EthSubscriptionApiImpl {
                         .await;
                     return Ok(());
                 };
-                let sink = pending.accept().await?;
-                let mut rx = headers_tx.subscribe();
-                tokio::spawn(async move {
-                    loop {
-                        match rx.recv().await {
-                            Ok(header) => {
-                                let value = match serde_json::to_value(&header) {
-                                    Ok(v) => v,
-                                    Err(e) => {
-                                        warn!(error = %e, "failed to serialize gossip header");
-                                        break;
-                                    }
-                                };
-                                let msg = match SubscriptionMessage::from_json(&value) {
-                                    Ok(m) => m,
-                                    Err(e) => {
-                                        warn!(error = %e, "failed to build headers subscription message");
-                                        break;
-                                    }
-                                };
-                                if sink.send(msg).await.is_err() {
-                                    trace!("headers subscriber disconnected");
-                                    break;
-                                }
-                            }
-                            Err(broadcast::error::RecvError::Lagged(n)) => {
-                                warn!(lagged = n, "headers subscriber lagged, dropping");
-                                break;
-                            }
-                            Err(broadcast::error::RecvError::Closed) => break,
-                        }
-                    }
-                });
+                crate::header_subscribe::stream_headers(pending, headers_tx).await?;
             }
             "logs" => {
                 let filter: SubscriptionLogFilter = match params {
