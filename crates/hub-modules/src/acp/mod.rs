@@ -644,14 +644,15 @@ impl AcpModule {
     fn get_relationship(
         &self,
         policy_id: &str,
-        storage_key: &str,
+        relationship: &Relationship,
     ) -> Result<Option<RelationshipRecord>> {
+        let storage_key = relationship.storage_key();
         self.store
-            .get_ref(&keys::relationship_key(policy_id, storage_key))
+            .get_ref(&keys::relationship_key(policy_id, &storage_key))
             .map(|bytes| {
                 let record: RelationshipRecord = serde_json::from_slice(bytes)
                     .map_err(|e| AcpError::State(format!("invalid relationship record: {e}")))?;
-                if record.policy_id != policy_id || record.relationship.storage_key() != storage_key {
+                if record.policy_id != policy_id || record.relationship != *relationship {
                     return Err(AcpError::State(
                         "relationship record identity mismatch".into(),
                     ));
@@ -935,7 +936,7 @@ impl AcpModule {
         }
 
         let storage_key = rel.storage_key();
-        if let Some(record) = self.get_relationship(policy_id, &storage_key)? {
+        if let Some(record) = self.get_relationship(policy_id, &rel)? {
             return Ok(PolicyCmdResult::SetRelationship {
                 record_existed: true,
                 record,
@@ -1005,7 +1006,7 @@ impl AcpModule {
         }
 
         let storage_key = rel.storage_key();
-        let record_found = self.get_relationship(policy_id, &storage_key)?.is_some();
+        let record_found = self.get_relationship(policy_id, &rel)?.is_some();
         self.delete_relationship(policy_id, &storage_key);
 
         Ok(PolicyCmdResult::DeleteRelationship { record_found })
@@ -1416,7 +1417,7 @@ impl AcpModule {
 
         // Rule 2: object owner can manage any relation on the object.
         let owner_rel = Relationship::with_entity(resource, object_id, "owner", creator.clone());
-        if let Some(rec) = self.get_relationship(policy_id, &owner_rel.storage_key())?
+        if let Some(rec) = self.get_relationship(policy_id, &owner_rel)?
             && !rec.archived
         {
             return Ok(true);
@@ -1427,7 +1428,7 @@ impl AcpModule {
         for managing_relation in managers {
             let managing_rel =
                 Relationship::with_entity(resource, object_id, managing_relation, creator.clone());
-            if let Some(rec) = self.get_relationship(policy_id, &managing_rel.storage_key())?
+            if let Some(rec) = self.get_relationship(policy_id, &managing_rel)?
                 && !rec.archived
             {
                 return Ok(true);
@@ -1667,6 +1668,50 @@ resources:
         let module = AcpModule::new();
         let err = module.query_policy("nonexistent").unwrap_err();
         assert!(matches!(err, AcpError::PolicyNotFound { .. }));
+    }
+
+    #[test]
+    fn relationship_key_collision_rejects_mutation() {
+        let mut module = AcpModule::new();
+        let policy = module
+            .create_policy(&alice(), SIMPLE_POLICY, PolicyMarshalingType::ShortYaml)
+            .unwrap()
+            .policy
+            .id;
+        for (id, actor) in [("parent", alice()), ("parent/path", bob())] {
+            module
+                .direct_policy_cmd(
+                    &actor,
+                    &policy,
+                    PolicyCmd::RegisterObject(Object {
+                        resource: "document".into(),
+                        id: id.into(),
+                    }),
+                )
+                .unwrap();
+        }
+        let original = Relationship::with_entity("document", "parent/path", "reader", bob());
+        let collision = Relationship::with_entity("document", "parent", "path/reader", bob());
+        assert_eq!(original.storage_key(), collision.storage_key());
+        module
+            .direct_policy_cmd(&bob(), &policy, PolicyCmd::SetRelationship(original))
+            .unwrap();
+        for mut candidate in [
+            module.clone(),
+            AcpModule::from_store(InMemoryKvStore::deserialize(&module.store.serialize()).unwrap()),
+        ] {
+            let before = candidate.store.serialize();
+            for command in [
+                PolicyCmd::SetRelationship(collision.clone()),
+                PolicyCmd::DeleteRelationship(collision.clone()),
+            ] {
+                assert!(matches!(
+                    candidate.direct_policy_cmd(&alice(), &policy, command),
+                    Err(AcpError::State(_))
+                ));
+                assert_eq!(candidate.store.serialize(), before);
+            }
+        }
     }
 
     #[test]
@@ -2365,7 +2410,7 @@ resources:
         // The grant must still be present — the rejected delete is a no-op.
         assert!(
             module
-                .get_relationship(&policy_id, &grant.storage_key())
+                .get_relationship(&policy_id, &grant)
                 .unwrap()
                 .is_some(),
             "unauthorized delete must not remove the grant"

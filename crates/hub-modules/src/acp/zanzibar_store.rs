@@ -199,17 +199,30 @@ impl<S: RecordStore> ZanzibarStore for QmdbZanzibarStore<S> {
             metadata: default_metadata(),
         };
         let bytes = serde_json::to_vec(&record).expect("serialize RelationshipRecord");
-        self.store.write().unwrap().write_record(
-            &keys::relationship_key(policy_id, &rel.storage_key()),
-            bytes,
-        )?;
+        let key = keys::relationship_key(policy_id, &rel.storage_key());
+        let mut guard = self.store.write().unwrap();
+        if let Some(existing) = guard.read_record(&key)? {
+            let existing: RelationshipRecord = serde_json::from_slice(&existing)?;
+            if existing.policy_id != policy_id || existing.relationship != *rel {
+                return Err(zanzibar::error::Error::Serialization(
+                    "relationship key collision".into(),
+                ));
+            }
+        }
+        guard.write_record(&key, bytes)?;
         Ok(())
     }
 
     async fn delete_relationship(&self, policy_id: &str, rel: &Relationship) -> Result<bool> {
         let key = keys::relationship_key(policy_id, &rel.storage_key());
         let mut guard = self.store.write().unwrap();
-        if guard.read_record(&key)?.is_some() {
+        if let Some(bytes) = guard.read_record(&key)? {
+            let record: RelationshipRecord = serde_json::from_slice(&bytes)?;
+            if record.policy_id != policy_id || record.relationship != *rel {
+                return Err(zanzibar::error::Error::Serialization(
+                    "relationship key collision".into(),
+                ));
+            }
             guard.remove_record(&key)?;
             Ok(true)
         } else {
@@ -345,6 +358,29 @@ mod tests {
         };
         let bytes = serde_json::to_vec(&record).unwrap();
         store.put(&keys::relationship_key(POLICY, &rel.storage_key()), bytes);
+    }
+
+    #[test]
+    fn relationship_key_collision_rejects_adapter_mutation() {
+        let store = QmdbZanzibarStore::<InMemoryKvStore>::default();
+        let original = Relationship::with_entity("document", "parent/path", "reader", did(ALICE));
+        let collision = Relationship::with_entity("document", "parent", "path/reader", did(ALICE));
+        assert_eq!(original.storage_key(), collision.storage_key());
+        block_on(store.store_relationship(POLICY, &original)).unwrap();
+        let before = store.store.read().unwrap().serialize();
+        assert!(block_on(store.store_relationship(POLICY, &collision)).is_err());
+        assert!(block_on(store.delete_relationship(POLICY, &collision)).is_err());
+        assert_eq!(store.store.read().unwrap().serialize(), before);
+        assert!(
+            block_on(store.has_relationship(
+                POLICY,
+                "document",
+                "parent/path",
+                "reader",
+                &original.subject
+            ))
+            .unwrap()
+        );
     }
 
     #[test]

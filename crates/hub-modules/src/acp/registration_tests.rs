@@ -72,7 +72,7 @@ fn amendment_moves_the_owner_key_and_revokes_the_previous_owner() {
     let old = Relationship::with_entity("file", "report", "owner", first.clone());
     assert!(!module.has_relationship(&policy, &old.storage_key()));
     let stored = module
-        .get_relationship(&policy, &record.relationship.storage_key())
+        .get_relationship(&policy, &record.relationship)
         .unwrap()
         .unwrap();
     assert_eq!(
