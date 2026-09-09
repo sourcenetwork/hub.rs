@@ -74,3 +74,20 @@ still permit the retry. It never renews the decision. Fresh denied requests leav
 no decision or outcome. Current reads expose issuance and expiry separately from
 permission evaluation. All members must support the appended scope and call
 before operators enable it.
+
+Direct actors can use `create_operation_token` to sign an exact native request
+without relay authority. Set `JwtClaims.request` to the caller's operation ID,
+independently provisioned genesis identity and `DelegatedOperation::digest()` for
+the intended command. The token binds the signing actor, worker, audience and
+scope. The builder requires an operation claim, matching issuer, nonzero genesis,
+valid ID deadline and a token lifetime within that deadline.
+
+A different worker needs a newly actor-signed token naming that worker, while
+retaining the same operation claim. Execution rejects substituted arguments and
+returns the retained original outcome for an authorized retry. The operation ID
+and expiry rules still apply after the outcome is pruned.
+
+This is the native alternative to the legacy signed-policy-command payload. It
+uses the native JWT format and execution timestamps in seconds, not the legacy
+protobuf payload or revision-based expiration field. The legacy endpoint remains
+unsupported. Broad scoped bearer tokens remain a separate delegation choice.

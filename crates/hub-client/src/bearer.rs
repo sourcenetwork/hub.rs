@@ -60,6 +60,45 @@ pub fn create_scoped_bearer_token(
     sign_payload(signing_key, header, &payload)
 }
 
+/// Sign one exact caller operation without operator-managed relay authority.
+/// The request binds its immutable ID, semantic digest and genesis identity.
+pub fn create_operation_token(
+    signing_key: &SigningKey,
+    claims: &hub_crypto::jwt::JwtClaims,
+) -> Result<String, ClientError> {
+    let issuer = hub_crypto::secp256k1::did_from_secp256k1_pubkey(
+        signing_key
+            .verifying_key()
+            .to_encoded_point(true)
+            .as_bytes(),
+    )
+    .map_err(|e| ClientError::Signing(e.to_string()))?;
+    let request = claims
+        .request
+        .as_ref()
+        .ok_or_else(|| ClientError::Signing("operation claim required".into()))?;
+    if claims.iss != issuer
+        || claims.relay.is_some()
+        || claims.nbf != claims.iat
+        || claims.iat >= claims.exp
+        || claims.exp > request.id.expires_at()
+        || request.genesis_id == [0; 32]
+    {
+        return Err(ClientError::Signing(
+            "invalid operation issuer, binding or lifetime".into(),
+        ));
+    }
+    request
+        .id
+        .validate(claims.iat)
+        .map_err(|e| ClientError::Signing(e.to_string()))?;
+    sign_payload(
+        signing_key,
+        r#"{"alg":"ES256K","typ":"vera-delegation-v1+jwt"}"#,
+        &serde_json::to_string(claims)?,
+    )
+}
+
 /// Sign an operation-bound relay assertion. The issuer must match the signing key.
 /// The node separately verifies the committed grant, actor authority and revocations.
 pub fn create_relay_token(
@@ -136,6 +175,37 @@ mod tests {
         let key = test_key();
         for expires_at in [0, 50] {
             assert!(create_bearer_token(&key, "s", 9001, 50, expires_at).is_err());
+        }
+    }
+
+    #[test]
+    fn operation_tokens_require_actor_binding_and_immutable_deadline() {
+        use hub_crypto::operation::{OperationClaim, OperationId};
+        let key = test_key();
+        let token = create_bearer_token(&key, "did:key:worker", 9001, 50, 100).unwrap();
+        let mut claims = hub_crypto::jwt::verify_bearer_token(&token).unwrap();
+        claims.nbf = claims.iat;
+        assert!(create_operation_token(&key, &claims).is_err());
+        let mut id = [1; 32];
+        id[..8].copy_from_slice(&100u64.to_be_bytes());
+        claims.request = Some(OperationClaim {
+            id: OperationId(id),
+            digest: [3; 32],
+            genesis_id: [4; 32],
+        });
+        let signed = create_operation_token(&key, &claims).unwrap();
+        let decoded = hub_crypto::jwt::verify_bearer_token(&signed).unwrap();
+        assert_eq!(decoded.request.unwrap().digest, [3; 32]);
+        for case in 0..5 {
+            let mut invalid = claims.clone();
+            match case {
+                0 => invalid.iss = "did:key:other".into(),
+                1 => invalid.exp = 101,
+                2 => invalid.request.as_mut().unwrap().genesis_id = [0; 32],
+                3 => invalid.request.as_mut().unwrap().id.0[8..].fill(0),
+                _ => invalid.nbf -= 1,
+            }
+            assert!(create_operation_token(&key, &invalid).is_err());
         }
     }
 }
