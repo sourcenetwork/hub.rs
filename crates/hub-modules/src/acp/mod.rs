@@ -26,7 +26,7 @@ pub mod types;
 /// `ZanzibarStore` adapter over hub's module KV store.
 pub mod zanzibar_store;
 
-use std::collections::HashMap;
+use imbl::OrdMap;
 use std::sync::Arc;
 
 use acp::policy_yaml;
@@ -70,11 +70,11 @@ type Result<T> = std::result::Result<T, AcpError>;
 /// ```
 ///
 /// `zanzibar_policies` is an in-memory cache populated on `create_policy` /
-/// `edit_policy` and cloned with the module. Not persisted to the KV store.
+/// `edit_policy`. Forks share immutable policies and unchanged map branches.
 #[derive(Clone, Debug)]
 pub struct AcpModule {
     store: InMemoryKvStore,
-    zanzibar_policies: Arc<HashMap<String, Policy>>,
+    zanzibar_policies: OrdMap<String, Arc<Policy>>,
 }
 
 impl Default for AcpModule {
@@ -89,7 +89,7 @@ impl AcpModule {
     pub fn new() -> Self {
         Self {
             store: InMemoryKvStore::default(),
-            zanzibar_policies: Arc::default(),
+            zanzibar_policies: OrdMap::new(),
         }
     }
 
@@ -100,15 +100,15 @@ impl AcpModule {
 
     /// Reconstruct from a deserialized store, rebuilding the zanzibar cache.
     pub fn from_store(store: InMemoryKvStore) -> Self {
-        let mut zanzibar_policies = HashMap::new();
+        let mut zanzibar_policies = OrdMap::new();
         for (_, value) in store.prefix_iter(keys::POLICY_PREFIX) {
             if let Ok(record) = serde_json::from_slice::<PolicyRecord>(value) {
-                zanzibar_policies.insert(record.policy.id.clone(), record.policy);
+                zanzibar_policies.insert(record.policy.id.clone(), Arc::new(record.policy));
             }
         }
         Self {
             store,
-            zanzibar_policies: Arc::new(zanzibar_policies),
+            zanzibar_policies,
         }
     }
 
@@ -157,7 +157,8 @@ impl AcpModule {
         self.store
             .put(keys::POLICY_COUNTER_KEY, counter.to_be_bytes().to_vec());
         self.set_policy_record(&policy_id, &record);
-        Arc::make_mut(&mut self.zanzibar_policies).insert(policy_id, zanzibar_policy);
+        self.zanzibar_policies
+            .insert(policy_id, Arc::new(zanzibar_policy));
 
         Ok(record)
     }
@@ -247,7 +248,8 @@ impl AcpModule {
         };
 
         self.set_policy_record(policy_id, &new_record);
-        Arc::make_mut(&mut self.zanzibar_policies).insert(policy_id.to_string(), new_zanzibar);
+        self.zanzibar_policies
+            .insert(policy_id.to_string(), Arc::new(new_zanzibar));
 
         Ok((removed, new_record))
     }
