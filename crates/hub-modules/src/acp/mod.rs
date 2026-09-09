@@ -548,48 +548,7 @@ impl AcpModule {
             self.ensure_object_unregistered(policy_id, obj)?;
         }
 
-        let actor_did = actor.0.to_string();
-
-        // Build leaf hashes.
-        let leaf_hashes: Vec<[u8; 32]> = objects
-            .iter()
-            .map(|obj| {
-                Self::registration_leaf(policy_id, obj, &actor_did)
-                    .map(|data| Self::compute_leaf_hash(&data))
-            })
-            .collect::<Result<_>>()?;
-
-        let levels = Self::build_merkle_levels(&leaf_hashes);
-        let root = levels.last().unwrap()[0];
-
-        let proofs: Vec<RegistrationProof> = objects
-            .iter()
-            .enumerate()
-            .map(|(i, obj)| {
-                let siblings = Self::generate_merkle_proof(i, &levels);
-                RegistrationProof {
-                    object: obj.clone(),
-                    merkle_proof: siblings,
-                    leaf_count: objects.len() as u64,
-                    leaf_index: i as u64,
-                }
-            })
-            .collect();
-
-        let commitment = root.to_vec();
-        let commitment_hex = hex::encode(&commitment);
-
-        let proofs_json = proofs
-            .iter()
-            .map(|p| serde_json::to_string(p).unwrap_or_default())
-            .collect();
-
-        Ok(GenerateCommitmentResult {
-            commitment,
-            commitment_hex,
-            proofs,
-            proofs_json,
-        })
+        Self::generate_registration_commitment(policy_id, objects, actor)
     }
 
     /// List amendment events flagged as hijack attempts for a policy.

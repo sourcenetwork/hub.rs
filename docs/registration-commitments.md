@@ -83,3 +83,9 @@ absence using caller-provided consensus trust and a minimum revision. The client
 checks the requested policy, commitment identifier, root width and complete record
 encoding. It preserves issuance metadata and expiry status; record presence is
 not a guarantee that a later reveal will succeed.
+
+`hub_client::registrations::generate_registration_commitment` builds bounded
+commitment material locally with the same Merkle encoding used during reveal
+verification. Object identifiers need not be sent to a node during preparation.
+Local generation does not establish policy existence, valid resources or current
+ownership; execution checks these when processing the registration commands.

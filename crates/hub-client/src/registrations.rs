@@ -8,6 +8,20 @@ use hub_permission::{
 
 use crate::{ClientError, HubClient};
 
+/// Build commitment material locally without disclosing object identifiers to a server.
+/// This does not check policy existence, resource validity or current ownership.
+pub fn generate_registration_commitment(
+    policy: B256,
+    objects: &[hub_modules::acp::types::Object],
+    actor: &hub_modules::acp::types::Actor,
+) -> Result<hub_modules::acp::types::GenerateCommitmentResult, hub_modules::acp::error::AcpError> {
+    hub_modules::acp::AcpModule::generate_registration_commitment(
+        &hex::encode(policy),
+        objects,
+        actor,
+    )
+}
+
 /// Certified commitment identifiers at one revision; subsequent pages may select newer state.
 #[derive(Clone, Debug)]
 pub struct CommitmentIdPage {

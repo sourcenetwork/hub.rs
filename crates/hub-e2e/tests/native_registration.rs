@@ -5,10 +5,7 @@ use alloy_sol_types::{SolCall as _, SolEvent as _};
 use hub_client::{ACP_ADDRESS, Actor, BlsSigner, HubClient, ModuleId, Object, RECORD_PROOF_BYTES};
 use hub_domain::{ConsensusPublicKey, ExecutionReceipt, NativeTx};
 use hub_e2e::cluster::{ConsensusPreset, KeySet, TestCluster};
-use hub_modules::acp::{
-    abi::IAcp,
-    types::{GenerateCommitmentResult, RelationshipRecord},
-};
+use hub_modules::acp::{abi::IAcp, types::RelationshipRecord};
 use std::time::Duration;
 
 async fn submit(
@@ -58,19 +55,15 @@ async fn native_registration_preserves_commitment_priority_and_owner_proofs() {
     client.native_create_policy(&first, b"name: registrations\nresources:\n  - name: file\n    permissions:\n      - name: read\n        expr: owner\n", 1).await.unwrap();
     let policy = client.get_policy_ids().await.unwrap().pop().unwrap();
     let policy_id: B256 = policy.parse().unwrap();
-    let call = IAcp::generateCommitmentCall {
-        policyId: policy_id,
-        resources: vec!["file".into()],
-        objectIds: vec!["report".into()],
-        actor: second.did().into(),
-    };
-    let result = client
-        .eth_call(ACP_ADDRESS, call.abi_encode().into())
-        .await
-        .unwrap();
-    let generated: GenerateCommitmentResult =
-        serde_json::from_slice(&IAcp::generateCommitmentCall::abi_decode_returns(&result).unwrap())
-            .unwrap();
+    let generated = hub_client::registrations::generate_registration_commitment(
+        policy_id,
+        &[Object {
+            resource: "file".into(),
+            id: "report".into(),
+        }],
+        &Actor(second.did().parse().unwrap()),
+    )
+    .unwrap();
     let commit = || {
         IAcp::commitRegistrationsCall {
             policyId: policy_id,
