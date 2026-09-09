@@ -1,11 +1,24 @@
 //! In-memory index of the public Commonware artifacts needed by light clients.
 
-use std::collections::{HashMap, VecDeque};
+use std::{
+    collections::{BTreeMap, HashMap, VecDeque},
+    num::NonZeroU64,
+};
 
 use parking_lot::RwLock;
 
 /// Maximum number of finalizations retained in the hot proof cache.
 pub const MAX_CACHED_FINALIZATIONS: usize = 1024;
+/// Maximum number of cached epoch verifier records, including genesis.
+pub const MAX_CACHED_EPOCHS: usize = 128;
+const MAX_EPOCH_PAYLOAD_BYTES: usize = 8 << 20;
+
+#[derive(Debug, Default)]
+struct EpochCache {
+    entries: BTreeMap<u64, StoredEpochMaterial>,
+    payload_bytes: usize,
+}
+
 const MAX_FINALIZATION_PAYLOAD_BYTES: usize = 64 << 20;
 
 #[derive(Debug, Default)]
@@ -46,18 +59,30 @@ pub struct StoredEpochMaterial {
 /// can be reconstructed from marshal storage and finalized epoch-boundary
 /// blocks after restart. Finalizations are a FIFO cache capped at 1,024 entries
 /// and 64 MiB of vector capacity; callers must fall back to durable history on
-/// a miss. Epoch verifier material remains retained for historical proofs.
-#[derive(Debug, Default)]
+/// a miss. Epoch material retains genesis and recent epochs within 128 records
+/// and 8 MiB of vector capacity; older material is in finalized boundary records.
+#[derive(Debug)]
 pub struct LightBlockIndex {
     finalizations: RwLock<FinalizationCache>,
-    epoch_material: RwLock<HashMap<u64, StoredEpochMaterial>>,
+    epoch_material: RwLock<EpochCache>,
+    epoch_length: NonZeroU64,
 }
 
 impl LightBlockIndex {
     /// Create an empty light-block artifact index.
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(epoch_length: NonZeroU64) -> Self {
+        Self {
+            finalizations: RwLock::new(FinalizationCache::default()),
+            epoch_material: RwLock::new(EpochCache::default()),
+            epoch_length,
+        }
+    }
+
+    /// The deployment's fixed epoch length, used to locate historical verifier material.
+    #[must_use]
+    pub const fn epoch_length(&self) -> NonZeroU64 {
+        self.epoch_length
     }
 
     /// Cache an encoded finalization after persisting it in durable history.
@@ -92,13 +117,41 @@ impl LightBlockIndex {
 
     /// Store public verifier material for an epoch.
     pub fn insert_epoch_material(&self, epoch: u64, material: StoredEpochMaterial) {
-        self.epoch_material.write().insert(epoch, material);
+        let bytes = material.bytes.capacity();
+        if bytes > MAX_EPOCH_PAYLOAD_BYTES {
+            return;
+        }
+        let mut cache = self.epoch_material.write();
+        let genesis_bytes = cache
+            .entries
+            .get(&0)
+            .map_or(0, |material| material.bytes.capacity());
+        if epoch != 0 && bytes > MAX_EPOCH_PAYLOAD_BYTES - genesis_bytes {
+            return;
+        }
+        if let Some(previous) = cache.entries.remove(&epoch) {
+            cache.payload_bytes -= previous.bytes.capacity();
+        }
+        while cache.entries.len() >= MAX_CACHED_EPOCHS
+            || cache.payload_bytes > MAX_EPOCH_PAYLOAD_BYTES - bytes
+        {
+            let Some(oldest) = cache.entries.range(1..).next().map(|(&epoch, _)| epoch) else {
+                return;
+            };
+            let removed = cache
+                .entries
+                .remove(&oldest)
+                .expect("cached epoch material");
+            cache.payload_bytes -= removed.bytes.capacity();
+        }
+        cache.payload_bytes += bytes;
+        cache.entries.insert(epoch, material);
     }
 
     /// Retrieve public verifier material for an epoch.
     #[must_use]
     pub fn get_epoch_material(&self, epoch: u64) -> Option<StoredEpochMaterial> {
-        self.epoch_material.read().get(&epoch).cloned()
+        self.epoch_material.read().entries.get(&epoch).cloned()
     }
 }
 
@@ -108,7 +161,7 @@ mod tests {
 
     #[test]
     fn insert_and_get_finalization() {
-        let index = LightBlockIndex::new();
+        let index = LightBlockIndex::new(std::num::NonZeroU64::new(20).unwrap());
         let digest = [0xAA; 32];
         let finalization = StoredFinalization {
             epoch: 7,
@@ -122,7 +175,7 @@ mod tests {
 
     #[test]
     fn finalization_cache_bounds_capacity_and_replacements() {
-        let index = LightBlockIndex::new();
+        let index = LightBlockIndex::new(std::num::NonZeroU64::new(20).unwrap());
         let entry = |capacity| StoredFinalization {
             epoch: 0,
             bytes: Vec::with_capacity(capacity),
@@ -166,7 +219,7 @@ mod tests {
     #[test]
     fn missing_finalization_returns_none() {
         assert!(
-            LightBlockIndex::new()
+            LightBlockIndex::new(std::num::NonZeroU64::new(20).unwrap())
                 .get_finalization(&[0xFF; 32])
                 .is_none()
         );
@@ -174,7 +227,7 @@ mod tests {
 
     #[test]
     fn insert_and_get_epoch_material() {
-        let index = LightBlockIndex::new();
+        let index = LightBlockIndex::new(std::num::NonZeroU64::new(20).unwrap());
         let material = StoredEpochMaterial {
             bytes: vec![0x22; 423],
         };
@@ -184,7 +237,38 @@ mod tests {
     }
 
     #[test]
+    fn epoch_cache_preserves_genesis_and_bounds_payload_capacity() {
+        let index = LightBlockIndex::new(NonZeroU64::new(20).unwrap());
+        let material = |capacity| StoredEpochMaterial {
+            bytes: Vec::with_capacity(capacity),
+        };
+        index.insert_epoch_material(0, material(16));
+        for epoch in 1..=MAX_CACHED_EPOCHS as u64 {
+            index.insert_epoch_material(epoch, material(1));
+        }
+        assert!(index.get_epoch_material(0).is_some());
+        assert!(index.get_epoch_material(1).is_none());
+        assert_eq!(index.epoch_material.read().entries.len(), MAX_CACHED_EPOCHS);
+        let before = index.epoch_material.read().payload_bytes;
+        index.insert_epoch_material(999, material(MAX_EPOCH_PAYLOAD_BYTES));
+        assert!(index.get_epoch_material(999).is_none());
+        assert_eq!(index.epoch_material.read().payload_bytes, before);
+        index.insert_epoch_material(999, material(MAX_EPOCH_PAYLOAD_BYTES - 16));
+        assert_eq!(
+            index.epoch_material.read().payload_bytes,
+            MAX_EPOCH_PAYLOAD_BYTES
+        );
+        assert_eq!(index.epoch_material.read().entries.len(), 2);
+        index.insert_epoch_material(999, material(8));
+        assert_eq!(index.epoch_material.read().payload_bytes, 24);
+    }
+
+    #[test]
     fn missing_epoch_material_returns_none() {
-        assert!(LightBlockIndex::new().get_epoch_material(99).is_none());
+        assert!(
+            LightBlockIndex::new(std::num::NonZeroU64::new(20).unwrap())
+                .get_epoch_material(99)
+                .is_none()
+        );
     }
 }

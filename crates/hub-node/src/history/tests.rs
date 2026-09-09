@@ -56,7 +56,7 @@ async fn restart_restores_history_and_replaces_the_unprocessed_suffix() {
     {
         let history = FinalizedHistory::open(dir.path(), &genesis).unwrap();
         let index = BlockIndex::new();
-        let light = LightBlockIndex::new();
+        let light = LightBlockIndex::new(std::num::NonZeroU64::new(20).unwrap());
         history
             .recover(&genesis, &first, &index, &light, &lookup)
             .await
@@ -80,7 +80,7 @@ async fn restart_restores_history_and_replaces_the_unprocessed_suffix() {
                 &genesis,
                 &first,
                 &BlockIndex::new(),
-                &LightBlockIndex::new(),
+                &LightBlockIndex::new(std::num::NonZeroU64::new(20).unwrap()),
                 &lookup,
             )
             .await
@@ -98,7 +98,7 @@ async fn restart_restores_history_and_replaces_the_unprocessed_suffix() {
                     &genesis,
                     &wrong,
                     &BlockIndex::new(),
-                    &LightBlockIndex::new(),
+                    &LightBlockIndex::new(std::num::NonZeroU64::new(20).unwrap()),
                     &lookup
                 )
                 .await
@@ -111,7 +111,7 @@ async fn restart_restores_history_and_replaces_the_unprocessed_suffix() {
                     &genesis,
                     &first,
                     &BlockIndex::new(),
-                    &LightBlockIndex::new(),
+                    &LightBlockIndex::new(std::num::NonZeroU64::new(20).unwrap()),
                     &lookup
                 )
                 .await
@@ -213,7 +213,7 @@ async fn receipt_corruption_is_rejected_before_recovery_publishes_the_record() {
         .put(key(RECORD, 1), borsh::to_vec(&record).unwrap())
         .unwrap();
     let index = BlockIndex::new();
-    let light = LightBlockIndex::new();
+    let light = LightBlockIndex::new(std::num::NonZeroU64::new(20).unwrap());
     let lookup: FinalizationLookup =
         Arc::new(|_| panic!("invalid record must not reach certificate lookup"));
     let error = history
@@ -239,7 +239,7 @@ async fn ancestor_without_a_direct_certificate_remains_queryable() {
                 &genesis,
                 &first,
                 &BlockIndex::new(),
-                &LightBlockIndex::new(),
+                &LightBlockIndex::new(std::num::NonZeroU64::new(20).unwrap()),
                 &unavailable,
             )
             .await
@@ -247,7 +247,7 @@ async fn ancestor_without_a_direct_certificate_remains_queryable() {
     }
     let history = FinalizedHistory::open(dir.path(), &genesis).unwrap();
     let index = BlockIndex::new();
-    let light = LightBlockIndex::new();
+    let light = LightBlockIndex::new(std::num::NonZeroU64::new(20).unwrap());
     let unexpected: FinalizationLookup = Arc::new(|_| panic!("lookup result must be retained"));
     history
         .recover(&genesis, &first, &index, &light, &unexpected)
@@ -268,7 +268,7 @@ async fn indirect_proof_survives_reopen_and_uses_the_rpc_history_lookup() {
     use hub_jsonrpc::{HubApiImpl, HubApiServer, NodeState};
 
     let public = ed25519::PrivateKey::from_seed(7).public_key();
-    let (info, shares) = crate::trusted_setup(7, [public.clone()]).unwrap();
+    let (mut info, shares) = crate::trusted_setup(7, [public.clone()]).unwrap();
     let material = EpochMaterial::new(info.output.players().clone(), info.output.public().clone());
     let trusted = *material.sharing.public();
     let signer = ConsensusScheme::signer(
@@ -280,21 +280,28 @@ async fn indirect_proof_survives_reopen_and_uses_the_rpc_history_lookup() {
     .unwrap();
     let dir = tempfile::tempdir().unwrap();
     let genesis = block(0, BlockId(B256::ZERO));
-    let first = block(1, genesis.id());
-    let second = block(2, first.id());
-    let third = block(3, second.id());
+    info.epoch = commonware_consensus::types::Epoch::new(1);
+    let mut first = block(1, genesis.id());
+    first.payload = Some(Payload::EpochInfo(info));
+    let mut second = block(2, first.id());
+    second.context.round = commonware_consensus::types::Round::new(
+        commonware_consensus::types::Epoch::new(1),
+        second.context.round.view(),
+    );
+    let mut third = block(3, second.id());
+    third.context.round = second.context.round;
     let proposal = Proposal::new(third.context.round, third.context.parent.0, third.digest());
     let vote = Finalize::sign(&signer, proposal).unwrap();
     let finalization: Finalization<ConsensusScheme, ConsensusDigest> =
         Finalization::from_finalizes(&signer, non_empty![&vote], &Sequential).unwrap();
     let certificate = FinalizationArtifacts {
-        epoch: 0,
+        epoch: 1,
         finalization: finalization.encode().to_vec(),
         certificate: finalization.certificate.encode().to_vec(),
     };
-    let epochs = Arc::new(LightBlockIndex::new());
+    let epochs = Arc::new(LightBlockIndex::new(std::num::NonZeroU64::new(2).unwrap()));
     epochs.insert_epoch_material(
-        0,
+        1,
         StoredEpochMaterial {
             bytes: material.encode().to_vec(),
         },
@@ -365,6 +372,18 @@ async fn indirect_proof_survives_reopen_and_uses_the_rpc_history_lookup() {
         1,
         "direct proofs must use the existing index"
     );
+    for epoch in 2..=hub_indexer::MAX_CACHED_EPOCHS as u64 + 1 {
+        epochs.insert_epoch_material(epoch, StoredEpochMaterial { bytes: vec![] });
+    }
+    assert!(epochs.get_epoch_material(1).is_none());
+    let uncached_epoch = api
+        .get_light_block(alloy_primitives::U64::from(3))
+        .await
+        .unwrap();
+    assert_eq!(uncached_epoch, direct);
+    verify_light_block(&uncached_epoch, &trusted).unwrap();
+    assert_eq!(calls.load(Ordering::Relaxed), 2);
+
     for number in 0..hub_indexer::MAX_CACHED_FINALIZATIONS {
         let mut digest = [0; 32];
         digest[..8].copy_from_slice(&(number as u64).to_be_bytes());
@@ -385,13 +404,33 @@ async fn indirect_proof_survives_reopen_and_uses_the_rpc_history_lookup() {
         .unwrap();
     assert_eq!(evicted, direct);
     verify_light_block(&evicted, &trusted).unwrap();
-    assert_eq!(calls.load(Ordering::Relaxed), 2);
+    assert_eq!(calls.load(Ordering::Relaxed), 3);
 
     assert!(
         api.get_light_block(alloy_primitives::U64::from(4))
             .await
             .is_err()
     );
+    let original = history.db.get(key(RECORD, 1)).unwrap().unwrap();
+    let mut record: Record = borsh::from_slice(&original).unwrap();
+    let mut boundary = first.clone();
+    let Some(Payload::EpochInfo(info)) = &mut boundary.payload else {
+        unreachable!()
+    };
+    info.epoch = commonware_consensus::types::Epoch::new(2);
+    record.block = boundary.encode().to_vec();
+    history
+        .db
+        .put(key(RECORD, 1), borsh::to_vec(&record).unwrap())
+        .unwrap();
+    assert!(
+        api.get_light_block(alloy_primitives::U64::from(3))
+            .await
+            .unwrap_err()
+            .message()
+            .contains("epoch boundary material mismatch")
+    );
+    history.db.put(key(RECORD, 1), original).unwrap();
     history.db.delete(key(RECORD, 2)).unwrap();
     assert!(
         api.get_light_block(alloy_primitives::U64::from(1))
@@ -406,7 +445,7 @@ fn history_proofs_reject_gaps_corruption_and_excessive_work() {
     let dir = tempfile::tempdir().unwrap();
     let genesis = block(0, BlockId(B256::ZERO));
     let history = FinalizedHistory::open(dir.path(), &genesis).unwrap();
-    let epochs = LightBlockIndex::new();
+    let epochs = LightBlockIndex::new(std::num::NonZeroU64::new(20).unwrap());
     epochs.insert_epoch_material(0, StoredEpochMaterial { bytes: vec![1] });
     let mut parent = genesis.id();
     for height in 1..=LIGHT_BLOCK_MAX_DESCENDANTS as u64 + 2 {
@@ -527,7 +566,7 @@ async fn pruned_roster_selection_survives_history_and_module_reopen() {
             &genesis,
             &last,
             &BlockIndex::new(),
-            &LightBlockIndex::new(),
+            &LightBlockIndex::new(std::num::NonZeroU64::new(4).unwrap()),
             &lookup,
         )
         .await

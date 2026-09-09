@@ -368,7 +368,7 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     let mempool = InMemoryMempool::default();
     let (history_failures, mut history_failure_rx) = ::tokio::sync::mpsc::channel(1);
     let block_index = Arc::new(BlockIndex::new());
-    let light_block_index = Arc::new(LightBlockIndex::new());
+    let light_block_index = Arc::new(LightBlockIndex::new(blocks_per_epoch));
     let initial_material = EpochMaterial::new(
         epoch_info.output.players().clone(),
         epoch_info.output.public().clone(),

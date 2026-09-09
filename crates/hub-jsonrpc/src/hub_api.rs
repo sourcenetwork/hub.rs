@@ -427,15 +427,9 @@ impl HubApiServer for HubApiImpl {
                     let digest = commonware_cryptography::Sha256::hash(&[block.hash.as_slice()]).0;
                     light_index.get_finalization(&digest)
                 });
-            if let Some(finalization) = finalization {
-                let material = light_index
-                    .get_epoch_material(finalization.epoch)
-                    .ok_or_else(|| {
-                        RpcError::Internal(format!(
-                            "epoch material not found for epoch {}",
-                            finalization.epoch
-                        ))
-                    })?;
+            if let Some(finalization) = finalization
+                && let Some(material) = light_index.get_epoch_material(finalization.epoch)
+            {
                 return LightBlock::from_encoded_block(
                     &finalization.block,
                     &finalization.bytes,

@@ -245,8 +245,10 @@ time out after ten seconds, and socket closure after one second.
 The direct-finalization cache retains at most 1,024 entries and 64 MiB of
 encoded payload buffer capacity. FIFO eviction removes only cached artifacts;
 RPC reads fall back to durable history; clients verify the resulting proof.
-Oversized artifacts bypass the cache. Epoch verifier material remains available
-for historical proofs; this cache limit does not bound total node history.
+Oversized artifacts bypass the cache. The epoch-key cache retains genesis and
+recent material within 128 entries and 8 MiB of payload buffer capacity. Older
+keys are recovered from validated epoch-boundary records using the deployment's
+fixed epoch length. These cache limits do not bound total node history.
 
 A `LightBlock` carries the canonical block, the BLS threshold finalization
 certificate, and the epoch's group public key; `hub_domain::verify_light_block`

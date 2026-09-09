@@ -163,9 +163,48 @@ impl FinalizedHistory {
                     epoch == block.context.round.epoch().get(),
                     "finalized history epoch mismatch"
                 );
-                let material = epochs
-                    .get_epoch_material(epoch)
-                    .context("epoch material not found for finalized history")?;
+                let material = match epochs.get_epoch_material(epoch) {
+                    Some(material) => material,
+                    None => {
+                        let boundary = epoch
+                            .checked_mul(epochs.epoch_length().get())
+                            .and_then(|height| height.checked_sub(1))
+                            .context("historical epoch boundary overflow")?;
+                        ensure!(boundary <= head, "epoch boundary is not retained");
+                        let record = snapshot
+                            .get_pinned(key(RECORD, boundary))?
+                            .context("missing historical epoch boundary")?;
+                        let mut encoded = record.as_ref();
+                        let size = u32::deserialize(&mut encoded)? as usize;
+                        ensure!(
+                            size <= hub_domain::MAX_BLOCK_BYTES,
+                            "oversized epoch boundary"
+                        );
+                        let boundary_block = Block::decode_cfg(
+                            encoded.get(..size).context("truncated epoch boundary")?,
+                            &crate::node::block_cfg(),
+                        )?;
+                        ensure!(
+                            boundary_block.height == boundary,
+                            "epoch boundary height mismatch"
+                        );
+                        let Some(Payload::EpochInfo(info)) = boundary_block.payload else {
+                            anyhow::bail!("epoch boundary is missing verifier material");
+                        };
+                        ensure!(
+                            info.epoch.get() == epoch,
+                            "epoch boundary material mismatch"
+                        );
+                        StoredEpochMaterial {
+                            bytes: EpochMaterial::new(
+                                info.output.players().clone(),
+                                info.output.public().clone(),
+                            )
+                            .encode()
+                            .to_vec(),
+                        }
+                    }
+                };
                 Some((certificate, material.bytes))
             } else {
                 None

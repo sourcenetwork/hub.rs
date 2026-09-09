@@ -12,7 +12,8 @@ pub use filter::LogFilter;
 
 mod light_block_store;
 pub use light_block_store::{
-    LightBlockIndex, MAX_CACHED_FINALIZATIONS, StoredEpochMaterial, StoredFinalization,
+    LightBlockIndex, MAX_CACHED_EPOCHS, MAX_CACHED_FINALIZATIONS, StoredEpochMaterial,
+    StoredFinalization,
 };
 
 mod store;

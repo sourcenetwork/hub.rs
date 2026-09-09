@@ -72,7 +72,7 @@ fn peer_import_rejects_bad_records_and_resumes_after_cancellation() {
                 .db
                 .put(key(RECORD, 2), borsh::to_vec(&altered).unwrap())
                 .unwrap();
-            let epochs = Arc::new(LightBlockIndex::new());
+            let epochs = Arc::new(LightBlockIndex::new(std::num::NonZeroU64::new(20).unwrap()));
             let (second_proof, _) = certify(&second, 77);
             epochs.insert_epoch_material(
                 0,
@@ -218,7 +218,13 @@ fn peer_import_rejects_bad_records_and_resumes_after_cancellation() {
                 Arc::new(|_| panic!("imported history must not use local certificate lookup"));
             let index = BlockIndex::new();
             histories[2]
-                .recover(&genesis, &second, &index, &LightBlockIndex::new(), &lookup)
+                .recover(
+                    &genesis,
+                    &second,
+                    &index,
+                    &LightBlockIndex::new(std::num::NonZeroU64::new(20).unwrap()),
+                    &lookup,
+                )
                 .await
                 .unwrap();
             assert_eq!(index.head_block_number(), 2);
@@ -227,7 +233,10 @@ fn peer_import_rejects_bad_records_and_resumes_after_cancellation() {
                 histories[0].db.get(key(RECORD, 2)).unwrap()
             );
             let proof = histories[2]
-                .light_block(1, &LightBlockIndex::new())
+                .light_block(
+                    1,
+                    &LightBlockIndex::new(std::num::NonZeroU64::new(20).unwrap()),
+                )
                 .unwrap();
             assert_eq!(proof.descendants.len(), 1);
             assert_eq!(

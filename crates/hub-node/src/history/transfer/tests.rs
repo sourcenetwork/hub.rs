@@ -157,7 +157,7 @@ async fn authenticated_reverse_import_resumes_and_requires_matching_state_recove
     );
     assert!(target.import_record(&third_bytes, limits, &light).is_err());
     let index = BlockIndex::new();
-    let epochs = LightBlockIndex::new();
+    let epochs = LightBlockIndex::new(std::num::NonZeroU64::new(20).unwrap());
     let lookup: FinalizationLookup = Arc::new(|_| Box::pin(async { None }));
     assert!(
         target
@@ -291,7 +291,7 @@ async fn imported_descendant_finality_survives_restart_without_advancing_executi
         target.import_record(&bytes, limits, &anchor).unwrap();
     }
     let lookup: FinalizationLookup = Arc::new(|_| panic!("import must retain finality evidence"));
-    let epochs = LightBlockIndex::new();
+    let epochs = LightBlockIndex::new(std::num::NonZeroU64::new(20).unwrap());
     {
         let target = FinalizedHistory::open(target_dir.path(), &genesis).unwrap();
         assert_eq!(target.import_next().unwrap(), Some((1, first.id())));
@@ -418,7 +418,13 @@ async fn resumed_snapshot_can_advance_an_unpublished_history_selection() {
         let lookup: FinalizationLookup =
             Arc::new(|_| panic!("imported certificates must be retained"));
         target
-            .recover(&genesis, &third, &index, &LightBlockIndex::new(), &lookup)
+            .recover(
+                &genesis,
+                &third,
+                &index,
+                &LightBlockIndex::new(std::num::NonZeroU64::new(20).unwrap()),
+                &lookup,
+            )
             .await
             .unwrap();
         assert_eq!(index.head_block_number(), 3);
