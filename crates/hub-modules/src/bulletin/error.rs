@@ -33,9 +33,6 @@ pub enum BulletinError {
     #[error("invalid post payload: payload must be non-empty")]
     InvalidPostPayload,
 
-    #[error("invalid post proof: proof must be non-empty")]
-    InvalidPostProof,
-
     #[error("policy not initialized")]
     PolicyNotInitialized,
 

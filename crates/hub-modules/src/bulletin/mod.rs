@@ -187,56 +187,8 @@ impl BulletinModule {
         Ok(ns)
     }
 
-    /// Create a post in a namespace (requires collaborator permission via ACP).
-    ///
-    /// # Flow
-    ///
-    /// 1. Read `"policy_id"`. Return `PolicyNotInitialized` if empty.
-    /// 2. Compute `namespace_id = "bulletin/" + namespace`.
-    /// 3. Read `"namespace/" + namespace_id` — return `NamespaceNotFound`
-    ///    if absent.
-    /// 4. Validate payload is non-empty → `InvalidPostPayload`.
-    ///    (Go: this check lives in `MsgCreatePost.ValidateBasic()`,
-    ///    not in the keeper handler. Relocated here since hub.rs has
-    ///    no `ValidateBasic` equivalent.)
-    /// 5. Validate proof is non-empty → `InvalidPostProof`.
-    ///    (Same relocation from `ValidateBasic`.)
-    /// 6. Call `acp.query_verify_access_request(policy_id, &AccessRequest { operations: vec![Operation { object: Object { resource: "namespace", id: namespace_id }, permission: "create_post" }], actor: Actor { id: creator.to_string() } })`.
-    ///    This is a **read-only** query (Go: `VerifyAccessRequest`), NOT `check_access`.
-    ///    Return `NotCollaborator` if the engine denies access.
-    /// 7. Compute `post_id = hex(sha256(namespace_id + payload))`.
-    /// 8. Read `"post/" + sanitize(namespace_id) + "/" + sanitize(post_id)` —
-    ///    return `PostAlreadyExists` if present.
-    /// 9. Build `Post`:
-    ///    ```text
-    ///    id          = post_id
-    ///    namespace   = namespace_id
-    ///    creator_did = creator.to_string()
-    ///    payload     = payload bytes
-    ///    proof       = proof bytes
-    ///    ```
-    /// 10. Write post to `"post/" + sanitize(namespace_id) + "/" + sanitize(post_id)`.
-    /// 11. Return `Ok(())`. The `artifact` parameter is for event emission
-    ///     only — it is NOT stored in the `Post` struct.
-    ///
-    /// # Reads
-    /// - `"policy_id"`
-    /// - `"namespace/" + namespace_id`
-    /// - `"post/" + sanitize(namespace_id) + "/" + sanitize(post_id)`
-    ///
-    /// # Writes
-    /// - `"post/" + sanitize(namespace_id) + "/" + sanitize(post_id)`
-    ///
-    /// # Ctx
-    /// `tx_ctx.signer` for DID resolution.
-    ///
-    /// # Errors
-    /// - `PolicyNotInitialized` — module policy not yet created
-    /// - `NamespaceNotFound` — namespace does not exist
-    /// - `InvalidPostPayload` — empty payload
-    /// - `InvalidPostProof` — empty proof
-    /// - `NotCollaborator` — ACP denies create_post permission
-    /// - `PostAlreadyExists` — duplicate content hash
+    /// Store a nonempty payload after checking the creator's ACP permission.
+    /// Optional proof bytes are preserved for application-level verification.
     #[allow(clippy::too_many_arguments)]
     pub fn create_post(
         &mut self,
@@ -262,10 +214,6 @@ impl BulletinModule {
 
         if payload.is_empty() {
             return Err(BulletinError::InvalidPostPayload);
-        }
-
-        if proof.is_empty() {
-            return Err(BulletinError::InvalidPostProof);
         }
 
         let access_request = AccessRequest {
@@ -966,16 +914,26 @@ mod tests {
     }
 
     #[test]
-    fn create_post_empty_proof_fails() {
-        let mut m = populated_module();
-        m.set_policy_id("some-policy-id");
-        let acp = crate::acp::AcpModule::new();
+    fn create_post_accepts_payload_without_optional_proof() {
+        let mut m = BulletinModule::default();
+        let mut acp = crate::acp::AcpModule::new();
         let tx_ctx = make_tx_ctx("0xABCD");
+        let block_ctx = make_block_ctx(100, 10);
         let did = make_did("did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK");
-        let err = m
-            .create_post(&acp, &tx_ctx, &did, "ns1", b"payload", &[], "artifact")
-            .unwrap_err();
-        assert!(matches!(err, BulletinError::InvalidPostProof));
+        m.register_namespace(&mut acp, &block_ctx, &tx_ctx, &did, "ns1")
+            .unwrap();
+        m.create_post(&acp, &tx_ctx, &did, "ns1", b"payload", &[], "artifact")
+            .unwrap();
+        let posts = m.query_namespace_posts("ns1").unwrap();
+        assert_eq!(posts.len(), 1);
+        assert_eq!(posts[0].payload, b"payload");
+        assert!(posts[0].proof.is_empty());
+        let stranger = make_did("did:key:z6MkmjY8GnV5iJjM2BXSVn4MoDbZZbLffKHsygxC4BLd5v8P");
+        assert!(matches!(
+            m.create_post(&acp, &tx_ctx, &stranger, "ns1", b"other", &[], "artifact"),
+            Err(BulletinError::NotCollaborator { .. })
+        ));
+        assert_eq!(m.query_namespace_posts("ns1").unwrap().len(), 1);
     }
 
     #[test]

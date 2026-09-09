@@ -314,3 +314,6 @@ The e2e test (`hub_e2e_canonical`) is the baseline gate. It exercises both EVM a
 
 - Present tense commit messages
 - Worktree workflow: `git worktree add ../hub.rs-foo -b feat/foo`
+
+Bulletin posts require a nonempty payload and ACP create-post permission. Proof
+bytes are optional application data and are retained unchanged when supplied.
