@@ -295,6 +295,63 @@ resources:
         .native_register_object(&second, policy_id, "second", "file")
         .await
         .unwrap();
+    let expected = hub_modules::acp::decision::DecisionRequest {
+        deployment_id: deployment,
+        policy_id: policy.clone(),
+        creator: second.did().into(),
+        creator_sequence: second.nonce(),
+        request: hub_modules::acp::types::AccessRequest {
+            actor: Actor(second.did().parse().unwrap()),
+            operations: vec![hub_modules::acp::types::Operation {
+                object: Object {
+                    resource: "file".into(),
+                    id: "second".into(),
+                },
+                permission: "read".into(),
+            }],
+        },
+    };
+    assert!(
+        client
+            .read_access_decision(&expected, added.block_number, &trusted)
+            .await
+            .unwrap()
+            .value
+            .is_none()
+    );
+    let evaluated = client
+        .native_check_access(
+            &second,
+            policy_id,
+            vec!["file".into()],
+            vec!["second".into()],
+            vec!["read".into()],
+            second.did(),
+        )
+        .await
+        .unwrap();
+    let (decision_height, decision_receipt) =
+        certified_receipt(&client, evaluated.transaction_hash, &trusted).await;
+    assert!(decision_receipt.success());
+    let decision = client
+        .read_access_decision(&expected, decision_height, &trusted)
+        .await
+        .unwrap()
+        .value
+        .unwrap();
+    assert_eq!(decision.issued_height, decision_height);
+    assert_eq!(decision.creator_acc_sequence, expected.creator_sequence);
+    assert_eq!(decision.actor, second.did());
+    let mut unrelated = expected.clone();
+    unrelated.request.operations[0].object.id = "report".into();
+    assert!(
+        client
+            .read_access_decision(&unrelated, decision_height, &trusted)
+            .await
+            .unwrap()
+            .value
+            .is_none()
+    );
     let first_relationships = client
         .read_relationship_page(policy_id, None, 1, added.block_number, &trusted)
         .await

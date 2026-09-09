@@ -28,3 +28,11 @@ The stored Borsh field layout is unchanged. Historical records remain readable, 
 legacy identifiers and zero issuance placeholders do not pass the new verification
 rules. Operators must coordinate the execution update and consumer dependency pins;
 new and old decision producers derive different identifiers.
+
+`HubClient::read_access_decision` combines the certified native record read with
+`DecisionRequest::verify_record`. Supply the exact expected deployment, policy,
+creator, submission sequence, actor and ordered operations, plus independent
+consensus trust and a minimum revision. The result includes the selected revision
+and timestamp, with either a valid decision or certified absence. Invalid or
+expired records return errors. Callers still enforce freshness appropriate to
+usage; this method does not prove that an earlier permission remains granted.

@@ -204,7 +204,7 @@ impl HubClient {
             .await
     }
 
-    /// Check access via native BLS transaction (persists a decision record on-chain).
+    /// Evaluate access through native submission and persist a successful decision.
     pub async fn native_check_access(
         &self,
         signer: &BlsSigner,

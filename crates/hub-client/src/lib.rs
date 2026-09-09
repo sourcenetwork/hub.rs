@@ -15,6 +15,8 @@ mod bls_signer;
 /// Certified bulletin records and bounded listings.
 pub mod bulletin;
 mod client;
+/// Certified access decisions bound to an expected request.
+pub mod decisions;
 mod document_acp;
 mod error;
 mod native_tx;
