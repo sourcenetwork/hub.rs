@@ -17,7 +17,10 @@ pub use light_block_store::{
 };
 
 mod store;
-pub use store::{BlockIndex, LogQuery};
+pub use store::{BlockIndex, IndexedRevision, MAX_CACHED_REVISIONS};
+
+mod log_query;
+pub use log_query::LogQuery;
 
 mod types;
 pub use types::{

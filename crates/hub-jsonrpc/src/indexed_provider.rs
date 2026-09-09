@@ -565,6 +565,16 @@ mod tests {
         tx.signer_did = Some("did:key:retained-owner".into());
         let mut receipt = create_test_receipt(tx_hash, hash, 1);
         receipt.signer_did = tx.signer_did.clone();
+        let evicted = Arc::new(BlockIndex::new());
+        evicted.insert_block(block.clone(), vec![tx.clone()], vec![receipt.clone()]);
+        for number in 2..=hub_indexer::MAX_CACHED_REVISIONS as u64 + 1 {
+            evicted.insert_block(
+                create_test_block(number, B256::from(U256::from(number))),
+                vec![],
+                vec![],
+            );
+        }
+        assert!(evicted.get_receipt(&tx_hash).is_none());
         index.insert_block(block, vec![tx], vec![receipt]);
         let state = NodeState::new(1, 0, 1);
         let calls = Arc::new(AtomicUsize::new(0));
@@ -584,14 +594,9 @@ mod tests {
         let hot =
             IndexedStateProvider::new(index.clone(), MockState, 1, 30_000_000, default_modules())
                 .with_archive(archive.clone());
-        let cold = IndexedStateProvider::new(
-            Arc::new(BlockIndex::new()),
-            MockState,
-            1,
-            30_000_000,
-            default_modules(),
-        )
-        .with_archive(archive.clone());
+        let cold =
+            IndexedStateProvider::new(evicted.clone(), MockState, 1, 30_000_000, default_modules())
+                .with_archive(archive.clone());
         let height = BlockNumberOrTag::Number(U64::from(1));
         let expected = serde_json::to_value((
             hot.block_by_number(height.clone()).await.unwrap(),
@@ -613,7 +618,7 @@ mod tests {
         let hot_api = HubApiImpl::new(Arc::new(state.clone()), None)
             .with_index_and_modules(index, default_modules());
         let cold_api = HubApiImpl::new(Arc::new(state.clone()), None)
-            .with_index_and_modules(Arc::new(BlockIndex::new()), default_modules())
+            .with_index_and_modules(evicted, default_modules())
             .with_archive(archive);
         let expected = hot_api
             .get_transaction_receipt(tx_hash)

@@ -1,228 +1,219 @@
-//! In-memory block index storage.
-
-use std::{
-    collections::HashMap,
-    sync::atomic::{AtomicU64, Ordering},
-};
-
-use alloy_primitives::B256;
-use parking_lot::RwLock;
-use tracing::debug;
+//! Bounded in-memory indexes over finalized revisions.
 
 use crate::{
-    IndexerError,
-    filter::LogFilter,
-    types::{IndexStats, IndexedBlock, IndexedLog, IndexedReceipt, IndexedTransaction},
+    IndexStats, IndexedBlock, IndexedLog, IndexedReceipt, IndexedTransaction, IndexerError,
+    LogFilter, LogQuery,
 };
+use alloy_primitives::B256;
+use parking_lot::RwLock;
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
+use tracing::debug;
 
-/// In-memory storage for indexed blocks, transactions, receipts, and logs.
-#[derive(Debug)]
+/// Maximum number of resident finalized revisions.
+pub const MAX_CACHED_REVISIONS: usize = 1_024;
+const MAX_CACHED_BYTES: usize = 64 << 20;
+
+/// An immutable revision retained by readers independently of cache eviction.
+#[derive(Debug, Clone)]
+pub struct IndexedRevision {
+    /// Revision header and submission order.
+    pub block: IndexedBlock,
+    /// Indexed submissions.
+    pub transactions: Vec<IndexedTransaction>,
+    /// Indexed execution results.
+    pub receipts: Vec<IndexedReceipt>,
+    logs: Vec<IndexedLog>,
+    bytes: usize,
+}
+
+#[derive(Debug, Default)]
+struct Cache {
+    revisions: HashMap<B256, Arc<IndexedRevision>>,
+    numbers: BTreeMap<u64, B256>,
+    transactions: HashMap<B256, (B256, usize)>,
+    receipts: HashMap<B256, (B256, usize)>,
+    bytes: usize,
+}
+
+impl Cache {
+    fn remove(&mut self, hash: B256) {
+        let Some(revision) = self.revisions.remove(&hash) else {
+            return;
+        };
+        self.numbers.remove(&revision.block.number);
+        self.bytes -= revision.bytes;
+        for tx in &revision.transactions {
+            if self
+                .transactions
+                .get(&tx.hash)
+                .is_some_and(|(owner, _)| *owner == hash)
+            {
+                self.transactions.remove(&tx.hash);
+            }
+        }
+        for receipt in &revision.receipts {
+            if self
+                .receipts
+                .get(&receipt.transaction_hash)
+                .is_some_and(|(owner, _)| *owner == hash)
+            {
+                self.receipts.remove(&receipt.transaction_hash);
+            }
+        }
+    }
+}
+
+/// Recent execution cache. The newest revision stays resident even when its
+/// payload alone exceeds the byte budget; older data is served from history.
+#[derive(Debug, Default)]
 pub struct BlockIndex {
-    blocks_by_hash: RwLock<HashMap<B256, IndexedBlock>>,
-    blocks_by_number: RwLock<HashMap<u64, B256>>,
-    transactions: RwLock<HashMap<B256, IndexedTransaction>>,
-    receipts: RwLock<HashMap<B256, IndexedReceipt>>,
-    logs_by_block: RwLock<HashMap<B256, Vec<IndexedLog>>>,
-    head_block: AtomicU64,
-}
-
-/// Whole-query scan and result accounting, shared by memory and archive reads.
-#[derive(Debug)]
-pub struct LogQuery {
-    /// First requested revision, inclusive.
-    pub from: u64,
-    /// Last requested revision, inclusive.
-    pub to: u64,
-    filter: LogFilter,
-    result: Vec<IndexedLog>,
-    inspected: usize,
-    remaining_bytes: usize,
-}
-
-impl LogQuery {
-    /// Validate selectors before any archive work begins.
-    pub fn new(filter: LogFilter, head: u64) -> Result<Self, IndexerError> {
-        let from_block = filter.from_block.unwrap_or(0);
-        let to_block = filter.to_block.unwrap_or(head);
-
-        if from_block > to_block {
-            return Err(IndexerError::InvalidBlockRange {
-                from: from_block,
-                to: to_block,
-            });
-        }
-        if to_block - from_block >= 10_000
-            || filter
-                .address
-                .as_ref()
-                .is_some_and(|values| values.len() > 64)
-            || filter
-                .topics
-                .iter()
-                .flatten()
-                .any(|values| values.len() > 64)
-        {
-            return Err(IndexerError::LogQueryLimit);
-        }
-        Ok(Self {
-            from: from_block,
-            to: to_block,
-            filter,
-            result: Vec::new(),
-            inspected: 0,
-            remaining_bytes: 1 << 20,
-        })
-    }
-
-    fn push(&mut self, log: &IndexedLog) -> Result<(), IndexerError> {
-        self.inspected += 1;
-        if self.inspected > 10_000 {
-            return Err(IndexerError::LogQueryLimit);
-        }
-        if !BlockIndex::matches_filter(log, &self.filter) {
-            return Ok(());
-        }
-        let bytes = size_of::<IndexedLog>()
-            .saturating_add(log.topics.len().saturating_mul(size_of::<B256>()))
-            .saturating_add(log.data.len());
-        self.remaining_bytes = self
-            .remaining_bytes
-            .checked_sub(bytes)
-            .ok_or(IndexerError::LogQueryLimit)?;
-        if self.result.len() == 1_000 {
-            return Err(IndexerError::LogQueryLimit);
-        }
-        self.result.push(log.clone());
-        Ok(())
-    }
-
-    /// Return results only after every requested revision was processed.
-    pub fn finish(self) -> Vec<IndexedLog> {
-        self.result
-    }
-}
-
-impl Default for BlockIndex {
-    fn default() -> Self {
-        Self::new()
-    }
+    cache: RwLock<Cache>,
 }
 
 impl BlockIndex {
-    /// Creates a new empty block index.
+    /// Creates an empty cache.
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            blocks_by_hash: RwLock::new(HashMap::new()),
-            blocks_by_number: RwLock::new(HashMap::new()),
-            transactions: RwLock::new(HashMap::new()),
-            receipts: RwLock::new(HashMap::new()),
-            logs_by_block: RwLock::new(HashMap::new()),
-            head_block: AtomicU64::new(0),
-        }
+        Self::default()
     }
 
-    /// Inserts a block with its transactions and receipts into the index.
+    /// Atomically publish a complete revision and evict the oldest entries.
     pub fn insert_block(
         &self,
         block: IndexedBlock,
         txs: Vec<IndexedTransaction>,
         receipts: Vec<IndexedReceipt>,
     ) {
-        let block_hash = block.hash;
-        let block_number = block.number;
-
-        debug!(number = block_number, hash = %block_hash, txs = txs.len(), "indexing block");
-
-        let mut all_logs = Vec::new();
+        let mut logs = Vec::new();
         for receipt in &receipts {
-            all_logs.extend(receipt.logs.clone());
+            logs.extend(receipt.logs.clone());
         }
-
+        let mut revision = IndexedRevision {
+            block,
+            transactions: txs,
+            receipts,
+            logs,
+            bytes: 0,
+        };
+        revision.bytes = revision.retained_bytes();
+        let hash = revision.block.hash;
+        let number = revision.block.number;
+        debug!(number, %hash, txs = revision.transactions.len(), "indexing revision");
+        let mut cache = self.cache.write();
+        if let Some(previous) = cache.numbers.get(&number).copied() {
+            cache.remove(previous);
+        }
+        cache.remove(hash);
+        for (position, tx) in revision.transactions.iter().enumerate() {
+            cache.transactions.insert(tx.hash, (hash, position));
+        }
+        for (position, receipt) in revision.receipts.iter().enumerate() {
+            cache
+                .receipts
+                .insert(receipt.transaction_hash, (hash, position));
+        }
+        cache.bytes += revision.bytes;
+        cache.numbers.insert(number, hash);
+        cache.revisions.insert(hash, Arc::new(revision));
+        while cache.revisions.len() > 1
+            && (cache.revisions.len() > MAX_CACHED_REVISIONS || cache.bytes > MAX_CACHED_BYTES)
         {
-            let mut blocks_by_hash = self.blocks_by_hash.write();
-            blocks_by_hash.insert(block_hash, block);
-        }
-
-        {
-            let mut blocks_by_number = self.blocks_by_number.write();
-            blocks_by_number.insert(block_number, block_hash);
-        }
-
-        {
-            let mut transactions = self.transactions.write();
-            for tx in txs {
-                transactions.insert(tx.hash, tx);
-            }
-        }
-
-        {
-            let mut receipts_map = self.receipts.write();
-            for receipt in receipts {
-                receipts_map.insert(receipt.transaction_hash, receipt);
-            }
-        }
-
-        {
-            let mut logs_by_block = self.logs_by_block.write();
-            logs_by_block.insert(block_hash, all_logs);
-        }
-
-        let mut current = self.head_block.load(Ordering::Acquire);
-        while block_number > current {
-            match self.head_block.compare_exchange_weak(
-                current,
-                block_number,
-                Ordering::Release,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(c) => current = c,
-            }
+            let oldest = *cache.numbers.first_key_value().expect("nonempty cache").1;
+            cache.remove(oldest);
         }
     }
 
-    /// Gets a block by its hash.
+    /// Gets a block by hash.
     pub fn get_block_by_hash(&self, hash: &B256) -> Option<IndexedBlock> {
-        self.blocks_by_hash.read().get(hash).cloned()
+        Some(self.cache.read().revisions.get(hash)?.block.clone())
     }
 
-    /// Gets a block by its number.
+    /// Gets a block by number.
     pub fn get_block_by_number(&self, number: u64) -> Option<IndexedBlock> {
-        let blocks_by_number = self.blocks_by_number.read();
-        let hash = blocks_by_number.get(&number)?;
-        self.blocks_by_hash.read().get(hash).cloned()
+        let cache = self.cache.read();
+        Some(
+            cache
+                .revisions
+                .get(cache.numbers.get(&number)?)?
+                .block
+                .clone(),
+        )
     }
 
-    /// Gets a transaction by its hash.
+    /// Capture the current header without a separate head-number lookup.
+    pub fn latest_block(&self) -> Option<IndexedBlock> {
+        let cache = self.cache.read();
+        Some(
+            cache
+                .revisions
+                .get(cache.numbers.last_key_value()?.1)?
+                .block
+                .clone(),
+        )
+    }
+
+    /// Gets a transaction by hash.
     pub fn get_transaction(&self, hash: &B256) -> Option<IndexedTransaction> {
-        self.transactions.read().get(hash).cloned()
+        let cache = self.cache.read();
+        let (revision, position) = cache.transactions.get(hash)?;
+        Some(cache.revisions.get(revision)?.transactions[*position].clone())
     }
 
-    /// Gets a receipt by its transaction hash.
+    /// Gets a receipt by submission hash.
     pub fn get_receipt(&self, hash: &B256) -> Option<IndexedReceipt> {
-        self.receipts.read().get(hash).cloned()
+        let cache = self.cache.read();
+        let (revision, position) = cache.receipts.get(hash)?;
+        Some(cache.revisions.get(revision)?.receipts[*position].clone())
     }
 
-    /// Find a receipt's revision without cloning its logs.
-    #[must_use]
-    pub fn receipt_block_hash(&self, hash: &B256) -> Option<B256> {
-        self.receipts
-            .read()
+    /// Capture a receipt and its submission metadata under the same cache lock.
+    pub fn receipt_with_transaction(
+        &self,
+        hash: &B256,
+    ) -> Option<(IndexedReceipt, Option<IndexedTransaction>)> {
+        let cache = self.cache.read();
+        let (owner, position) = cache.receipts.get(hash)?;
+        let revision = cache.revisions.get(owner)?;
+        let receipt = revision.receipts[*position].clone();
+        let tx = cache
+            .transactions
             .get(hash)
-            .map(|receipt| receipt.block_hash)
+            .and_then(|(tx_owner, position)| {
+                (*tx_owner == *owner).then(|| revision.transactions[*position].clone())
+            });
+        Some((receipt, tx))
     }
 
-    /// Returns the current head block number.
+    /// Retain complete execution data across asynchronous proof assembly.
+    pub fn receipt_revision(&self, hash: &B256) -> Option<Arc<IndexedRevision>> {
+        let cache = self.cache.read();
+        let (revision, _) = cache.receipts.get(hash)?;
+        cache.revisions.get(revision).cloned()
+    }
+
+    /// Find a receipt's revision without cloning logs.
+    pub fn receipt_block_hash(&self, hash: &B256) -> Option<B256> {
+        self.cache
+            .read()
+            .receipts
+            .get(hash)
+            .map(|(revision, _)| *revision)
+    }
+
+    /// Returns the current head number.
     #[must_use]
     pub fn head_block_number(&self) -> u64 {
-        self.head_block.load(Ordering::Acquire)
+        self.cache
+            .read()
+            .numbers
+            .last_key_value()
+            .map_or(0, |(number, _)| *number)
     }
 
-    /// Gets matching logs, rejecting queries beyond the scan or result budgets.
-    ///
-    /// Limits: 10,000 revisions, 10,000 inspected logs, 64 alternatives per selector,
-    /// 1,000 results and 1 MiB of retained log data including record/topic storage.
+    /// Query resident logs with aggregate scan/result limits.
     pub fn get_logs(&self, filter: &LogFilter) -> Result<Vec<IndexedLog>, IndexerError> {
         let mut query = LogQuery::new(filter.clone(), self.head_block_number())?;
         for height in query.from..=query.to {
@@ -231,80 +222,105 @@ impl BlockIndex {
         Ok(query.finish())
     }
 
-    /// Collect one resident revision under the query's shared budgets.
-    /// Returns false when the revision must be read from history.
+    /// Collect a resident revision, returning false when history is needed.
     pub fn collect_revision_logs(
         &self,
         height: u64,
         query: &mut LogQuery,
     ) -> Result<bool, IndexerError> {
-        let numbers = self.blocks_by_number.read();
-        let Some(hash) = numbers.get(&height) else {
-            return Ok(false);
+        let revision = {
+            let cache = self.cache.read();
+            let Some(hash) = cache.numbers.get(&height) else {
+                return Ok(false);
+            };
+            cache.revisions.get(hash).expect("indexed revision").clone()
         };
-        let logs = self.logs_by_block.read();
-        let Some(logs) = logs.get(hash) else {
-            return Ok(false);
-        };
-        for log in logs {
+        for log in &revision.logs {
             query.push(log)?;
         }
         Ok(true)
     }
 
-    /// Returns the total number of indexed blocks.
+    /// Number of resident revisions.
     #[must_use]
     pub fn block_count(&self) -> usize {
-        self.blocks_by_hash.read().len()
+        self.cache.read().revisions.len()
     }
-
-    /// Returns the total number of indexed transactions.
+    /// Number of resident submissions.
     #[must_use]
     pub fn transaction_count(&self) -> usize {
-        self.transactions.read().len()
+        self.cache.read().transactions.len()
     }
-
-    /// Returns the total number of indexed receipts.
+    /// Number of resident receipts.
     #[must_use]
     pub fn receipt_count(&self) -> usize {
-        self.receipts.read().len()
+        self.cache.read().receipts.len()
     }
-
-    /// Returns true if the index is empty (no blocks indexed).
+    /// Whether the cache has no revisions.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.blocks_by_hash.read().is_empty()
+        self.cache.read().revisions.is_empty()
     }
-
-    /// Returns statistics about the index.
+    /// Coherent resident counts and head number.
     #[must_use]
     pub fn stats(&self) -> IndexStats {
+        let cache = self.cache.read();
         IndexStats {
-            block_count: self.block_count(),
-            transaction_count: self.transaction_count(),
-            receipt_count: self.receipt_count(),
-            head_block_number: self.head_block_number(),
+            block_count: cache.revisions.len(),
+            transaction_count: cache.transactions.len(),
+            receipt_count: cache.receipts.len(),
+            head_block_number: cache.numbers.last_key_value().map_or(0, |(n, _)| *n),
         }
     }
+}
 
-    fn matches_filter(log: &IndexedLog, filter: &LogFilter) -> bool {
-        if let Some(addresses) = &filter.address
-            && !addresses.contains(&log.address)
-        {
-            return false;
+impl IndexedRevision {
+    fn retained_bytes(&self) -> usize {
+        fn logs_bytes(logs: &Vec<IndexedLog>) -> usize {
+            logs.capacity() * size_of::<IndexedLog>()
+                + logs
+                    .iter()
+                    .map(|log| log.topics.capacity() * size_of::<B256>() + log.data.len())
+                    .sum::<usize>()
         }
+        size_of::<Self>()
+            + self.block.transaction_hashes.capacity() * size_of::<B256>()
+            + self.transactions.capacity() * size_of::<IndexedTransaction>()
+            + self
+                .transactions
+                .iter()
+                .map(|tx| tx.input.len() + tx.signer_did.as_ref().map_or(0, String::capacity))
+                .sum::<usize>()
+            + self.receipts.capacity() * size_of::<IndexedReceipt>()
+            + self
+                .receipts
+                .iter()
+                .map(|receipt| {
+                    logs_bytes(&receipt.logs)
+                        + receipt.signer_did.as_ref().map_or(0, String::capacity)
+                })
+                .sum::<usize>()
+            + logs_bytes(&self.logs)
+    }
+}
 
-        for (i, topic_filter) in filter.topics.iter().enumerate() {
-            if let Some(allowed_topics) = topic_filter {
-                match log.topics.get(i) {
-                    Some(log_topic) if allowed_topics.contains(log_topic) => {}
-                    _ => return false,
-                }
+pub(crate) fn matches_filter(log: &IndexedLog, filter: &LogFilter) -> bool {
+    if let Some(addresses) = &filter.address
+        && !addresses.contains(&log.address)
+    {
+        return false;
+    }
+
+    for (i, topic_filter) in filter.topics.iter().enumerate() {
+        if let Some(allowed_topics) = topic_filter {
+            match log.topics.get(i) {
+                Some(log_topic) if allowed_topics.contains(log_topic) => {}
+                _ => return false,
             }
         }
-
-        true
     }
+
+    true
 }
 
 #[cfg(test)]
@@ -312,6 +328,10 @@ mod tests {
     use alloy_primitives::{Address, B256, Bytes, U256};
 
     use super::*;
+
+    fn set_logs(index: &BlockIndex, hash: B256, logs: Vec<IndexedLog>) {
+        Arc::make_mut(index.cache.write().revisions.get_mut(&hash).unwrap()).logs = logs;
+    }
 
     fn create_test_block(number: u64, hash: B256) -> IndexedBlock {
         IndexedBlock {
@@ -361,6 +381,89 @@ mod tests {
             status: true,
             signer_did: None,
         }
+    }
+
+    #[test]
+    fn eviction_preserves_readers_and_removes_all_lookup_entries() {
+        let index = BlockIndex::new();
+        let hash = B256::repeat_byte(1);
+        let tx_hash = B256::repeat_byte(2);
+        let mut block = create_test_block(1, hash);
+        block.transaction_hashes = vec![tx_hash];
+        let tx = IndexedTransaction {
+            hash: tx_hash,
+            block_hash: hash,
+            block_number: 1,
+            transaction_index: 0,
+            from: Address::ZERO,
+            to: None,
+            value: U256::ZERO,
+            gas_limit: 100,
+            gas_price: 0,
+            input: Bytes::new(),
+            nonce: 73,
+            signer_did: Some("owner".into()),
+        };
+        let receipt = IndexedReceipt {
+            transaction_hash: tx_hash,
+            block_hash: hash,
+            block_number: 1,
+            transaction_index: 0,
+            from: Address::ZERO,
+            to: None,
+            cumulative_gas_used: 0,
+            gas_used: 0,
+            contract_address: None,
+            logs: vec![],
+            status: true,
+            signer_did: Some("owner".into()),
+        };
+        index.insert_block(block, vec![tx], vec![receipt]);
+        let retained = index.receipt_revision(&tx_hash).unwrap();
+        for height in 2..=MAX_CACHED_REVISIONS as u64 + 1 {
+            index.insert_block(
+                create_test_block(height, B256::from(U256::from(height))),
+                vec![],
+                vec![],
+            );
+        }
+        assert_eq!(index.block_count(), MAX_CACHED_REVISIONS);
+        assert!(index.get_block_by_number(1).is_none());
+        assert!(index.get_block_by_hash(&hash).is_none());
+        assert!(index.get_transaction(&tx_hash).is_none());
+        assert!(index.get_receipt(&tx_hash).is_none());
+        assert!(index.receipt_revision(&tx_hash).is_none());
+        assert_eq!(retained.receipts[0].transaction_hash, tx_hash);
+        assert_eq!(retained.transactions[0].nonce, 73);
+        assert_eq!(
+            index.latest_block().unwrap().number,
+            MAX_CACHED_REVISIONS as u64 + 1
+        );
+        // Replacing an old revision must not change the selected head or leak entries.
+        index.insert_block(create_test_block(2, B256::repeat_byte(9)), vec![], vec![]);
+        assert_eq!(index.block_count(), MAX_CACHED_REVISIONS);
+        assert_eq!(index.head_block_number(), MAX_CACHED_REVISIONS as u64 + 1);
+        assert!(
+            index
+                .get_block_by_hash(&B256::from(U256::from(2)))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn byte_budget_keeps_only_an_oversized_head_until_it_is_replaced() {
+        let index = BlockIndex::new();
+        let mut large = create_test_block(2, B256::repeat_byte(2));
+        large.transaction_hashes = Vec::with_capacity(MAX_CACHED_BYTES / size_of::<B256>());
+        index.insert_block(create_test_block(1, B256::repeat_byte(1)), vec![], vec![]);
+        index.insert_block(large, vec![], vec![]);
+        assert_eq!(index.block_count(), 1);
+        assert!(index.cache.read().bytes > MAX_CACHED_BYTES);
+        assert_eq!(index.latest_block().unwrap().number, 2);
+        index.insert_block(create_test_block(3, B256::repeat_byte(3)), vec![], vec![]);
+        assert_eq!(index.block_count(), 1);
+        assert!(index.cache.read().bytes < MAX_CACHED_BYTES);
+        assert_eq!(index.latest_block().unwrap().number, 3);
     }
 
     #[test]
@@ -498,30 +601,21 @@ mod tests {
             transaction_hash: B256::ZERO,
             transaction_index: 0,
         };
-        index
-            .logs_by_block
-            .write()
-            .insert(hash, vec![log.clone(); 1_000]);
+        set_logs(&index, hash, vec![log.clone(); 1_000]);
         assert_eq!(index.get_logs(&LogFilter::new()).unwrap().len(), 1_000);
-        index
-            .logs_by_block
-            .write()
-            .insert(hash, vec![log.clone(); 1_001]);
+        set_logs(&index, hash, vec![log.clone(); 1_001]);
         assert!(matches!(
             index.get_logs(&LogFilter::new()),
             Err(IndexerError::LogQueryLimit)
         ));
-        index
-            .logs_by_block
-            .write()
-            .insert(hash, vec![log.clone(); 10_001]);
+        set_logs(&index, hash, vec![log.clone(); 10_001]);
         let unmatched = LogFilter::new().address(vec![Address::repeat_byte(1)]);
         assert!(matches!(
             index.get_logs(&unmatched),
             Err(IndexerError::LogQueryLimit)
         ));
         log.data = Bytes::from(vec![0; 1 << 20]);
-        index.logs_by_block.write().insert(hash, vec![log]);
+        set_logs(&index, hash, vec![log]);
         assert!(matches!(
             index.get_logs(&LogFilter::new()),
             Err(IndexerError::LogQueryLimit)

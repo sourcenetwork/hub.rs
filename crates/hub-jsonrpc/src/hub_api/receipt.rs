@@ -14,35 +14,37 @@ impl HubApiImpl {
             .index
             .as_ref()
             .ok_or_else(|| error("receipt index unavailable"))?;
-        let Some(block_hash) = index.receipt_block_hash(&hash) else {
+        let Some(_) = index.receipt_block_hash(&hash) else {
             return self.archived_receipt(hash).await;
         };
         let _permit = self.state.proof_permit()?;
-        let block = index
-            .get_block_by_hash(&block_hash)
-            .ok_or_else(|| error("receipt revision unavailable"))?;
+        let Some(execution) = index.receipt_revision(&hash) else {
+            return self.archived_receipt(hash).await;
+        };
+        let block = &execution.block;
         let Some(revision) = tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            self.try_captured_revision(&block),
+            self.try_captured_revision(block),
         )
         .await
         .map_err(|_| error("receipt finality deadline exceeded"))??
         else {
             return Ok(None);
         };
-        let mut receipts = block
-            .transaction_hashes
-            .iter()
-            .map(|id| {
-                let receipt = index
-                    .get_receipt(id)
-                    .ok_or_else(|| error("incomplete receipt index"))?;
-                if receipt.block_hash != block.hash || receipt.block_number != block.number {
-                    return Err(error("receipt belongs to another revision"));
-                }
-                Ok(receipt)
-            })
-            .collect::<RpcResult<Vec<_>>>()?;
+        if execution.receipts.len() != block.transaction_hashes.len()
+            || execution
+                .receipts
+                .iter()
+                .zip(&block.transaction_hashes)
+                .any(|(receipt, hash)| {
+                    receipt.transaction_hash != *hash
+                        || receipt.block_hash != block.hash
+                        || receipt.block_number != block.number
+                })
+        {
+            return Err(error("incomplete receipt index"));
+        }
+        let mut receipts = execution.receipts.clone();
         // Execution groups native submissions first while preserving order within each group.
         receipts.sort_by_key(|receipt| receipt.signer_did.is_none());
         let receipts = receipts

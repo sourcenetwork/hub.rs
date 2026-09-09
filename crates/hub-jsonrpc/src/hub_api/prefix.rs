@@ -38,7 +38,7 @@ impl HubApiImpl {
                         databases.3.read(),
                     );
                     let selected = index
-                        .get_block_by_number(index.head_block_number())
+                        .latest_block()
                         .ok_or_else(|| error("finalized revision unavailable"))?;
                     if selected.number < minimum_height {
                         return Err(error("finalized revision precedes required minimum"));

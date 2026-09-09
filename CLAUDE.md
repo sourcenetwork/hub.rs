@@ -225,6 +225,13 @@ share one consensus group.
 
 ### RPC surfaces
 
+The execution index keeps at most 1,024 recent revisions under a 64 MiB payload
+accounting budget. It always retains the newest revision, even if that revision
+alone exceeds the budget. Accounting includes vector capacity, strings and byte
+payload lengths; it is not a total RSS bound. Readers hold immutable revision
+snapshots across proof assembly, so eviction cannot remove their receipts.
+Index publication and removal update all lookup maps under one lock.
+
 Revision number/hash, transaction and receipt point queries use bounded archive
 reads when absent from memory. The native receipt endpoint uses the same
 conversion for recent and historical data, including signer identity and nonce.

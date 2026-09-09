@@ -292,21 +292,18 @@ impl HubApiServer for HubApiImpl {
             return Err(RpcError::Internal("block index not available".into()).into());
         };
 
-        let mut selected = index.clone();
-        let mut receipt = selected.get_receipt(&hash);
-        if receipt.is_none()
+        let mut execution = index.receipt_with_transaction(&hash);
+        if execution.is_none()
             && let Some(archive) = &self.archive
             && let Some(index) = archive
                 .read(hub_indexer::IndexQuery::Submission(hash))
                 .await?
         {
-            receipt = index.get_receipt(&hash);
-            selected = index;
+            execution = index.receipt_with_transaction(&hash);
         }
-        let Some(receipt) = receipt else {
+        let Some((receipt, tx)) = execution else {
             return Ok(None);
         };
-        let tx = selected.get_transaction(&hash);
         let native_nonce = tx.as_ref().and_then(|t| {
             if receipt.signer_did.is_some() {
                 Some(U64::from(t.nonce))
