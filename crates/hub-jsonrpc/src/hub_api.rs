@@ -8,12 +8,15 @@ use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use commonware_cryptography::Hasher as _;
 use hub_domain::{LightBlock, ModuleId, ModuleStateProof, RelationPrefixProof};
 
+#[cfg(test)]
+mod admission_tests;
 mod page;
 mod permission;
 mod prefix;
 mod receipt;
 mod record;
 mod relation;
+mod state_proof;
 use hub_executor::{ModuleTrees, SharedModuleState};
 use hub_indexer::{BlockIndex, LightBlockIndex};
 use hub_permission::{
@@ -326,6 +329,7 @@ impl HubApiServer for HubApiImpl {
         &self,
         hash: B256,
     ) -> RpcResult<Option<hub_domain::ReceiptResponse>> {
+        let _permit = self.state.proof_permit()?;
         self.receipt_proof(hash).await
     }
 
@@ -347,53 +351,8 @@ impl HubApiServer for HubApiImpl {
         key: String,
         height: U64,
     ) -> RpcResult<ModuleStateProof> {
-        let Some(ref trees) = self.module_trees else {
-            return Err(RpcError::Internal("module state trees not available".into()).into());
-        };
-
-        let module_id = ModuleId::from_str_name(&module).ok_or_else(|| {
-            RpcError::InvalidTransaction(format!(
-                "unknown module: {module} (expected acp, bulletin, hub, or native_nonce)"
-            ))
-        })?;
-
-        let key_bytes = hex::decode(key.strip_prefix("0x").unwrap_or(&key))
-            .map_err(|e| RpcError::InvalidTransaction(format!("invalid key hex: {e}")))?;
-
-        let height_val: u64 = height.to();
-
-        let mut all_roots = [[0u8; 32]; 4];
-        for (i, tree_mutex) in trees.iter().enumerate() {
-            let tree = tree_mutex
-                .lock()
-                .map_err(|_| RpcError::Internal("tree lock poisoned".into()))?;
-            let root = tree
-                .root_at_height(height_val)
-                .map_err(|e| RpcError::Internal(format!("root at height: {e}")))?;
-            all_roots[i] = root.0;
-        }
-
-        let target_tree = trees[module_id.index()]
-            .lock()
-            .map_err(|_| RpcError::Internal("tree lock poisoned".into()))?;
-
-        let (value, jmt_proof, root_hash) = target_tree
-            .prove_at_height(&key_bytes, height_val)
-            .map_err(|e| RpcError::Internal(format!("proof generation: {e}")))?;
-
-        all_roots[module_id.index()] = root_hash.0;
-
-        let proof = ModuleStateProof::new(
-            module_id,
-            height_val,
-            &key_bytes,
-            value.as_deref(),
-            &jmt_proof,
-            root_hash.0,
-            all_roots,
-        );
-
-        Ok(proof)
+        let _permit = self.state.proof_permit()?;
+        self.state_proof(module, key, height).await
     }
 
     async fn get_relation_proof(
@@ -401,6 +360,7 @@ impl HubApiServer for HubApiImpl {
         prefix: Bytes,
         height: U64,
     ) -> RpcResult<RelationPrefixProof> {
+        let _permit = self.state.proof_permit()?;
         self.relation_proof(&prefix, height.to()).await
     }
 
@@ -410,6 +370,7 @@ impl HubApiServer for HubApiImpl {
         request: AccessRequest,
         height: U64,
     ) -> RpcResult<PermissionProof> {
+        let _permit = self.state.proof_permit()?;
         self.permission_proof(&policy, &request, height.to()).await
     }
 
@@ -419,6 +380,7 @@ impl HubApiServer for HubApiImpl {
         request: AccessRequest,
         minimum_height: U64,
     ) -> RpcResult<PermissionResponse> {
+        let _permit = self.state.proof_permit()?;
         self.current_permission_proof(&policy, &request, minimum_height.to())
             .await
     }
@@ -429,6 +391,7 @@ impl HubApiServer for HubApiImpl {
         key: Bytes,
         minimum_height: U64,
     ) -> RpcResult<RecordResponse> {
+        let _permit = self.state.proof_permit()?;
         self.current_record_proof(module, &key, minimum_height.to())
             .await
     }
@@ -439,6 +402,7 @@ impl HubApiServer for HubApiImpl {
         prefix: Bytes,
         minimum_height: U64,
     ) -> RpcResult<PrefixResponse> {
+        let _permit = self.state.proof_permit()?;
         self.current_prefix_proof(module, &prefix, minimum_height.to())
             .await
     }
@@ -448,6 +412,7 @@ impl HubApiServer for HubApiImpl {
         request: PrefixPageRequest,
         minimum_height: U64,
     ) -> RpcResult<PrefixPageResponse> {
+        let _permit = self.state.proof_permit()?;
         self.current_prefix_page_proof(&request, minimum_height.to())
             .await
     }
@@ -484,10 +449,14 @@ impl HubApiServer for HubApiImpl {
         }
         if let Some(lookup) = &self.light_block_lookup {
             let lookup = lookup.clone();
-            return tokio::task::spawn_blocking(move || lookup(height))
-                .await
-                .map_err(|error| RpcError::Internal(format!("light block lookup failed: {error}")))?
-                .map_err(|error| RpcError::Internal(error).into());
+            let permit = self.state.light_lookup_permit()?;
+            return tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                lookup(height)
+            })
+            .await
+            .map_err(|error| RpcError::Internal(format!("light block lookup failed: {error}")))?
+            .map_err(|error| RpcError::Internal(error).into());
         }
         Err(RpcError::Internal(format!(
             "finalization certificate not found for height {height}"

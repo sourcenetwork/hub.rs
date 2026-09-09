@@ -196,6 +196,10 @@ captured-revision guarantees. `PrefixResponse::verify_object_owner` derives live
 ownership from complete owner evidence and treats archived records as unregistered. Standalone `hub_getStateProof` and
 `hub_getRelationProof` remain JMT-only and are unavailable on the native node.
 Historical native activity proofs are not retained.
+Proof RPCs share eight in-flight slots per node; blocking historical certificate
+lookups have a separate eight-slot limit. Excess work returns JSON-RPC -32002
+with `retryable: true` before starting. Cancelling a lookup does not release its
+slot until its blocking task finishes.
 See `docs/permission-proofs.md` for formats and limits.
 
 Legacy `VeraStateSet` and JMT proof support remain available to explicit library

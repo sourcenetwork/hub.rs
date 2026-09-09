@@ -31,6 +31,20 @@ struct NodeStateInner {
     is_leader: RwLock<bool>,
     backfilling: AtomicBool,
     snapshot_revision: AtomicU64,
+    proof_requests: Arc<tokio::sync::Semaphore>,
+    light_lookups: Arc<tokio::sync::Semaphore>,
+}
+
+fn acquire(
+    semaphore: &Arc<tokio::sync::Semaphore>,
+) -> jsonrpsee::core::RpcResult<tokio::sync::OwnedSemaphorePermit> {
+    semaphore.clone().try_acquire_owned().map_err(|_| {
+        jsonrpsee::types::ErrorObjectOwned::owned(
+            crate::error::codes::RESOURCE_UNAVAILABLE,
+            "proof service busy; retry later",
+            Some(serde_json::json!({"retryable": true})),
+        )
+    })
 }
 
 impl NodeState {
@@ -51,8 +65,22 @@ impl NodeState {
                 is_leader: RwLock::new(false),
                 backfilling: AtomicBool::new(false),
                 snapshot_revision: AtomicU64::new(0),
+                proof_requests: Arc::new(tokio::sync::Semaphore::new(8)),
+                light_lookups: Arc::new(tokio::sync::Semaphore::new(8)),
             }),
         }
+    }
+
+    pub(crate) fn proof_permit(
+        &self,
+    ) -> jsonrpsee::core::RpcResult<tokio::sync::OwnedSemaphorePermit> {
+        acquire(&self.inner.proof_requests)
+    }
+
+    pub(crate) fn light_lookup_permit(
+        &self,
+    ) -> jsonrpsee::core::RpcResult<tokio::sync::OwnedSemaphorePermit> {
+        acquire(&self.inner.light_lookups)
     }
 
     /// Update the current view.

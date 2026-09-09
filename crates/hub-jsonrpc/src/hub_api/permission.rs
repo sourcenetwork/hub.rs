@@ -132,7 +132,7 @@ impl HubApiImpl {
             let read = match read {
                 RecordRead::Key(key) => PermissionRead::Point {
                     proof: self
-                        .get_state_proof("acp".into(), hex::encode(key), U64::from(height))
+                        .state_proof("acp".into(), hex::encode(key), U64::from(height))
                         .await?,
                 },
                 RecordRead::Prefix(prefix) => PermissionRead::Prefix {
