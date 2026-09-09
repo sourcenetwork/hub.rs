@@ -317,3 +317,4 @@ The e2e test (`hub_e2e_canonical`) is the baseline gate. It exercises both EVM a
 
 Bulletin posts require a nonempty payload and ACP create-post permission. Proof
 bytes are optional application data and are retained unchanged when supplied.
+Successful post creation returns and emits the stored content-derived post ID.

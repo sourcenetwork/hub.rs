@@ -73,7 +73,7 @@ pub(super) fn dispatch(
             let call = IBulletin::createPostCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
 
-            match module.create_post(
+            let post_id = match module.create_post(
                 acp,
                 tx_ctx,
                 &creator,
@@ -82,15 +82,19 @@ pub(super) fn dispatch(
                 &call.proof,
                 &call.artifact,
             ) {
-                Ok(()) => {}
+                Ok(id) => id,
                 Err(e) => return Ok(err_dispatch(e)),
-            }
+            };
+            let post_id = match post_id.parse::<B256>() {
+                Ok(id) => id,
+                Err(e) => return Ok(err_dispatch(e)),
+            };
 
             let event = IBulletin::PostCreated {
                 namespace: alloy_primitives::keccak256(call.namespace.as_bytes()),
-                postId: B256::ZERO,
+                postId: post_id,
             };
-            let ret = IBulletin::createPostCall::abi_encode_returns(&B256::ZERO);
+            let ret = IBulletin::createPostCall::abi_encode_returns(&post_id);
             Ok(ok_dispatch(
                 WRITE_GAS,
                 ret,
@@ -302,5 +306,63 @@ pub(super) fn dispatch(
         _ => Err(PrecompileError::Other(
             format!("unknown Bulletin selector: 0x{}", hex::encode(selector)).into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_sol_types::SolEvent;
+
+    #[test]
+    fn created_post_id_matches_storage_return_and_event() {
+        let mut module = BulletinModule::new();
+        let mut acp = AcpModule::new();
+        let block = BlockExecCtx::default();
+        let tx = TxExecCtx {
+            sequence: 0,
+            tx_hash: vec![1; 32],
+            signer: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK".into(),
+        };
+        let register = IBulletin::registerNamespaceCall {
+            namespace: "posts".into(),
+        };
+        let result = dispatch(
+            &mut module,
+            &mut acp,
+            &block,
+            &tx,
+            &register.abi_encode(),
+            WRITE_GAS,
+        )
+        .unwrap();
+        assert!(!result.precompile.reverted);
+        let create = IBulletin::createPostCall {
+            namespace: "posts".into(),
+            payload: b"payload".to_vec().into(),
+            proof: Default::default(),
+            artifact: String::new(),
+        };
+        let result = dispatch(
+            &mut module,
+            &mut acp,
+            &block,
+            &tx,
+            &create.abi_encode(),
+            WRITE_GAS,
+        )
+        .unwrap();
+        assert!(!result.precompile.reverted);
+        let posts = module.query_namespace_posts("posts").unwrap();
+        assert_eq!(posts.len(), 1);
+        let expected: B256 = posts[0].id.parse().unwrap();
+        assert_ne!(expected, B256::ZERO);
+        assert_eq!(
+            IBulletin::createPostCall::abi_decode_returns(&result.precompile.bytes).unwrap(),
+            expected
+        );
+        assert_eq!(result.logs.len(), 1);
+        let event = IBulletin::PostCreated::decode_log(&result.logs[0]).unwrap();
+        assert_eq!(event.data.postId, expected);
     }
 }

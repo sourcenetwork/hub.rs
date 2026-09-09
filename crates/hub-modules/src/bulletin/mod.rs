@@ -199,7 +199,7 @@ impl BulletinModule {
         payload: &[u8],
         proof: &[u8],
         _artifact: &str,
-    ) -> Result<()> {
+    ) -> Result<String> {
         validate_namespace(namespace)?;
         let policy_id = self
             .get_policy_id()?
@@ -254,7 +254,7 @@ impl BulletinModule {
             proof: proof.to_vec(),
         };
         self.set_post(&post);
-        Ok(())
+        Ok(post.id)
     }
 
     /// Add a collaborator to a namespace.
