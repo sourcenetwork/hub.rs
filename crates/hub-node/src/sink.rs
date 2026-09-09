@@ -147,12 +147,14 @@ impl FinalizedSink for NodeSink {
     }
 
     async fn finalized(&self, block: &Block, receipts: Vec<ExecutionReceipt>) {
+        // Marshal serves lookups independently of the stateful callback.
+        let artifacts = (self.finalization_lookup)(block.height).await;
         let history = self.history.clone();
         let persisted = block.clone();
         let gas_limit = self.gas_limit;
-        let receipts = ::tokio::task::spawn_blocking(move || {
-            history.append(&persisted, &receipts, gas_limit)?;
-            Ok::<_, anyhow::Error>(receipts)
+        let (receipts, artifacts) = ::tokio::task::spawn_blocking(move || {
+            history.append_finalized(&persisted, &receipts, gas_limit, artifacts.as_ref())?;
+            Ok::<_, anyhow::Error>((receipts, artifacts))
         })
         .await
         .expect("finalized history writer stopped")
@@ -172,18 +174,7 @@ impl FinalizedSink for NodeSink {
             trace!(height = block.height, "no logs subscribers");
         }
         restore_epoch(&self.light_index, block);
-        // The stateful reporter enqueues work, so marshal can answer this
-        // lookup before we release the finalized block's acknowledgement.
-        let artifacts = (self.finalization_lookup)(block.height).await;
-        let history = self.history.clone();
         let height = block.height;
-        let artifacts = ::tokio::task::spawn_blocking(move || {
-            history.store_finalization(height, artifacts.as_ref())?;
-            Ok::<_, anyhow::Error>(artifacts)
-        })
-        .await
-        .expect("finalized certificate writer stopped")
-        .expect("persist finalized certificate before acknowledgement");
         if let Some(artifacts) = artifacts {
             let mut header = GossipHeader::from_block(block, self.chain_id, self.publisher_index);
             header.set_signature(&artifacts.certificate);

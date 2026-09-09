@@ -31,6 +31,50 @@ fn artifacts(height: u64) -> FinalizationArtifacts {
 }
 
 #[tokio::test]
+async fn finalized_batch_preserves_execution_and_certificate_on_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let genesis = block(0, BlockId(B256::ZERO));
+    let first = block(1, genesis.id());
+    let second = block(2, first.id());
+    let skipped = block(4, second.id());
+    {
+        let history = FinalizedHistory::open(dir.path(), &genesis).unwrap();
+        history.append(&first, &[], 100).unwrap();
+        assert!(
+            history
+                .append_finalized(&first, &[], 101, Some(&artifacts(1)))
+                .is_err()
+        );
+        assert!(history.db.get(key(CERTIFICATE, 1)).unwrap().is_none());
+        history
+            .append_finalized(&first, &[], 100, Some(&artifacts(1)))
+            .unwrap();
+        history.append_finalized(&second, &[], 100, None).unwrap();
+        assert!(
+            history
+                .append_finalized(&skipped, &[], 100, Some(&artifacts(4)))
+                .is_err()
+        );
+        assert!(history.db.get(key(RECORD, 4)).unwrap().is_none());
+        assert!(history.db.get(key(CERTIFICATE, 4)).unwrap().is_none());
+    }
+    let history = FinalizedHistory::open(dir.path(), &genesis).unwrap();
+    let index = BlockIndex::new();
+    let light = LightBlockIndex::new(std::num::NonZeroU64::new(20).unwrap());
+    let lookup: FinalizationLookup = Arc::new(|_| panic!("persisted lookup must not be repeated"));
+    history
+        .recover(&genesis, &second, &index, &light, &lookup)
+        .await
+        .unwrap();
+    assert_eq!(index.head_block_number(), 2);
+    assert_eq!(
+        light.get_finalization(&first.digest().0).unwrap().bytes,
+        artifacts(1).finalization
+    );
+    assert!(light.get_finalization(&second.digest().0).is_none());
+}
+
+#[tokio::test]
 async fn restart_restores_history_and_replaces_the_unprocessed_suffix() {
     let dir = tempfile::tempdir().unwrap();
     let genesis = block(0, BlockId(B256::ZERO));

@@ -164,6 +164,32 @@ impl FinalizedHistory {
         receipts: &[ExecutionReceipt],
         gas_limit: u64,
     ) -> Result<()> {
+        self.append_batch(block, receipts, gas_limit, WriteBatch::default())
+    }
+
+    /// Persist execution and marshal's certificate lookup in one durable batch.
+    pub fn append_finalized(
+        &self,
+        block: &Block,
+        receipts: &[ExecutionReceipt],
+        gas_limit: u64,
+        artifacts: Option<&FinalizationArtifacts>,
+    ) -> Result<()> {
+        self.append_batch(
+            block,
+            receipts,
+            gas_limit,
+            Self::finalization_batch(block.height, artifacts)?,
+        )
+    }
+
+    fn append_batch(
+        &self,
+        block: &Block,
+        receipts: &[ExecutionReceipt],
+        gas_limit: u64,
+        mut batch: WriteBatch,
+    ) -> Result<()> {
         ensure!(
             receipts.len() == block.txs.len(),
             "incomplete execution record"
@@ -200,6 +226,9 @@ impl FinalizedHistory {
                 self.db.get(key(RECORD, block.height))?.as_deref() == Some(bytes.as_slice()),
                 "conflicting finalized history record"
             );
+            if !batch.is_empty() {
+                write(&self.db, batch)?;
+            }
             return Ok(());
         }
         ensure!(
@@ -212,7 +241,6 @@ impl FinalizedHistory {
                 "execution conflicts with finalized proof block"
             );
         }
-        let mut batch = WriteBatch::default();
         query::index_execution(&mut batch, block, &record.receipts);
         batch.put(key(RECORD, block.height), bytes);
         batch.delete(key(PROOF_BLOCK, block.height));
@@ -231,12 +259,19 @@ impl FinalizedHistory {
         height: u64,
         artifacts: Option<&FinalizationArtifacts>,
     ) -> Result<()> {
+        write(&self.db, Self::finalization_batch(height, artifacts)?)
+    }
+
+    fn finalization_batch(
+        height: u64,
+        artifacts: Option<&FinalizationArtifacts>,
+    ) -> Result<WriteBatch> {
         let mut batch = WriteBatch::default();
         batch.put(
             key(CERTIFICATE, height),
             borsh::to_vec(&artifacts.map(|a| (a.epoch, &a.finalization)))?,
         );
-        write(&self.db, batch)
+        Ok(batch)
     }
 
     /// Restore indexes through the same anchor as application state. Later

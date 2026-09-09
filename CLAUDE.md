@@ -61,8 +61,8 @@ stops:
   validators. There is no leader prediction.
 - **RPC:** the `hub-jsonrpc` server over the live committed state (below).
 
-The finalization callback awaits durable execution history and certificate
-history before returning to Commonware's acknowledgement path. Disk writes run
+The finalization callback persists execution and certificate history together
+in one durable batch before returning to Commonware's acknowledgement path. Disk writes run
 on the blocking pool; a failed write stops the actor before acknowledgement.
 Marshal serves the certificate lookup independently of the stateful callback.
 Proposal transaction exclusion stops at the published finalized revision, including
