@@ -261,11 +261,12 @@ impl BlockIndex {
     pub fn is_empty(&self) -> bool {
         self.cache.read().revisions.is_empty()
     }
-    /// Coherent resident counts and head number.
+    /// Coherent resident counts, accounted bytes and head number.
     #[must_use]
     pub fn stats(&self) -> IndexStats {
         let cache = self.cache.read();
         IndexStats {
+            cached_bytes: cache.bytes,
             block_count: cache.revisions.len(),
             transaction_count: cache.transactions.len(),
             receipt_count: cache.receipts.len(),
@@ -675,6 +676,7 @@ mod tests {
         let index = BlockIndex::new();
 
         let stats = index.stats();
+        assert_eq!(stats.cached_bytes, 0);
         assert_eq!(stats.block_count, 0);
         assert_eq!(stats.transaction_count, 0);
         assert_eq!(stats.receipt_count, 0);
@@ -688,6 +690,7 @@ mod tests {
         index.insert_block(create_test_block(5, block_hash), vec![tx], vec![receipt]);
 
         let stats = index.stats();
+        assert!(stats.cached_bytes > 0);
         assert_eq!(stats.block_count, 1);
         assert_eq!(stats.transaction_count, 1);
         assert_eq!(stats.receipt_count, 1);

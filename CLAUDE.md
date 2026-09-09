@@ -391,7 +391,8 @@ account performs the revocation; the record retains that account in invalidated_
 
 Resource diagnostics are opt-in with `RUST_LOG=warn,hub_diagnostics=debug`.
 Every 30 seconds the node logs existing Commonware metrics, resident execution
-index counts, and RocksDB history memtable/table-reader/block-cache byte counters.
+index counts and accounted revision bytes, finalization/epoch cache entries and
+buffer capacity, and RocksDB history memtable/table-reader/block-cache byte counters.
 Collection runs off the async executor; disabled diagnostics start no sampler.
 Counters are non-atomic and exclude other allocations. Unsupported properties
 remain absent, and collection failures are logged rather than reported as zero.

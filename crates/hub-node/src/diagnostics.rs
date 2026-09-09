@@ -2,10 +2,15 @@
 
 use crate::FinalizedHistory;
 use commonware_runtime::{Metrics as _, tokio::Context};
-use hub_indexer::BlockIndex;
+use hub_indexer::{BlockIndex, LightBlockIndex};
 use std::{sync::Arc, time::Duration};
 
-pub(crate) async fn run(context: Context, history: Arc<FinalizedHistory>, index: Arc<BlockIndex>) {
+pub(crate) async fn run(
+    context: Context,
+    history: Arc<FinalizedHistory>,
+    index: Arc<BlockIndex>,
+    proofs: Arc<LightBlockIndex>,
+) {
     let context = Arc::new(context);
     let mut interval = tokio::time::interval(Duration::from_secs(30));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -14,14 +19,20 @@ pub(crate) async fn run(context: Context, history: Arc<FinalizedHistory>, index:
         let context = context.clone();
         let history = history.clone();
         let index = index.clone();
+        let proofs = proofs.clone();
         let result = tokio::task::spawn_blocking(move || {
-            Ok::<_, anyhow::Error>((context.encode(), history.memory_usage()?, index.stats()))
+            Ok::<_, anyhow::Error>((
+                context.encode(),
+                history.memory_usage()?,
+                index.stats(),
+                proofs.stats(),
+            ))
         })
         .await;
         match result {
-            Ok(Ok((metrics, memory, index))) => {
+            Ok(Ok((metrics, memory, index, proofs))) => {
                 tracing::debug!(target: "hub_diagnostics", runtime_metrics = %metrics,
-                    history_memory_bytes = ?memory, index = ?index, "node resource snapshot");
+                    history_memory_bytes = ?memory, index = ?index, proofs = ?proofs, "node resource snapshot");
             }
             Ok(Err(error)) => {
                 tracing::warn!(target: "hub_diagnostics", %error, "resource snapshot failed")

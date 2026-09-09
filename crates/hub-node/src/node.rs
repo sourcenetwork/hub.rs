@@ -685,10 +685,11 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     if tracing::enabled!(target: "hub_diagnostics", tracing::Level::DEBUG) {
         let history = history.clone();
         let index = block_index.clone();
+        let proofs = light_block_index.clone();
         state_resolver_handles.push(
             context
                 .child("diagnostics")
-                .spawn(move |context| crate::diagnostics::run(context, history, index)),
+                .spawn(move |context| crate::diagnostics::run(context, history, index, proofs)),
         );
     }
     let rpc_handle = RpcServer::with_state_provider(node_state, rpc_addr, chain_id, state_provider)

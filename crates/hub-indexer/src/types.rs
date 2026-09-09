@@ -122,6 +122,8 @@ pub struct IndexedLog {
 /// Statistics about the block index.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct IndexStats {
+    /// Accounted resident revision bytes, excluding map overhead and evicted reader snapshots.
+    pub cached_bytes: usize,
     /// Total number of indexed blocks.
     pub block_count: usize,
     /// Total number of indexed transactions.

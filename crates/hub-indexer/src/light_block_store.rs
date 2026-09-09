@@ -52,6 +52,19 @@ pub struct StoredEpochMaterial {
     pub bytes: Vec<u8>,
 }
 
+/// Resident proof-cache entries and encoded buffer capacity, excluding map overhead.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LightBlockStats {
+    /// Number of cached finalizations.
+    pub finalizations: usize,
+    /// Capacity of cached certificate and block buffers.
+    pub finalization_bytes: usize,
+    /// Number of cached epoch verifier records.
+    pub epochs: usize,
+    /// Capacity of cached epoch verifier buffers.
+    pub epoch_bytes: usize,
+}
+
 /// In-memory index of finalizations and their epoch verifier material.
 ///
 /// Finalizations are keyed by consensus digest (SHA-256 of the EVM block ID),
@@ -76,6 +89,19 @@ impl LightBlockIndex {
             finalizations: RwLock::new(FinalizationCache::default()),
             epoch_material: RwLock::new(EpochCache::default()),
             epoch_length,
+        }
+    }
+
+    /// Read each cache's counters without scanning entries or cloning proof payloads.
+    #[must_use]
+    pub fn stats(&self) -> LightBlockStats {
+        let finalizations = self.finalizations.read();
+        let epochs = self.epoch_material.read();
+        LightBlockStats {
+            finalizations: finalizations.entries.len(),
+            finalization_bytes: finalizations.payload_bytes,
+            epochs: epochs.entries.len(),
+            epoch_bytes: epochs.payload_bytes,
         }
     }
 
@@ -204,6 +230,14 @@ mod tests {
         assert!(index.get_finalization(&[4; 32]).is_none());
         assert!(index.get_finalization(&[3; 32]).is_some());
         assert_eq!(index.finalizations.read().payload_bytes, 1);
+        assert_eq!(
+            index.stats(),
+            LightBlockStats {
+                finalizations: 1,
+                finalization_bytes: 1,
+                ..Default::default()
+            }
+        );
         for number in 0..MAX_CACHED_FINALIZATIONS {
             let mut digest = [0; 32];
             digest[..8].copy_from_slice(&(number as u64).to_be_bytes());
@@ -261,6 +295,14 @@ mod tests {
         assert_eq!(index.epoch_material.read().entries.len(), 2);
         index.insert_epoch_material(999, material(8));
         assert_eq!(index.epoch_material.read().payload_bytes, 24);
+        assert_eq!(
+            index.stats(),
+            LightBlockStats {
+                epochs: 2,
+                epoch_bytes: 24,
+                ..Default::default()
+            }
+        );
     }
 
     #[test]
