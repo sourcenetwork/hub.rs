@@ -70,9 +70,11 @@ impl ParticipantsProvider for RegistryParticipants {
             "invalid consensus roster size"
         );
         let keys: Vec<_> = bytes
-            .chunks_exact(32)
-            .map(|mut bytes| {
-                ed25519::PublicKey::read(&mut bytes).expect("invalid consensus identity")
+            .as_chunks::<32>()
+            .0
+            .iter()
+            .map(|bytes| {
+                ed25519::PublicKey::read(&mut bytes.as_slice()).expect("invalid consensus identity")
             })
             .collect();
         assert!(
