@@ -103,6 +103,20 @@ pub struct FinalizedHistory {
 }
 
 impl FinalizedHistory {
+    /// Non-atomic RocksDB memory counters; unsupported properties remain absent.
+    pub(crate) fn memory_usage(
+        &self,
+    ) -> Result<std::collections::BTreeMap<&'static str, Option<u64>>> {
+        [
+            ("memtables", "rocksdb.size-all-mem-tables"),
+            ("table_readers", "rocksdb.estimate-table-readers-mem"),
+            ("block_cache", "rocksdb.block-cache-usage"),
+        ]
+        .into_iter()
+        .map(|(label, property)| Ok((label, self.db.property_int_value(property)?)))
+        .collect()
+    }
+
     /// Open the history for a specific genesis identity.
     pub fn open(path: impl AsRef<Path>, genesis: &Block) -> Result<Self> {
         let db = DB::open_default(path)?;

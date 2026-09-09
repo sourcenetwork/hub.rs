@@ -19,6 +19,8 @@ pub use config::{NodeSettings, PeerSet, PeerSetError, load_peers};
 mod consts;
 pub use consts::*;
 
+mod diagnostics;
+
 mod finalize;
 pub use finalize::{index_finalized_block, subscription_data};
 

@@ -682,6 +682,15 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         modules.clone(),
     )
     .with_archive(archive.clone());
+    if tracing::enabled!(target: "hub_diagnostics", tracing::Level::DEBUG) {
+        let history = history.clone();
+        let index = block_index.clone();
+        state_resolver_handles.push(
+            context
+                .child("diagnostics")
+                .spawn(move |context| crate::diagnostics::run(context, history, index)),
+        );
+    }
     let rpc_handle = RpcServer::with_state_provider(node_state, rpc_addr, chain_id, state_provider)
         .with_max_connections(config.rpc.max_connections.get())
         .with_tx_submit(tx_submit)

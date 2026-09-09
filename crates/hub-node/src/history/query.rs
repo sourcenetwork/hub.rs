@@ -178,6 +178,11 @@ mod tests {
             history.append(&second, &[], 100).unwrap();
         }
         let history = FinalizedHistory::open(dir.path(), &genesis).unwrap();
+        let memory = history.memory_usage().unwrap();
+        assert!(memory["memtables"].is_some_and(|bytes| bytes > 0));
+        assert!(memory["table_readers"].is_some());
+        assert!(memory["block_cache"].is_some());
+
         assert_eq!(
             history
                 .execution(IndexQuery::Revision(1))

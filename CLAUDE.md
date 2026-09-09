@@ -375,3 +375,10 @@ The creation event also retains the submitted artifact label.
 
 Token invalidation events identify the token issuer even when an authorized
 account performs the revocation; the record retains that account in invalidated_by.
+
+Resource diagnostics are opt-in with `RUST_LOG=warn,hub_diagnostics=debug`.
+Every 30 seconds the node logs existing Commonware metrics, resident execution
+index counts, and RocksDB history memtable/table-reader/block-cache byte counters.
+Collection runs off the async executor; disabled diagnostics start no sampler.
+Counters are non-atomic and exclude other allocations. Unsupported properties
+remain absent, and collection failures are logged rather than reported as zero.
