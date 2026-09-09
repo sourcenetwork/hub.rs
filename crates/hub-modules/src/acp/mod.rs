@@ -425,9 +425,12 @@ impl AcpModule {
         policy_id: &str,
         access_request: &AccessRequest,
     ) -> Result<bool> {
-        let Some(policy) = self.zanzibar_policies.get(policy_id) else {
-            return Ok(false);
-        };
+        let policy = self
+            .zanzibar_policies
+            .get(policy_id)
+            .ok_or_else(|| AcpError::PolicyNotFound {
+                id: policy_id.to_string(),
+            })?;
 
         let actor_did = &access_request.actor.0;
         let engine = self.permission_engine(policy);

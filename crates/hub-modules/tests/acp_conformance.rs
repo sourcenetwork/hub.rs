@@ -375,3 +375,32 @@ fn actor_roles_require_management_authority_without_object_registration() {
         .unwrap();
     assert!(!can_read(&restore(&module), &policy));
 }
+
+#[test]
+fn access_query_distinguishes_missing_policy_from_denial() {
+    let (module, policy_id) = setup();
+    let mut request = AccessRequest {
+        actor: Actor(reader()),
+        operations: vec![Operation {
+            object: object(),
+            permission: "read".into(),
+        }],
+    };
+    let before = module.store().serialize();
+    assert!(!module
+        .query_verify_access_request(&policy_id, &request)
+        .unwrap());
+    for empty in [false, true] {
+        if empty {
+            request.operations.clear();
+            assert!(module
+                .query_verify_access_request(&policy_id, &request)
+                .unwrap());
+        }
+        assert!(matches!(
+            module.query_verify_access_request("missing-policy", &request),
+            Err(AcpError::PolicyNotFound { id }) if id == "missing-policy"
+        ));
+    }
+    assert_eq!(module.store().serialize(), before);
+}
