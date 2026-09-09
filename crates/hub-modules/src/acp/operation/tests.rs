@@ -294,6 +294,50 @@ fn request_binding_and_expiry_precede_effects_and_survive_pruning() {
 }
 
 #[test]
+fn an_operation_identity_cannot_be_reused_for_different_arguments() {
+    let mut acp = AcpModule::new();
+    let mut hub = HubModule::new();
+    let worker = submission(7);
+    let operation_id = id(1, 200);
+    let original = token(
+        &worker,
+        operation_id,
+        &DelegatedOperation::CreatePolicy(POLICY, &FORMAT),
+    );
+    let created = acp
+        .bearer_create_policy(&mut hub, &context(100), &worker, &original, POLICY, FORMAT)
+        .unwrap();
+    let retained = acp.operation(&issuer(), operation_id).unwrap().unwrap();
+    let conflicting = "name: other\nresources:\n  - name: file\n";
+    let reused = token(
+        &worker,
+        operation_id,
+        &DelegatedOperation::CreatePolicy(conflicting, &FORMAT),
+    );
+    let before = (acp.store().serialize(), hub.store().serialize());
+    let error = acp
+        .bearer_create_policy(
+            &mut hub,
+            &context(101),
+            &worker,
+            &reused,
+            conflicting,
+            FORMAT,
+        )
+        .unwrap_err();
+    assert!(
+        matches!(&error, AcpError::InvalidBearerToken { reason } if reason.contains("different arguments")),
+        "{error}"
+    );
+    assert_eq!(before, (acp.store().serialize(), hub.store().serialize()));
+    assert_eq!(
+        serde_json::to_value(acp.operation(&issuer(), operation_id).unwrap().unwrap()).unwrap(),
+        serde_json::to_value(&retained).unwrap()
+    );
+    assert_eq!(acp.query_policy_ids().unwrap(), vec![created.policy.id]);
+}
+
+#[test]
 fn repeated_edit_returns_its_original_count_without_removing_new_relationships() {
     let mut acp = AcpModule::new();
     let mut hub = HubModule::new();
