@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use alloy_primitives::FixedBytes;
 use alloy_sol_types::SolCall;
+use futures::{StreamExt, stream};
 use hub_client::{ACP_ADDRESS, BlsSigner, HubClient};
 use hub_domain::NativeTx;
 use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, KeySet, TestCluster};
@@ -213,10 +214,14 @@ async fn main() {
     let replica_clients: Vec<_> = (0..cluster.node_count())
         .map(|i| HubClient::new(cluster.node(i).rpc_url()))
         .collect();
+    let verification_concurrency = (rpc_connections.get() as usize).min(8);
+    let mut checks = stream::iter(observations.iter())
+        .map(|observation| driver::verify(&replica_clients, policy_id, observation))
+        .buffer_unordered(verification_concurrency);
     let mut reconciled = 0;
     let mut unresolved = 0;
-    for observation in &observations {
-        match driver::verify(&replica_clients, policy_id, observation).await {
+    while let Some(resolution) = checks.next().await {
+        match resolution {
             driver::Resolution::Verified => reconciled += 1,
             driver::Resolution::Unresolved => unresolved += 1,
         }
@@ -225,6 +230,7 @@ async fn main() {
         "{}",
         serde_json::json!({
             "kind": "verification", "replicas": 4, "verified": reconciled, "unresolved": unresolved,
+            "concurrency": verification_concurrency,
         })
     );
     cluster
@@ -320,9 +326,10 @@ async fn main() {
     let recovery_ms = restart.elapsed().as_secs_f64() * 1000.0;
     let mut receipt_mismatches = 0;
     let mut state_mismatches = 0;
-    for observation in &observations {
-        let (receipt_matches, state_matches) =
-            driver::check_recovered(&client, &recovered, policy_id, observation).await;
+    let mut checks = stream::iter(observations.iter())
+        .map(|observation| driver::check_recovered(&client, &recovered, policy_id, observation))
+        .buffer_unordered(verification_concurrency);
+    while let Some((receipt_matches, state_matches)) = checks.next().await {
         receipt_mismatches += usize::from(!receipt_matches);
         state_mismatches += usize::from(!state_matches);
     }

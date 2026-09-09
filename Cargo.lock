@@ -3983,6 +3983,7 @@ dependencies = [
  "blst",
  "commonware-codec",
  "commonware-cryptography",
+ "futures",
  "hex",
  "hub-client",
  "hub-crypto",

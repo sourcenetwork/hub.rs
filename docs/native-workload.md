@@ -10,7 +10,10 @@ HUB_E2E_KEEP=1 HUBD_BINARY=target/release/hubd target/release/examples/operation
 
 `HUB_E2E_KEEP=1` preserves the printed run directories, including node logs and
 state, for diagnosis. Replica reconciliation reuses one HTTP client per node
-to avoid exhausting local connection ports during large runs.
+to avoid exhausting local connection ports during large runs. Replica and restart
+checks process at most eight operations concurrently, reduced to the configured
+per-node connection limit when lower. Every operation is still checked; these
+checks run outside the measured load interval.
 
 Arguments are operation count (1–100,000), offered arrivals per second (1–10,000),
 maximum outstanding workflows (1–1,024) and permission reads per write (0 or 1).
