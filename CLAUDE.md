@@ -319,3 +319,6 @@ Bulletin posts require a nonempty payload and ACP create-post permission. Proof
 bytes are optional application data and are retained unchanged when supplied.
 Successful post creation returns and emits the stored content-derived post ID.
 The creation event also retains the submitted artifact label.
+
+Token invalidation events identify the token issuer even when an authorized
+account performs the revocation; the record retains that account in invalidated_by.

@@ -216,14 +216,14 @@ pub(super) fn dispatch(
             let call = IHub::invalidateJWSCall::abi_decode(input).map_err(decode_error)?;
             let creator = did_from_signer(&tx_ctx.signer)?;
 
-            match module.invalidate_jws(block_ctx, tx_ctx, &creator, &call.tokenHash) {
-                Ok(_) => {}
+            let record = match module.invalidate_jws(block_ctx, tx_ctx, &creator, &call.tokenHash) {
+                Ok(record) => record,
                 Err(e) => return Ok(err_dispatch(e)),
-            }
+            };
 
             let event = IHub::JWSTokenInvalidated {
                 tokenHash: alloy_primitives::keccak256(call.tokenHash.as_bytes()),
-                issuerDid: tx_ctx.signer.clone(),
+                issuerDid: record.issuer_did,
             };
             Ok(ok_dispatch(
                 WRITE_GAS,
@@ -370,4 +370,56 @@ fn threshold_object_requires_gas_before_decoding_or_admission() {
         WRITE_GAS - 1,
     );
     assert!(matches!(result, Err(PrecompileError::OutOfGas)));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_sol_types::SolEvent;
+    use hub_modules::{hub::types::JWSTokenStatus, types::Timestamp};
+
+    #[test]
+    fn invalidation_event_retains_issuer_when_authorized_account_revokes() {
+        let issuer = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+        let account = "did:key:z6MkmjY8GnV5iJjM2BXSVn4MoDbZZbLffKHsygxC4BLd5v8P";
+        let mut module = HubModule::new();
+        let mut acp = AcpModule::new();
+        let block = BlockExecCtx::default();
+        module
+            .store_or_update_jws_token(
+                &block,
+                "token",
+                &did_from_signer(issuer).unwrap(),
+                account,
+                Timestamp::default(),
+                Timestamp::default(),
+            )
+            .unwrap();
+        let hash = hub_modules::hub::keys::hash_jws_token("token");
+        let tx = TxExecCtx {
+            sequence: 0,
+            tx_hash: vec![1; 32],
+            signer: account.into(),
+        };
+        let call = IHub::invalidateJWSCall {
+            tokenHash: hash.clone(),
+        };
+        let result = dispatch(
+            &mut module,
+            &mut acp,
+            &block,
+            &tx,
+            &call.abi_encode(),
+            WRITE_GAS,
+        )
+        .unwrap();
+        assert!(!result.precompile.reverted);
+        let stored = module.get_jws_token(&hash).unwrap().unwrap();
+        assert_eq!(stored.status, JWSTokenStatus::Invalid);
+        assert_eq!(stored.invalidated_by, account);
+        assert_eq!(result.logs.len(), 1);
+        let event = IHub::JWSTokenInvalidated::decode_log(&result.logs[0]).unwrap();
+        assert_eq!(event.data.issuerDid, issuer);
+        assert_ne!(event.data.issuerDid, account);
+    }
 }

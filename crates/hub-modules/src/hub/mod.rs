@@ -99,7 +99,7 @@ impl HubModule {
     ///    (`tx_ctx.signer == record.authorized_account`).
     ///    Return `Unauthorized` if neither holds.
     /// 4. Call `update_jws_token_status(token_hash, Invalid, tx_ctx.signer)`.
-    /// 5. Return `Ok(true)`.
+    /// 5. Return the updated token record.
     ///
     /// # Reads
     /// - `0x01 || token_hash` (primary lookup)
@@ -126,7 +126,7 @@ impl HubModule {
         tx_ctx: &TxExecCtx,
         creator: &Did,
         token_hash: &str,
-    ) -> Result<bool> {
+    ) -> Result<JWSTokenRecord> {
         let record = self
             .get_jws_token(token_hash)?
             .ok_or_else(|| HubError::TokenNotFound {
@@ -150,8 +150,7 @@ impl HubModule {
             token_hash,
             JWSTokenStatus::Invalid,
             &tx_ctx.signer,
-        )?;
-        Ok(true)
+        )
     }
 
     /// Reject legacy parameter writes without operator approvals.
@@ -404,7 +403,7 @@ impl HubModule {
         token_hash: &str,
         status: JWSTokenStatus,
         invalidated_by: &str,
-    ) -> Result<()> {
+    ) -> Result<JWSTokenRecord> {
         let mut record =
             self.get_jws_token(token_hash)?
                 .ok_or_else(|| HubError::TokenNotFound {
@@ -417,7 +416,8 @@ impl HubModule {
                 record.invalidated_by = invalidated_by.to_string();
             }
         }
-        self.set_jws_token(&record)
+        self.set_jws_token(&record)?;
+        Ok(record)
     }
 
     /// Set chain configuration (write-once at genesis).
@@ -1066,7 +1066,7 @@ mod tests {
         let tctx = tx_ctx("some-other-account");
         let creator = make_did("did:key:z6MkTest");
         let result = hub.invalidate_jws(&bctx, &tctx, &creator, &hash).unwrap();
-        assert!(result);
+        assert_eq!(result.status, JWSTokenStatus::Invalid);
         let record = hub.get_jws_token(&hash).unwrap().unwrap();
         assert_eq!(record.status, JWSTokenStatus::Invalid);
         assert_eq!(record.invalidated_by, "some-other-account");
@@ -1079,7 +1079,7 @@ mod tests {
         let tctx = tx_ctx("0xAccount1");
         let creator = make_did("did:key:z6MkOther");
         let result = hub.invalidate_jws(&bctx, &tctx, &creator, &hash).unwrap();
-        assert!(result);
+        assert_eq!(result.status, JWSTokenStatus::Invalid);
     }
 
     #[test]
