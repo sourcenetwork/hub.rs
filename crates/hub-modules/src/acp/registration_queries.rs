@@ -198,6 +198,67 @@ mod tests {
     }
 
     #[test]
+    fn generation_rejects_missing_policies_and_malformed_objects_without_effects() {
+        let (mut module, actor, policy, object) = fixture();
+        let reserved = module
+            .create_policy(
+                &actor,
+                "name: reserved\nactor:\n  relations:\n    - name: member\n      types: [actor]\nresources:\n  - name: file\n",
+                PolicyMarshalingType::ShortYaml,
+            )
+            .unwrap()
+            .policy
+            .id;
+        let before = module.store.serialize();
+        for (target, objects, expected) in [
+            ("missing-policy", vec![object.clone()], "policy not found"),
+            (&policy, Vec::new(), "object count"),
+            (
+                &policy,
+                vec![Object {
+                    resource: "file".into(),
+                    id: String::new(),
+                }],
+                "object ID must not be empty",
+            ),
+            (
+                &policy,
+                vec![Object {
+                    resource: "unknown".into(),
+                    id: "report".into(),
+                }],
+                "not defined in policy",
+            ),
+            (
+                &reserved,
+                vec![Object {
+                    resource: "actor".into(),
+                    id: "member".into(),
+                }],
+                "cannot be registered as objects",
+            ),
+        ] {
+            let error = module
+                .query_generate_commitment(target, &objects, &Actor(actor.clone()))
+                .unwrap_err();
+            assert!(error.to_string().contains(expected), "{target}: {error}");
+            assert_eq!(module.store.serialize(), before);
+        }
+        for target in [&policy, &reserved] {
+            assert!(
+                module
+                    .query_generate_commitment(
+                        target,
+                        std::slice::from_ref(&object),
+                        &Actor(actor.clone())
+                    )
+                    .is_ok()
+            );
+        }
+        assert_eq!(module.store.serialize(), before);
+    }
+
+    #[test]
     fn owner_queries_reject_corrupt_mismatched_and_duplicate_records() {
         let (mut module, actor, policy, object) = fixture();
         let PolicyCmdResult::RegisterObject { record } = module
