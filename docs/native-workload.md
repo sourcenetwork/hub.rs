@@ -12,8 +12,10 @@ HUB_E2E_KEEP=1 HUBD_BINARY=target/release/hubd target/release/examples/operation
 state, for diagnosis. Replica reconciliation reuses one HTTP client per node
 to avoid exhausting local connection ports during large runs.
 
-Arguments are operation count, offered arrivals per second, maximum outstanding
-workflows and permission reads per write (0 or 1). An optional fifth argument selects `fast`,
+Arguments are operation count (1–100,000), offered arrivals per second (1–10,000),
+maximum outstanding workflows (1–1,024) and permission reads per write (0 or 1).
+The count ceiling bounds the runner's retained requests and observations; it is
+not a node admission or throughput limit. An optional fifth argument selects `fast`,
 `normal` (default) or `stress` timing. The example starts four local nodes and
 records the selected preset and resolved timeouts. A sixth argument selects the
 per-node RPC connection limit (default 100), independently of outstanding

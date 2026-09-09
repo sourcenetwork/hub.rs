@@ -60,7 +60,14 @@ async fn main() {
     let timing = preset.params();
     let keys = KeySet::builder().seed(42).build().unwrap();
     let trusted = *keys.epoch_info().output.public().public();
-    assert!((1..=10_000).contains(&count) && (1..=10_000).contains(&rate));
+    assert!(
+        (1..=100_000).contains(&count),
+        "count must be within 1..=100000"
+    );
+    assert!(
+        (1..=10_000).contains(&rate),
+        "rate must be within 1..=10000"
+    );
     assert!((1..=1024).contains(&outstanding));
 
     let mut cluster = TestCluster::builder()
