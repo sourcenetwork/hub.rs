@@ -84,7 +84,9 @@ removal. The marker is consumed before exit so recovery does not crash again.
   Each run gets an isolated `{timestamp}-{random}` directory.
 - `HUB_E2E_KEEP=1` — preserve the run directory on drop instead of deleting it.
 - `RUST_LOG` — forwarded to every node process (default `info`); `NO_COLOR=1`
-  is always set for node logs.
+  is always set for node logs. Pruning tests require `hub_storage=info` to
+  verify completed pruning from the logs; keep that target enabled when
+  overriding the default filter.
 - Per-node layout under the run dir: `node{i}/` holds the node's config,
   data dir, and `logs/`; `TestNode` exposes `rpc_url()` / `ws_url()` on
   ephemeral OS-allocated ports (RPC and P2P allocated together per node).

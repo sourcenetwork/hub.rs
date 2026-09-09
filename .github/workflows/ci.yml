@@ -255,6 +255,17 @@ jobs:
       - name: Regolith history invariants
         run: cargo test --frozen -p hub-node --lib --features regolith-history history::
 
+      - name: Build Regolith node
+        run: cargo build --frozen -p hubd --features regolith-history
+
+      - name: Regolith recovery from pruned peers
+        env:
+          RUST_LOG: warn,hub_storage=info
+        run: >-
+          cargo test --frozen -p hub-e2e --test snapshot_catchup
+          snapshot_replica_recovers_from_pruned_peers
+          -- --exact --nocapture
+
       - name: Build crash-injection node
         run: cargo build --frozen -p hubd --features fault-injection
 

@@ -31,3 +31,16 @@ throughput, memory bounds, or power-loss durability. Its `memtables` diagnostic
 reports the engine's current memtable-size counter; it is not directly comparable
 to RocksDB's allocation accounting. Unsupported `table_readers` accounting remains
 absent, and block-cache usage is reported separately.
+
+To exercise authenticated snapshot import from pruned peers with Regolith,
+build the feature above, then point the harness at that binary:
+
+```sh
+HUBD_BINARY="$PWD/target/debug/hubd" RUST_LOG=warn,hub_storage=info \
+  cargo test --frozen -p hub-e2e --test snapshot_catchup \
+  snapshot_replica_recovers_from_pruned_peers -- --exact
+```
+
+This case checks historical receipts and proofs, restored revocation state,
+restart, and subsequent writes requiring the recovered member's participation.
+The prepared Linux CI workflow runs it after building the Regolith node.
