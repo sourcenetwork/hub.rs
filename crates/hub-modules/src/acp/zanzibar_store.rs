@@ -109,7 +109,7 @@ impl<S: RecordStore> QmdbZanzibarStore<S> {
             .store
             .read()
             .unwrap()
-            .read_record(&keys::relationship_key(policy_id, &keys::relationship_storage_key(&rel)))?
+            .read_record(&keys::relationship_key(policy_id, &keys::relationship_storage_key(rel)))?
         else {
             return Ok(false);
         };
@@ -199,7 +199,7 @@ impl<S: RecordStore> ZanzibarStore for QmdbZanzibarStore<S> {
             metadata: default_metadata(),
         };
         let bytes = serde_json::to_vec(&record).expect("serialize RelationshipRecord");
-        let key = keys::relationship_key(policy_id, &keys::relationship_storage_key(&rel));
+        let key = keys::relationship_key(policy_id, &keys::relationship_storage_key(rel));
         let mut guard = self.store.write().unwrap();
         if let Some(existing) = guard.read_record(&key)? {
             let existing: RelationshipRecord = serde_json::from_slice(&existing)?;
@@ -214,7 +214,7 @@ impl<S: RecordStore> ZanzibarStore for QmdbZanzibarStore<S> {
     }
 
     async fn delete_relationship(&self, policy_id: &str, rel: &Relationship) -> Result<bool> {
-        let key = keys::relationship_key(policy_id, &keys::relationship_storage_key(&rel));
+        let key = keys::relationship_key(policy_id, &keys::relationship_storage_key(rel));
         let mut guard = self.store.write().unwrap();
         if let Some(bytes) = guard.read_record(&key)? {
             let record: RelationshipRecord = serde_json::from_slice(&bytes)?;

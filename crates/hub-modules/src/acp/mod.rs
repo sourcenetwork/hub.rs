@@ -220,7 +220,7 @@ impl AcpModule {
             })?;
             let relationship = &record.relationship;
             if record.policy_id != policy_id
-                || keys::relationship_key(policy_id, &keys::relationship_storage_key(&relationship)) != *kv_key
+                || keys::relationship_key(policy_id, &keys::relationship_storage_key(relationship)) != *kv_key
             {
                 return Err(AcpError::State(
                     "relationship record differs from its key".into(),
@@ -646,7 +646,7 @@ impl AcpModule {
         policy_id: &str,
         relationship: &Relationship,
     ) -> Result<Option<RelationshipRecord>> {
-        let storage_key = keys::relationship_storage_key(&relationship);
+        let storage_key = keys::relationship_storage_key(relationship);
         self.store
             .get_ref(&keys::relationship_key(policy_id, &storage_key))
             .map(|bytes| {
@@ -1278,7 +1278,7 @@ impl AcpModule {
             // New registration — creator becomes owner.
             let owner_rel = Relationship::with_entity(
                 proof.object.resource.clone(),
-                proof.object.id.clone(),
+                proof.object.id,
                 "owner",
                 creator.clone(),
             );
