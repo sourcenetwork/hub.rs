@@ -37,3 +37,10 @@ after verification, and continue until the cursor is absent even if no records
 in a page match. An empty prefix proves no relationships, not policy existence.
 Pages may select newer revisions; pass the previous revision as the next minimum.
 Enumeration is not a permission decision or a historical snapshot across pages.
+
+Policy lookup and editing reject malformed records or IDs that differ from the
+selected key. Grant-management checks likewise reject invalid policy, ownership
+or manager records encountered during authorization. Relationship set/delete
+validate the existing target before mutation, including when the policy owner
+submits the command. These paths preserve damaged records for explicit recovery
+instead of treating them as absent or silently overwriting them.

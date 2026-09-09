@@ -166,11 +166,11 @@ impl AcpModule {
         policy: &str,
         marshal_type: PolicyMarshalingType,
     ) -> Result<(u64, PolicyRecord)> {
-        let existing =
-            self.get_policy_record(policy_id)
-                .ok_or_else(|| AcpError::PolicyNotFound {
-                    id: policy_id.to_string(),
-                })?;
+        let existing = self
+            .get_policy_record(policy_id)?
+            .ok_or_else(|| AcpError::PolicyNotFound {
+                id: policy_id.to_string(),
+            })?;
 
         if existing.metadata.owner_did != creator.to_string() {
             return Err(AcpError::Unauthorized {
@@ -380,7 +380,7 @@ impl AcpModule {
     /// Fetch a policy by ID.
     #[allow(unused_variables)]
     pub fn query_policy(&self, id: &str) -> Result<PolicyRecord> {
-        self.get_policy_record(id)
+        self.get_policy_record(id)?
             .ok_or_else(|| AcpError::PolicyNotFound { id: id.to_string() })
     }
 
@@ -563,10 +563,18 @@ impl AcpModule {
 
     // ── Storage — Policy records ─────────────────────────────────────────
 
-    fn get_policy_record(&self, id: &str) -> Option<PolicyRecord> {
+    fn get_policy_record(&self, id: &str) -> Result<Option<PolicyRecord>> {
         self.store
-            .get(&keys::policy_key(id))
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .get_ref(&keys::policy_key(id))
+            .map(|bytes| {
+                let record: PolicyRecord = serde_json::from_slice(bytes)
+                    .map_err(|e| AcpError::State(format!("invalid policy record: {e}")))?;
+                if record.policy.id != id {
+                    return Err(AcpError::State("policy record identity mismatch".into()));
+                }
+                Ok(record)
+            })
+            .transpose()
     }
 
     fn set_policy_record(&mut self, id: &str, record: &PolicyRecord) {
@@ -592,10 +600,24 @@ impl AcpModule {
 
     // ── Storage — Relationships ──────────────────────────────────────────
 
-    fn get_relationship(&self, policy_id: &str, storage_key: &str) -> Option<RelationshipRecord> {
+    fn get_relationship(
+        &self,
+        policy_id: &str,
+        storage_key: &str,
+    ) -> Result<Option<RelationshipRecord>> {
         self.store
-            .get(&keys::relationship_key(policy_id, storage_key))
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .get_ref(&keys::relationship_key(policy_id, storage_key))
+            .map(|bytes| {
+                let record: RelationshipRecord = serde_json::from_slice(bytes)
+                    .map_err(|e| AcpError::State(format!("invalid relationship record: {e}")))?;
+                if record.policy_id != policy_id || record.relationship.storage_key() != storage_key {
+                    return Err(AcpError::State(
+                        "relationship record identity mismatch".into(),
+                    ));
+                }
+                Ok(record)
+            })
+            .transpose()
     }
 
     fn set_relationship(
@@ -853,7 +875,7 @@ impl AcpModule {
             &rel.resource,
             &rel.object_id,
             &rel.relation,
-        ) {
+        )? {
             return Err(AcpError::Unauthorized {
                 reason: format!(
                     "{} is not authorized to set relation '{}' on '{}/{}'",
@@ -863,7 +885,7 @@ impl AcpModule {
         }
 
         let storage_key = rel.storage_key();
-        let record_existed = self.has_relationship(policy_id, &storage_key);
+        let record_existed = self.get_relationship(policy_id, &storage_key)?.is_some();
 
         let metadata = RecordMetadata {
             creation_ts: Timestamp::default(),
@@ -918,7 +940,7 @@ impl AcpModule {
             &rel.resource,
             &rel.object_id,
             &rel.relation,
-        ) {
+        )? {
             return Err(AcpError::Unauthorized {
                 reason: format!(
                     "{} is not authorized to delete relation '{}' on '{}/{}'",
@@ -928,7 +950,7 @@ impl AcpModule {
         }
 
         let storage_key = rel.storage_key();
-        let record_found = self.has_relationship(policy_id, &storage_key);
+        let record_found = self.get_relationship(policy_id, &storage_key)?.is_some();
         self.delete_relationship(policy_id, &storage_key);
 
         Ok(PolicyCmdResult::DeleteRelationship { record_found })
@@ -1335,20 +1357,20 @@ impl AcpModule {
         resource: &str,
         object_id: &str,
         relation: &str,
-    ) -> bool {
+    ) -> Result<bool> {
         // Rule 1: policy creator can manage anything.
-        if let Some(rec) = self.get_policy_record(policy_id)
+        if let Some(rec) = self.get_policy_record(policy_id)?
             && rec.metadata.owner_did == creator.to_string()
         {
-            return true;
+            return Ok(true);
         }
 
         // Rule 2: object owner can manage any relation on the object.
         let owner_rel = Relationship::with_entity(resource, object_id, "owner", creator.clone());
-        if let Some(rec) = self.get_relationship(policy_id, &owner_rel.storage_key())
+        if let Some(rec) = self.get_relationship(policy_id, &owner_rel.storage_key())?
             && !rec.archived
         {
-            return true;
+            return Ok(true);
         }
 
         // Rule 3: creator has a managing relation for the target relation.
@@ -1356,14 +1378,14 @@ impl AcpModule {
         for managing_relation in managers {
             let managing_rel =
                 Relationship::with_entity(resource, object_id, managing_relation, creator.clone());
-            if let Some(rec) = self.get_relationship(policy_id, &managing_rel.storage_key())
+            if let Some(rec) = self.get_relationship(policy_id, &managing_rel.storage_key())?
                 && !rec.archived
             {
-                return true;
+                return Ok(true);
             }
         }
 
-        false
+        Ok(false)
     }
 
     // ── Relationship selector matching ───────────────────────────────────
@@ -2244,6 +2266,7 @@ resources:
         assert!(
             module
                 .get_relationship(&policy_id, &grant.storage_key())
+                .unwrap()
                 .is_some(),
             "unauthorized delete must not remove the grant"
         );

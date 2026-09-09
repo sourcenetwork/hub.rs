@@ -75,6 +75,7 @@ fn amendment_moves_the_owner_key_and_revokes_the_previous_owner() {
     assert!(!module.has_relationship(&policy, &old.storage_key()));
     let stored = module
         .get_relationship(&policy, &record.relationship.storage_key())
+        .unwrap()
         .unwrap();
     assert_eq!(
         serde_json::to_value(stored).unwrap(),
@@ -484,5 +485,64 @@ fn reveal_checks_deadline_without_waiting_for_cleanup() {
         ));
         assert_eq!(module.store.serialize(), before);
         execute(&mut module, &actor, &policy, reveal, 610).unwrap();
+    }
+}
+
+#[test]
+fn corrupt_policy_and_relationship_records_cannot_authorize_or_be_overwritten() {
+    let (mut module, first, second, policy, object) = setup();
+    module
+        .direct_policy_cmd(&second, &policy, PolicyCmd::RegisterObject(object))
+        .unwrap();
+    let grant = Relationship::with_entity("file", "report", "reader", first.clone());
+    let policy_key = keys::policy_key(&policy);
+    let policy_bytes = module.store.get(&policy_key).unwrap();
+    for invalid in [b"{".to_vec(), {
+        let mut record: PolicyRecord = serde_json::from_slice(&policy_bytes).unwrap();
+        record.policy.id = "other".into();
+        serde_json::to_vec(&record).unwrap()
+    }] {
+        module.store.put(&policy_key, invalid);
+        let before = module.store.serialize();
+        assert!(matches!(
+            module.query_policy(&policy),
+            Err(AcpError::State(_))
+        ));
+        assert!(matches!(
+            module.edit_policy(&first, &policy, "", PolicyMarshalingType::ShortYaml),
+            Err(AcpError::State(_))
+        ));
+        assert!(matches!(
+            module.direct_policy_cmd(&second, &policy, PolicyCmd::SetRelationship(grant.clone())),
+            Err(AcpError::State(_))
+        ));
+        assert_eq!(module.store.serialize(), before);
+    }
+    module.store.put(&policy_key, policy_bytes);
+    let owner = Relationship::with_entity("file", "report", "owner", second.clone());
+    let owner_key = keys::relationship_key(&policy, &owner.storage_key());
+    let owner_bytes = module.store.get(&owner_key).unwrap();
+    module.store.put(&owner_key, b"{".to_vec());
+    let before = module.store.serialize();
+    assert!(matches!(
+        module.direct_policy_cmd(&second, &policy, PolicyCmd::SetRelationship(grant.clone())),
+        Err(AcpError::State(_))
+    ));
+    assert_eq!(module.store.serialize(), before);
+    module.store.put(&owner_key, owner_bytes.clone());
+    let grant_key = keys::relationship_key(&policy, &grant.storage_key());
+    for invalid in [b"{".to_vec(), owner_bytes] {
+        module.store.put(&grant_key, invalid);
+        let before = module.store.serialize();
+        for command in [
+            PolicyCmd::SetRelationship(grant.clone()),
+            PolicyCmd::DeleteRelationship(grant.clone()),
+        ] {
+            assert!(matches!(
+                module.direct_policy_cmd(&first, &policy, command),
+                Err(AcpError::State(_))
+            ));
+            assert_eq!(module.store.serialize(), before);
+        }
     }
 }
