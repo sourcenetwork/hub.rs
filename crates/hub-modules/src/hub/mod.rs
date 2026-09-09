@@ -6,6 +6,7 @@ pub mod abi;
 pub mod administration;
 mod delegation;
 mod token_expiry;
+mod token_queries;
 /// Hub error types.
 pub mod error;
 /// Key prefixes and builders for Hub KV storage.
@@ -349,18 +350,10 @@ impl HubModule {
     /// - `0x02 || len_prefix(did) || ...` (index scan)
     /// - `0x01 || token_hash` per match (primary lookup)
     pub fn get_jws_tokens_by_did(&self, did: &Did) -> Result<Vec<JWSTokenRecord>> {
-        let did_str = did.to_string();
-        let prefix = keys::jws_token_did_prefix(&did_str);
-        let hashes: Vec<String> = self
-            .store
-            .prefix_scan(&prefix)
-            .iter()
-            .filter_map(|(k, _)| extract_hash_from_index_suffix(&k[prefix.len()..]))
-            .collect();
-        hashes
-            .iter()
-            .filter_map(|hash| self.get_jws_token(hash).transpose())
-            .collect()
+        Self::validate_token_selector(did.as_str())?;
+        self.collect_tokens(&keys::jws_token_did_prefix(did.as_str()), true, |record| {
+            keys::jws_token_by_did_key(&record.issuer_did, &record.token_hash)
+        })
     }
 
     /// Look up all JWS tokens authorized for an account.
@@ -376,17 +369,10 @@ impl HubModule {
     /// - `0x03 || len_prefix(account) || ...` (index scan)
     /// - `0x01 || token_hash` per match (primary lookup)
     pub fn get_jws_tokens_by_account(&self, account: &str) -> Result<Vec<JWSTokenRecord>> {
-        let prefix = keys::jws_token_account_prefix(account);
-        let hashes: Vec<String> = self
-            .store
-            .prefix_scan(&prefix)
-            .iter()
-            .filter_map(|(k, _)| extract_hash_from_index_suffix(&k[prefix.len()..]))
-            .collect();
-        hashes
-            .iter()
-            .filter_map(|hash| self.get_jws_token(hash).transpose())
-            .collect()
+        Self::validate_token_selector(account)?;
+        self.collect_tokens(&keys::jws_token_account_prefix(account), true, |record| {
+            keys::jws_token_by_account_key(&record.authorized_account, &record.token_hash)
+        })
     }
 
     /// Update a token's status (valid/invalid) and record who invalidated it.
@@ -531,13 +517,9 @@ impl HubModule {
     /// # Reads
     /// - All keys under `0x01` prefix
     pub fn get_all_jws_tokens(&self) -> Result<Vec<JWSTokenRecord>> {
-        self.store
-            .prefix_scan(keys::JWS_TOKEN_PREFIX)
-            .iter()
-            .map(|(_, v)| {
-                borsh::from_slice(v).map_err(|e: std::io::Error| HubError::State(e.to_string()))
-            })
-            .collect()
+        self.collect_tokens(keys::JWS_TOKEN_PREFIX, false, |record| {
+            keys::jws_token_key(&record.token_hash)
+        })
     }
 
     // ── Storage access methods ──────────────────────────────────────────
@@ -599,15 +581,10 @@ impl HubModule {
     ///   - Invalid `authorized_account` format
     ///   - Serialization failure
     fn set_jws_token(&mut self, record: &JWSTokenRecord) -> Result<()> {
-        if record.token_hash.is_empty() {
-            return Err(HubError::InvalidJws {
-                reason: "token_hash is empty".to_string(),
-            });
-        }
-        if record.issuer_did.is_empty() {
-            return Err(HubError::InvalidJws {
-                reason: "issuer_did is empty".to_string(),
-            });
+        Self::validate_token_selector(&record.token_hash)?;
+        Self::validate_token_selector(&record.issuer_did)?;
+        if !record.authorized_account.is_empty() {
+            Self::validate_token_selector(&record.authorized_account)?;
         }
         let config = self.get_chain_config()?;
         if !config.ignore_bearer_auth && record.authorized_account.is_empty() {
@@ -703,7 +680,7 @@ fn extract_hash_from_index_suffix(suffix: &[u8]) -> Option<String> {
         return None;
     }
     let hash_len = suffix[0] as usize;
-    if suffix.len() < 1 + hash_len {
+    if hash_len == 0 || suffix.len() != 1 + hash_len {
         return None;
     }
     std::str::from_utf8(&suffix[1..1 + hash_len])

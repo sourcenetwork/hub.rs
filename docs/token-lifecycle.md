@@ -23,3 +23,11 @@ require an explicit migration that builds indexes for active, expiring tokens;
 startup does not automatically migrate them. This change removes scans of token
 history from each revision. It does not cap retained history or the number of
 tokens that can expire at the same instant.
+
+Token collection queries inspect at most 128 records and 1 MiB of combined
+index, primary-key and record bytes. Larger results return errors instead of
+partial lists. Use certified native prefix pages for larger collections.
+Malformed index suffixes, unexpected index values, missing records and mismatched
+record identities are errors. Account selectors must contain 1–255 bytes; DID
+selectors are also capped at 255 bytes. Token writes validate every index
+component before changing state, avoiding key-encoder panics and partial writes.
