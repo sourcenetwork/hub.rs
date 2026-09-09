@@ -93,7 +93,7 @@ impl AcpModule {
     ) -> Result<Option<RelationshipRecord>> {
         let prefix = keys::relationship_storage_prefix(
             policy,
-            &Relationship::relation_prefix(&object.resource, &object.id, "owner"),
+            &keys::relation_prefix(&object.resource, &object.id, "owner"),
         );
         let mut entries = self.store.prefix_iter(&prefix);
         let Some((key, value)) = entries.next() else {
@@ -112,7 +112,7 @@ impl AcpModule {
             || record.relationship.object_id != object.id
             || record.relationship.relation != "owner"
             || record.metadata.owner_did != actor.as_str()
-            || keys::relationship_storage_prefix(policy, &record.relationship.storage_key()) != key
+            || keys::relationship_storage_prefix(policy, &keys::relationship_storage_key(&record.relationship)) != key
         {
             return Err(AcpError::State(
                 "object owner record does not match its key".into(),
@@ -198,7 +198,7 @@ mod tests {
         else {
             panic!("expected registration")
         };
-        let key = keys::relationship_storage_prefix(&policy, &record.relationship.storage_key());
+        let key = keys::relationship_storage_prefix(&policy, &keys::relationship_storage_key(&record.relationship));
         let original = module.store.serialize();
         for case in 0..4 {
             module.store = InMemoryKvStore::deserialize(&original).unwrap();
@@ -224,7 +224,7 @@ mod tests {
                         "owner",
                         Did::new("did:key:other").unwrap(),
                     );
-                    module.set_relationship(&policy, &other.storage_key(), &record);
+                    module.set_relationship(&policy, &keys::relationship_storage_key(&other), &record);
                 }
             }
             let before = module.store.serialize();

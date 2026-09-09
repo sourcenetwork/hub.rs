@@ -25,7 +25,7 @@ fn native_genesis_recovers_partial_initialization_and_binds_configuration() {
             tokio::Runner::new(runtime.clone()).start(|context| async move {
                 persist(
                     &directory.join("native-genesis.intent"),
-                    keccak256(serde_json::to_vec(&genesis).unwrap()).as_slice(),
+                    crate::native_genesis::fingerprint(&genesis).unwrap().as_slice(),
                 )
                 .unwrap();
                 let cache = CacheRef::from_pooler(&context, NZU16!(4084), NZUsize!(64));
@@ -112,9 +112,15 @@ fn native_genesis_recovers_partial_initialization_and_binds_configuration() {
                     .await
                     .is_err()
             );
+            let mut legacy = keccak256(serde_json::to_vec(genesis).unwrap()).to_vec();
+            legacy.extend_from_slice(&block.encode());
+            persist(&directory.join("native-genesis.bin"), &legacy).unwrap();
+            assert!(load_or_create(&context, directory, genesis, &cache).await.unwrap_err()
+                .to_string().contains("explicit migration"));
+            assert_eq!(fs::read(directory.join("native-genesis.bin")).unwrap(), legacy);
             let mut old = block;
             old.receipt_commitment = None;
-            let mut record = keccak256(serde_json::to_vec(genesis).unwrap()).to_vec();
+            let mut record = crate::native_genesis::fingerprint(genesis).unwrap().to_vec();
             record.extend_from_slice(&old.encode());
             persist(&directory.join("native-genesis.bin"), &record).unwrap();
             assert!(
@@ -193,7 +199,7 @@ fn legacy_state_and_missing_genesis_with_history_require_recovery() {
         let genesis = &genesis;
         persist(
             &directory.join("native-genesis.intent"),
-            keccak256(serde_json::to_vec(&genesis).unwrap()).as_slice(),
+            crate::native_genesis::fingerprint(&genesis).unwrap().as_slice(),
         )
         .unwrap();
         tokio::Runner::new(

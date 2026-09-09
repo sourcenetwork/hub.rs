@@ -214,7 +214,7 @@ fn permission_evaluation_requires_complete_proofs_at_one_root() {
         }
         let blocked_prefix = keys::relationship_storage_prefix(
             &policy_id,
-            &Relationship::relation_prefix("document", "report", "blocked"),
+            &keys::relation_prefix("document", "report", "blocked"),
         );
         let mut incomplete_records = VerifiedReads::verify(&reads, &old_root).unwrap();
         incomplete_records

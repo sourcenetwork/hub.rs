@@ -85,7 +85,7 @@ fn fixture(subject: Subject, archived: bool) -> InMemoryKvStore {
             false,
         ),
     ] {
-        let key = keys::relationship_key(POLICY, &relationship.storage_key());
+        let key = keys::relationship_key(POLICY, &keys::relationship_storage_key(&relationship));
         store.put(
             &key,
             serde_json::to_vec(&RelationshipRecord {
@@ -213,7 +213,7 @@ fn capture_keeps_a_snapshot_and_rejects_mutation() {
         "blocked",
         Subject::typed_wildcard("document"),
     );
-    let key = keys::relationship_key(POLICY, &blocked.storage_key());
+    let key = keys::relationship_key(POLICY, &keys::relationship_storage_key(&blocked));
     store.delete(&key);
     assert!(evaluate_access_request(store, POLICY, &request()).unwrap());
     assert!(capture.remove_record(&key).is_err());
@@ -221,7 +221,7 @@ fn capture_keeps_a_snapshot_and_rejects_mutation() {
     assert!(!evaluate_access_request(capture.clone(), POLICY, &request()).unwrap());
     let prefix = keys::relationship_storage_prefix(
         POLICY,
-        &Relationship::relation_prefix("document", "report", "blocked"),
+        &keys::relation_prefix("document", "report", "blocked"),
     );
     assert!(
         capture

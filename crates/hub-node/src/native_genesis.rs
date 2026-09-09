@@ -14,6 +14,12 @@ use hub_domain::Block;
 use hub_genesis::HubGenesis;
 use hub_modules::ModuleState;
 
+pub(super) fn fingerprint(genesis: &HubGenesis) -> anyhow::Result<alloy_primitives::B256> {
+    let mut bytes = b"vera/native-genesis/v2\0".to_vec();
+    bytes.extend_from_slice(&serde_json::to_vec(genesis)?);
+    Ok(keccak256(bytes))
+}
+
 /// Initialize all seven journals once, with a durable intent for interrupted first boots.
 pub(super) async fn load_or_create(
     context: &tokio::Context,
@@ -21,13 +27,13 @@ pub(super) async fn load_or_create(
     genesis: &HubGenesis,
     cache: &CacheRef,
 ) -> anyhow::Result<Block> {
-    let fingerprint = keccak256(serde_json::to_vec(genesis)?);
+    let fingerprint = fingerprint(genesis)?;
     let path = data_dir.join("native-genesis.bin");
     if path.exists() {
         let record = fs::read(&path)?;
         ensure!(
             record.get(..32) == Some(fingerprint.as_slice()),
-            "configured genesis differs from persisted native genesis"
+            "native genesis configuration or storage format differs; an explicit migration is required"
         );
         let block = Block::decode_cfg(&record[32..], &crate::node::block_cfg())?;
         ensure!(

@@ -73,7 +73,7 @@ fn amendment_moves_the_owner_key_and_revokes_the_previous_owner() {
     assert_eq!(event.previous_owner.0, first);
     assert_eq!(event.new_owner.0, second);
     let old = Relationship::with_entity("file", "report", "owner", first.clone());
-    assert!(!module.has_relationship(&policy, &old.storage_key()));
+    assert!(!module.has_relationship(&policy, &keys::relationship_storage_key(&old)));
     let stored = module
         .get_relationship(&policy, &record.relationship)
         .unwrap()
@@ -520,7 +520,7 @@ fn corrupt_policy_and_relationship_records_cannot_authorize_or_be_overwritten() 
     }
     module.store.put(&policy_key, policy_bytes);
     let owner = Relationship::with_entity("file", "report", "owner", second.clone());
-    let owner_key = keys::relationship_key(&policy, &owner.storage_key());
+    let owner_key = keys::relationship_key(&policy, &keys::relationship_storage_key(&owner));
     let owner_bytes = module.store.get(&owner_key).unwrap();
     module.store.put(&owner_key, b"{".to_vec());
     let before = module.store.serialize();
@@ -530,7 +530,7 @@ fn corrupt_policy_and_relationship_records_cannot_authorize_or_be_overwritten() 
     ));
     assert_eq!(module.store.serialize(), before);
     module.store.put(&owner_key, owner_bytes.clone());
-    let grant_key = keys::relationship_key(&policy, &grant.storage_key());
+    let grant_key = keys::relationship_key(&policy, &keys::relationship_storage_key(&grant));
     for invalid in [b"{".to_vec(), owner_bytes] {
         module.store.put(&grant_key, invalid);
         let before = module.store.serialize();

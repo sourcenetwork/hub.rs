@@ -153,7 +153,7 @@ pub(super) async fn check_permissions(
         )
         .is_err()
     );
-    let blocked_prefix = format!("relationship/{policy}//rel/document/doc1/blocked/");
+    let blocked_prefix = format!("relationship/{policy}/{}", hub_modules::acp::keys::relation_prefix("document", "doc1", "blocked"));
     assert_eq!(prefix(&denied, &blocked_prefix).entries.len(), 1);
     remove_prefix_records(&mut denied, &blocked_prefix);
     assert!(

@@ -81,13 +81,13 @@ impl<S: RecordStore> QmdbZanzibarStore<S> {
     ) -> Result<Vec<RelationshipRecord>> {
         let scan = keys::relationship_storage_prefix(
             policy_id,
-            &Relationship::relation_prefix(resource, object_id, relation),
+            &keys::relation_prefix(resource, object_id, relation),
         );
         let mut records = Vec::new();
         for (key, bytes) in self.store.read().unwrap().scan_records(&scan)? {
             let record: RelationshipRecord = serde_json::from_slice(&bytes)?;
             if record.policy_id != policy_id
-                || keys::relationship_key(policy_id, &record.relationship.storage_key()) != key
+                || keys::relationship_key(policy_id, &keys::relationship_storage_key(&record.relationship)) != key
             {
                 return Err(zanzibar::error::Error::Serialization(
                     "relationship record does not match its key".into(),
@@ -109,7 +109,7 @@ impl<S: RecordStore> QmdbZanzibarStore<S> {
             .store
             .read()
             .unwrap()
-            .read_record(&keys::relationship_key(policy_id, &rel.storage_key()))?
+            .read_record(&keys::relationship_key(policy_id, &keys::relationship_storage_key(&rel)))?
         else {
             return Ok(false);
         };
@@ -199,7 +199,7 @@ impl<S: RecordStore> ZanzibarStore for QmdbZanzibarStore<S> {
             metadata: default_metadata(),
         };
         let bytes = serde_json::to_vec(&record).expect("serialize RelationshipRecord");
-        let key = keys::relationship_key(policy_id, &rel.storage_key());
+        let key = keys::relationship_key(policy_id, &keys::relationship_storage_key(&rel));
         let mut guard = self.store.write().unwrap();
         if let Some(existing) = guard.read_record(&key)? {
             let existing: RelationshipRecord = serde_json::from_slice(&existing)?;
@@ -214,7 +214,7 @@ impl<S: RecordStore> ZanzibarStore for QmdbZanzibarStore<S> {
     }
 
     async fn delete_relationship(&self, policy_id: &str, rel: &Relationship) -> Result<bool> {
-        let key = keys::relationship_key(policy_id, &rel.storage_key());
+        let key = keys::relationship_key(policy_id, &keys::relationship_storage_key(&rel));
         let mut guard = self.store.write().unwrap();
         if let Some(bytes) = guard.read_record(&key)? {
             let record: RelationshipRecord = serde_json::from_slice(&bytes)?;
@@ -308,14 +308,14 @@ impl<S: RecordStore> ZanzibarStore for QmdbZanzibarStore<S> {
     ) -> Result<()> {
         let prefix = keys::relationship_storage_prefix(
             policy_id,
-            &Relationship::object_prefix(resource, object_id),
+            &keys::object_prefix(resource, object_id),
         );
         let mut guard = self.store.write().unwrap();
         let mut keys_to_delete = Vec::new();
         for (key, bytes) in guard.scan_records(&prefix)? {
             let record: RelationshipRecord = serde_json::from_slice(&bytes)?;
             if record.policy_id != policy_id
-                || keys::relationship_key(policy_id, &record.relationship.storage_key()) != key
+                || keys::relationship_key(policy_id, &keys::relationship_storage_key(&record.relationship)) != key
             {
                 return Err(zanzibar::error::Error::Serialization(
                     "relationship record does not match its key".into(),
@@ -357,19 +357,19 @@ mod tests {
             metadata: default_metadata(),
         };
         let bytes = serde_json::to_vec(&record).unwrap();
-        store.put(&keys::relationship_key(POLICY, &rel.storage_key()), bytes);
+        store.put(&keys::relationship_key(POLICY, &keys::relationship_storage_key(&rel)), bytes);
     }
 
     #[test]
-    fn relationship_key_collision_rejects_adapter_mutation() {
+    fn relationship_keys_isolate_adapter_path_fields() {
         let store = QmdbZanzibarStore::<InMemoryKvStore>::default();
         let original = Relationship::with_entity("document", "parent/path", "reader", did(ALICE));
         let collision = Relationship::with_entity("document", "parent", "path/reader", did(ALICE));
         assert_eq!(original.storage_key(), collision.storage_key());
         block_on(store.store_relationship(POLICY, &original)).unwrap();
         let before = store.store.read().unwrap().serialize();
-        assert!(block_on(store.store_relationship(POLICY, &collision)).is_err());
-        assert!(block_on(store.delete_relationship(POLICY, &collision)).is_err());
+        block_on(store.store_relationship(POLICY, &collision)).unwrap();
+        assert!(block_on(store.delete_relationship(POLICY, &collision)).unwrap());
         assert_eq!(store.store.read().unwrap().serialize(), before);
         assert!(
             block_on(store.has_relationship(
@@ -442,10 +442,10 @@ mod tests {
         let requested = Relationship::with_entity("document", "doc", "reader", did(ALICE));
         seed(&mut kv, &stored, false);
         let bytes = kv
-            .get(&keys::relationship_key(POLICY, &stored.storage_key()))
+            .get(&keys::relationship_key(POLICY, &keys::relationship_storage_key(&stored)))
             .unwrap();
         kv.put(
-            &keys::relationship_key(POLICY, &requested.storage_key()),
+            &keys::relationship_key(POLICY, &keys::relationship_storage_key(&requested)),
             bytes,
         );
         let store = QmdbZanzibarStore::new(kv);
@@ -924,7 +924,7 @@ mod tests {
             );
 
             kv.put(
-                &keys::relationship_key(POLICY, &blocked.storage_key()),
+                &keys::relationship_key(POLICY, &keys::relationship_storage_key(&blocked)),
                 b"{".to_vec(),
             );
             let mut engine = PermissionEngine::new(Arc::new(QmdbZanzibarStore::new(kv)));
@@ -942,7 +942,7 @@ mod tests {
         let mut kv = InMemoryKvStore::default();
         let rel = Relationship::with_entity("document", "doc1", "reader", did(ALICE));
         kv.put(
-            &keys::relationship_key(POLICY, &rel.storage_key()),
+            &keys::relationship_key(POLICY, &keys::relationship_storage_key(&rel)),
             b"{".to_vec(),
         );
         kv.put(&keys::policy_key(POLICY), b"{".to_vec());

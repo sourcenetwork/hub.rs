@@ -11,11 +11,11 @@ impl AcpModule {
         for (key, bytes) in self.store.prefix_iter(keys::RELATIONSHIP_PREFIX) {
             let record: RelationshipRecord = serde_json::from_slice(bytes)
                 .map_err(|e| AcpError::State(format!("invalid relationship record: {e}")))?;
-            if keys::relationship_key(&record.policy_id, &record.relationship.storage_key()) != key
+            if keys::relationship_key(&record.policy_id, &keys::relationship_storage_key(&record.relationship)) != key
                 || !self.zanzibar_policies.contains_key(&record.policy_id)
             {
                 return Err(AcpError::State(
-                    "relationship key or policy mismatch".into(),
+                    "relationship key or policy mismatch; legacy keys require explicit migration".into(),
                 ));
             }
         }
@@ -259,13 +259,20 @@ mod tests {
             )
             .unwrap();
         let original = module.store.clone();
+        let owner_relation = Relationship::with_entity("file", "report", "owner", owner.clone());
+        let canonical = keys::relationship_key(&policy, &keys::relationship_storage_key(&owner_relation));
+        let legacy = keys::relationship_key(&policy, &owner_relation.storage_key());
+        let mut legacy_store = original.clone();
+        legacy_store.put(&legacy, legacy_store.get(&canonical).unwrap());
+        legacy_store.delete(&canonical);
+        assert!(AcpModule::from_store(legacy_store).validate_restored_state().is_err());
         AcpModule::from_store(original.clone())
             .validate_restored_state()
             .unwrap();
         let policy_key = keys::policy_key(&policy);
         let owner_key = keys::relationship_key(
             &policy,
-            &Relationship::with_entity("file", "report", "owner", owner).storage_key(),
+            &keys::relationship_storage_key(&Relationship::with_entity("file", "report", "owner", owner)),
         );
         for key in [&policy_key, &owner_key] {
             let bytes = original.get(key).unwrap();

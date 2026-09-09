@@ -16,7 +16,7 @@ pub fn object_owner_prefix(policy: &str, object: &Object) -> Result<Vec<u8>, Per
     Relationship::try_new(&object.resource, &object.id, "owner", Subject::Wildcard)?;
     let prefix = keys::relationship_storage_prefix(
         policy,
-        &Relationship::relation_prefix(&object.resource, &object.id, "owner"),
+        &keys::relation_prefix(&object.resource, &object.id, "owner"),
     );
     if prefix.len() > MAX_KEY_BYTES {
         return Err(PermissionError::Limit);
@@ -67,7 +67,7 @@ fn owner<'a>(
             || relation.resource != object.resource
             || relation.object_id != object.id
             || relation.relation != "owner"
-            || keys::relationship_key(policy, &relation.storage_key()) != key
+            || keys::relationship_key(policy, &keys::relationship_storage_key(&relation)) != key
         {
             return Err(PermissionError::Invalid(
                 "owner record differs from its key",

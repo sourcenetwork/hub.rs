@@ -194,7 +194,7 @@ fn permission_evidence_replays_deny_and_revocation_at_one_revision() {
         }
         let blocked_prefix = keys::relationship_storage_prefix(
             &policy,
-            &Relationship::relation_prefix("document", "report", "blocked"),
+            &keys::relation_prefix("document", "report", "blocked"),
         );
         let mut omitted = proof.clone();
         let deny_read = omitted

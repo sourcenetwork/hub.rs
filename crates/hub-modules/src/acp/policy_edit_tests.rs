@@ -38,7 +38,7 @@ fn editing_rejects_corrupt_relationships_without_partial_pruning() {
                 .unwrap();
         }
         let relationship = Relationship::with_entity("file", "report", "reader", owner.clone());
-        let key = keys::relationship_key(&policy, &relationship.storage_key());
+        let key = keys::relationship_key(&policy, &keys::relationship_storage_key(&relationship));
         let bytes = module.store.get(&key).unwrap();
         let mut record: RelationshipRecord = serde_json::from_slice(&bytes).unwrap();
         let bad = match corruption {

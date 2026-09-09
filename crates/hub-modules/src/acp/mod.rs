@@ -220,7 +220,7 @@ impl AcpModule {
             })?;
             let relationship = &record.relationship;
             if record.policy_id != policy_id
-                || keys::relationship_key(policy_id, &relationship.storage_key()) != *kv_key
+                || keys::relationship_key(policy_id, &keys::relationship_storage_key(&relationship)) != *kv_key
             {
                 return Err(AcpError::State(
                     "relationship record differs from its key".into(),
@@ -646,7 +646,7 @@ impl AcpModule {
         policy_id: &str,
         relationship: &Relationship,
     ) -> Result<Option<RelationshipRecord>> {
-        let storage_key = relationship.storage_key();
+        let storage_key = keys::relationship_storage_key(&relationship);
         self.store
             .get_ref(&keys::relationship_key(policy_id, &storage_key))
             .map(|bytes| {
@@ -935,7 +935,7 @@ impl AcpModule {
             });
         }
 
-        let storage_key = rel.storage_key();
+        let storage_key = keys::relationship_storage_key(&rel);
         if let Some(record) = self.get_relationship(policy_id, &rel)? {
             return Ok(PolicyCmdResult::SetRelationship {
                 record_existed: true,
@@ -1005,7 +1005,7 @@ impl AcpModule {
             });
         }
 
-        let storage_key = rel.storage_key();
+        let storage_key = keys::relationship_storage_key(&rel);
         let record_found = self.get_relationship(policy_id, &rel)?.is_some();
         self.delete_relationship(policy_id, &storage_key);
 
@@ -1014,7 +1014,7 @@ impl AcpModule {
 
     fn ensure_object_unregistered(&self, policy_id: &str, obj: &Object) -> Result<()> {
         // Archiving preserves ownership; only unarchive may reactivate it.
-        let owner_prefix = Relationship::relation_prefix(&obj.resource, &obj.id, "owner");
+        let owner_prefix = keys::relation_prefix(&obj.resource, &obj.id, "owner");
         let scan_prefix = keys::relationship_storage_prefix(policy_id, &owner_prefix);
         if self.store.prefix_iter(&scan_prefix).next().is_some() {
             return Err(AcpError::ObjectAlreadyRegistered {
@@ -1062,7 +1062,7 @@ impl AcpModule {
         self.ensure_object_unregistered(policy_id, &obj)?;
 
         let owner_rel = Relationship::with_entity(obj.resource, obj.id, "owner", creator.clone());
-        let storage_key = owner_rel.storage_key();
+        let storage_key = keys::relationship_storage_key(&owner_rel);
 
         let metadata = RecordMetadata {
             creation_ts: Timestamp::default(),
@@ -1116,14 +1116,14 @@ impl AcpModule {
         }
         let prefix = keys::relationship_storage_prefix(
             policy_id,
-            &Relationship::object_prefix(&obj.resource, &obj.id),
+            &keys::object_prefix(&obj.resource, &obj.id),
         );
         let mut keys = Vec::new();
         for (key, value) in self.store.prefix_iter(&prefix) {
             let record: RelationshipRecord = serde_json::from_slice(value)
                 .map_err(|error| AcpError::State(format!("invalid relationship record: {error}")))?;
             if record.policy_id != policy_id
-                || keys::relationship_key(policy_id, &record.relationship.storage_key()) != key
+                || keys::relationship_key(policy_id, &keys::relationship_storage_key(&record.relationship)) != key
             {
                 return Err(AcpError::State("relationship record does not match its key".into()));
             }
@@ -1138,7 +1138,7 @@ impl AcpModule {
             self.store.delete(&key);
         }
         owner_rec.archived = true;
-        self.set_relationship(policy_id, &owner_rec.relationship.storage_key(), &owner_rec);
+        self.set_relationship(policy_id, &keys::relationship_storage_key(&owner_rec.relationship), &owner_rec);
         Ok(PolicyCmdResult::ArchiveObject {
             found: true,
             relationships_removed: removed,
@@ -1177,7 +1177,7 @@ impl AcpModule {
 
         let bytes = serde_json::to_vec(&rec).expect("serialize RelationshipRecord");
         self.store.put(
-            &keys::relationship_storage_prefix(policy_id, &rec.relationship.storage_key()),
+            &keys::relationship_storage_prefix(policy_id, &keys::relationship_storage_key(&rec.relationship)),
             bytes,
         );
 
@@ -1282,7 +1282,7 @@ impl AcpModule {
                 "owner",
                 creator.clone(),
             );
-            let storage_key = owner_rel.storage_key();
+            let storage_key = keys::relationship_storage_key(&owner_rel);
             let record = RelationshipRecord {
                 policy_id: policy_id.to_string(),
                 relationship: owner_rel,
@@ -1337,8 +1337,8 @@ impl AcpModule {
         };
 
         self.create_amendment_event(&mut event)?;
-        self.delete_relationship(policy_id, &existing.relationship.storage_key());
-        self.set_relationship(policy_id, &record.relationship.storage_key(), &record);
+        self.delete_relationship(policy_id, &keys::relationship_storage_key(&existing.relationship));
+        self.set_relationship(policy_id, &keys::relationship_storage_key(&record.relationship), &record);
 
         Ok(PolicyCmdResult::RevealRegistration {
             record,
@@ -1659,7 +1659,7 @@ resources:
     }
 
     #[test]
-    fn relationship_key_collision_rejects_mutation() {
+    fn relationship_keys_isolate_path_fields() {
         let mut module = AcpModule::new();
         let policy = module
             .create_policy(&alice(), SIMPLE_POLICY, PolicyMarshalingType::ShortYaml)
@@ -1693,12 +1693,9 @@ resources:
                 PolicyCmd::SetRelationship(collision.clone()),
                 PolicyCmd::DeleteRelationship(collision.clone()),
             ] {
-                assert!(matches!(
-                    candidate.direct_policy_cmd(&alice(), &policy, command),
-                    Err(AcpError::State(_))
-                ));
-                assert_eq!(candidate.store.serialize(), before);
+                candidate.direct_policy_cmd(&alice(), &policy, command).unwrap();
             }
+            assert_eq!(candidate.store.serialize(), before);
         }
     }
 
@@ -1828,7 +1825,7 @@ resources:
         let relationship =
             Relationship::with_entity("document", "large", "reader", creator.clone());
         module.store.put(
-            &keys::relationship_key(&policy.policy.id, &relationship.storage_key()),
+            &keys::relationship_key(&policy.policy.id, &keys::relationship_storage_key(&relationship)),
             vec![b' '; read_capture::PERMISSION_READ_LIMITS.bytes + 1],
         );
         let mut request = AccessRequest {

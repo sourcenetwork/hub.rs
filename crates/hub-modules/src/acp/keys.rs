@@ -1,6 +1,6 @@
 //! ACP module key prefixes and builders.
 //!
-//! Matches Go `x/acp/types/keys.go`. Auto-increment stores use
+//! Native relationship keys use an explicit canonical format. Auto-increment stores use
 //! `objs/` and `counter/` sub-prefixes as defined by the mod.rs
 //! storage spec.
 
@@ -31,6 +31,38 @@ pub fn policy_key(id: &str) -> Vec<u8> {
     let mut key = Vec::from(POLICY_PREFIX);
     key.extend_from_slice(id.as_bytes());
     key
+}
+
+/// Canonical native key suffix, independent of the shared engine's storage format.
+pub fn relationship_storage_key(relationship: &acp::Relationship) -> String {
+    use sha2::{Digest, Sha256};
+    let mut digest = Sha256::new();
+    digest.update(b"vera/acp-subject/v1\0");
+    digest
+        .update(serde_json::to_vec(&relationship.subject).expect("serialize relationship subject"));
+    format!(
+        "{}{}",
+        relation_prefix(
+            &relationship.resource,
+            &relationship.object_id,
+            &relationship.relation
+        ),
+        hex::encode(digest.finalize())
+    )
+}
+
+/// Exact object boundary, including when identifiers contain path separators.
+pub fn object_prefix(resource: &str, object_id: &str) -> String {
+    format!("v2/{}/{}/", hex::encode(resource), hex::encode(object_id))
+}
+
+/// Exact relation boundary within an object.
+pub fn relation_prefix(resource: &str, object_id: &str, relation: &str) -> String {
+    format!(
+        "{}{}/",
+        object_prefix(resource, object_id),
+        hex::encode(relation)
+    )
 }
 
 /// Relationship key: `"relationship/" + policy_id + "/" + storage_key`.
@@ -154,6 +186,27 @@ pub fn amendment_event_policy_index_prefix(policy_id: &str) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_relationship_key_format() {
+        let relationship =
+            acp::Relationship::new("file", "report/child", "reader", acp::Subject::Wildcard);
+        assert_eq!(
+            relationship_storage_key(&relationship),
+            "v2/66696c65/7265706f72742f6368696c64/726561646572/00414ab1420d5a968b2ab88ef68b22497b031cd04a26bf22380cb3f845fa18b1"
+        );
+        assert!(
+            !relationship_storage_key(&relationship).starts_with(&object_prefix("file", "report"))
+        );
+        assert!(
+            relationship_storage_key(&relationship).starts_with(&relation_prefix(
+                "file",
+                "report/child",
+                "reader"
+            ))
+        );
+        assert_ne!(object_prefix("a/b", "c"), object_prefix("a", "b/c"));
+    }
 
     #[test]
     fn access_decision_key_format() {

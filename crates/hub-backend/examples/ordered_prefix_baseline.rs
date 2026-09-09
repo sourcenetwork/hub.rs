@@ -87,7 +87,7 @@ fn prefix(object: usize, layout: &str, policy: &str) -> Vec<u8> {
         "grouped" => Sha256::hash(&[text.as_bytes()]).to_vec(),
         "native" => keys::relationship_storage_prefix(
             policy,
-            &Relationship::relation_prefix("document", &format!("{object:08}"), "blocked"),
+            &keys::relation_prefix("document", &format!("{object:08}"), "blocked"),
         ),
         _ => text.into_bytes(),
     }
@@ -101,7 +101,7 @@ fn key(object: usize, subject: usize, layout: &str, policy: &str) -> Vec<u8> {
             "blocked",
             Subject::entity_set("group", format!("{subject:08}"), "member"),
         );
-        return keys::relationship_key(policy, &relation.storage_key());
+        return keys::relationship_key(policy, &keys::relationship_storage_key(&relation));
     }
     let mut key = prefix(object, layout, policy);
     key.extend_from_slice(format!("{subject:08}").as_bytes());

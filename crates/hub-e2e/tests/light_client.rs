@@ -239,7 +239,7 @@ async fn light_client_proof_verification() {
         .unwrap();
     let proof_1 = response.record;
     assert!(proof_1.value.is_some());
-    let reader_prefix = format!("relationship/{policy_id_str}//rel/document/doc1/reader/");
+    let reader_prefix = format!("relationship/{policy_id_str}/{}", hub_modules::acp::keys::relation_prefix("document", "doc1", "reader"));
     let request = permission::request();
     let empty_readers = permission::evidence(&client, policy_id_str, &request, h1).await;
     assert!(
