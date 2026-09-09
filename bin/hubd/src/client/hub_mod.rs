@@ -7,6 +7,17 @@ use super::context::ClientContext;
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum HubCommand {
+    /// Read an operator relay grant with verified finality.
+    RelayGrant {
+        /// Canonical relay issuer DID.
+        issuer: String,
+        /// Consensus public key from authenticated deployment configuration (hex).
+        #[arg(long)]
+        trusted_key: String,
+        /// Minimum acceptable finalized revision.
+        #[arg(long, default_value_t = 0)]
+        minimum_revision: u64,
+    },
     /// Fetch chain configuration.
     ChainConfig,
     /// Fetch current Hub module parameters.
@@ -36,6 +47,26 @@ pub(crate) enum HubCommand {
 impl HubCommand {
     pub(super) async fn run(self, ctx: &ClientContext) -> eyre::Result<()> {
         match self {
+            Self::RelayGrant {
+                issuer,
+                trusted_key,
+                minimum_revision,
+            } => {
+                let bytes = hex::decode(trusted_key.strip_prefix("0x").unwrap_or(&trusted_key))
+                    .map_err(|error| eyre::eyre!("invalid --trusted-key hex: {error}"))?;
+                let trusted = commonware_codec::DecodeExt::decode(bytes.as_slice())
+                    .map_err(|error| eyre::eyre!("invalid --trusted-key: {error}"))?;
+                let record = ctx
+                    .client
+                    .read_relay_grant(&issuer, minimum_revision, &trusted)
+                    .await?;
+                ctx.print_json(&serde_json::json!({
+                    "revision": record.revision,
+                    "timestamp": record.timestamp,
+                    "grant": record.value,
+                }))?;
+            }
+
             Self::ChainConfig => {
                 let data = ctx.client.get_chain_config().await?;
                 let json = bytes_to_json(&data);

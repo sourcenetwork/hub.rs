@@ -4,6 +4,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use alloy_primitives::Address;
 use alloy_sol_types::{SolCall, SolEvent};
+use commonware_codec::Encode as _;
 use hub_client::{
     ACP_ADDRESS, BlsSigner, ClientError, DelegationScope, HUB_ADDRESS, HubClient, ModuleId,
     NativeReceipt, RECORD_PROOF_BYTES, create_bearer_token, create_scoped_bearer_token,
@@ -543,6 +544,15 @@ async fn native_relay_grants_bind_workers_and_survive_revocation_restart() {
     );
     let selected = client.read_relay_grant(&issuer, 0, &trusted).await.unwrap();
     let state = selected.value.unwrap();
+    let inspected = relay_cli(
+        &cluster.node(0).rpc_url(),
+        &issuer,
+        &trusted,
+        selected.revision,
+    )
+    .await;
+    assert_eq!(inspected["grant"], serde_json::to_value(&state).unwrap());
+
     assert_eq!(state.grant, grant);
     assert_eq!(state.sequence, 1);
     let replacement_token = token(&second, 1);
@@ -601,6 +611,14 @@ async fn native_relay_grants_bind_workers_and_survive_revocation_restart() {
         .unwrap();
     assert!(absent.revision >= receipt.block_number);
     assert!(absent.value.is_none());
+    let inspected = relay_cli(
+        &cluster.node(3).rpc_url(),
+        &issuer,
+        &trusted,
+        receipt.block_number,
+    )
+    .await;
+    assert!(inspected["grant"].is_null());
 
     assert_eq!(
         submit(
@@ -621,4 +639,40 @@ async fn native_relay_grants_bind_workers_and_survive_revocation_restart() {
             .owner_did,
         owner
     );
+}
+
+async fn relay_cli(
+    endpoint: &str,
+    issuer: &str,
+    trusted: &ConsensusPublicKey,
+    minimum: u64,
+) -> serde_json::Value {
+    let mut command = tokio::process::Command::new(hub_e2e::resolve_binary().unwrap());
+    command
+        .args([
+            "client",
+            "--url",
+            endpoint,
+            "--compact",
+            "hub",
+            "relay-grant",
+            issuer,
+            "--trusted-key",
+            &hex::encode(trusted.encode()),
+            "--minimum-revision",
+            &minimum.to_string(),
+        ])
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(Duration::from_secs(15), command.output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "relay CLI failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(value["revision"].as_u64().unwrap() >= minimum);
+    value
 }

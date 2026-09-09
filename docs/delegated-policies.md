@@ -154,3 +154,14 @@ configured consensus trust and a caller-selected minimum revision. It returns
 scopes, expiry and grant generation, or certified absence before authorization or
 after revocation. Expired grants may remain stored; presence alone does not
 authorize an assertion. Consumers still check its scope, generation and lifetime.
+
+Operators can inspect the same certified grant from the CLI:
+
+```sh
+hubd client --url "$VERA_URL" hub relay-grant "$RELAY_ISSUER" \
+  --trusted-key "$VERA_TRUSTED_KEY" --minimum-revision "$MINIMUM_REVISION"
+```
+
+The trust key comes from authenticated deployment configuration. Output includes
+`revision`, `timestamp`, and `grant` (null for certified absence). Select a minimum
+revision appropriate to the operator's freshness requirements; the default is zero.
