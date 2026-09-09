@@ -44,3 +44,11 @@ HUBD_BINARY="$PWD/target/debug/hubd" RUST_LOG=warn,hub_storage=info \
 This case checks historical receipts and proofs, restored revocation state,
 restart, and subsequent writes requiring the recovered member's participation.
 The prepared Linux CI workflow runs it after building the Regolith node.
+
+The `snapshot_interrupt` case `interrupted_snapshot_resumes_from_pruned_peers`
+combines pruning with a process abort after a durable history-import record.
+It removes the explicit snapshot request before restarting, exercising automatic
+import resumption. Run it with both the node and test built with
+`fault-injection`, and the node additionally built with `regolith-history`.
+Keep `hub_storage=info` enabled. This checks process-crash recovery, not power-loss
+or failed-write behavior.

@@ -266,6 +266,17 @@ jobs:
           snapshot_replica_recovers_from_pruned_peers
           -- --exact --nocapture
 
+      - name: Build Regolith crash-injection node
+        run: cargo build --frozen -p hubd --features regolith-history,fault-injection
+
+      - name: Interrupted Regolith recovery from pruned peers
+        env:
+          RUST_LOG: warn,hub_storage=info
+        run: >-
+          cargo test --frozen -p hub-e2e --features fault-injection
+          --test snapshot_interrupt interrupted_snapshot_resumes_from_pruned_peers
+          -- --exact --nocapture
+
       - name: Build crash-injection node
         run: cargo build --frozen -p hubd --features fault-injection
 
