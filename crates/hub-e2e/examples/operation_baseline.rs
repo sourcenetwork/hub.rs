@@ -10,6 +10,10 @@ mod retention;
 #[path = "operation_baseline/updates.rs"]
 mod updates;
 
+#[cfg(test)]
+#[path = "operation_baseline/updates_tests.rs"]
+mod updates_tests;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -280,6 +284,12 @@ async fn main() {
         println!("{}", observation.json());
     }
     println!("{}", driver::summary(&observations, elapsed));
+
+    if update_objects > 0 {
+        for observation in &observations {
+            observation.assert_completed();
+        }
+    }
 
     let replica_clients: Vec<_> = (0..cluster.node_count())
         .map(|i| HubClient::new(cluster.node(i).rpc_url()))

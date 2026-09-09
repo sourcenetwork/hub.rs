@@ -4008,6 +4008,7 @@ dependencies = [
  "hub-permission",
  "identity",
  "jsonrpsee",
+ "jsonrpsee-server",
  "k256",
  "orbis-reporting",
  "reqwest 0.12.28",

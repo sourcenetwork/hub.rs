@@ -116,19 +116,20 @@ pub(super) async fn run(
         let permits = permits.clone();
         workers.spawn(async move {
             let mut results = Vec::with_capacity(group.len());
+            let mut blocked = false;
             for request in group {
                 let scheduled = started
                     + std::time::Duration::from_secs_f64(request.index as f64 / rate as f64);
                 tokio::time::sleep_until(scheduled).await;
-                let result = driver::observe(
-                    client.clone(),
-                    request,
-                    scheduled,
-                    Some(permits.clone().acquire_owned().await.unwrap()),
-                    reads.clone(),
-                )
-                .await;
-                result.assert_completed();
+                let permit = if blocked {
+                    None
+                } else {
+                    Some(permits.clone().acquire_owned().await.unwrap())
+                };
+                let result =
+                    driver::observe(client.clone(), request, scheduled, permit, reads.clone())
+                        .await;
+                blocked |= !result.completed();
                 results.push(result);
             }
             results

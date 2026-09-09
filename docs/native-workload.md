@@ -21,6 +21,12 @@ counters record these retries separately from read throttles. Submission and
 scheduled workflow latencies include retry delays. Permanent submission errors
 are not retried.
 
+In fixed-object workloads, an incomplete update stops subsequent submissions for
+that object; those operations are recorded as `not_sent`. Other object workers
+finish independently. The runner prints all observations and the summary before
+failing the run, and skips state reconciliation that would assume every update
+succeeded.
+
 Arguments are operation count (1–100,000), offered arrivals per second (1–10,000),
 maximum outstanding workflows (1–1,024) and permission reads per write (0 or 1).
 The count ceiling bounds the runner's retained requests and observations; it is

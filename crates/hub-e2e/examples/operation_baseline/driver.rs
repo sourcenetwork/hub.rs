@@ -55,12 +55,12 @@ pub(super) struct Observation {
 }
 
 impl Observation {
+    pub(super) fn completed(&self) -> bool {
+        self.outcome == "confirmed" && self.workflow_ms.is_some()
+    }
+
     pub(super) fn assert_completed(&self) {
-        assert!(
-            self.outcome == "confirmed" && self.workflow_ms.is_some(),
-            "update workflow failed: {}",
-            self.json()
-        );
+        assert!(self.completed(), "update workflow failed: {}", self.json());
     }
 
     pub(super) fn json(&self) -> Value {
