@@ -1,6 +1,6 @@
 //! Typed bulletin reads authenticated against caller-provided consensus trust.
 
-use alloy_primitives::Bytes;
+use alloy_primitives::{B256, Bytes};
 use borsh::BorshDeserialize;
 use hub_domain::ConsensusPublicKey;
 use hub_modules::bulletin::keys;
@@ -57,7 +57,50 @@ fn decode<T: BorshDeserialize>(
     Ok(record)
 }
 
+fn decode_policy_id(value: &[u8]) -> Result<B256, ClientError> {
+    if value.len() != 64
+        || !value
+            .iter()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b))
+    {
+        return Err(ClientError::InvalidResponse(
+            "invalid bulletin policy identifier",
+        ));
+    }
+    let mut id = [0; 32];
+    hex::decode_to_slice(value, &mut id)
+        .map_err(|_| ClientError::InvalidResponse("invalid bulletin policy identifier"))?;
+    Ok(B256::from(id))
+}
+
 impl HubClient {
+    /// Discover the bulletin's ACP policy, with certified absence before initialization.
+    pub async fn read_bulletin_policy_id(
+        &self,
+        minimum: u64,
+        trusted: &ConsensusPublicKey,
+    ) -> Result<BulletinRecord<B256>, ClientError> {
+        let response = self
+            .read_current_record(
+                ModuleId::Bulletin,
+                keys::POLICY_ID_KEY,
+                minimum,
+                trusted,
+                RECORD_PROOF_BYTES,
+            )
+            .await?;
+        let value = response
+            .record
+            .value
+            .as_ref()
+            .map(|bytes| decode_policy_id(bytes))
+            .transpose()?;
+        Ok(BulletinRecord {
+            revision: response.revision.height,
+            timestamp: response.revision.timestamp,
+            value,
+        })
+    }
     /// Read a namespace by its unprefixed name, including certified absence.
     pub async fn read_bulletin_namespace(
         &self,
@@ -267,6 +310,23 @@ impl HubClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bulletin_policy_identifier_requires_canonical_encoding() {
+        assert_eq!(
+            decode_policy_id(&[b'a'; 64]).unwrap(),
+            B256::repeat_byte(0xaa)
+        );
+        for bytes in [
+            vec![],
+            vec![b'a'; 63],
+            vec![b'a'; 65],
+            vec![b'A'; 64],
+            vec![0xff; 64],
+        ] {
+            assert!(decode_policy_id(&bytes).is_err());
+        }
+    }
 
     #[test]
     fn bulletin_decoding_rejects_wrong_selection_and_trailing_bytes() {

@@ -90,6 +90,14 @@ async fn certified_bulletin_reads_follow_grants_pages_and_restart() {
             .records
             .is_empty()
     );
+    assert!(
+        reader
+            .read_bulletin_policy_id(absent.revision, &trusted)
+            .await
+            .unwrap()
+            .value
+            .is_none()
+    );
     let mut minimum = submit(
         &writer,
         &reader,
@@ -101,6 +109,16 @@ async fn certified_bulletin_reads_follow_grants_pages_and_restart() {
         true,
     )
     .await;
+    let bulletin_policy = reader
+        .read_bulletin_policy_id(minimum, &trusted)
+        .await
+        .unwrap();
+    let policy_id = bulletin_policy.value.unwrap();
+    let policy = reader
+        .read_policy(policy_id, bulletin_policy.revision, &trusted)
+        .await
+        .unwrap();
+    assert_eq!(policy.value.unwrap().policy.id, hex::encode(policy_id));
     let namespace = reader
         .read_bulletin_namespace("team", minimum, &trusted)
         .await
@@ -244,6 +262,14 @@ async fn certified_bulletin_reads_follow_grants_pages_and_restart() {
     minimum = namespace_isolation(&writer, &reader, &owner, &collaborator, &trusted).await;
     cluster.restart_node(3).unwrap();
     cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    assert_eq!(
+        reader
+            .read_bulletin_policy_id(minimum, &trusted)
+            .await
+            .unwrap()
+            .value,
+        Some(policy_id)
+    );
     let restored = reader
         .list_bulletin_posts("team", None, 2, minimum, &trusted)
         .await

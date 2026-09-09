@@ -32,3 +32,12 @@ publishing query state. Truncated or trailing record bytes, namespace/post/
 collaborator key mismatches, invalid policy-ID encoding and malformed parameters
 stop restoration with a storage error. Absent settings remain valid for an
 uninitialized module. Recovery does not repair or discard corrupt records.
+
+`HubClient::read_bulletin_policy_id` authenticates the bulletin's ACP policy ID
+against caller-provided consensus trust. Before the first namespace initializes
+the policy, it returns certified absence. Present IDs must be canonical 64-byte
+lowercase hexadecimal strings and are returned as 32-byte values. Use
+`read_policy` with that ID and at least the returned revision to inspect the
+policy definition. The two reads may select different finalized revisions;
+policy presence does not itself grant permission to create posts or manage
+collaborators.
