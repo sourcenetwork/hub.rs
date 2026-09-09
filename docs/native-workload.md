@@ -97,3 +97,27 @@ record the node binary hash, build profile, machine, commands and raw output wit
 any measurement. A local baseline is not a regional deployment SLA or a maximum
 capacity claim. Sustained mixed workloads, gateway signing/queueing, overload and
 long-duration memory/storage growth still need separate qualification.
+
+## Fixed-object updates
+
+A ninth argument selects a fixed object/signer count; zero (default) keeps the
+registration workload. For example, `6000 100 128 1 normal 100 1000 0 128`
+prepares 128 registered objects, then alternates archive and unarchive operations
+on each. The object count must not exceed the operation count or outstanding
+limit, and permission reads must be enabled. Preparation and signing occur before
+timing and are reported together as `update_preparation_seconds`.
+
+Each object has one signer and at most one active workflow. Its next scheduled
+operation waits for the previous verified receipt and permission result: archive
+must deny owner access and unarchive must restore it. A failed workflow aborts
+the run instead of submitting later requests with sequence gaps. This mode does
+not drop offered operations when a signer is busy; scheduling lag includes that
+wait. Configuration records the distinct workload and arrival model. Its
+throughput measures completed work through drain and is not directly comparable
+to the registration mode's overload behavior.
+
+Reconciliation and restart checks inspect every receipt and compare each object's
+final active/archived state with its update count. Application objects and signer
+records stay fixed in number, while sequences, revisions and retained history
+continue advancing. This separates growing application cardinality from cache,
+history and allocator behavior; it does not make total disk usage constant.

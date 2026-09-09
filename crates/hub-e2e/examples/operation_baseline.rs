@@ -7,6 +7,8 @@ mod driver;
 mod resources;
 #[path = "operation_baseline/retention.rs"]
 mod retention;
+#[path = "operation_baseline/updates.rs"]
+mod updates;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,8 +28,8 @@ const CHAIN_ID: u64 = 9001;
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     assert!(
-        args.len() <= 8,
-        "usage: operation_baseline [count] [arrivals/sec] [max outstanding] [permission reads 0/1] [fast|normal|stress] [RPC connections] [epoch revisions] [retention minimum revision]"
+        args.len() <= 9,
+        "usage: operation_baseline [count] [arrivals/sec] [max outstanding] [permission reads 0/1] [fast|normal|stress] [RPC connections] [epoch revisions] [retention minimum revision] [fixed update objects, 0 for registrations]"
     );
     let parse = |index: usize, default: usize| {
         args.get(index).map_or(default, |value| {
@@ -58,6 +60,12 @@ async fn main() {
         "epoch is too short for four participants"
     );
     let retention_height = u64::try_from(parse(7, 0)).expect("retention revision within u64");
+    let update_objects = parse(8, 0);
+    assert!(update_objects <= count && update_objects <= outstanding);
+    assert!(
+        update_objects == 0 || permission_reads == 1,
+        "updates require permission verification"
+    );
     let timing = preset.params();
     let keys = KeySet::builder().seed(42).build().unwrap();
     let trusted = *keys.epoch_info().output.public().public();
@@ -133,34 +141,59 @@ async fn main() {
     } else {
         None
     };
+    let preparation_start = Instant::now();
+    let prepared_updates = if update_objects > 0 {
+        Some(
+            updates::prepare(
+                client.clone(),
+                reads.clone(),
+                policy_id,
+                count,
+                update_objects,
+                (rpc_connections.get() as usize).min(8),
+            )
+            .await,
+        )
+    } else {
+        None
+    };
+    let update_preparation_seconds =
+        (update_objects > 0).then(|| preparation_start.elapsed().as_secs_f64());
     let signing_start = Instant::now();
-    let requests: Vec<_> = (0..count)
-        .map(|index| {
-            let signer = BlsSigner::new(((index + 1) as u64).into(), CHAIN_ID).unwrap();
-            let raw = signer
-                .sign_native_tx(
-                    ACP_ADDRESS,
-                    IAcp::registerObjectCall {
-                        policyId: policy_id,
-                        resource: "file".into(),
-                        objectId: index.to_string(),
-                    }
-                    .abi_encode()
-                    .into(),
-                )
-                .unwrap();
-            driver::Request {
-                index,
-                hash: NativeTx::decode_wire(&raw).unwrap().tx_id().0,
-                owner: signer.did().to_string(),
-                raw,
-            }
-        })
-        .collect();
+    let requests: Vec<_> = prepared_updates.unwrap_or_else(|| {
+        (0..count)
+            .map(|index| {
+                let signer = BlsSigner::new(((index + 1) as u64).into(), CHAIN_ID).unwrap();
+                let raw = signer
+                    .sign_native_tx(
+                        ACP_ADDRESS,
+                        IAcp::registerObjectCall {
+                            policyId: policy_id,
+                            resource: "file".into(),
+                            objectId: index.to_string(),
+                        }
+                        .abi_encode()
+                        .into(),
+                    )
+                    .unwrap();
+                driver::Request {
+                    index,
+                    object_id: index.to_string(),
+                    expected_access: true,
+                    final_registered: None,
+                    hash: NativeTx::decode_wire(&raw).unwrap().tx_id().0,
+                    owner: signer.did().to_string(),
+                    raw,
+                }
+            })
+            .collect()
+    });
     println!(
         "{}",
         serde_json::json!({
-            "kind": "configuration", "workload": "certified_native_registrations",
+            "kind": "configuration", "workload": if update_objects == 0 { "certified_native_registrations" } else { "certified_native_object_updates" },
+            "fixed_update_objects": update_objects,
+            "arrival_model": if update_objects == 0 { "scheduled_drop_when_full" } else { "scheduled_wait_for_previous_per_object" },
             "format_version": 2, "permission_reads_per_write": permission_reads,
             "runner_debug_assertions": cfg!(debug_assertions),
             "revisions_per_epoch": epoch_length.get(),
@@ -174,7 +207,8 @@ async fn main() {
             "nullify_retry_ms": timing.nullify_retry.as_millis(), "count": count, "arrivals_per_second": rate,
             "max_outstanding": outstanding, "receipt_poll_ms": driver::POLL_INTERVAL.as_millis(),
             "request_timeout_ms": driver::REQUEST_TIMEOUT.as_millis(),
-            "signing_seconds": signing_start.elapsed().as_secs_f64(),
+            "signing_seconds": (update_objects == 0).then(|| signing_start.elapsed().as_secs_f64()),
+            "update_preparation_seconds": update_preparation_seconds,
             "signed_bytes": requests.iter().map(|r| r.raw.len()).sum::<usize>(),
             "node_data_dirs": (0..4).map(|i| cluster.node(i).data_dir.display().to_string()).collect::<Vec<_>>(),
         })
@@ -185,22 +219,35 @@ async fn main() {
     let limit = Arc::new(Semaphore::new(outstanding));
     let mut tasks = JoinSet::new();
     let started = Instant::now();
-    for request in requests {
-        let scheduled = started + Duration::from_secs_f64(request.index as f64 / rate as f64);
-        tokio::time::sleep_until(scheduled).await;
-        let permit = limit.clone().try_acquire_owned().ok();
-        tasks.spawn(driver::observe(
+    let mut observations = if update_objects > 0 {
+        updates::run(
+            requests,
+            update_objects,
+            rate,
+            started,
             client.clone(),
-            request,
-            scheduled,
-            permit,
             reads.clone(),
-        ));
-    }
-    let mut observations = Vec::with_capacity(count);
-    while let Some(result) = tasks.join_next().await {
-        observations.push(result.expect("request task panicked"));
-    }
+        )
+        .await
+    } else {
+        for request in requests {
+            let scheduled = started + Duration::from_secs_f64(request.index as f64 / rate as f64);
+            tokio::time::sleep_until(scheduled).await;
+            let permit = limit.clone().try_acquire_owned().ok();
+            tasks.spawn(driver::observe(
+                client.clone(),
+                request,
+                scheduled,
+                permit,
+                reads.clone(),
+            ));
+        }
+        let mut observations = Vec::with_capacity(count);
+        while let Some(result) = tasks.join_next().await {
+            observations.push(result.expect("request task panicked"));
+        }
+        observations
+    };
     let elapsed = started.elapsed();
     let _ = stop_resources.send(());
     resource_task.await.expect("resource sampler task");
@@ -233,6 +280,11 @@ async fn main() {
             "concurrency": verification_concurrency,
         })
     );
+    if update_objects > 0 {
+        for replica in &replica_clients {
+            updates::verify_state(replica, &observations, update_objects, &reads).await;
+        }
+    }
     cluster
         .wait_ready(Duration::from_secs(10))
         .await
@@ -332,6 +384,9 @@ async fn main() {
     while let Some((receipt_matches, state_matches)) = checks.next().await {
         receipt_mismatches += usize::from(!receipt_matches);
         state_mismatches += usize::from(!state_matches);
+    }
+    if update_objects > 0 {
+        updates::verify_state(&recovered, &observations, update_objects, &reads).await;
     }
     println!(
         "{}",

@@ -14,6 +14,9 @@ pub(super) const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 #[derive(Debug)]
 pub(super) struct Request {
     pub(super) index: usize,
+    pub(super) object_id: String,
+    pub(super) expected_access: bool,
+    pub(super) final_registered: Option<bool>,
     pub(super) hash: B256,
     pub(super) owner: String,
     pub(super) raw: Vec<u8>,
@@ -51,9 +54,18 @@ pub(super) struct Observation {
 }
 
 impl Observation {
+    pub(super) fn assert_completed(&self) {
+        assert!(
+            self.outcome == "confirmed" && self.workflow_ms.is_some(),
+            "update workflow failed: {}",
+            self.json()
+        );
+    }
+
     pub(super) fn json(&self) -> Value {
         json!({
             "kind": "observation", "index": self.request.index, "hash": self.request.hash,
+            "object_id": self.request.object_id, "expected_access": self.request.expected_access,
             "outcome": self.outcome, "schedule_lag_ms": self.schedule_lag_ms,
             "submit_rpc_ms": self.submit_ms, "scheduled_to_certified_receipt_ms": self.receipt_ms,
             "permission_read_ms": self.permission_ms, "scheduled_to_workflow_ms": self.workflow_ms,
@@ -134,7 +146,7 @@ pub(super) async fn observe(
                             operations: vec![Operation {
                                 object: Object {
                                     resource: "file".into(),
-                                    id: observation.request.index.to_string(),
+                                    id: observation.request.object_id.clone(),
                                 },
                                 permission: "read".into(),
                             }],
@@ -160,7 +172,10 @@ pub(super) async fn observe(
                         observation.permission_ms = Some(started.elapsed().as_secs_f64() * 1000.0);
                         match permission {
                             Ok((_, allowed)) => {
-                                assert!(allowed, "certified owner permission denied")
+                                assert_eq!(
+                                    allowed, observation.request.expected_access,
+                                    "certified permission differs"
+                                )
                             }
                             Err(error) => {
                                 observation.verification_failure = matches!(
@@ -283,10 +298,13 @@ pub(super) async fn check_recovered(
             _ => false,
         };
         let (registered, record) = recovered
-            .get_object_owner(policy_id, "file", &observation.request.index.to_string())
+            .get_object_owner(policy_id, "file", &observation.request.object_id.clone())
             .await
             .unwrap();
-        let expected_registration = expected.as_ref().is_some_and(|r| r.status == 1);
+        let expected_registration = observation
+            .request
+            .final_registered
+            .unwrap_or_else(|| expected.as_ref().is_some_and(|r| r.status == 1));
         let owner_matches = !registered || {
             let record: Value = serde_json::from_slice(&record).unwrap();
             record["metadata"]["owner_did"] == observation.request.owner
@@ -344,10 +362,13 @@ pub(super) async fn verify(
                     .unwrap()
             };
             let (registered, record) = client
-                .get_object_owner(policy_id, "file", &observation.request.index.to_string())
+                .get_object_owner(policy_id, "file", &observation.request.object_id.clone())
                 .await
                 .unwrap();
-            let expected_registration = receipt.as_ref().is_some_and(|r| r.status == 1);
+            let expected_registration = observation
+                .request
+                .final_registered
+                .unwrap_or_else(|| receipt.as_ref().is_some_and(|r| r.status == 1));
             assert_eq!(
                 registered, expected_registration,
                 "replica {index} ownership differs"
