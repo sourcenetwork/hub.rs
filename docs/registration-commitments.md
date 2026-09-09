@@ -89,3 +89,9 @@ commitment material locally with the same Merkle encoding used during reveal
 verification. Object identifiers need not be sent to a node during preparation.
 Local generation does not establish policy existence, valid resources or current
 ownership; execution checks these when processing the registration commands.
+
+Use `native_commit_registrations` to submit the 32-byte root and
+`native_reveal_registration` to submit one typed registration proof. Both use
+the native signer and submission path. Their transaction receipts are transport
+responses; use `read_receipt` with independently configured consensus trust when
+acting on a certified outcome.

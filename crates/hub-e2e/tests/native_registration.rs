@@ -19,6 +19,14 @@ async fn submit(
         .unwrap();
     let id = NativeTx::decode_wire(&wire).unwrap().tx_id().0;
     assert_eq!(client.send_native_tx(&wire).await.unwrap(), id);
+    certified_receipt(client, id, trusted).await
+}
+
+async fn certified_receipt(
+    client: &HubClient,
+    id: B256,
+    trusted: &ConsensusPublicKey,
+) -> (u64, ExecutionReceipt) {
     tokio::time::timeout(Duration::from_secs(60), async {
         loop {
             if let Ok(Some(response)) = client.read_receipt(id, trusted).await {
@@ -64,14 +72,13 @@ async fn native_registration_preserves_commitment_priority_and_owner_proofs() {
         &Actor(second.did().parse().unwrap()),
     )
     .unwrap();
-    let commit = || {
-        IAcp::commitRegistrationsCall {
-            policyId: policy_id,
-            commitment: generated.commitment.clone().into(),
-        }
-        .abi_encode()
-    };
-    let (early_height, early) = submit(&client, &second, &trusted, commit()).await;
+    let commitment = B256::from_slice(&generated.commitment);
+    let committed = client
+        .native_commit_registrations(&second, policy_id, commitment)
+        .await
+        .unwrap();
+    let (early_height, early) =
+        certified_receipt(&client, committed.transaction_hash, &trusted).await;
     assert!(early.success());
     let early = IAcp::RegistrationsCommitted::decode_log(&early.logs()[0]).unwrap();
     assert_eq!(early.data.policyId, policy_id);
@@ -81,7 +88,12 @@ async fn native_registration_preserves_commitment_priority_and_owner_proofs() {
         .await
         .unwrap();
     assert!(registered.block_number > early_height);
-    let (late_height, late) = submit(&client, &second, &trusted, commit()).await;
+    let committed = client
+        .native_commit_registrations(&second, policy_id, commitment)
+        .await
+        .unwrap();
+    let (late_height, late) =
+        certified_receipt(&client, committed.transaction_hash, &trusted).await;
     assert!(late.success());
     let late = IAcp::RegistrationsCommitted::decode_log(&late.logs()[0]).unwrap();
     let commitment = client
@@ -145,8 +157,12 @@ async fn native_registration_preserves_commitment_priority_and_owner_proofs() {
     };
     let (_, rejected) = submit(&client, &second, &trusted, reveal(late.data.commitmentId)).await;
     assert!(!rejected.success());
+    let revealed = client
+        .native_reveal_registration(&second, early.data.commitmentId, &generated.proofs[0])
+        .await
+        .unwrap();
     let (amended_height, amended) =
-        submit(&client, &second, &trusted, reveal(early.data.commitmentId)).await;
+        certified_receipt(&client, revealed.transaction_hash, &trusted).await;
     assert!(amended.success());
     let object = Object {
         resource: "file".into(),

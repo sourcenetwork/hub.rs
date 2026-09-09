@@ -143,6 +143,38 @@ impl HubClient {
             .await
     }
 
+    /// Commit to registrations before revealing their object identifiers.
+    pub async fn native_commit_registrations(
+        &self,
+        signer: &BlsSigner,
+        policy_id: FixedBytes<32>,
+        commitment: FixedBytes<32>,
+    ) -> Result<TransactionReceipt, ClientError> {
+        let calldata = IAcp::commitRegistrationsCall {
+            policyId: policy_id,
+            commitment: commitment.to_vec().into(),
+        }
+        .abi_encode();
+        self.send_native_precompile_tx(signer, ACP_ADDRESS, calldata.into())
+            .await
+    }
+
+    /// Reveal one registration using locally generated commitment material.
+    pub async fn native_reveal_registration(
+        &self,
+        signer: &BlsSigner,
+        commitment_id: u64,
+        proof: &hub_modules::acp::types::RegistrationProof,
+    ) -> Result<TransactionReceipt, ClientError> {
+        let calldata = IAcp::revealRegistrationCall {
+            commitmentId: commitment_id,
+            proof: serde_json::to_vec(proof)?.into(),
+        }
+        .abi_encode();
+        self.send_native_precompile_tx(signer, ACP_ADDRESS, calldata.into())
+            .await
+    }
+
     /// Archive an object in an ACP policy via native BLS transaction.
     pub async fn native_archive_object(
         &self,
