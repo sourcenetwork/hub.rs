@@ -89,10 +89,10 @@ commonware-macros = "2026.9.0"
 commonware-glue = "2026.9.0"
 
 # Shared Defra types and policy evaluation
-acp = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "4da37c6cb896f95409b801feb5892b6b8fcc45ac", default-features = false }
-identity = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "4da37c6cb896f95409b801feb5892b6b8fcc45ac" }
-storage = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "4da37c6cb896f95409b801feb5892b6b8fcc45ac", default-features = false }
-zanzibar = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "4da37c6cb896f95409b801feb5892b6b8fcc45ac", default-features = false }
+acp = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "aaa4aeaa2a9ba291bfdb383be9ba7a3ba8a8b6d0", default-features = false }
+identity = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "aaa4aeaa2a9ba291bfdb383be9ba7a3ba8a8b6d0" }
+storage = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "aaa4aeaa2a9ba291bfdb383be9ba7a3ba8a8b6d0", default-features = false }
+zanzibar = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "aaa4aeaa2a9ba291bfdb383be9ba7a3ba8a8b6d0", default-features = false }
 
 # Alloy
 alloy-primitives = "1.0"
