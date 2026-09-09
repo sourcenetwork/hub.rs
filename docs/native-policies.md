@@ -69,3 +69,5 @@ reject dangling or aliased root, expiry and amendment-policy indexes, unexpected
 index values, and expiry entries for already expired commitments. Missing or
 inconsistent indexes require explicit recovery or migration; startup does not
 rebuild them silently.
+
+The legacy policy-ID query returns at most 128 IDs and rejects malformed stored identifiers. Larger listings use `read_policy_page`; the bounded query never returns a truncated success.

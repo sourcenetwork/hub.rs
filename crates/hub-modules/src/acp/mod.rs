@@ -389,17 +389,28 @@ impl AcpModule {
             .ok_or_else(|| AcpError::PolicyNotFound { id: id.to_string() })
     }
 
-    /// List all stored policy IDs.
+    /// List up to 128 policy IDs; larger listings require certified prefix pages.
     pub fn query_policy_ids(&self) -> Result<Vec<String>> {
+        const MAX_IDS: usize = 128;
         let prefix = keys::POLICY_PREFIX;
-        let ids = self
-            .store
-            .prefix_scan(prefix)
-            .into_iter()
-            .map(|(k, _)| {
-                String::from_utf8(k[prefix.len()..].to_vec()).expect("policy ID is valid UTF-8")
-            })
-            .collect();
+        let mut ids = Vec::new();
+        for (key, _) in self.store.prefix_iter(prefix).take(MAX_IDS + 1) {
+            if ids.len() == MAX_IDS {
+                return Err(AcpError::InvalidAccessRequest {
+                    reason: "policy listing exceeds limit; use certified prefix pages".into(),
+                });
+            }
+            let id = &key[prefix.len()..];
+            if id.len() != 64
+                || !id.iter().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b))
+            {
+                return Err(AcpError::State("invalid stored policy identifier".into()));
+            }
+            ids.push(
+                String::from_utf8(id.to_vec())
+                    .map_err(|_| AcpError::State("invalid stored policy identifier".into()))?,
+            );
+        }
         Ok(ids)
     }
 

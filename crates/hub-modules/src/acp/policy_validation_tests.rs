@@ -139,3 +139,31 @@ fn json_policy_uses_shared_semantics_for_creation_and_editing() {
         PolicyMarshalingType::ShortJson
     );
 }
+
+#[test]
+fn policy_id_listing_is_bounded_and_rejects_invalid_keys() {
+    let mut module = AcpModule::new();
+    for n in 0..128u64 {
+        module
+            .store
+            .put(&keys::policy_key(&format!("{n:064x}")), vec![0; 8192]);
+    }
+    let ids = module.query_policy_ids().unwrap();
+    assert_eq!(ids.len(), 128);
+    assert_eq!(ids.first().unwrap(), &format!("{:064x}", 0));
+    assert_eq!(ids.last().unwrap(), &format!("{:064x}", 127));
+    module
+        .store
+        .put(&keys::policy_key(&format!("{:064x}", 128)), Vec::new());
+    assert!(matches!(
+        module.query_policy_ids(),
+        Err(AcpError::InvalidAccessRequest { .. })
+    ));
+    for suffix in [vec![255], b"short".to_vec(), vec![b'A'; 64]] {
+        let mut module = AcpModule::new();
+        let mut key = keys::POLICY_PREFIX.to_vec();
+        key.extend(suffix);
+        module.store.put(&key, Vec::new());
+        assert!(matches!(module.query_policy_ids(), Err(AcpError::State(_))));
+    }
+}
