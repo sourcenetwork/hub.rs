@@ -63,7 +63,10 @@ impl AcpModule {
         let mut result = self.direct_policy_cmd(actor, policy_id, command)?;
         match &mut result {
             PolicyCmdResult::RegisterObject { record }
-            | PolicyCmdResult::SetRelationship { record, .. } => {
+            | PolicyCmdResult::SetRelationship {
+                record_existed: false,
+                record,
+            } => {
                 record.metadata = metadata;
                 self.set_relationship(policy_id, &record.relationship.storage_key(), record);
             }

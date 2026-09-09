@@ -404,3 +404,77 @@ fn access_query_distinguishes_missing_policy_from_denial() {
     }
     assert_eq!(module.store().serialize(), before);
 }
+
+#[test]
+fn duplicate_relationship_preserves_original_metadata() {
+    use hub_modules::types::{BlockExecCtx, Timestamp, TxExecCtx};
+
+    let (mut module, policy_id) = setup();
+    let relationship = Relationship::with_entity("file", "report", "reader", reader());
+    let mut block = BlockExecCtx {
+        timestamp: Timestamp {
+            seconds: 100,
+            block_height: 10,
+        },
+        ..Default::default()
+    };
+    let mut submission = TxExecCtx {
+        signer: owner().to_string(),
+        tx_hash: vec![1; 32],
+        sequence: 1
+    };
+    let original = module
+        .execute_policy_cmd(
+            &owner(),
+            &policy_id,
+            PolicyCmd::SetRelationship(relationship.clone()),
+            &block,
+            &submission,
+        )
+        .unwrap();
+    let PolicyCmdResult::SetRelationship {
+        record_existed: false,
+        record,
+    } = original
+    else {
+        panic!("expected new relationship");
+    };
+    let encoded = serde_json::to_value(&record).unwrap();
+    block.timestamp = Timestamp {
+        seconds: 200,
+        block_height: 20,
+    };
+    submission.tx_hash = vec![2; 32];
+    for mut candidate in [module.clone(), restore(&module)] {
+        let before = candidate.store().serialize();
+        let result = candidate
+            .execute_policy_cmd(
+                &owner(),
+                &policy_id,
+                PolicyCmd::SetRelationship(relationship.clone()),
+                &block,
+                &submission,
+            )
+            .unwrap();
+        let PolicyCmdResult::SetRelationship {
+            record_existed: true,
+            record,
+        } = result
+        else {
+            panic!("expected existing relationship");
+        };
+        assert_eq!(serde_json::to_value(&record).unwrap(), encoded);
+        assert_eq!(candidate.store().serialize(), before);
+        assert!(matches!(
+            candidate.execute_policy_cmd(
+                &reader(),
+                &policy_id,
+                PolicyCmd::SetRelationship(relationship.clone()),
+                &block,
+                &submission,
+            ),
+            Err(AcpError::Unauthorized { .. })
+        ));
+        assert_eq!(candidate.store().serialize(), before);
+    }
+}

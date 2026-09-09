@@ -935,7 +935,12 @@ impl AcpModule {
         }
 
         let storage_key = rel.storage_key();
-        let record_existed = self.get_relationship(policy_id, &storage_key)?.is_some();
+        if let Some(record) = self.get_relationship(policy_id, &storage_key)? {
+            return Ok(PolicyCmdResult::SetRelationship {
+                record_existed: true,
+                record,
+            });
+        }
 
         let metadata = RecordMetadata {
             creation_ts: Timestamp::default(),
@@ -954,7 +959,7 @@ impl AcpModule {
         self.set_relationship(policy_id, &storage_key, &record);
 
         Ok(PolicyCmdResult::SetRelationship {
-            record_existed,
+            record_existed: false,
             record,
         })
     }
