@@ -2161,9 +2161,8 @@ resources:
         let (valid, msg, _) = module
             .query_validate_policy("not: valid: yaml: policy", PolicyMarshalingType::ShortYaml)
             .unwrap();
-        // Either parse fails or the policy is otherwise invalid.
-        // We just assert it returns false with a non-empty message or valid=false.
-        let _ = (valid, msg); // result depends on YAML parser behavior; don't assert specifics
+        assert!(!valid);
+        assert!(!msg.is_empty());
     }
 
     #[test]

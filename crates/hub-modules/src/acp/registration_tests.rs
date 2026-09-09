@@ -22,6 +22,93 @@ fn setup() -> (AcpModule, Did, Did, String, Object) {
 }
 
 #[test]
+fn unarchive_errors_preserve_state_before_and_after_restoration() {
+    let (mut module, policy_owner, object_owner, policy, object) = setup();
+    module
+        .direct_policy_cmd(
+            &object_owner,
+            &policy,
+            PolicyCmd::RegisterObject(object.clone()),
+        )
+        .unwrap();
+    for archived in [false, true] {
+        if archived {
+            module
+                .direct_policy_cmd(
+                    &object_owner,
+                    &policy,
+                    PolicyCmd::ArchiveObject(object.clone()),
+                )
+                .unwrap();
+        }
+        let before = module.store.serialize();
+        for mut candidate in [
+            module.clone(),
+            AcpModule::from_store(InMemoryKvStore::deserialize(&before).unwrap()),
+        ] {
+            assert!(matches!(
+                candidate.direct_policy_cmd(
+                    &object_owner,
+                    &"f".repeat(64),
+                    PolicyCmd::UnarchiveObject(object.clone()),
+                ),
+                Err(AcpError::PolicyNotFound { .. })
+            ));
+            assert_eq!(candidate.store.serialize(), before);
+            for missing in [
+                Object {
+                    resource: object.resource.clone(),
+                    id: "missing".into(),
+                },
+                Object {
+                    resource: "missing".into(),
+                    id: object.id.clone(),
+                },
+            ] {
+                assert!(matches!(
+                    candidate.direct_policy_cmd(
+                        &object_owner,
+                        &policy,
+                        PolicyCmd::UnarchiveObject(missing),
+                    ),
+                    Err(AcpError::ObjectNotRegistered { .. })
+                ));
+                assert_eq!(candidate.store.serialize(), before);
+            }
+            assert!(matches!(
+                candidate.direct_policy_cmd(
+                    &policy_owner,
+                    &policy,
+                    PolicyCmd::UnarchiveObject(object.clone()),
+                ),
+                Err(AcpError::Unauthorized { .. })
+            ));
+            assert_eq!(candidate.store.serialize(), before);
+            let result = candidate
+                .direct_policy_cmd(
+                    &object_owner,
+                    &policy,
+                    PolicyCmd::UnarchiveObject(object.clone()),
+                )
+                .unwrap();
+            let PolicyCmdResult::UnarchiveObject {
+                record,
+                relationship_modified,
+            } = result
+            else {
+                panic!("unexpected unarchive result");
+            };
+            assert_eq!(relationship_modified, archived);
+            assert!(!record.archived);
+            assert_eq!(record.metadata.owner_did, object_owner.to_string());
+            if !archived {
+                assert_eq!(candidate.store.serialize(), before);
+            }
+        }
+    }
+}
+
+#[test]
 fn amendment_moves_the_owner_key_and_revokes_the_previous_owner() {
     let (mut module, first, second, policy, object) = setup();
     let generated = module
