@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use alloy_primitives::{B256, Log};
 use hub_domain::{ExecutionReceipt, RECEIPT_RESPONSE_BYTES, ReceiptResponse};
 use hub_permission::encoded_size;
@@ -22,6 +20,15 @@ impl HubApiImpl {
         let block = index
             .get_block_by_hash(&requested.block_hash)
             .ok_or_else(|| error("receipt revision unavailable"))?;
+        let Some(revision) = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            self.try_captured_revision(&block),
+        )
+        .await
+        .map_err(|_| error("receipt finality deadline exceeded"))??
+        else {
+            return Ok(None);
+        };
         let mut receipts = block
             .transaction_hashes
             .iter()
@@ -54,9 +61,6 @@ impl HubApiImpl {
             })
             .collect::<Vec<_>>();
         encoded_size(&receipts, 8 << 20).map_err(request_error)?;
-        let revision = tokio::time::timeout(Duration::from_secs(2), self.captured_revision(&block))
-            .await
-            .map_err(|_| error("receipt finality deadline exceeded"))??;
         let response = ReceiptResponse {
             revision,
             gas_limit: block.gas_limit,

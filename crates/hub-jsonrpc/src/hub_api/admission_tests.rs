@@ -72,3 +72,69 @@ async fn cancelled_lookup_keeps_its_permit_until_blocking_work_finishes() {
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn receipt_poll_does_not_wait_for_a_missing_certificate() {
+    use hub_indexer::{IndexedBlock, IndexedReceipt};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let hash = B256::repeat_byte(1);
+    let index = Arc::new(BlockIndex::new());
+    index.insert_block(
+        IndexedBlock {
+            hash,
+            number: 1,
+            parent_hash: B256::ZERO,
+            state_root: B256::ZERO,
+            module_state_root: B256::ZERO,
+            timestamp: 1,
+            gas_limit: 100,
+            gas_used: 0,
+            base_fee_per_gas: None,
+            prevrandao: B256::ZERO,
+            transaction_hashes: vec![hash],
+        },
+        vec![],
+        vec![IndexedReceipt {
+            transaction_hash: hash,
+            block_hash: hash,
+            block_number: 1,
+            transaction_index: 0,
+            from: alloy_primitives::Address::ZERO,
+            to: None,
+            cumulative_gas_used: 0,
+            gas_used: 0,
+            contract_address: None,
+            logs: vec![],
+            status: true,
+            signer_did: None,
+        }],
+    );
+    let lookups = Arc::new(AtomicUsize::new(0));
+    let calls = lookups.clone();
+    let state = Arc::new(NodeState::new(1, 0, 1));
+    let mut api =
+        HubApiImpl::new(state.clone(), None).with_light_block_lookup(Arc::new(move |_| {
+            calls.fetch_add(1, Ordering::Relaxed);
+            Err("finalization certificate not found".into())
+        }));
+    api.index = Some(index);
+    assert!(
+        tokio::time::timeout(Duration::from_secs(1), api.get_receipt_proof(hash))
+            .await
+            .unwrap()
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(lookups.load(Ordering::Relaxed), 1);
+    let permits: Vec<_> = (0..8).map(|_| state.proof_permit().unwrap()).collect();
+    drop(permits);
+    api.light_block_lookup = Some(Arc::new(|_| Err("corrupt certificate".into())));
+    assert!(
+        api.get_receipt_proof(hash)
+            .await
+            .unwrap_err()
+            .message()
+            .contains("corrupt certificate")
+    );
+}

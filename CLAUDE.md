@@ -200,7 +200,9 @@ Proof RPCs share eight in-flight slots per node; blocking historical certificate
 lookups have a separate eight-slot limit. Excess work returns JSON-RPC -32002
 with `retryable: true` before starting. The Rust client exposes these responses
 as `ResourceBusy`; `is_throttled()` also recognizes HTTP 429. Other -32002
-errors remain ordinary RPC errors, and submissions are not automatically retried. Cancelling a lookup does not release its
+errors remain ordinary RPC errors, and submissions are not automatically retried.
+Receipt polls return no evidence yet when the finalization certificate is absent,
+without holding a proof slot while waiting or assembling receipt payloads. Cancelling a lookup does not release its
 slot until its blocking task finishes.
 See `docs/permission-proofs.md` for formats and limits.
 

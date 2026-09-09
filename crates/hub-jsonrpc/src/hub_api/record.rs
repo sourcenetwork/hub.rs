@@ -79,18 +79,28 @@ impl HubApiImpl {
 
     // Called after releasing storage guards, under the enclosing request deadline.
     pub(super) async fn captured_revision(&self, selected: &IndexedBlock) -> RpcResult<LightBlock> {
-        let revision = loop {
-            match self.get_light_block(U64::from(selected.number)).await {
-                Ok(revision) => break revision,
-                Err(cause)
-                    if cause
-                        .message()
-                        .contains("finalization certificate not found") =>
-                {
-                    tokio::time::sleep(Duration::from_millis(5)).await;
-                }
-                Err(cause) => return Err(cause),
+        loop {
+            if let Some(revision) = self.try_captured_revision(selected).await? {
+                return Ok(revision);
             }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    pub(super) async fn try_captured_revision(
+        &self,
+        selected: &IndexedBlock,
+    ) -> RpcResult<Option<LightBlock>> {
+        let revision = match self.get_light_block(U64::from(selected.number)).await {
+            Ok(revision) => revision,
+            Err(cause)
+                if cause
+                    .message()
+                    .contains("finalization certificate not found") =>
+            {
+                return Ok(None);
+            }
+            Err(cause) => return Err(cause),
         };
         if revision.height != selected.number
             || revision.block_hash.parse::<B256>().map_err(error)? != selected.hash
@@ -101,6 +111,6 @@ impl HubApiImpl {
         }
         revision.check_artifact_limits().map_err(error)?;
         encoded_size(&revision, hub_domain::LIGHT_BLOCK_RESPONSE_BYTES).map_err(request_error)?;
-        Ok(revision)
+        Ok(Some(revision))
     }
 }
