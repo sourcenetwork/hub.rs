@@ -37,10 +37,15 @@ pub struct BulletinPage<T> {
 }
 
 fn namespace_id(namespace: &str) -> Result<String, ClientError> {
-    if namespace.len() > MAX_KEY_BYTES - keys::NAMESPACE_PREFIX.len() - "bulletin/".len() {
+    let prefix_len = if namespace.starts_with("bulletin/") {
+        0
+    } else {
+        "bulletin/".len()
+    };
+    if namespace.len() > MAX_KEY_BYTES - keys::NAMESPACE_PREFIX.len() - prefix_len {
         return Err(hub_permission::PermissionError::Limit.into());
     }
-    Ok(format!("bulletin/{namespace}"))
+    Ok(keys::namespace_id(namespace))
 }
 
 fn decode<T: BorshDeserialize>(
@@ -310,6 +315,19 @@ impl HubClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn namespace_selection_accepts_returned_ids_and_bounds_encoded_keys() {
+        assert_eq!(
+            namespace_id("a/b").unwrap(),
+            namespace_id("bulletin/a/b").unwrap()
+        );
+        let short = "x".repeat(MAX_KEY_BYTES - keys::NAMESPACE_PREFIX.len() - "bulletin/".len());
+        let full = format!("bulletin/{short}");
+        assert_eq!(namespace_id(&short).unwrap(), namespace_id(&full).unwrap());
+        assert!(namespace_id(&(short + "x")).is_err());
+        assert!(namespace_id(&(full + "x")).is_err());
+    }
 
     #[test]
     fn bulletin_policy_identifier_requires_canonical_encoding() {

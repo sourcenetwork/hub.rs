@@ -28,6 +28,15 @@ pub const COLLABORATOR_PREFIX: &[u8] = b"collaborator/";
 /// Module parameters key.
 pub const PARAMS_KEY: &[u8] = b"p_bulletin";
 
+/// Accept a short namespace name or its stored identifier.
+pub fn namespace_id(namespace: &str) -> String {
+    if namespace.starts_with("bulletin/") {
+        namespace.to_owned()
+    } else {
+        format!("bulletin/{namespace}")
+    }
+}
+
 /// Post key: `prefix + sanitize(namespace_id) + "/" + sanitize(post_id)`.
 pub fn post_key(namespace_id: &str, post_id: &str) -> Vec<u8> {
     let mut key = Vec::from(POST_PREFIX);

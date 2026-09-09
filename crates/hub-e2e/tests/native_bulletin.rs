@@ -39,10 +39,8 @@ async fn submit(
                 if let Some(post) = &expected_post {
                     assert_eq!(receipt.logs().len(), 1);
                     let event = IBulletin::PostCreated::decode_log(&receipt.logs()[0]).unwrap();
-                    let expected = keys::generate_post_id(
-                        &format!("bulletin/{}", post.namespace),
-                        &post.payload,
-                    );
+                    let expected =
+                        keys::generate_post_id(&keys::namespace_id(&post.namespace), &post.payload);
                     assert_eq!(
                         event.data.postId,
                         expected.parse::<alloy_primitives::B256>().unwrap()
@@ -179,14 +177,14 @@ async fn certified_bulletin_reads_follow_grants_pages_and_restart() {
         &reader,
         &collaborator,
         &trusted,
-        post("team", denied),
+        post(namespace.id.as_str(), denied),
         false,
     )
     .await;
     assert!(
         reader
             .read_bulletin_post(
-                "team",
+                namespace.id.as_str(),
                 &keys::generate_post_id("bulletin/team", denied),
                 minimum,
                 &trusted
@@ -202,7 +200,7 @@ async fn certified_bulletin_reads_follow_grants_pages_and_restart() {
         &owner,
         &trusted,
         IBulletin::addCollaboratorCall {
-            namespace: "team".into(),
+            namespace: namespace.id.as_str().into(),
             collaboratorDid: collaborator.did().into(),
         },
         true,
@@ -210,7 +208,12 @@ async fn certified_bulletin_reads_follow_grants_pages_and_restart() {
     .await;
     assert_eq!(
         reader
-            .read_bulletin_collaborator("team", collaborator.did(), minimum, &trusted)
+            .read_bulletin_collaborator(
+                namespace.id.as_str(),
+                collaborator.did(),
+                minimum,
+                &trusted
+            )
             .await
             .unwrap()
             .value
@@ -219,13 +222,13 @@ async fn certified_bulletin_reads_follow_grants_pages_and_restart() {
         collaborator.did()
     );
     let collaborators = reader
-        .list_bulletin_collaborators("team", None, 1, minimum, &trusted)
+        .list_bulletin_collaborators(namespace.id.as_str(), None, 1, minimum, &trusted)
         .await
         .unwrap();
     assert_eq!(collaborators.records.len(), 1);
     assert!(collaborators.continuation.is_none());
     for payload in [b"first".as_slice(), b"second"] {
-        let mut request = post("team", payload);
+        let mut request = post(namespace.id.as_str(), payload);
         if payload == b"first" {
             request.proof = Default::default();
         }
@@ -233,7 +236,7 @@ async fn certified_bulletin_reads_follow_grants_pages_and_restart() {
         minimum = submit(&writer, &reader, &collaborator, &trusted, request, true).await;
         let record = reader
             .read_bulletin_post(
-                "team",
+                namespace.id.as_str(),
                 &keys::generate_post_id("bulletin/team", payload),
                 minimum,
                 &trusted,
@@ -247,7 +250,7 @@ async fn certified_bulletin_reads_follow_grants_pages_and_restart() {
         assert_eq!(record.creator_did, collaborator.did());
     }
     let first = reader
-        .list_bulletin_posts("team", None, 1, minimum, &trusted)
+        .list_bulletin_posts(namespace.id.as_str(), None, 1, minimum, &trusted)
         .await
         .unwrap();
     assert_eq!(first.records.len(), 1);
@@ -259,7 +262,13 @@ async fn certified_bulletin_reads_follow_grants_pages_and_restart() {
             .is_err()
     );
     let last = reader
-        .list_bulletin_posts("team", Some(next), 1, first.revision, &trusted)
+        .list_bulletin_posts(
+            namespace.id.as_str(),
+            Some(next),
+            1,
+            first.revision,
+            &trusted,
+        )
         .await
         .unwrap();
     assert_eq!(last.records.len(), 1);
@@ -271,7 +280,7 @@ async fn certified_bulletin_reads_follow_grants_pages_and_restart() {
         &owner,
         &trusted,
         IBulletin::removeCollaboratorCall {
-            namespace: "team".into(),
+            namespace: namespace.id.as_str().into(),
             collaboratorDid: collaborator.did().into(),
         },
         true,
@@ -279,7 +288,12 @@ async fn certified_bulletin_reads_follow_grants_pages_and_restart() {
     .await;
     assert!(
         reader
-            .read_bulletin_collaborator("team", collaborator.did(), minimum, &trusted)
+            .read_bulletin_collaborator(
+                namespace.id.as_str(),
+                collaborator.did(),
+                minimum,
+                &trusted
+            )
             .await
             .unwrap()
             .value
@@ -287,7 +301,7 @@ async fn certified_bulletin_reads_follow_grants_pages_and_restart() {
     );
     assert!(
         reader
-            .list_bulletin_collaborators("team", None, 1, minimum, &trusted)
+            .list_bulletin_collaborators(namespace.id.as_str(), None, 1, minimum, &trusted)
             .await
             .unwrap()
             .records
@@ -298,7 +312,7 @@ async fn certified_bulletin_reads_follow_grants_pages_and_restart() {
         &reader,
         &collaborator,
         &trusted,
-        post("team", b"after revocation"),
+        post(namespace.id.as_str(), b"after revocation"),
         false,
     )
     .await;
@@ -314,7 +328,7 @@ async fn certified_bulletin_reads_follow_grants_pages_and_restart() {
         Some(policy_id)
     );
     let restored = reader
-        .list_bulletin_posts("team", None, 2, minimum, &trusted)
+        .list_bulletin_posts(namespace.id.as_str(), None, 2, minimum, &trusted)
         .await
         .unwrap();
     assert_eq!(
@@ -324,7 +338,12 @@ async fn certified_bulletin_reads_follow_grants_pages_and_restart() {
     assert!(restored.continuation.is_none());
     assert!(
         reader
-            .read_bulletin_collaborator("team", collaborator.did(), minimum, &trusted)
+            .read_bulletin_collaborator(
+                namespace.id.as_str(),
+                collaborator.did(),
+                minimum,
+                &trusted
+            )
             .await
             .unwrap()
             .value
@@ -353,7 +372,7 @@ async fn certified_bulletin_reads_follow_grants_pages_and_restart() {
         .public();
     assert!(
         reader
-            .read_bulletin_namespace("team", minimum, &untrusted)
+            .read_bulletin_namespace(namespace.id.as_str(), minimum, &untrusted)
             .await
             .is_err()
     );

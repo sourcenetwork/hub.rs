@@ -50,3 +50,9 @@ bytes; defaults apply only to missing keys. Native recovery checks these values
 before publishing query state.
 
 Namespace registration, posting, and collaborator changes reject empty namespace names before reading or mutating policy state. Failed empty-name registration does not initialize the bulletin policy.
+
+Namespace inputs accept short names (`team`) and stored IDs (`bulletin/team`).
+Registration results can be passed directly to subsequent reads, posting, and
+collaborator changes. Both forms select the same namespace and authorization
+object; an already prefixed ID is preserved. Verified client reads use the same
+normalization and enforce limits on the resulting storage key.

@@ -159,7 +159,7 @@ impl BulletinModule {
     ) -> Result<Namespace> {
         validate_namespace(namespace)?;
         let policy_id = self.ensure_policy(acp)?;
-        let namespace_id = format!("bulletin/{}", namespace);
+        let namespace_id = keys::namespace_id(namespace);
 
         if self.has_namespace(&namespace_id)? {
             return Err(BulletinError::NamespaceAlreadyExists {
@@ -204,7 +204,7 @@ impl BulletinModule {
         let policy_id = self
             .get_policy_id()?
             .ok_or(BulletinError::PolicyNotInitialized)?;
-        let namespace_id = format!("bulletin/{}", namespace);
+        let namespace_id = keys::namespace_id(namespace);
 
         if !self.has_namespace(&namespace_id)? {
             return Err(BulletinError::NamespaceNotFound {
@@ -275,7 +275,7 @@ impl BulletinModule {
         let policy_id = self
             .get_policy_id()?
             .ok_or(BulletinError::PolicyNotInitialized)?;
-        let namespace_id = format!("bulletin/{}", namespace);
+        let namespace_id = keys::namespace_id(namespace);
 
         if !self.has_namespace(&namespace_id)? {
             return Err(BulletinError::NamespaceNotFound {
@@ -333,7 +333,7 @@ impl BulletinModule {
         let policy_id = self
             .get_policy_id()?
             .ok_or(BulletinError::PolicyNotInitialized)?;
-        let namespace_id = format!("bulletin/{}", namespace);
+        let namespace_id = keys::namespace_id(namespace);
 
         if !self.has_namespace(&namespace_id)? {
             return Err(BulletinError::NamespaceNotFound {
@@ -392,7 +392,7 @@ impl BulletinModule {
     /// # Reads
     /// - `"namespace/" + namespace_id`
     pub fn query_namespace(&self, namespace: &str) -> Result<Namespace> {
-        let namespace_id = format!("bulletin/{}", namespace);
+        let namespace_id = keys::namespace_id(namespace);
         self.get_namespace(&namespace_id)?
             .ok_or(BulletinError::NamespaceNotFound {
                 namespace: namespace.to_string(),
@@ -410,7 +410,7 @@ impl BulletinModule {
 
     /// List namespace collaborators within the collection work budget.
     pub fn query_namespace_collaborators(&self, namespace: &str) -> Result<Vec<Collaborator>> {
-        let namespace_id = format!("bulletin/{}", namespace);
+        let namespace_id = keys::namespace_id(namespace);
         if !self.has_namespace(&namespace_id)? {
             return Err(BulletinError::NamespaceNotFound {
                 namespace: namespace.to_string(),
@@ -425,7 +425,7 @@ impl BulletinModule {
 
     /// List namespace posts within the collection work budget.
     pub fn query_namespace_posts(&self, namespace: &str) -> Result<Vec<Post>> {
-        let namespace_id = format!("bulletin/{}", namespace);
+        let namespace_id = keys::namespace_id(namespace);
         if !self.has_namespace(&namespace_id)? {
             return Err(BulletinError::NamespaceNotFound {
                 namespace: namespace.to_string(),
@@ -456,7 +456,7 @@ impl BulletinModule {
     /// - `NamespaceNotFound` — namespace does not exist
     /// - `PostNotFound` — post not found at that key
     pub fn query_post(&self, namespace: &str, id: &str) -> Result<Post> {
-        let namespace_id = format!("bulletin/{}", namespace);
+        let namespace_id = keys::namespace_id(namespace);
         if !self.has_namespace(&namespace_id)? {
             return Err(BulletinError::NamespaceNotFound {
                 namespace: namespace.to_string(),
@@ -486,7 +486,7 @@ impl BulletinModule {
             });
         }
 
-        let namespace_id = format!("bulletin/{}", namespace);
+        let namespace_id = keys::namespace_id(namespace);
         let scan_prefix = keys::post_prefix(&namespace_id);
 
         if glob.len() > 4096 {
@@ -942,6 +942,97 @@ mod tests {
             Err(BulletinError::NotCollaborator { .. })
         ));
         assert_eq!(m.query_namespace_posts("ns1").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn returned_namespace_ids_support_collaboration_and_restored_revocation() {
+        let mut module = BulletinModule::new();
+        let mut acp = crate::acp::AcpModule::new();
+        let owner = make_did("did:key:owner");
+        let writer = make_did("did:key:writer");
+        let stranger = make_did("did:key:stranger");
+        let tx = make_tx_ctx(owner.as_str());
+        let block = make_block_ctx(100, 10);
+        let ns = module
+            .register_namespace(&mut acp, &block, &tx, &owner, "group/notes")
+            .unwrap();
+        assert_eq!(module.query_namespace(&ns.id).unwrap(), ns);
+        let before = (module.store().serialize(), acp.store().serialize());
+        assert!(matches!(
+            module.register_namespace(&mut acp, &block, &tx, &owner, &ns.id),
+            Err(BulletinError::NamespaceAlreadyExists { .. })
+        ));
+        assert!(matches!(
+            module.add_collaborator(&mut acp, &tx, &stranger, &ns.id, writer.as_str()),
+            Err(BulletinError::Unauthorized { .. })
+        ));
+        assert_eq!(
+            (module.store().serialize(), acp.store().serialize()),
+            before
+        );
+        module
+            .add_collaborator(&mut acp, &tx, &owner, &ns.id, writer.as_str())
+            .unwrap();
+        let before = (module.store().serialize(), acp.store().serialize());
+        assert!(matches!(
+            module.add_collaborator(&mut acp, &tx, &owner, "group/notes", writer.as_str()),
+            Err(BulletinError::CollaboratorAlreadyExists { .. })
+        ));
+        assert!(matches!(
+            module.remove_collaborator(&mut acp, &tx, &stranger, &ns.id, writer.as_str()),
+            Err(BulletinError::Unauthorized { .. })
+        ));
+        assert_eq!(
+            (module.store().serialize(), acp.store().serialize()),
+            before
+        );
+        let id = module
+            .create_post(&acp, &tx, &writer, &ns.id, b"first", b"proof", "")
+            .unwrap();
+        assert_eq!(
+            module.query_post(&ns.id, &id).unwrap(),
+            module.query_post("group/notes", &id).unwrap()
+        );
+        assert_eq!(
+            module.query_namespace_posts(&ns.id).unwrap(),
+            module.query_iterate_glob("group/notes", "*").unwrap()
+        );
+        assert_eq!(
+            module.query_namespace_collaborators(&ns.id).unwrap().len(),
+            1
+        );
+        module
+            .remove_collaborator(&mut acp, &tx, &owner, &ns.id, writer.as_str())
+            .unwrap();
+        module = BulletinModule::from_store(
+            crate::kv_store::InMemoryKvStore::deserialize(&module.store().serialize()).unwrap(),
+        );
+        acp = crate::acp::AcpModule::from_store(
+            crate::kv_store::InMemoryKvStore::deserialize(&acp.store().serialize()).unwrap(),
+        );
+        let before = (module.store().serialize(), acp.store().serialize());
+        assert!(matches!(
+            module.create_post(&acp, &tx, &writer, &ns.id, b"second", &[], ""),
+            Err(BulletinError::NotCollaborator { .. })
+        ));
+        assert!(matches!(
+            module.remove_collaborator(&mut acp, &tx, &owner, &ns.id, writer.as_str()),
+            Err(BulletinError::CollaboratorNotFound { .. })
+        ));
+        assert_eq!(
+            (module.store().serialize(), acp.store().serialize()),
+            before
+        );
+        assert!(
+            module
+                .query_namespace_collaborators(&ns.id)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(module.query_post(&ns.id, &id).unwrap().payload, b"first");
+        module
+            .create_post(&acp, &tx, &owner, &ns.id, b"second", &[], "")
+            .unwrap();
     }
 
     #[test]
