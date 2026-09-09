@@ -31,5 +31,6 @@ tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
 commonware-p2p.workspace = true
+serde_json.workspace = true
 tempfile.workspace = true
 zanzibar.workspace = true

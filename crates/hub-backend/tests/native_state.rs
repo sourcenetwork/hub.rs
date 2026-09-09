@@ -15,6 +15,7 @@ use hub_modules::{
         keys,
         types::{AccessRequest, Actor, Object, Operation, PolicyCmd, PolicyMarshalingType},
     },
+    bulletin::keys as bulletin_keys,
     hub::types::ChainConfig,
     kv_store::{InMemoryKvStore, ModuleKvStore},
     module_state::{ModuleChanges, combine_module_roots},
@@ -247,12 +248,13 @@ fn record_limits_and_colliding_prefixes_survive_reopen() {
         }
         let modules = ModuleState::from_stores(std::array::from_fn(|module| {
             let mut store = InMemoryKvStore::default();
+            // 0xFF keys avoid module-owned prefixes; recovery structurally validates those records.
             for key in [
                 vec![],
                 vec![0],
-                vec![1; native::INDEX_PREFIX_BYTES],
-                vec![1; native::INDEX_PREFIX_BYTES + 1],
-                vec![1; native::MAX_KEY_BYTES],
+                vec![0xFF; native::INDEX_PREFIX_BYTES],
+                vec![0xFF; native::INDEX_PREFIX_BYTES + 1],
+                vec![0xFF; native::MAX_KEY_BYTES],
             ] {
                 store.put(&key, vec![u8::try_from(module).unwrap(); 8]);
             }
@@ -288,8 +290,47 @@ fn native_hydration_rejects_invalid_bulletin_keys_without_modifying_state() {
     let config = tokio::Config::new().with_storage_directory(directory.path());
     tokio::Runner::new(config).start(|context| async move {
         let set = open(&context).await;
+        let owner = OWNER.parse().unwrap();
+        let tx_ctx = TxExecCtx {
+            sequence: 0,
+            tx_hash: vec![1; 32],
+            signer: OWNER.into(),
+        };
+        let mut modules = ModuleState::default();
+        modules
+            .bulletin
+            .register_namespace(
+                &mut modules.acp,
+                &BlockExecCtx::default(),
+                &tx_ctx,
+                &owner,
+                "reports",
+            )
+            .unwrap();
+        let post_id = modules
+            .bulletin
+            .create_post(
+                &modules.acp,
+                &tx_ctx,
+                &owner,
+                "reports",
+                b"payload",
+                &[],
+                "",
+            )
+            .unwrap();
+        let post_key = bulletin_keys::post_key("bulletin/reports", &post_id);
+        let changes = modules.diff_from(&ModuleState::default());
+        let post_value = changes[1]
+            .iter()
+            .find(|(key, _)| *key == post_key)
+            .unwrap()
+            .1
+            .clone()
+            .unwrap();
         let mut changes: ModuleChanges = Default::default();
-        changes[1].push((b"post/legacy/id".to_vec(), Some(vec![255; 8])));
+        // A valid record under a mismatched key fails its identity check like a legacy alias.
+        changes[1].push((b"post/legacy/id".to_vec(), Some(post_value)));
         let sealed = native::prepare(set.new_batches().await, changes)
             .await
             .unwrap();
@@ -301,7 +342,7 @@ fn native_hydration_rejects_invalid_bulletin_keys_without_modifying_state() {
         assert!(
             error
                 .to_string()
-                .contains("invalid bulletin record identity")
+                .contains("bulletin key does not match its record")
         );
         assert_eq!(set.committed_targets().await, before);
         assert_eq!(root(&set).await, before_root);
