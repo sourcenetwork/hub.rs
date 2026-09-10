@@ -129,6 +129,51 @@ mod tests {
     }
 
     #[test]
+    fn commitment_by_id_rejects_missing_zero_and_mismatched_records() {
+        let mut module = AcpModule::new();
+        assert!(matches!(
+            module.query_registrations_commitment(1),
+            Err(AcpError::CommitmentNotFound { id: 1 })
+        ));
+        insert(&mut module, 1, vec![9; 32]);
+        let record = module.query_registrations_commitment(1).unwrap();
+        assert_eq!(record.commitment, vec![9; 32]);
+        assert!(!record.expired);
+        for (id, root) in [(2, vec![9; 32]), (1, vec![9; 31])] {
+            let mut mismatched = record.clone();
+            mismatched.id = id;
+            mismatched.commitment = root;
+            module.store.put(
+                &keys::commitment_key(1),
+                borsh::to_vec(&mismatched).unwrap(),
+            );
+            let before = module.store.serialize();
+            assert!(module.query_registrations_commitment(1).is_err());
+            assert_eq!(module.store.serialize(), before);
+        }
+        let mut replaced = record.clone();
+        replaced.commitment = vec![8; 32];
+        module
+            .store
+            .put(&keys::commitment_key(1), borsh::to_vec(&replaced).unwrap());
+        assert_eq!(module.query_registrations_commitment(1).unwrap(), replaced);
+        assert!(
+            module
+                .query_registrations_commitment_by_commitment(&[9; 32])
+                .is_err()
+        );
+        module.store.put(&keys::commitment_key(1), vec![0]);
+        assert!(module.query_registrations_commitment(1).is_err());
+        module
+            .store
+            .put(&keys::commitment_key(0), borsh::to_vec(&record).unwrap());
+        assert!(matches!(
+            module.query_registrations_commitment(0),
+            Err(AcpError::State(_))
+        ));
+    }
+
+    #[test]
     fn commitment_lookup_rejects_corruption_and_excessive_bytes() {
         let mut module = AcpModule::new();
         insert(&mut module, 1, vec![9; 32]);
