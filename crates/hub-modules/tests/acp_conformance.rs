@@ -67,6 +67,134 @@ fn setup() -> (AcpModule, String) {
 }
 
 #[test]
+fn check_access_rejects_invalid_context_missing_policies_and_partial_denials() {
+    use hub_modules::types::{BlockExecCtx, Timestamp, TxExecCtx};
+
+    let read_on = |id: &str| Operation {
+        object: Object {
+            resource: "file".into(),
+            id: id.into(),
+        },
+        permission: "read".into(),
+    };
+    let context = |height: u64, seconds: u64| BlockExecCtx {
+        genesis_id: [7; 32],
+        deployment_id: 9001,
+        timestamp: Timestamp {
+            seconds,
+            block_height: height,
+        },
+    };
+    let submission = |signer: &str, sequence: u64| TxExecCtx {
+        sequence,
+        tx_hash: vec![9; 32],
+        signer: signer.into(),
+    };
+    let (mut module, policy_id) = setup();
+    module
+        .direct_policy_cmd(
+            &owner(),
+            &policy_id,
+            PolicyCmd::SetRelationship(Relationship::with_entity(
+                "file",
+                "report",
+                "reader",
+                reader(),
+            )),
+        )
+        .unwrap();
+    let granted = AccessRequest {
+        actor: Actor(reader()),
+        operations: vec![read_on("report")],
+    };
+    let before = module.store().serialize();
+    for (height, seconds, signer) in [
+        (0, 100, "did:key:owner"),
+        (5, 0, "did:key:owner"),
+        (5, 100, "did:key:other"),
+    ] {
+        assert!(matches!(
+            module.check_access(
+                &owner(),
+                &policy_id,
+                &granted,
+                &context(height, seconds),
+                &submission(signer, 0),
+            ),
+            Err(AcpError::InvalidAccessRequest { .. })
+        ));
+    }
+    assert!(matches!(
+        module.check_access(
+            &owner(),
+            "missing-policy",
+            &granted,
+            &context(5, 100),
+            &submission(owner().as_str(), 0),
+        ),
+        Err(AcpError::PolicyNotFound { .. })
+    ));
+    let unknown_resource = AccessRequest {
+        actor: Actor(reader()),
+        operations: vec![Operation {
+            object: Object {
+                resource: "unknown".into(),
+                id: "report".into(),
+            },
+            permission: "read".into(),
+        }],
+    };
+    let denied_first = AccessRequest {
+        actor: Actor(reader()),
+        operations: vec![read_on("other")],
+    };
+    let denied_second = AccessRequest {
+        actor: Actor(reader()),
+        operations: vec![read_on("report"), read_on("other")],
+    };
+    for request in [&unknown_resource, &denied_first, &denied_second] {
+        assert!(matches!(
+            module.check_access(
+                &owner(),
+                &policy_id,
+                request,
+                &context(5, 100),
+                &submission(owner().as_str(), 0),
+            ),
+            Err(AcpError::Unauthorized { .. }) | Err(AcpError::State(_))
+        ));
+        assert_eq!(module.store().serialize(), before);
+    }
+    let decision = module
+        .check_access(
+            &owner(),
+            &policy_id,
+            &granted,
+            &context(5, 100),
+            &submission(owner().as_str(), 3),
+        )
+        .unwrap();
+    assert_eq!(decision.actor, reader().to_string());
+    assert_eq!(decision.creator, owner().to_string());
+    assert_eq!(decision.creator_acc_sequence, 3);
+    assert_eq!(
+        module.query_access_decision(&decision.id).unwrap().as_ref(),
+        Some(&decision)
+    );
+    let replayed = module
+        .check_access(
+            &owner(),
+            &policy_id,
+            &granted,
+            &context(6, 101),
+            &submission(owner().as_str(), 3),
+        )
+        .unwrap();
+    assert_eq!(replayed.id, decision.id);
+    assert_eq!(replayed.operations, decision.operations);
+}
+
+#[test]
 fn registration_errors_preserve_state_and_object_identity_after_restore() {
     let (module, policy) = setup();
     for mut candidate in [module.clone(), restore(&module)] {
