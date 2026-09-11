@@ -86,6 +86,10 @@ async fn recover_after_each_module_commit() {
     let signer = BlsSigner::new(7u64.into(), 9001).unwrap();
     let baseline = create_policy(&origin, &signer, "baseline").await;
     assert_replicas(&cluster, &signer, &baseline).await;
+    // A restarted replica can serve recovered query state while its live module
+    // application is still replaying earlier blocks, so an armed crash marker may
+    // fire one block behind the submitted policy. Track the applied floor.
+    let mut floor = baseline.block_number;
     let marker = cluster.node(3).data_dir.join("module-commit-crash");
     let witness = marker.with_extension("hit");
 
@@ -95,6 +99,7 @@ async fn recover_after_each_module_commit() {
         }
         std::fs::write(&marker, store.to_string()).unwrap();
         let receipt = create_policy(&origin, &signer, &format!("crash-{store}")).await;
+        floor = floor.max(receipt.block_number.saturating_sub(1));
         tokio::time::timeout(deadline(), async {
             while !witness.exists() {
                 tokio::time::sleep(POLL).await;
@@ -107,7 +112,11 @@ async fn recover_after_each_module_commit() {
             .split_whitespace()
             .map(|s| s.parse().unwrap())
             .collect();
-        assert_eq!(observed, vec![receipt.block_number, store]);
+        assert_eq!(observed[1], store);
+        assert!(
+            observed[0] >= floor && observed[0] <= receipt.block_number,
+            "crash witness {observed:?} outside the applied range"
+        );
         assert!(
             !marker.exists(),
             "crash marker must be consumed before restart"
@@ -120,6 +129,7 @@ async fn recover_after_each_module_commit() {
         let recovered = HubClient::new(cluster.node(3).rpc_url());
         let probe = create_policy(&recovered, &signer, &format!("after-crash-{store}")).await;
         assert_replicas(&cluster, &signer, &probe).await;
+        floor = probe.block_number;
         eprintln!(
             "recovered after module store {store} at height {}",
             receipt.block_number
