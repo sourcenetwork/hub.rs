@@ -100,7 +100,7 @@ jobs:
     timeout-minutes: 20
     env:
       HUBD_BINARY: ${{ github.workspace }}/target/debug/hubd
-      TMPDIR: ${{ runner.temp }}/hub-e2e-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.suite }}
+      TMPDIR: $RUNNER_TEMP/hub-e2e-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.suite }}
     strategy:
       fail-fast: false
       matrix:
