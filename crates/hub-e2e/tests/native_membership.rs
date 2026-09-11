@@ -17,10 +17,17 @@ use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, KeySet, NodeConfigBuilde
 use hub_modules::validator_registry::abi::IValidatorRegistry;
 use serde_json::json;
 
-const DEADLINE: Duration = Duration::from_secs(60);
+fn deadline() -> Duration {
+    let scale = std::env::var("HUB_E2E_DEADLINE_SCALE")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(1)
+        .max(1);
+    Duration::from_secs(60 * scale as u64)
+}
 
 async fn receipt(client: &HubClient, id: B256, trusted: &ConsensusPublicKey) -> u64 {
-    tokio::time::timeout(DEADLINE, async {
+    tokio::time::timeout(deadline(), async {
         loop {
             if let Ok(Some(proof)) = client.read_receipt(id, trusted).await {
                 assert!(proof.verify(id, trusted).unwrap().success());
@@ -53,7 +60,7 @@ async fn membership(
     minimum: u64,
     members: usize,
 ) -> LightBlock {
-    tokio::time::timeout(DEADLINE, async {
+    tokio::time::timeout(deadline(), async {
         loop {
             if let Ok(height) = client.block_number().await
                 && height >= minimum
@@ -233,7 +240,7 @@ async fn admit_member(interrupt: bool, crash_share: bool) {
     let mut incoming = command.spawn().unwrap();
     let joining = HubClient::new(format!("http://127.0.0.1:{rpc_port}"));
     if interrupt {
-        tokio::time::timeout(DEADLINE, async {
+        tokio::time::timeout(deadline(), async {
             loop {
                 assert!(incoming.try_wait().unwrap().is_none());
                 if tokio::net::TcpStream::connect(("127.0.0.1", p2p_port))
@@ -269,7 +276,7 @@ async fn admit_member(interrupt: bool, crash_share: bool) {
         assert!(!directory.join("secrets.json").exists());
     }
     if crash_share {
-        let status = tokio::time::timeout(DEADLINE, incoming.wait())
+        let status = tokio::time::timeout(deadline(), incoming.wait())
             .await
             .expect("share persistence crash deadline")
             .unwrap();

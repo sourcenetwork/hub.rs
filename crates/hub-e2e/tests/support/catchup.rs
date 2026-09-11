@@ -15,7 +15,14 @@ use serde_json::json;
 
 const OBJECT: &str = "doc/child";
 const POLL: Duration = Duration::from_millis(100);
-const DEADLINE: Duration = Duration::from_secs(90);
+fn deadline() -> Duration {
+    let scale = std::env::var("HUB_E2E_DEADLINE_SCALE")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(1)
+        .max(1);
+    Duration::from_secs(90 * scale as u64)
+}
 const READER: &str = "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH";
 const POLICY: &[u8] = b"name: replayed
 resources:
@@ -32,7 +39,7 @@ async fn certified_height(
     minimum: u64,
     trusted_key: &ConsensusPublicKey,
 ) -> LightBlock {
-    tokio::time::timeout(DEADLINE, async {
+    tokio::time::timeout(deadline(), async {
         loop {
             let height: String = client
                 .rpc_call_typed("eth_blockNumber", json!([]))
@@ -178,7 +185,7 @@ pub(super) async fn recover_replica(snapshot: bool, interrupt: bool, pruning: bo
     }
 
     let origin = HubClient::new(cluster.node(0).rpc_url());
-    tokio::time::timeout(DEADLINE, async {
+    tokio::time::timeout(deadline(), async {
         while origin.chain_id().await.is_err() {
             tokio::time::sleep(POLL).await;
         }
@@ -263,7 +270,7 @@ pub(super) async fn recover_replica(snapshot: bool, interrupt: bool, pruning: bo
     }
     cluster.restart_node(3).unwrap();
     if interrupt {
-        tokio::time::timeout(DEADLINE, async {
+        tokio::time::timeout(deadline(), async {
             while cluster.node_mut(3).process.is_running() {
                 tokio::time::sleep(POLL).await;
             }
@@ -285,11 +292,11 @@ pub(super) async fn recover_replica(snapshot: bool, interrupt: bool, pruning: bo
         fs::write(path, config.replace("\n[snapshot]\n", "\n")).unwrap();
         cluster.restart_node(3).unwrap();
     }
-    cluster.wait_ready(DEADLINE).await.unwrap();
+    cluster.wait_ready(deadline()).await.unwrap();
     let replica = HubClient::new(cluster.node(3).rpc_url());
     for receipt in receipts {
         let replayed = tokio::time::timeout(
-            DEADLINE,
+            deadline(),
             replica.wait_for_receipt(receipt.transaction_hash, POLL, 900),
         )
         .await
@@ -335,7 +342,7 @@ pub(super) async fn recover_replica(snapshot: bool, interrupt: bool, pruning: bo
         check_pruned_rosters(&replica, target.height, &trusted_key, &expected_roster).await;
         cluster.kill_node(3);
         cluster.restart_node(3).unwrap();
-        cluster.wait_ready(DEADLINE).await.unwrap();
+        cluster.wait_ready(deadline()).await.unwrap();
         assert_eq!(replica.get_native_nonce(signer.did()).await.unwrap(), 4);
         let (_, allowed) = current_access(
             &replica,

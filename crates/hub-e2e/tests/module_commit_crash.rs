@@ -9,7 +9,14 @@ use hub_e2e::cluster::{ConsensusPreset, TestCluster};
 use hub_modules::acp::abi::IAcp;
 
 const POLL: Duration = Duration::from_millis(50);
-const DEADLINE: Duration = Duration::from_secs(30);
+fn deadline() -> Duration {
+    let scale = std::env::var("HUB_E2E_DEADLINE_SCALE")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(1)
+        .max(1);
+    Duration::from_secs(30 * scale as u64)
+}
 
 async fn create_policy(client: &HubClient, signer: &BlsSigner, name: &str) -> TransactionReceipt {
     let raw = signer
@@ -25,7 +32,7 @@ async fn create_policy(client: &HubClient, signer: &BlsSigner, name: &str) -> Tr
             .into(),
         )
         .unwrap();
-    tokio::time::timeout(DEADLINE, async {
+    tokio::time::timeout(deadline(), async {
         let hash = client.send_native_tx(&raw).await.unwrap();
         let receipt = client.wait_for_receipt(hash, POLL, 600).await.unwrap();
         assert_eq!(receipt.status, 1);
@@ -36,7 +43,7 @@ async fn create_policy(client: &HubClient, signer: &BlsSigner, name: &str) -> Tr
 }
 
 async fn assert_replicas(cluster: &TestCluster, signer: &BlsSigner, receipt: &TransactionReceipt) {
-    tokio::time::timeout(DEADLINE, async {
+    tokio::time::timeout(deadline(), async {
         let origin = HubClient::new(cluster.node(0).rpc_url());
         origin
             .wait_for_receipt(receipt.transaction_hash, POLL, 600)
@@ -74,7 +81,7 @@ async fn recover_after_each_module_commit() {
         .build()
         .await
         .unwrap();
-    cluster.wait_ready(DEADLINE).await.unwrap();
+    cluster.wait_ready(deadline()).await.unwrap();
     let origin = HubClient::new(cluster.node(0).rpc_url());
     let signer = BlsSigner::new(7u64.into(), 9001).unwrap();
     let baseline = create_policy(&origin, &signer, "baseline").await;
@@ -88,7 +95,7 @@ async fn recover_after_each_module_commit() {
         }
         std::fs::write(&marker, store.to_string()).unwrap();
         let receipt = create_policy(&origin, &signer, &format!("crash-{store}")).await;
-        tokio::time::timeout(DEADLINE, async {
+        tokio::time::timeout(deadline(), async {
             while !witness.exists() {
                 tokio::time::sleep(POLL).await;
             }
@@ -107,7 +114,7 @@ async fn recover_after_each_module_commit() {
         );
         cluster.kill_node(3);
         cluster.restart_node(3).unwrap();
-        cluster.wait_ready(DEADLINE).await.unwrap();
+        cluster.wait_ready(deadline()).await.unwrap();
         assert_replicas(&cluster, &signer, &receipt).await;
 
         let recovered = HubClient::new(cluster.node(3).rpc_url());

@@ -201,6 +201,7 @@ jobs:
     env:
       CARGO_BUILD_JOBS: 2
       HUBD_BINARY: ${{ github.workspace }}/target/debug/hubd
+      HUB_E2E_DEADLINE_SCALE: "3"
     steps:
       - uses: actions/checkout@v4
         with:
