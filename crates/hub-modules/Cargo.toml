@@ -9,7 +9,7 @@ description = "Hub module implementations (ACP, Bulletin, Hub)"
 acp.workspace = true
 hub-crypto.workspace = true
 identity.workspace = true
-orbis-reporting = { git = "https://github.com/sourcenetwork/orbis-rs", rev = "47df2a5367c64309595b631ad95156e8fe931b32" }
+orbis-reporting = { git = "https://github.com/sourcenetwork/orbis-rs", rev = "d189e0965d387c9b371a464340bf936ab35bee7f" }
 zanzibar.workspace = true
 
 alloy-sol-types.workspace = true
