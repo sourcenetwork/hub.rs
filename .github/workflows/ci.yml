@@ -194,14 +194,14 @@ jobs:
 
   linux-native:
     name: Linux native service
-    runs-on: ubuntu-latest-8-cores
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
       contents: read
     env:
-      CARGO_BUILD_JOBS: 8
+      CARGO_BUILD_JOBS: 2
       HUBD_BINARY: ${{ github.workspace }}/target/debug/hubd
-      HUB_E2E_DEADLINE_SCALE: "3"
+      HUB_E2E_DEADLINE_SCALE: "5"
     steps:
       - uses: actions/checkout@v4
         with:
