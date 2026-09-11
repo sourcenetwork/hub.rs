@@ -728,7 +728,7 @@ async fn canonical_module_test() {
     );
 
     // D5.5. Invalid bearer token (tampered) should produce a reverted tx
-    let tampered_token = format!("{}X", &bearer_token);
+    let tampered_token = format!("{}X", bearer_token);
     let d5_bad_cmd =
         hub_modules::acp::types::PolicyCmd::RegisterObject(hub_modules::acp::types::Object {
             resource: "document".into(),
