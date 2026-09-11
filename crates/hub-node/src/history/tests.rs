@@ -456,7 +456,7 @@ async fn indirect_proof_survives_reopen_and_uses_the_rpc_history_lookup() {
     let calls = Arc::new(AtomicUsize::new(0));
     let api = HubApiImpl::new(Arc::new(NodeState::new(1, 0, 1)), None)
         .with_index_and_modules(
-            index,
+            index.clone(),
             Arc::new(std::sync::RwLock::new(hub_modules::ModuleState::default())),
         )
         .with_light_block_index(epochs.clone())
@@ -521,9 +521,11 @@ async fn indirect_proof_survives_reopen_and_uses_the_rpc_history_lookup() {
     assert_eq!(evicted, direct);
     verify_light_block(&evicted, &trusted).unwrap();
     assert_eq!(calls.load(Ordering::Relaxed), 3);
+    // Archived reads share the node's recovered index; the publication gate drops
+    // proofs ahead of its head while still routing unindexed receipts to history.
     let archive_api = HubApiImpl::new(Arc::new(NodeState::new(1, 0, 1)), None)
         .with_index_and_modules(
-            Arc::new(BlockIndex::new()),
+            index.clone(),
             Arc::new(std::sync::RwLock::new(hub_modules::ModuleState::default())),
         )
         .with_receipt_proof_lookup({
