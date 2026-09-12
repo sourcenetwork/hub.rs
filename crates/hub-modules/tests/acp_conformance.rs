@@ -195,6 +195,73 @@ fn check_access_rejects_invalid_context_missing_policies_and_partial_denials() {
 }
 
 #[test]
+fn edit_and_read_policy_guards_reject_without_side_effects() {
+    use hub_modules::acp::types::PolicyMarshalingType;
+
+    let mut module = AcpModule::new();
+    let policy_id = module
+        .create_policy(&owner(), POLICY, PolicyMarshalingType::ShortYaml)
+        .unwrap()
+        .policy
+        .id;
+    let before = module.store().serialize();
+    assert!(matches!(
+        module.query_policy("missing-policy"),
+        Err(AcpError::PolicyNotFound { .. })
+    ));
+    assert!(matches!(
+        module.edit_policy(
+            &reader(),
+            &policy_id,
+            POLICY,
+            PolicyMarshalingType::ShortYaml
+        ),
+        Err(AcpError::Unauthorized { .. })
+    ));
+    assert!(matches!(
+        module.edit_policy(
+            &owner(),
+            "missing-policy",
+            POLICY,
+            PolicyMarshalingType::ShortYaml
+        ),
+        Err(AcpError::PolicyNotFound { .. })
+    ));
+    let shrunk = "name: shrunk\nresources:\n  - name: other\n";
+    assert!(
+        module
+            .edit_policy(
+                &owner(),
+                &policy_id,
+                shrunk,
+                PolicyMarshalingType::ShortYaml
+            )
+            .is_err()
+    );
+    assert!(matches!(
+        module.edit_policy(&owner(), &policy_id, POLICY, PolicyMarshalingType::Unknown),
+        Err(AcpError::InvalidPolicy { .. })
+    ));
+    assert_eq!(module.store().serialize(), before);
+    let (removed, record) = module
+        .edit_policy(
+            &owner(),
+            &policy_id,
+            "name: edited\nresources:\n  - name: file\n  - name: other\n",
+            PolicyMarshalingType::ShortYaml,
+        )
+        .unwrap();
+    assert_eq!(removed, 0);
+    assert_eq!(record.metadata.owner_did, owner().to_string());
+    let restored = restore(&module);
+    let serialized = serde_json::to_value(&record).unwrap();
+    assert_eq!(
+        serde_json::to_value(restored.query_policy(&policy_id).unwrap()).unwrap(),
+        serialized
+    );
+}
+
+#[test]
 fn registration_errors_preserve_state_and_object_identity_after_restore() {
     let (module, policy) = setup();
     for mut candidate in [module.clone(), restore(&module)] {
