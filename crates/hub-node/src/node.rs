@@ -694,6 +694,14 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         modules.clone(),
     )
     .with_archive(archive.clone());
+    if let Some(pruning) = prune_config {
+        let marshal = marshal.clone();
+        state_resolver_handles.push(context.child("marshal_floor").spawn(
+            move |context| async move {
+                crate::marshal_floor::run(context, marshal, pruning).await;
+            },
+        ));
+    }
     if tracing::enabled!(target: "hub_diagnostics", tracing::Level::DEBUG) {
         let history = history.clone();
         let index = block_index.clone();
