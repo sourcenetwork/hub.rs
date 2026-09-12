@@ -203,7 +203,7 @@ fn delegated_scopes_authorize_only_their_operations() {
         ),
     ];
     for (scope, result) in mismatches {
-        let error = result.err().expect(scope);
+        let error = result.expect_err(scope);
         assert!(
             matches!(&error, AcpError::InvalidBearerToken { reason } if reason.contains("does not authorize this operation")),
             "{scope}: {error}"
