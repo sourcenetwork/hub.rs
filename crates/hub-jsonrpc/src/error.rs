@@ -62,6 +62,10 @@ pub enum RpcError {
     #[error("invalid transaction: {0}")]
     InvalidTransaction(String),
 
+    /// Invalid method parameters.
+    #[error("invalid params: {0}")]
+    InvalidParams(String),
+
     /// Execution failed.
     #[error("execution failed: {0}")]
     ExecutionFailed(String),
@@ -105,6 +109,7 @@ impl From<RpcError> for ErrorObjectOwned {
                     RpcError::AccountNotFound(_) => (codes::RESOURCE_NOT_FOUND, err.to_string()),
                     RpcError::InvalidBlockNumber(_) => (codes::INVALID_PARAMS, err.to_string()),
                     RpcError::InvalidTransaction(_) => (codes::INVALID_PARAMS, err.to_string()),
+                    RpcError::InvalidParams(_) => (codes::INVALID_PARAMS, err.to_string()),
                     RpcError::ExecutionFailed(_) => (codes::EXECUTION_ERROR, err.to_string()),
                     RpcError::StateError(_) => (codes::INTERNAL_ERROR, err.to_string()),
                     RpcError::Internal(_) => (codes::INTERNAL_ERROR, err.to_string()),

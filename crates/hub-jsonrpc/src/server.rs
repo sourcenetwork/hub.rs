@@ -371,6 +371,9 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
 
         let jsonrpc_handle = tokio::spawn(async move {
             let server = match Server::builder()
+                // Subscription acknowledgements echo the client's request id;
+                // keeping the response budget above the request budget keeps
+                // that echo from overflowing the response limit.
                 .max_request_body_size(hub_domain::SUBMISSION_REQUEST_BYTES)
                 .max_response_body_size(
                     hub_permission::PERMISSION_RESPONSE_BYTES
