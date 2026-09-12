@@ -3776,6 +3776,7 @@ dependencies = [
  "commonware-storage",
  "commonware-utils",
  "futures",
+ "governor",
  "hub-modules",
  "hub-permission",
  "hub-qmdb",

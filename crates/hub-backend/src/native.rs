@@ -65,7 +65,9 @@ impl BuildHasher for KeyPrefix {
 }
 
 /// One ordered module partition with current-state and operation-log commitments.
-pub type NativeDb = Db<mmr::Family, Ctx, Vec<u8>, Bytes, Sha256, KeyPrefix, 32, Sequential>;
+pub type NativeDbFor<E> = Db<mmr::Family, E, Vec<u8>, Bytes, Sha256, KeyPrefix, 32, Sequential>;
+/// The native partition database over the production tokio context.
+pub type NativeDb = NativeDbFor<Ctx>;
 type Operation = <NativeDb as commonware_storage::qmdb::sync::Database>::Op;
 
 pub(crate) fn operation_config() -> <Operation as commonware_codec::Read>::Cfg {
@@ -74,6 +76,13 @@ pub(crate) fn operation_config() -> <Operation as commonware_codec::Read>::Cfg {
         RangeCfg::new(0..=MAX_VALUE_BYTES),
     )
 }
+/// ACP, bulletin, identity and native sequence partitions over any qualifying context.
+pub type NativeSetFor<E> = (
+    Shared<NativeDbFor<E>>,
+    Shared<NativeDbFor<E>>,
+    Shared<NativeDbFor<E>>,
+    Shared<NativeDbFor<E>>,
+);
 /// ACP, bulletin, identity and native sequence partitions.
 pub type NativeStateSet = (
     Shared<NativeDb>,
@@ -89,10 +98,13 @@ pub type NativeUnmerkleized = <NativeStateSet as DatabaseSet<Ctx>>::Unmerkleized
 pub type NativeMerkleized = <NativeStateSet as DatabaseSet<Ctx>>::Merkleized;
 /// Configuration for the four ordered partitions.
 pub type NativeConfig = <NativeStateSet as DatabaseSet<Ctx>>::Config;
-type Batch = <NativeDb as ManagedDb<Ctx>>::Unmerkleized;
-type Sealed = <NativeDb as ManagedDb<Ctx>>::Merkleized;
 
-/// Configure independent journals for each native namespace.
+#[cfg(test)]
+mod fault_tests;
+#[cfg(test)]
+mod faulty_ctx;
+
+/// Configure independent journals for the four native namespaces.
 pub fn state_config(prefix: &str, cache: CacheRef) -> NativeConfig {
     (
         config(prefix, "acp", cache.clone()),
@@ -132,10 +144,17 @@ fn config(prefix: &str, module: &str, cache: CacheRef) -> <NativeDb as ManagedDb
 }
 
 /// Stage and seal ordered logical changes without modifying committed records.
-pub async fn prepare(
-    batches: NativeUnmerkleized,
+pub async fn prepare<E>(
+    batches: <NativeSetFor<E> as DatabaseSet<E>>::Unmerkleized,
     changes: ModuleChanges,
-) -> Result<NativeMerkleized, BackendError> {
+) -> Result<<NativeSetFor<E> as DatabaseSet<E>>::Merkleized, BackendError>
+where
+    E: commonware_runtime::Spawner
+        + commonware_runtime::Storage
+        + commonware_runtime::Clock
+        + commonware_runtime::Metrics
+        + commonware_runtime::BufferPooler,
+{
     for entries in &changes {
         if entries.iter().any(|(key, value)| {
             key.len() > MAX_KEY_BYTES || value.as_ref().is_some_and(|v| v.len() > MAX_VALUE_BYTES)
@@ -159,10 +178,17 @@ pub async fn prepare(
     )
 }
 
-async fn seal(
-    mut batch: Batch,
+async fn seal<E>(
+    mut batch: <NativeDbFor<E> as ManagedDb<E>>::Unmerkleized,
     entries: Vec<(Vec<u8>, Option<Vec<u8>>)>,
-) -> Result<Sealed, BackendError> {
+) -> Result<<NativeDbFor<E> as ManagedDb<E>>::Merkleized, BackendError>
+where
+    E: commonware_runtime::Spawner
+        + commonware_runtime::Storage
+        + commonware_runtime::Clock
+        + commonware_runtime::Metrics
+        + commonware_runtime::BufferPooler,
+{
     for (key, value) in entries {
         batch = batch.write(key, value.map(Bytes::from));
     }
