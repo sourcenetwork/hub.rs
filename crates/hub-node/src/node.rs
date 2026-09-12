@@ -694,14 +694,6 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         modules.clone(),
     )
     .with_archive(archive.clone());
-    if let Some(pruning) = prune_config {
-        let marshal = marshal.clone();
-        state_resolver_handles.push(context.child("marshal_floor").spawn(
-            move |context| async move {
-                crate::marshal_floor::run(context, marshal, pruning).await;
-            },
-        ));
-    }
     if tracing::enabled!(target: "hub_diagnostics", tracing::Level::DEBUG) {
         let history = history.clone();
         let index = block_index.clone();
@@ -711,6 +703,14 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
                 .child("diagnostics")
                 .spawn(move |context| crate::diagnostics::run(context, history, index, proofs)),
         );
+    }
+    if let Some(pruning) = prune_config {
+        let marshal = marshal.clone();
+        state_resolver_handles.push(context.child("marshal_floor").spawn(
+            move |context| async move {
+                crate::marshal_floor::run(context, marshal, pruning).await;
+            },
+        ));
     }
     let rpc_handle = RpcServer::with_state_provider(node_state, rpc_addr, chain_id, state_provider)
         .with_max_connections(config.rpc.max_connections.get())
