@@ -3793,6 +3793,7 @@ name = "hub-cli"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "tempfile",
 ]
 
 [[package]]
@@ -4021,6 +4022,7 @@ dependencies = [
  "commonware-utils",
  "eyre",
  "hex",
+ "hub-cli",
  "hub-modules",
  "hub-node",
  "parking_lot",

@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+hub-cli.workspace = true
 test-infra = { path = "../test-infra" }
 hub-node.workspace = true
 hub-modules.workspace = true

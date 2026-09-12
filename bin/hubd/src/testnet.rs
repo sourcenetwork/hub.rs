@@ -117,7 +117,7 @@ pub(crate) fn run(chain_id: u64, data_dir: PathBuf, args: &TestnetArgs) -> eyre:
 
         // Write validator.key (32 bytes that NodeConfig::validator_key() reads).
         let key_bytes = Encode::encode(&key);
-        std::fs::write(node_dir.join("validator.key"), key_bytes.as_ref())?;
+        hub_cli::write_private(node_dir.join("validator.key"), key_bytes.as_ref())?;
 
         participants.push(pk);
         keys.push(key);
