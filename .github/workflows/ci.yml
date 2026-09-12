@@ -236,6 +236,7 @@ jobs:
       - name: Native module and storage checks
         run: |
           cargo test --frozen -p hub-modules --lib
+          cargo test --frozen -p hub-backend --lib
           cargo test --frozen -p hub-backend --test native_state --test native_hydration
           cargo test --frozen -p hub-e2e --example operation_baseline rejected_updates_preserve_results_and_stop_dependent_submissions
 
