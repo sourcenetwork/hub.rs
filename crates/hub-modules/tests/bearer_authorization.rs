@@ -90,6 +90,141 @@ fn bearer_expiration_uses_execution_time_before_mutating_state() {
 }
 
 #[test]
+fn delegated_scopes_authorize_only_their_operations() {
+    let key = SigningKey::from_slice(&[42; 32]).unwrap();
+    let issuer = hub_crypto::secp256k1::did_from_secp256k1_pubkey(
+        key.verifying_key().to_encoded_point(true).as_bytes(),
+    )
+    .unwrap();
+    let actor = Did::new(&issuer).unwrap();
+    let mut module = AcpModule::new();
+    let policy_id = module
+        .create_policy(
+            &actor,
+            "name: files\nresources:\n  - name: file\n",
+            PolicyMarshalingType::ShortYaml,
+        )
+        .unwrap()
+        .policy
+        .id;
+    let context = BlockExecCtx {
+        genesis_id: [0; 32],
+        deployment_id: 9001,
+        timestamp: Timestamp {
+            seconds: 10,
+            block_height: 1,
+        },
+    };
+    let claims = |scope: &str| {
+        signed_token(
+            &key,
+            serde_json::json!({"iss": issuer, "sub": issuer, "aud": "vera:9001",
+                "scope": scope, "iat": 0, "nbf": 0, "exp": 100}),
+        )
+    };
+    let mut hub = hub_modules::hub::HubModule::new();
+    let before = module.store().serialize();
+    let object = Object {
+        resource: "file".into(),
+        id: "report".into(),
+    };
+    let mismatches: [(&str, Result<(), AcpError>); 5] = [
+        (
+            "acp:policy:create",
+            module
+                .bearer_policy_cmd(
+                    &mut hub,
+                    &context,
+                    &transaction(&actor),
+                    &claims("acp:policy:create"),
+                    &policy_id,
+                    PolicyCmd::RegisterObject(object.clone()),
+                )
+                .map(|_| ()),
+        ),
+        (
+            "acp:policy:edit",
+            module
+                .bearer_policy_cmd(
+                    &mut hub,
+                    &context,
+                    &transaction(&actor),
+                    &claims("acp:policy:edit"),
+                    &policy_id,
+                    PolicyCmd::RegisterObject(object.clone()),
+                )
+                .map(|_| ()),
+        ),
+        (
+            "acp:policy",
+            module
+                .bearer_create_policy(
+                    &mut hub,
+                    &context,
+                    &transaction(&actor),
+                    &claims("acp:policy"),
+                    "name: forged\nresources:\n  - name: file\n",
+                    PolicyMarshalingType::ShortYaml,
+                )
+                .map(|_| ()),
+        ),
+        (
+            "acp:policy",
+            module
+                .bearer_edit_policy(
+                    &mut hub,
+                    &context,
+                    &transaction(&actor),
+                    &claims("acp:policy"),
+                    &policy_id,
+                    "name: forged\nresources:\n  - name: file\n",
+                    PolicyMarshalingType::ShortYaml,
+                )
+                .map(|_| ()),
+        ),
+        (
+            "acp:policy",
+            module
+                .bearer_check_access(
+                    &mut hub,
+                    &context,
+                    &transaction(&actor),
+                    &claims("acp:policy"),
+                    &policy_id,
+                    &hub_modules::acp::types::AccessRequest {
+                        actor: hub_modules::acp::types::Actor(actor.clone()),
+                        operations: vec![hub_modules::acp::types::Operation {
+                            object: object.clone(),
+                            permission: "read".into(),
+                        }],
+                    },
+                )
+                .map(|_| ()),
+        ),
+    ];
+    for (scope, result) in mismatches {
+        let error = result.err().expect(scope);
+        assert!(
+            matches!(&error, AcpError::InvalidBearerToken { reason } if reason.contains("does not authorize this operation")),
+            "{scope}: {error}"
+        );
+        assert_eq!(module.store().serialize(), before);
+    }
+    assert!(
+        module
+            .bearer_policy_cmd(
+                &mut hub,
+                &context,
+                &transaction(&actor),
+                &claims("acp:policy"),
+                &policy_id,
+                PolicyCmd::RegisterObject(object),
+            )
+            .is_ok()
+    );
+}
+
+#[test]
 fn delegation_binds_caller_deployment_and_revocation() {
     use hub_modules::hub::{HubModule, types::JWSTokenStatus};
     use hub_modules::kv_store::InMemoryKvStore;
