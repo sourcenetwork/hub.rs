@@ -5,7 +5,7 @@ use jsonrpsee::core::RpcResult;
 
 use super::{
     HubApiImpl,
-    permission::{error, request_error},
+    permission::{error, request_error, retryable},
 };
 
 impl HubApiImpl {
@@ -24,7 +24,7 @@ impl HubApiImpl {
             self.try_captured_revision(block),
         )
         .await
-        .map_err(|_| error("receipt finality deadline exceeded"))??
+        .map_err(|_| retryable("receipt finality deadline exceeded"))??
         else {
             return Ok(None);
         };

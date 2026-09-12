@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use super::{
     HubApiImpl,
-    permission::{error, request_error},
+    permission::{error, request_error, retryable},
 };
 
 impl HubApiImpl {
@@ -76,6 +76,6 @@ impl HubApiImpl {
             Ok(response)
         })
         .await
-        .map_err(|_| error("current prefix evidence deadline exceeded"))?
+        .map_err(|_| retryable("current prefix evidence deadline exceeded"))?
     }
 }

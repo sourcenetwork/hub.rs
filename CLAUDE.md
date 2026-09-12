@@ -234,7 +234,8 @@ ownership from complete owner evidence and treats archived records as unregister
 Historical native activity proofs are not retained.
 Proof RPCs share eight in-flight slots per node; blocking historical certificate
 lookups have a separate eight-slot limit. Excess work returns JSON-RPC -32002
-with `retryable: true` before starting. The Rust client exposes these responses
+with `retryable: true` before starting, and so does exceeding the two-second
+current-evidence deadline: the certificate is delayed, not absent. The Rust client exposes these responses
 as `ResourceBusy`; `is_throttled()` also recognizes HTTP 429. Other -32002
 errors remain ordinary RPC errors, and submissions are not automatically retried.
 Receipt polls return no evidence yet when the finalization certificate is absent,

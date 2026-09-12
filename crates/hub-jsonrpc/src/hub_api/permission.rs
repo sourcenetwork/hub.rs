@@ -13,6 +13,15 @@ pub(super) fn error(error: impl std::fmt::Display) -> ErrorObjectOwned {
     ErrorObjectOwned::owned(codes::RESOURCE_UNAVAILABLE, error.to_string(), None::<()>)
 }
 
+/// Evidence waits are transient: flag them for client retry like admission throttles.
+pub(super) fn retryable(error: impl std::fmt::Display) -> ErrorObjectOwned {
+    ErrorObjectOwned::owned(
+        codes::RESOURCE_UNAVAILABLE,
+        error.to_string(),
+        Some(serde_json::json!({"retryable": true})),
+    )
+}
+
 pub(super) fn request_error(error: PermissionError) -> ErrorObjectOwned {
     let code = if matches!(error, PermissionError::Limit) {
         codes::LIMIT_EXCEEDED
@@ -99,7 +108,7 @@ impl HubApiImpl {
             Ok(response)
         })
         .await
-        .map_err(|_| error("current permission evidence deadline exceeded"))?
+        .map_err(|_| retryable("current permission evidence deadline exceeded"))?
     }
 
     pub(super) async fn permission_proof(

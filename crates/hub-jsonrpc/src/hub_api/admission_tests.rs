@@ -244,3 +244,60 @@ async fn cancelled_archive_receipt_keeps_blocking_lookup_bounded() {
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn evidence_deadline_is_a_retryable_error() {
+    use hub_indexer::{IndexedBlock, IndexedReceipt};
+
+    let hash = B256::repeat_byte(3);
+    let index = Arc::new(BlockIndex::new());
+    index.insert_block(
+        IndexedBlock {
+            hash,
+            number: 1,
+            parent_hash: B256::ZERO,
+            state_root: B256::ZERO,
+            module_state_root: B256::ZERO,
+            timestamp: 1,
+            gas_limit: 100,
+            gas_used: 0,
+            base_fee_per_gas: None,
+            prevrandao: B256::ZERO,
+            transaction_hashes: vec![hash],
+        },
+        vec![],
+        vec![IndexedReceipt {
+            transaction_hash: hash,
+            block_hash: hash,
+            block_number: 1,
+            transaction_index: 0,
+            from: alloy_primitives::Address::ZERO,
+            to: None,
+            cumulative_gas_used: 0,
+            gas_used: 0,
+            contract_address: None,
+            logs: vec![],
+            status: true,
+            signer_did: None,
+        }],
+    );
+    let (release, receiver) = std::sync::mpsc::channel();
+    let receiver = std::sync::Mutex::new(receiver);
+    let state = Arc::new(NodeState::new(1, 0, 1));
+    let mut api = HubApiImpl::new(state, None).with_light_block_lookup(Arc::new(move |_| {
+        receiver
+            .lock()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        Err("finished".into())
+    }));
+    api.index = Some(index);
+    let started = std::time::Instant::now();
+    let error = api.get_receipt_proof(hash).await.unwrap_err();
+    assert!(started.elapsed() >= Duration::from_secs(2));
+    assert_eq!(error.code(), codes::RESOURCE_UNAVAILABLE);
+    assert_eq!(error.data().unwrap().get(), r#"{"retryable":true}"#);
+    assert_eq!(error.message(), "receipt finality deadline exceeded");
+    release.send(()).unwrap();
+}

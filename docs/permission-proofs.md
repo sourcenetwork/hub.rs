@@ -32,7 +32,8 @@ accepted only with a valid exclusion proof.
 The server captures the record under all four partition read locks and releases
 those locks before obtaining its matching finalization certificate. Selection
 and certificate lookup share a two-second timeout. An unavailable revision or
-unmet minimum returns `RESOURCE_UNAVAILABLE`; it is not proven absence.
+unmet minimum returns `RESOURCE_UNAVAILABLE`; it is not proven absence. A
+deadline exceed is also `RESOURCE_UNAVAILABLE` with `retryable: true`.
 
 `HubClient::read_current_record` bounds the response before deserialization and
 verifies the certificate with the caller's consensus key. `RecordResponse::verify`
@@ -65,7 +66,8 @@ Prefix requests allow at most 64 KiB of prefix bytes, 4,096 records, 1 MiB of
 prefix/key/value bytes and 4 MiB of serialized evidence. The transport uses
 `RECORD_RESPONSE_BYTES`, including bounded finalization artifacts. Oversized
 scans fail; they do not return a partial list. Selection and certificate lookup
-share a two-second deadline. Callers supply any additional revision-age policy.
+share a two-second deadline whose exceed is a retryable `RESOURCE_UNAVAILABLE`
+error. Callers supply any additional revision-age policy.
 
 `object_owner_prefix(policy, object)` rejects ambiguous path components.
 `PrefixResponse::verify_object_owner` verifies the complete owner relation,
@@ -85,7 +87,9 @@ locks. It releases those locks before waiting for the selected revision's
 certificate. State advancing during that wait does not change the captured
 response. If the finalized index temporarily trails the databases, selection
 retries after releasing the locks. Selection and certificate waits share a
-two-second timeout; this is not a bound on synchronous evaluation or storage work.
+two-second timeout; this is not a bound on synchronous evaluation or storage
+work. Exceeding it returns `RESOURCE_UNAVAILABLE` with `retryable: true`, since
+the evidence is delayed rather than absent.
 
 `HubClient::verify_current_access` fetches this response once, verifies the
 certificate against the caller's independently provisioned consensus key,

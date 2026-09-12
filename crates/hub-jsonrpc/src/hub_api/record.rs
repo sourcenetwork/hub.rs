@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use super::{
     HubApiImpl, HubApiServer, U64,
-    permission::{error, request_error},
+    permission::{error, request_error, retryable},
 };
 
 impl HubApiImpl {
@@ -75,7 +75,7 @@ impl HubApiImpl {
             Ok(response)
         })
         .await
-        .map_err(|_| error("current record evidence deadline exceeded"))?
+        .map_err(|_| retryable("current record evidence deadline exceeded"))?
     }
 
     // Called after releasing storage guards, under the enclosing request deadline.
