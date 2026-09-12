@@ -253,6 +253,13 @@ jobs:
           --test native_membership
           --test quorum_recovery
           --test cold_replay
+          -- --test-threads=1 --nocapture
+
+      - name: Pruned snapshot catch-up
+        env:
+          HUB_E2E_DEADLINE_SCALE: "16"
+        run: >-
+          cargo test --frozen -p hub-e2e
           --test snapshot_catchup
           -- --test-threads=1 --nocapture
 
@@ -265,6 +272,7 @@ jobs:
       - name: Regolith recovery from pruned peers
         env:
           RUST_LOG: warn,hub_storage=info
+          HUB_E2E_DEADLINE_SCALE: "16"
         run: >-
           cargo test --frozen -p hub-e2e --test snapshot_catchup
           snapshot_replica_recovers_from_pruned_peers
@@ -276,6 +284,7 @@ jobs:
       - name: Interrupted Regolith recovery from pruned peers
         env:
           RUST_LOG: warn,hub_storage=info
+          HUB_E2E_DEADLINE_SCALE: "16"
         run: >-
           cargo test --frozen -p hub-e2e --features fault-injection
           --test snapshot_interrupt interrupted_snapshot_resumes_from_pruned_peers
@@ -284,10 +293,18 @@ jobs:
       - name: Build crash-injection node
         run: cargo build --frozen -p hubd --features fault-injection
 
-      - name: Interrupted commit and snapshot recovery
+      - name: Interrupted commit recovery
         run: >-
           cargo test --frozen -p hub-e2e --features fault-injection
-          --test module_commit_crash --test snapshot_interrupt
+          --test module_commit_crash
+          -- --test-threads=1 --nocapture
+
+      - name: Interrupted snapshot recovery
+        env:
+          HUB_E2E_DEADLINE_SCALE: "16"
+        run: >-
+          cargo test --frozen -p hub-e2e --features fault-injection
+          --test snapshot_interrupt
           -- --test-threads=1 --nocapture
 
       - name: Recover membership after share persistence crash
