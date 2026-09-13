@@ -294,16 +294,10 @@ fn node_settings(
     // config address; the config value binds only when it names a port the
     // caller did not override.
     let derived: std::net::SocketAddr = format!("0.0.0.0:{rpc_port}").parse()?;
-    let rpc_addr = config
-        .rpc
-        .http_addr
-        .parse()
-        .map(|configured: std::net::SocketAddr| {
-            (configured.port() == rpc_port)
-                .then_some(configured)
-                .unwrap_or(derived)
-        })
-        .unwrap_or(derived);
+    let rpc_addr = match config.rpc.http_addr.parse() {
+        Ok(configured) if configured.port() == rpc_port => configured,
+        _ => derived,
+    };
     Ok(NodeSettings {
         config,
         genesis,
