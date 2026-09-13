@@ -294,7 +294,7 @@ fn node_settings(
     // config address; the config value binds only when it names a port the
     // caller did not override.
     let derived: std::net::SocketAddr = format!("0.0.0.0:{rpc_port}").parse()?;
-    let rpc_addr = match config.rpc.http_addr.parse() {
+    let rpc_addr = match config.rpc.http_addr.parse::<std::net::SocketAddr>() {
         Ok(configured) if configured.port() == rpc_port => configured,
         _ => derived,
     };
