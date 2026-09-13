@@ -111,7 +111,6 @@ sol! {
             string actor
         ) external view returns (bool);
 
-        function signedPolicyCmd(bytes payload, uint8 contentType) external returns (bytes);
         function bearerPolicyCmd(string bearerToken, bytes32 policyId, bytes cmd) external returns (bytes);
         function updateParams(bytes params) external;
 

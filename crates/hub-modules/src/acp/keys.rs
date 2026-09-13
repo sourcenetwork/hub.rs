@@ -17,7 +17,6 @@ pub const COMMITMENT_PREFIX: &[u8] = b"commitment/";
 /// Amendment event prefix (auto-increment objects).
 pub const AMENDMENT_EVENT_PREFIX: &[u8] = b"amendment_event/";
 /// Signed policy command replay cache prefix.
-pub const SIGNED_POLICY_CMD_SEEN_PREFIX: &[u8] = b"spc_seen/";
 /// Module parameters key.
 pub const PARAMS_KEY: &[u8] = b"p_acp";
 
@@ -125,13 +124,6 @@ pub fn amendment_event_counter_key() -> Vec<u8> {
     let mut key = Vec::from(AMENDMENT_EVENT_PREFIX);
     key.extend_from_slice(COUNTER_SUBPREFIX);
     key.extend_from_slice(b"id");
-    key
-}
-
-/// Signed policy command replay cache key: `prefix + payload_id`.
-pub fn signed_policy_cmd_key(payload_id: &[u8]) -> Vec<u8> {
-    let mut key = Vec::from(SIGNED_POLICY_CMD_SEEN_PREFIX);
-    key.extend_from_slice(payload_id);
     key
 }
 
@@ -244,14 +236,6 @@ mod tests {
         let key = amendment_event_key(256);
         let id_bytes = &key[key.len() - 8..];
         assert_eq!(u64::from_be_bytes(id_bytes.try_into().unwrap()), 256);
-    }
-
-    #[test]
-    fn signed_policy_cmd_key_format() {
-        let payload_id = [0xAA; 32];
-        let key = signed_policy_cmd_key(&payload_id);
-        assert!(key.starts_with(SIGNED_POLICY_CMD_SEEN_PREFIX));
-        assert_eq!(&key[SIGNED_POLICY_CMD_SEEN_PREFIX.len()..], &payload_id);
     }
 
     #[test]

@@ -39,9 +39,6 @@ pub enum AcpError {
     #[error("invalid bearer token: {reason}")]
     InvalidBearerToken { reason: String },
 
-    #[error("invalid JWS payload: {reason}")]
-    InvalidJws { reason: String },
-
     #[error("replay detected: payload already processed")]
     ReplayDetected,
 

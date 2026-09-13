@@ -31,13 +31,6 @@ pub struct Operation {
     pub permission: String,
 }
 
-/// Content type discriminator for signed payloads.
-#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
-pub enum ContentType {
-    Unknown,
-    Jws,
-}
-
 /// Policy serialization format.
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub enum PolicyMarshalingType {

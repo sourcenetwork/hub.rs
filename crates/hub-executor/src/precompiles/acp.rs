@@ -5,8 +5,8 @@ use alloy_sol_types::SolCall;
 use hub_modules::acp::AcpModule;
 use hub_modules::acp::abi::IAcp;
 use hub_modules::acp::types::{
-    AccessRequest, AcpParams, Actor, ContentType, Object, Operation, PolicyCmd,
-    PolicyMarshalingType, RelationshipSelector,
+    AccessRequest, AcpParams, Actor, Object, Operation, PolicyCmd, PolicyMarshalingType,
+    RelationshipSelector,
 };
 use hub_modules::hub::HubModule;
 use hub_modules::types::{BlockExecCtx, TxExecCtx};
@@ -108,13 +108,6 @@ const fn marshal_type_from_u8(v: u8) -> PolicyMarshalingType {
         1 => PolicyMarshalingType::ShortYaml,
         2 => PolicyMarshalingType::ShortJson,
         _ => PolicyMarshalingType::Unknown,
-    }
-}
-
-const fn content_type_from_u8(v: u8) -> ContentType {
-    match v {
-        1 => ContentType::Jws,
-        _ => ContentType::Unknown,
     }
 }
 
@@ -857,25 +850,6 @@ pub(super) fn dispatch(
 
             let ret = IAcp::verifyAccessRequestCall::abi_encode_returns(&allowed);
             Ok(ok_dispatch(READ_GAS, ret, vec![]))
-        }
-
-        IAcp::signedPolicyCmdCall::SELECTOR => {
-            if gas_limit < WRITE_GAS {
-                return Err(PrecompileError::OutOfGas);
-            }
-            let call = IAcp::signedPolicyCmdCall::abi_decode(input).map_err(decode_error)?;
-            let creator = did_from_signer(&tx_ctx.signer)?;
-            let payload_str = String::from_utf8(call.payload.to_vec())
-                .map_err(|_| PrecompileError::Other("invalid UTF-8 in payload".into()))?;
-            let content_type = content_type_from_u8(call.contentType);
-
-            let result = match module.signed_policy_cmd(&creator, &payload_str, content_type) {
-                Ok(r) => r,
-                Err(e) => return Ok(err_dispatch(e)),
-            };
-
-            let ret = IAcp::signedPolicyCmdCall::abi_encode_returns(&json_bytes(&result));
-            Ok(ok_dispatch(WRITE_GAS, ret, vec![]))
         }
 
         IAcp::bearerPolicyCmdCall::SELECTOR => {

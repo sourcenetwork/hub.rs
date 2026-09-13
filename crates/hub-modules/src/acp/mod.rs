@@ -40,7 +40,7 @@ use zanzibar_store::QmdbZanzibarStore;
 use crate::kv_store::{InMemoryKvStore, ModuleKvStore};
 use crate::types::{BlockExecCtx, Duration, Timestamp, TxExecCtx};
 use types::{
-    AccessDecision, AccessRequest, AcpParams, Actor, AmendmentEvent, ContentType, DecisionParams,
+    AccessDecision, AccessRequest, AcpParams, Actor, AmendmentEvent, DecisionParams,
     GenerateCommitmentResult, Object, ObjectSelector, PolicyCmd, PolicyCmdResult,
     PolicyMarshalingType, PolicyRecord, RecordMetadata, RegistrationProof, RegistrationsCommitment,
     RelationSelector, RelationshipRecord, RelationshipSelector, SubjectSelector,
@@ -66,7 +66,6 @@ type Result<T> = std::result::Result<T, AcpError>;
 /// "amendment_event/objs/" + BE(id)                     → AmendmentEvent (Borsh)
 /// "amendment_event/counter/id"                         → u64 BE
 /// "p_acp"                                              → AcpParams (Borsh)
-/// "spc_seen/" + payload_id                             → u64 LE (expire height)
 /// ```
 ///
 /// `zanzibar_policies` is an in-memory cache populated on `create_policy` /
@@ -378,21 +377,6 @@ impl AcpModule {
                 self.cmd_flag_hijack_attempt(creator, policy_id, event_id)
             }
         }
-    }
-
-    /// Execute a policy command authenticated by a JWS payload signature.
-    ///
-    /// JWS signature verification is not yet implemented — returns an error.
-    #[allow(unused_variables)]
-    pub fn signed_policy_cmd(
-        &mut self,
-        creator: &Did,
-        payload: &str,
-        content_type: ContentType,
-    ) -> Result<PolicyCmdResult> {
-        Err(AcpError::InvalidJws {
-            reason: "JWS signature verification not yet implemented".into(),
-        })
     }
 
     /// Reject legacy parameter writes without operator approvals.
@@ -724,34 +708,6 @@ impl AcpModule {
     }
 
     // ── Storage — Replay cache ───────────────────────────────────────────
-
-    #[allow(unused_variables)]
-    fn has_seen_signed_policy_cmd(&mut self, payload_id: &[u8], current_height: u64) -> bool {
-        let key = keys::signed_policy_cmd_key(payload_id);
-        match self.store.get(&key) {
-            None => false,
-            Some(bytes) => {
-                let expire_height =
-                    u64::from_le_bytes(bytes.try_into().expect("replay cache is 8 bytes"));
-                if expire_height < current_height {
-                    self.store.delete(&key);
-                    false
-                } else {
-                    true
-                }
-            }
-        }
-    }
-
-    #[allow(unused_variables)]
-    fn mark_signed_policy_cmd_seen(&mut self, payload_id: &[u8], expire_height: u64) -> Result<()> {
-        let key = keys::signed_policy_cmd_key(payload_id);
-        if self.store.has(&key) {
-            return Err(AcpError::ReplayDetected);
-        }
-        self.store.put(&key, expire_height.to_le_bytes().to_vec());
-        Ok(())
-    }
 
     // ── Storage — Access decisions ───────────────────────────────────────
 
