@@ -258,6 +258,8 @@ jobs:
       - name: Pruned snapshot catch-up
         env:
           HUB_E2E_DEADLINE_SCALE: "16"
+          HUB_E2E_DIR: ${{ runner.temp }}/e2e-logs
+          HUB_E2E_KEEP: "1"
         run: >-
           cargo test --frozen -p hub-e2e
           --test snapshot_catchup
@@ -302,6 +304,8 @@ jobs:
       - name: Interrupted snapshot recovery
         env:
           HUB_E2E_DEADLINE_SCALE: "16"
+          HUB_E2E_DIR: ${{ runner.temp }}/e2e-logs
+          HUB_E2E_KEEP: "1"
         run: >-
           cargo test --frozen -p hub-e2e --features fault-injection
           --test snapshot_interrupt
@@ -312,6 +316,14 @@ jobs:
           cargo test --frozen -p hub-e2e --features fault-injection
           --test native_membership native_member_recovers_after_share_persistence_crash
           -- --exact --nocapture
+
+      - name: Upload failed cluster logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-e2e-cluster-logs
+          path: ${{ runner.temp }}/e2e-logs
+          if-no-files-found: ignore
 
       - name: Build release node without fault injection
         run: cargo build --frozen --release -p hubd
