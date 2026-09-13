@@ -196,12 +196,12 @@ fn check_pending_branches(persistent: bool) {
         {
             let visible = executor.modules().read().unwrap();
             assert_eq!(
-                visible.nonces.get_nonce(alice.did()),
+                visible.nonces.get_nonce(alice.did()).unwrap(),
                 0,
                 "pending Alice state leaked to queries"
             );
             assert_eq!(
-                visible.nonces.get_nonce(bob.did()),
+                visible.nonces.get_nonce(bob.did()).unwrap(),
                 0,
                 "pending Bob state leaked to queries"
             );
@@ -226,7 +226,8 @@ fn check_pending_branches(persistent: bool) {
                     .read()
                     .unwrap()
                     .nonces
-                    .get_nonce(alice.did()),
+                    .get_nonce(alice.did())
+                    .unwrap(),
                 1,
                 "database apply must publish native state before the application callback"
             );
@@ -238,8 +239,8 @@ fn check_pending_branches(persistent: bool) {
             )
             .await;
             let visible = executor.modules().read().unwrap();
-            assert_eq!(visible.nonces.get_nonce(alice.did()), 1);
-            assert_eq!(visible.nonces.get_nonce(bob.did()), 0);
+            assert_eq!(visible.nonces.get_nonce(alice.did()).unwrap(), 1);
+            assert_eq!(visible.nonces.get_nonce(bob.did()).unwrap(), 0);
             assert_eq!(visible.acp.query_policy_ids().unwrap().len(), 1);
             if let Some(trees) = &trees {
                 let roots = std::array::from_fn(|i| {
@@ -266,7 +267,8 @@ fn check_pending_branches(persistent: bool) {
                     .read()
                     .unwrap()
                     .nonces
-                    .get_nonce(alice.did()),
+                    .get_nonce(alice.did())
+                    .unwrap(),
                 1
             );
             set.rewind_to_targets(StatefulHubApp::<NoopSink>::sync_targets(&genesis))
@@ -288,7 +290,8 @@ fn check_pending_branches(persistent: bool) {
                     .read()
                     .unwrap()
                     .nonces
-                    .get_nonce(alice.did()),
+                    .get_nonce(alice.did())
+                    .unwrap(),
                 0
             );
         }

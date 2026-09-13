@@ -175,7 +175,7 @@ fn authorization_survives_forks_restart_and_rewind() {
             let loaded = native::load_modules(&set).await.unwrap();
             assert_eq!(loaded.serialize_stores(), second_state.serialize_stores());
             assert!(can_read(&loaded, &policy));
-            assert_eq!(loaded.nonces.get_nonce(READER), 0);
+            assert_eq!(loaded.nonces.get_nonce(READER).unwrap(), 0);
             assert_eq!(root(&set).await, second_root);
 
             let target = set.committed_targets().await;

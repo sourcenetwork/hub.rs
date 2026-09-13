@@ -186,7 +186,8 @@ fn checkpoint_rejects_bad_evidence_and_checks_rebuilt_state_before_publication()
                         .read()
                         .unwrap()
                         .nonces
-                        .get_nonce("unpublished"),
+                        .get_nonce("unpublished")
+                        .unwrap(),
                     1
                 );
                 assert!(

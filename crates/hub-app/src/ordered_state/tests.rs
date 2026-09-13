@@ -233,7 +233,8 @@ fn sync_publishes_latest_modules_before_suffix_execution() {
                         .read()
                         .unwrap()
                         .nonces
-                        .get_nonce("stale"),
+                        .get_nonce("stale")
+                        .unwrap(),
                     1
                 );
                 assert!(
@@ -261,7 +262,8 @@ fn sync_publishes_latest_modules_before_suffix_execution() {
                         .read()
                         .unwrap()
                         .nonces
-                        .get_nonce("stale"),
+                        .get_nonce("stale")
+                        .unwrap(),
                     1
                 );
                 assert!(
@@ -367,7 +369,8 @@ fn sync_publishes_latest_modules_before_suffix_execution() {
                     .read()
                     .unwrap()
                     .nonces
-                    .get_nonce(signer.did()),
+                    .get_nonce(signer.did())
+                    .unwrap(),
                 3
             );
             destination.rewind_to_targets(target.clone()).await;

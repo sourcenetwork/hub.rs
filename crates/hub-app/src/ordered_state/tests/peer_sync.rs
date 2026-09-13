@@ -165,7 +165,13 @@ fn all_partitions_sync_over_authenticated_peers_and_reopen() {
                         .unwrap_err();
                         assert_eq!(failed, "history unavailable");
                         assert_eq!(
-                            executor.modules().read().unwrap().nonces.get_nonce("stale"),
+                            executor
+                                .modules()
+                                .read()
+                                .unwrap()
+                                .nonces
+                                .get_nonce("stale")
+                                .unwrap(),
                             1
                         );
                         assert!(
