@@ -290,11 +290,20 @@ fn node_settings(
     timeouts: ConsensusTimeouts,
 ) -> eyre::Result<NodeSettings> {
     let secrets_path = config.data_dir.join("secrets.json");
+    // The CLI port (already defaulted per validator index) wins over the
+    // config address; the config value binds only when it names a port the
+    // caller did not override.
+    let derived: std::net::SocketAddr = format!("0.0.0.0:{rpc_port}").parse()?;
     let rpc_addr = config
         .rpc
         .http_addr
         .parse()
-        .or_else(|_| format!("0.0.0.0:{rpc_port}").parse())?;
+        .map(|configured: std::net::SocketAddr| {
+            (configured.port() == rpc_port)
+                .then_some(configured)
+                .unwrap_or(derived)
+        })
+        .unwrap_or(derived);
     Ok(NodeSettings {
         config,
         genesis,
