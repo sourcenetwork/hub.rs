@@ -284,7 +284,7 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     let completed_sync_height = plan.sync_height();
     let mut snapshot_sync = plan.should_state_sync(config.snapshot.is_some());
     let mut probe_artifact = None;
-    if !snapshot_sync && history.head_height() > 0 {
+    if !snapshot_sync && history.head_height() > 0 && peers.participants.len() > 1 {
         // A completed state sync skips peer synchronization forever, which
         // strands a restart that fell too far behind to follow reshare
         // ceremonies forward. Ask the network for its epoch before
