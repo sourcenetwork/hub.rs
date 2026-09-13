@@ -16,7 +16,10 @@ use hub_domain::NativeTx;
 use hub_modules::acp::abi::IAcp;
 use tokio::{sync::Semaphore, task::JoinSet, time::Instant};
 
+// The workload driver is shared with operation_baseline, which also uses the
+// update-workflow and recovery helpers this gate does not drive.
 #[path = "operation_baseline/driver.rs"]
+#[allow(dead_code)]
 mod driver;
 
 const DEFAULT_CHAIN_ID: u64 = 9001;
@@ -39,8 +42,15 @@ async fn main() {
     let permission_reads = parse(5, 1);
     assert!(permission_reads <= 1);
     let chain_id = parse(6, DEFAULT_CHAIN_ID as usize) as u64;
-    let trusted: hub_domain::ConsensusPublicKey = match std::fs::read(&args[1]) {
-        Ok(bytes) => {
+    let trusted: hub_domain::ConsensusPublicKey = std::fs::read(&args[1]).map_or_else(
+        |_| {
+            let bytes = hex::decode(args[1].trim_start_matches("0x")).expect("trusted key hex");
+            bytes
+                .as_slice()
+                .try_into()
+                .expect("trusted group key bytes")
+        },
+        |bytes| {
             let genesis: hub_genesis::HubGenesis =
                 serde_json::from_slice(&bytes).expect("parse genesis.json");
             *genesis
@@ -50,15 +60,8 @@ async fn main() {
                 .output
                 .public()
                 .public()
-        }
-        Err(_) => {
-            let bytes = hex::decode(args[1].trim_start_matches("0x")).expect("trusted key hex");
-            bytes
-                .as_slice()
-                .try_into()
-                .expect("trusted group key bytes")
-        }
-    };
+        },
+    );
     let extra = args
         .get(7)
         .map(|list| list.split(',').map(str::to_string).collect::<Vec<_>>())
@@ -170,7 +173,7 @@ async fn main() {
     if !extra.is_empty() {
         let replicas: Vec<_> = extra
             .iter()
-            .map(|url| HubClient::new(url))
+            .map(HubClient::new)
             .chain([HubClient::new(&args[0])])
             .collect();
         let mut checks = stream::iter(observations.iter())
