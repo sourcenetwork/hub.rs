@@ -13,6 +13,8 @@ use crate::node::PARTITION_PREFIX;
 
 /// Partition holding the stateful syncer's completed-sync marker.
 const STATE_SYNC_METADATA: &str = "state_sync_metadata";
+/// Partition holding the DKG state-sync transcript.
+const DKG_STATE_SYNC: &str = "_dkg_state_sync";
 
 /// Epochs beyond which a restart cannot recover by advancing through
 /// reshare ceremonies one epoch at a time.
@@ -34,22 +36,24 @@ pub(crate) const fn stranded(our_epoch: u64, network_epoch: u64) -> bool {
     network_epoch >= our_epoch + REJOIN_EPOCHS
 }
 
-/// Discard the completed-sync marker so the next plan initialization re-arms
-/// peer state sync. Application databases, marshal archives, durable history
-/// and the DKG transcript are untouched: keeping the transcript preserves any
-/// reshare ceremony participation in flight across the restart, and the
-/// syncer supersedes execution state from a current floor.
+/// Discard sync bookkeeping so the next plan initialization re-arms peer
+/// state sync. Application databases, marshal archives and durable history
+/// are untouched; the syncer supersedes them from a current floor. The DKG
+/// transcript is discarded with it: the rejoin path only runs when the node
+/// is epochs behind, outside any ceremony it could still participate in, and
+/// a stale transcript left behind the reconciling state sync stalls recovery.
 pub(crate) fn reset_sync_bookkeeping(data_dir: &Path) {
-    let partition = data_dir
-        .join("commonware")
-        .join(format!("{PARTITION_PREFIX}{STATE_SYNC_METADATA}"));
-    match std::fs::remove_dir_all(&partition) {
-        Ok(()) => {
-            tracing::warn!(partition = %partition.display(), "reset state sync bookkeeping for rejoin")
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => {
-            tracing::error!(partition = %partition.display(), %error, "failed to reset state sync bookkeeping")
+    let storage = data_dir.join("commonware");
+    for suffix in [STATE_SYNC_METADATA, DKG_STATE_SYNC] {
+        let partition = storage.join(format!("{PARTITION_PREFIX}{suffix}"));
+        match std::fs::remove_dir_all(&partition) {
+            Ok(()) => {
+                tracing::warn!(partition = %partition.display(), "reset state sync bookkeeping for rejoin")
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                tracing::error!(partition = %partition.display(), %error, "failed to reset state sync bookkeeping")
+            }
         }
     }
 }
@@ -71,7 +75,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let storage = directory.path().join("commonware");
         let metadata = storage.join(format!("{PARTITION_PREFIX}{STATE_SYNC_METADATA}"));
-        let transcript = storage.join(format!("{PARTITION_PREFIX}_dkg_state_sync"));
+        let transcript = storage.join(format!("{PARTITION_PREFIX}{DKG_STATE_SYNC}"));
         let history = directory.path().join("history");
         for path in [&metadata, &transcript, &history] {
             std::fs::create_dir_all(path).unwrap();
@@ -79,7 +83,7 @@ mod tests {
         }
         reset_sync_bookkeeping(directory.path());
         assert!(!metadata.exists());
-        assert!(transcript.exists());
+        assert!(!transcript.exists());
         assert!(history.exists());
     }
 }
