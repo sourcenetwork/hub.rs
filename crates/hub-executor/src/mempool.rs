@@ -181,6 +181,9 @@ impl<S: StateDb> MempoolValidator<S> {
                 hub_modules::native_account::NonceError::Overflow(did) => {
                     ExecutionError::InvalidTx(format!("nonce overflow for {did}"))
                 }
+                hub_modules::native_account::NonceError::Malformed(did) => {
+                    ExecutionError::InvalidTx(format!("stored nonce for {did} is malformed"))
+                }
             })?;
 
         Ok(TxValidationResult {
@@ -296,6 +299,9 @@ impl<S: StateDb> MempoolValidator<S> {
                 }
                 hub_modules::native_account::NonceError::Overflow(did) => {
                     ExecutionError::InvalidTx(format!("nonce overflow for {did}"))
+                }
+                hub_modules::native_account::NonceError::Malformed(did) => {
+                    ExecutionError::InvalidTx(format!("stored nonce for {did} is malformed"))
                 }
             })?;
 

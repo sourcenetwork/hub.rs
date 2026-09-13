@@ -250,6 +250,9 @@ impl HubExecutor {
                 hub_modules::native_account::NonceError::Overflow(did) => {
                     ExecutionError::InvalidTx(format!("nonce overflow for {did}"))
                 }
+                hub_modules::native_account::NonceError::Malformed(did) => {
+                    ExecutionError::InvalidTx(format!("stored nonce for {did} is malformed"))
+                }
             })?;
 
         let tx_hash = native_tx.tx_id().0;

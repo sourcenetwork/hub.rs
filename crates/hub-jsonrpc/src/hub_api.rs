@@ -367,7 +367,10 @@ impl HubApiServer for HubApiImpl {
         let guard = modules
             .read()
             .map_err(|_| RpcError::Internal("lock poisoned".into()))?;
-        let nonce = guard.nonces.get_nonce(&did);
+        let nonce = guard
+            .nonces
+            .get_nonce(&did)
+            .map_err(|e| RpcError::Internal(e.to_string()))?;
         Ok(U64::from(nonce))
     }
 

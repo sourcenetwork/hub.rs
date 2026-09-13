@@ -167,6 +167,6 @@ mod tests {
         let restored = ModuleState::from_stores(deserialized);
 
         assert_eq!(state.state_root(), restored.state_root());
-        assert_eq!(restored.nonces.get_nonce("did:key:z6MkAlice"), 1);
+        assert_eq!(restored.nonces.get_nonce("did:key:z6MkAlice").unwrap(), 1);
     }
 }

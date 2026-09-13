@@ -23,6 +23,10 @@ pub enum NonceError {
     /// Nonce counter would overflow `u64::MAX`.
     #[error("nonce overflow for {0}")]
     Overflow(String),
+
+    /// Stored nonce does not have the shape written by this store.
+    #[error("stored nonce for {0} is malformed")]
+    Malformed(String),
 }
 
 /// In-memory per-DID nonce store for native BLS transactions.
@@ -47,16 +51,24 @@ impl NativeNonceStore {
     }
 
     /// Return the current nonce for the given DID (0 for new accounts).
-    pub fn get_nonce(&self, did: &str) -> u64 {
+    ///
+    /// A stored value other than the eight bytes this store writes is
+    /// corruption, surfaced as an error instead of trusted.
+    pub fn get_nonce(&self, did: &str) -> Result<u64, NonceError> {
         self.store
             .get(&keys::native_nonce_key(did))
-            .map(|bytes| u64::from_le_bytes(bytes.try_into().expect("nonce is 8 bytes")))
-            .unwrap_or(0)
+            .map(|bytes| {
+                bytes
+                    .try_into()
+                    .map(u64::from_le_bytes)
+                    .map_err(|_| NonceError::Malformed(did.to_string()))
+            })
+            .unwrap_or(Ok(0))
     }
 
     /// Validate `tx_nonce == stored` and increment. Returns an error on mismatch.
     pub fn check_and_increment(&mut self, did: &str, tx_nonce: u64) -> Result<(), NonceError> {
-        let expected = self.get_nonce(did);
+        let expected = self.get_nonce(did)?;
         if tx_nonce != expected {
             return Err(NonceError::Mismatch {
                 did: did.to_string(),
@@ -80,7 +92,7 @@ mod tests {
     #[test]
     fn new_account_starts_at_zero() {
         let store = NativeNonceStore::default();
-        assert_eq!(store.get_nonce("did:key:z6MkNew"), 0);
+        assert_eq!(store.get_nonce("did:key:z6MkNew").unwrap(), 0);
     }
 
     #[test]
@@ -89,10 +101,10 @@ mod tests {
         let did = "did:key:z6MkAlice";
 
         store.check_and_increment(did, 0).unwrap();
-        assert_eq!(store.get_nonce(did), 1);
+        assert_eq!(store.get_nonce(did).unwrap(), 1);
 
         store.check_and_increment(did, 1).unwrap();
-        assert_eq!(store.get_nonce(did), 2);
+        assert_eq!(store.get_nonce(did).unwrap(), 2);
     }
 
     #[test]
@@ -110,7 +122,7 @@ mod tests {
             }
         );
         // Nonce unchanged after rejection.
-        assert_eq!(store.get_nonce(did), 0);
+        assert_eq!(store.get_nonce(did).unwrap(), 0);
     }
 
     #[test]
@@ -119,8 +131,8 @@ mod tests {
         store.check_and_increment("did:key:z6MkAlice", 0).unwrap();
         store.check_and_increment("did:key:z6MkBob", 0).unwrap();
 
-        assert_eq!(store.get_nonce("did:key:z6MkAlice"), 1);
-        assert_eq!(store.get_nonce("did:key:z6MkBob"), 1);
+        assert_eq!(store.get_nonce("did:key:z6MkAlice").unwrap(), 1);
+        assert_eq!(store.get_nonce("did:key:z6MkBob").unwrap(), 1);
     }
 
     #[test]
@@ -131,8 +143,8 @@ mod tests {
         let mut fork = store.clone();
         fork.check_and_increment("did:key:z6Mk1", 1).unwrap();
 
-        assert_eq!(store.get_nonce("did:key:z6Mk1"), 1);
-        assert_eq!(fork.get_nonce("did:key:z6Mk1"), 2);
+        assert_eq!(store.get_nonce("did:key:z6Mk1").unwrap(), 1);
+        assert_eq!(fork.get_nonce("did:key:z6Mk1").unwrap(), 2);
     }
 
     #[test]
@@ -143,7 +155,7 @@ mod tests {
         for i in 0..10 {
             store.check_and_increment(did, i).unwrap();
         }
-        assert_eq!(store.get_nonce(did), 10);
+        assert_eq!(store.get_nonce(did).unwrap(), 10);
     }
 
     #[test]
@@ -177,6 +189,24 @@ mod tests {
     }
 
     #[test]
+    fn malformed_stored_nonce_is_an_error() {
+        let mut nonce_store = NativeNonceStore::default();
+        let did = "did:key:z6MkCorrupt";
+        nonce_store
+            .store
+            .put(&keys::native_nonce_key(did), vec![1; 7]);
+
+        assert_eq!(
+            nonce_store.get_nonce(did).unwrap_err(),
+            NonceError::Malformed(did.into())
+        );
+        assert_eq!(
+            nonce_store.check_and_increment(did, 0).unwrap_err(),
+            NonceError::Malformed(did.into())
+        );
+    }
+
+    #[test]
     fn overflow_rejected() {
         let mut nonce_store = NativeNonceStore::default();
         let did = "did:key:z6MkMax";
@@ -187,6 +217,6 @@ mod tests {
 
         let err = nonce_store.check_and_increment(did, u64::MAX).unwrap_err();
         assert_eq!(err, NonceError::Overflow(did.to_string()));
-        assert_eq!(nonce_store.get_nonce(did), u64::MAX);
+        assert_eq!(nonce_store.get_nonce(did).unwrap(), u64::MAX);
     }
 }
