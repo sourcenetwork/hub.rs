@@ -115,7 +115,7 @@ async fn cross_object_grant_replicates_across_nodes() {
         .expect("cluster should start");
 
     cluster
-        .wait_ready(Duration::from_secs(30))
+        .wait_ready(hub_e2e::readiness_deadline())
         .await
         .expect("cluster should become healthy");
 

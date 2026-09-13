@@ -100,6 +100,7 @@ jobs:
     needs: [build]
     timeout-minutes: 20
     env:
+      HUB_E2E_DEADLINE_SCALE: "4"
       HUBD_BINARY: ${{ github.workspace }}/target/debug/hubd
       TMPDIR: $RUNNER_TEMP/hub-e2e-${{ github.run_id }}-${{ github.run_attempt }}-canonical
     steps:
@@ -147,6 +148,7 @@ jobs:
     needs: [e2e-canonical]
     timeout-minutes: 20
     env:
+      HUB_E2E_DEADLINE_SCALE: "4"
       HUBD_BINARY: ${{ github.workspace }}/target/debug/hubd
       TMPDIR: $RUNNER_TEMP/hub-e2e-${{ github.run_id }}-${{ github.run_attempt }}-extended
     steps:

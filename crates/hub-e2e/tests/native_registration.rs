@@ -73,7 +73,10 @@ async fn registration_workflow(pruning: bool) {
         .build()
         .await
         .unwrap();
-    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    cluster
+        .wait_ready(hub_e2e::readiness_deadline())
+        .await
+        .unwrap();
     let client = HubClient::new(cluster.node(0).rpc_url());
     cluster
         .observe(Duration::from_millis(100))
@@ -314,7 +317,10 @@ resources:
         }
     }
     cluster.restart_node(0).unwrap();
-    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    cluster
+        .wait_ready(hub_e2e::readiness_deadline())
+        .await
+        .unwrap();
     let restored_policy = client
         .read_policy(policy_id, amended_height, &trusted)
         .await

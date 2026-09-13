@@ -26,7 +26,10 @@ async fn minority_write_waits_for_quorum_and_survives_replica_recovery() {
         .build()
         .await
         .unwrap();
-    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    cluster
+        .wait_ready(hub_e2e::readiness_deadline())
+        .await
+        .unwrap();
     cluster
         .observe(Duration::from_millis(100))
         .wait_for_height(3, Duration::from_secs(30))
@@ -72,7 +75,10 @@ async fn minority_write_waits_for_quorum_and_survives_replica_recovery() {
     .expect("the surviving replicas must retain and finalize the admitted write");
 
     cluster.restart_node(3).unwrap();
-    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    cluster
+        .wait_ready(hub_e2e::readiness_deadline())
+        .await
+        .unwrap();
     for client in &clients {
         tokio::time::timeout(Duration::from_secs(60), async {
             loop {

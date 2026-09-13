@@ -134,7 +134,10 @@ async fn native_workers_preserve_policy_ownership_results_and_revocation() {
         .build()
         .await
         .unwrap();
-    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    cluster
+        .wait_ready(hub_e2e::readiness_deadline())
+        .await
+        .unwrap();
     let client = HubClient::new(cluster.node(0).rpc_url());
     let actor_key = SigningKey::from_slice(&[42; 32]).unwrap();
     let owner = hub_crypto::secp256k1::did_from_secp256k1_pubkey(
@@ -286,7 +289,10 @@ async fn native_workers_preserve_policy_ownership_results_and_revocation() {
     let replica = HubClient::new(cluster.node(3).rpc_url());
     policy(&replica, &first_id, revoked.block_number, &trusted).await;
     cluster.restart_node(3).unwrap();
-    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    cluster
+        .wait_ready(hub_e2e::readiness_deadline())
+        .await
+        .unwrap();
     for receipt in [&first_receipt, &direct] {
         let proof = replica
             .read_receipt(receipt.transaction_hash, &trusted)
@@ -362,7 +368,10 @@ async fn native_relay_grants_bind_workers_and_survive_revocation_restart() {
         .build()
         .await
         .unwrap();
-    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    cluster
+        .wait_ready(hub_e2e::readiness_deadline())
+        .await
+        .unwrap();
     let client = HubClient::new(cluster.node(0).rpc_url());
     cluster
         .observe(Duration::from_millis(100))
@@ -576,7 +585,10 @@ async fn native_relay_grants_bind_workers_and_survive_revocation_restart() {
         .unwrap();
     assert_eq!(observed.value.as_ref(), Some(&state));
     cluster.restart_node(3).unwrap();
-    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    cluster
+        .wait_ready(hub_e2e::readiness_deadline())
+        .await
+        .unwrap();
     assert_eq!(
         replica
             .read_relay_grant(&issuer, observed.revision, &trusted)
@@ -604,7 +616,10 @@ async fn native_relay_grants_bind_workers_and_survive_revocation_restart() {
     assert_eq!(receipt.status, 1);
     policy(&replica, &id, receipt.block_number, &trusted).await;
     cluster.restart_node(3).unwrap();
-    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    cluster
+        .wait_ready(hub_e2e::readiness_deadline())
+        .await
+        .unwrap();
     let absent = replica
         .read_relay_grant(&issuer, receipt.block_number, &trusted)
         .await

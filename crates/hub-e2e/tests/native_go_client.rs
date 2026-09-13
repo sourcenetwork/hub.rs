@@ -46,7 +46,10 @@ async fn native_go_workers_verify_policy_creation() {
         .build()
         .await
         .unwrap();
-    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    cluster
+        .wait_ready(hub_e2e::readiness_deadline())
+        .await
+        .unwrap();
     let client = HubClient::new(cluster.node(0).rpc_url());
     let key = SigningKey::from_slice(&[42; 32]).unwrap();
     let issuer = hub_crypto::secp256k1::did_from_secp256k1_pubkey(
@@ -152,7 +155,10 @@ async fn native_go_workers_verify_policy_creation() {
     .await
     .unwrap();
     cluster.restart_node(3).unwrap();
-    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    cluster
+        .wait_ready(hub_e2e::readiness_deadline())
+        .await
+        .unwrap();
     fixture["endpoint"] = serde_json::json!(cluster.node(3).rpc_url());
     let budget = replica
         .read_current_record(
@@ -177,7 +183,10 @@ async fn native_go_workers_verify_policy_creation() {
             .await;
     apply(&client, &replica, &trusted, &operator, &revoked).await;
     cluster.restart_node(3).unwrap();
-    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    cluster
+        .wait_ready(hub_e2e::readiness_deadline())
+        .await
+        .unwrap();
     fixture["endpoint"] = serde_json::json!(cluster.node(3).rpc_url());
     fixture["revoked"] = serde_json::json!(true);
     run_client(&binary, &fixture).await;
@@ -260,7 +269,10 @@ async fn native_go_policy_pages() {
         .build()
         .await
         .unwrap();
-    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    cluster
+        .wait_ready(hub_e2e::readiness_deadline())
+        .await
+        .unwrap();
     let client = HubClient::new(cluster.node(0).rpc_url());
     let signer = BlsSigner::new(7u64.into(), deployment).unwrap();
     let mut minimum = 0;

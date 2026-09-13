@@ -31,7 +31,10 @@ async fn operator_rotation_and_sequence_survive_replica_restart() {
         .build()
         .await
         .unwrap();
-    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    cluster
+        .wait_ready(hub_e2e::readiness_deadline())
+        .await
+        .unwrap();
     let client = HubClient::new(cluster.node(0).rpc_url());
     let submitter = BlsSigner::new(42u64.into(), 9001).unwrap();
     let parameters = AcpParams {
@@ -104,7 +107,10 @@ async fn operator_rotation_and_sequence_survive_replica_restart() {
         .await
         .unwrap();
     cluster.restart_node(3).unwrap();
-    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    cluster
+        .wait_ready(hub_e2e::readiness_deadline())
+        .await
+        .unwrap();
     let restored = replica
         .read_administration(receipt.block_number, &trusted)
         .await

@@ -101,7 +101,10 @@ async fn native_permission_reads_follow_finalized_grants_and_denials() {
         .build()
         .await
         .unwrap();
-    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    cluster
+        .wait_ready(hub_e2e::readiness_deadline())
+        .await
+        .unwrap();
     let observed = cluster.observe(Duration::from_millis(100));
     observed
         .wait_for_height(3, Duration::from_secs(30))
@@ -442,7 +445,10 @@ async fn native_permission_reads_follow_finalized_grants_and_denials() {
         );
     }
     cluster.restart_node(0).unwrap();
-    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    cluster
+        .wait_ready(hub_e2e::readiness_deadline())
+        .await
+        .unwrap();
     let restarted = HubClient::new(cluster.node(0).rpc_url());
     let current = restarted
         .read_current_prefix(

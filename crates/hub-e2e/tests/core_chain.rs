@@ -30,7 +30,7 @@ async fn cluster_observability_canonical() {
 
     // 2. Wait for all 4 nodes to become healthy.
     cluster
-        .wait_ready(Duration::from_secs(30))
+        .wait_ready(hub_e2e::readiness_deadline())
         .await
         .expect("cluster should become healthy");
 

@@ -76,7 +76,10 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
         .build()
         .await
         .unwrap();
-    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    cluster
+        .wait_ready(hub_e2e::readiness_deadline())
+        .await
+        .unwrap();
     cluster
         .observe(Duration::from_millis(100))
         .wait_for_height(3, Duration::from_secs(30))
@@ -494,7 +497,10 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
     )
     .await;
     cluster.restart_node(3).unwrap();
-    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    cluster
+        .wait_ready(hub_e2e::readiness_deadline())
+        .await
+        .unwrap();
     let recovered = reader
         .read_threshold_ring(&ring, announced.block_number, &trusted)
         .await
@@ -589,7 +595,10 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
     )
     .await;
     cluster.restart_node(3).unwrap();
-    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    cluster
+        .wait_ready(hub_e2e::readiness_deadline())
+        .await
+        .unwrap();
     let final_record = reader
         .read_threshold_ring(&ring, finalized.block_number, &trusted)
         .await

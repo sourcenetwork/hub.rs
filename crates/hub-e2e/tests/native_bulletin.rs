@@ -84,7 +84,10 @@ async fn certified_bulletin_reads_follow_grants_pages_and_restart() {
         .build()
         .await
         .unwrap();
-    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    cluster
+        .wait_ready(hub_e2e::readiness_deadline())
+        .await
+        .unwrap();
     let observed = cluster.observe(Duration::from_millis(100));
     observed
         .wait_for_height(3, Duration::from_secs(30))
@@ -318,7 +321,10 @@ async fn certified_bulletin_reads_follow_grants_pages_and_restart() {
     .await;
     minimum = namespace_isolation(&writer, &reader, &owner, &collaborator, &trusted).await;
     cluster.restart_node(3).unwrap();
-    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    cluster
+        .wait_ready(hub_e2e::readiness_deadline())
+        .await
+        .unwrap();
     assert_eq!(
         reader
             .read_bulletin_policy_id(minimum, &trusted)

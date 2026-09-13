@@ -115,7 +115,10 @@ async fn admit_member(interrupt: bool, crash_share: bool) {
         .build()
         .await
         .unwrap();
-    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    cluster
+        .wait_ready(hub_e2e::readiness_deadline())
+        .await
+        .unwrap();
     cluster
         .observe(Duration::from_millis(100))
         .wait_for_height(3, Duration::from_secs(30))

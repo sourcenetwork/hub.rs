@@ -59,7 +59,10 @@ async fn native_service_node_authority_survives_worker_changes_and_restart() {
         .build()
         .await
         .unwrap();
-    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    cluster
+        .wait_ready(hub_e2e::readiness_deadline())
+        .await
+        .unwrap();
     let observed = cluster.observe(Duration::from_millis(100));
     observed
         .wait_for_height(3, Duration::from_secs(30))
@@ -156,7 +159,10 @@ async fn native_service_node_authority_survives_worker_changes_and_restart() {
     .unwrap();
     let minimum = submit(&writer, &reader, &workers[1], &trusted, &remove, true).await;
     cluster.restart_node(3).unwrap();
-    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    cluster
+        .wait_ready(hub_e2e::readiness_deadline())
+        .await
+        .unwrap();
     let restored = reader
         .read_threshold_node(&public(&node), minimum, &trusted)
         .await

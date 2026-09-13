@@ -62,7 +62,10 @@ async fn actor_signed_command_rejects_substitution_and_deduplicates_across_worke
         .build()
         .await
         .unwrap();
-    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    cluster
+        .wait_ready(hub_e2e::readiness_deadline())
+        .await
+        .unwrap();
     cluster
         .observe(Duration::from_millis(100))
         .wait_for_height(3, Duration::from_secs(30))
@@ -290,7 +293,10 @@ async fn actor_signed_command_rejects_substitution_and_deduplicates_across_worke
         .unwrap();
     let revoked_height = receipt(&client, &trusted, revoked.transaction_hash, true).await;
     cluster.restart_node(0).unwrap();
-    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    cluster
+        .wait_ready(hub_e2e::readiness_deadline())
+        .await
+        .unwrap();
     let record = client
         .read_token_record(unused_hash, revoked_height, &trusted)
         .await

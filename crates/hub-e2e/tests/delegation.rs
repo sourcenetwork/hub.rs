@@ -64,7 +64,10 @@ async fn delegation_revocation_and_failed_batch_survive_restart() {
         .build()
         .await
         .unwrap();
-    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    cluster
+        .wait_ready(hub_e2e::readiness_deadline())
+        .await
+        .unwrap();
     let client = HubClient::new(cluster.node(0).rpc_url());
     let owner = EvmSigner::from_hex(OWNER, 9001).unwrap();
     let delegate = BlsSigner::new(7u64.into(), 9001).unwrap();
@@ -223,7 +226,10 @@ async fn delegation_revocation_and_failed_batch_survive_restart() {
     .await
     .unwrap();
     cluster.restart_node(3).unwrap();
-    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
+    cluster
+        .wait_ready(hub_e2e::readiness_deadline())
+        .await
+        .unwrap();
     for hash in revocations {
         replica.wait_for_receipt(hash, POLL, 600).await.unwrap();
     }
