@@ -275,6 +275,8 @@ jobs:
         env:
           RUST_LOG: warn,hub_storage=info
           HUB_E2E_DEADLINE_SCALE: "16"
+          HUB_E2E_DIR: ${{ runner.temp }}/e2e-logs
+          HUB_E2E_KEEP: "1"
         run: >-
           cargo test --frozen -p hub-e2e --test snapshot_catchup
           snapshot_replica_recovers_from_pruned_peers
@@ -287,6 +289,8 @@ jobs:
         env:
           RUST_LOG: warn,hub_storage=info
           HUB_E2E_DEADLINE_SCALE: "16"
+          HUB_E2E_DIR: ${{ runner.temp }}/e2e-logs
+          HUB_E2E_KEEP: "1"
         run: >-
           cargo test --frozen -p hub-e2e --features fault-injection
           --test snapshot_interrupt interrupted_snapshot_resumes_from_pruned_peers
