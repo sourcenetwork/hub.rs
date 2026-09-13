@@ -744,8 +744,9 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     if config.watchdog_stall_seconds > 0 {
         let stall = Duration::from_secs(config.watchdog_stall_seconds);
         let watchdog_state = node_state.clone();
+        let has_durable_history = history.head_height() > 0;
         state_resolver_handles.push(context.child("watchdog").spawn(move |_| async move {
-            crate::run_watchdog(watchdog_state, stall).await;
+            crate::run_watchdog(watchdog_state, stall, has_durable_history).await;
         }));
     }
     let rpc_handle = RpcServer::with_state_provider(node_state, rpc_addr, chain_id, state_provider)

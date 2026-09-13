@@ -15,9 +15,10 @@ pub(crate) const EXIT_CODE: i32 = 83;
 
 /// Decide whether the process should fail from observed progress.
 ///
-/// `finalized_ever` gates arming: a node that has never finalized is still
-/// joining, and initial synchronization may legitimately take longer than the
-/// stall budget.
+/// `finalized_ever` gates arming: a node that has never finalized — in this
+/// run or any earlier one — is still joining, and initial synchronization may
+/// legitimately take longer than the stall budget. A restarted node arms from
+/// its durable history, so a restart that stops finalizing is covered.
 pub(crate) fn tripped(
     finalized_ever: bool,
     stalled_for: Duration,
@@ -28,10 +29,13 @@ pub(crate) fn tripped(
 }
 
 /// Run the watchdog until the process ends.
-pub(crate) async fn run(state: NodeState, budget: Duration) {
+///
+/// `has_durable_history` arms the watchdog for a restart even before this
+/// process observes its first finalization.
+pub(crate) async fn run(state: NodeState, budget: Duration, has_durable_history: bool) {
     let mut last_count = state.finalized_count();
     let mut last_progress = tokio::time::Instant::now();
-    let mut finalized_ever = last_count > 0;
+    let mut finalized_ever = has_durable_history || last_count > 0;
     loop {
         tokio::time::sleep(Duration::from_secs(30)).await;
         let count = state.finalized_count();
