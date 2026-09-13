@@ -39,7 +39,7 @@ pub struct ChainConfig {
 
 /// Native BLS transaction operations for the Vera module.
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
-pub enum HubOp {
+pub enum VeraOp {
     InvalidateJWS { token_hash: String },
 }
 
@@ -47,4 +47,4 @@ pub enum HubOp {
 #[derive(
     Clone, Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize,
 )]
-pub struct HubParams {}
+pub struct VeraParams {}

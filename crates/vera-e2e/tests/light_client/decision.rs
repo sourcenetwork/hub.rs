@@ -1,6 +1,6 @@
 use super::{broadcast_evm_tx, parse_policy_id};
 use alloy_sol_types::SolCall;
-use vera_client::{ACP_ADDRESS, EvmSigner, HubClient, ModuleId, RECORD_PROOF_BYTES};
+use vera_client::{ACP_ADDRESS, EvmSigner, ModuleId, RECORD_PROOF_BYTES, VeraClient};
 use vera_domain::ConsensusPublicKey;
 use vera_e2e::cluster::TestCluster;
 use vera_modules::{
@@ -14,7 +14,7 @@ use vera_modules::{
 
 pub(super) async fn check_decisions(
     cluster: &TestCluster,
-    client: &HubClient,
+    client: &VeraClient,
     signer: &EvmSigner,
     policy: &str,
     trusted: &ConsensusPublicKey,

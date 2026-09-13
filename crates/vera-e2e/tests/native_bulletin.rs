@@ -3,14 +3,14 @@
 use std::time::Duration;
 
 use alloy_sol_types::{SolCall, SolEvent};
-use vera_client::{BULLETIN_ADDRESS, BlsSigner, HubClient};
+use vera_client::{BULLETIN_ADDRESS, BlsSigner, VeraClient};
 use vera_domain::ConsensusPublicKey;
 use vera_e2e::cluster::{ConsensusPreset, KeySet, TestCluster};
 use vera_modules::bulletin::{abi::IBulletin, keys};
 
 async fn submit(
-    client: &HubClient,
-    observer: &HubClient,
+    client: &VeraClient,
+    observer: &VeraClient,
     signer: &BlsSigner,
     trusted: &ConsensusPublicKey,
     call: impl SolCall,
@@ -93,8 +93,8 @@ async fn certified_bulletin_reads_follow_grants_pages_and_restart() {
         .wait_for_height(3, Duration::from_secs(30))
         .await
         .unwrap();
-    let writer = HubClient::new(cluster.node(0).rpc_url());
-    let reader = HubClient::new(cluster.node(3).rpc_url());
+    let writer = VeraClient::new(cluster.node(0).rpc_url());
+    let reader = VeraClient::new(cluster.node(3).rpc_url());
     let owner = BlsSigner::new(7u64.into(), deployment).unwrap();
     let collaborator = BlsSigner::new(8u64.into(), deployment).unwrap();
     let absent = reader
@@ -385,8 +385,8 @@ async fn certified_bulletin_reads_follow_grants_pages_and_restart() {
 }
 
 async fn namespace_isolation(
-    writer: &HubClient,
-    reader: &HubClient,
+    writer: &VeraClient,
+    reader: &VeraClient,
     owner: &BlsSigner,
     collaborator: &BlsSigner,
     trusted: &ConsensusPublicKey,

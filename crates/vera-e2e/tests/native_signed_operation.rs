@@ -3,7 +3,7 @@
 use alloy_sol_types::SolCall;
 use k256::ecdsa::SigningKey;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use vera_client::{ACP_ADDRESS, BlsSigner, HubClient, ModuleId, RECORD_PROOF_BYTES};
+use vera_client::{ACP_ADDRESS, BlsSigner, ModuleId, RECORD_PROOF_BYTES, VeraClient};
 use vera_crypto::{
     jwt::{DelegationScope, JwtClaims},
     operation::{OperationClaim, OperationId},
@@ -17,7 +17,7 @@ use vera_modules::acp::{
 };
 
 async fn submit(
-    client: &HubClient,
+    client: &VeraClient,
     signer: &BlsSigner,
     trusted: &ConsensusPublicKey,
     call: impl SolCall,
@@ -31,7 +31,7 @@ async fn submit(
 }
 
 async fn receipt(
-    client: &HubClient,
+    client: &VeraClient,
     trusted: &ConsensusPublicKey,
     id: alloy_primitives::B256,
     success: bool,
@@ -71,7 +71,7 @@ async fn actor_signed_command_rejects_substitution_and_deduplicates_across_worke
         .wait_for_height(3, Duration::from_secs(30))
         .await
         .unwrap();
-    let client = HubClient::new(cluster.node(0).rpc_url());
+    let client = VeraClient::new(cluster.node(0).rpc_url());
     let worker = BlsSigner::new(7u64.into(), deployment).unwrap();
     let other = BlsSigner::new(8u64.into(), deployment).unwrap();
     let key = SigningKey::from_bytes((&[42u8; 32]).into()).unwrap();

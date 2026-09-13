@@ -3,10 +3,10 @@ use super::*;
 const MAX_RECORDS: usize = 128;
 const MAX_BYTES: usize = 1 << 20;
 
-impl HubModule {
+impl VeraModule {
     pub(super) fn validate_token_selector(value: &str) -> Result<()> {
         if value.is_empty() || value.len() > u8::MAX as usize {
-            return Err(HubError::InvalidJws {
+            return Err(VeraError::InvalidJws {
                 reason: "token index components must contain 1–255 bytes".into(),
             });
         }
@@ -29,21 +29,21 @@ impl HubModule {
         {
             bytes = bytes.saturating_add(key.len()).saturating_add(value.len());
             if count == MAX_RECORDS || bytes > MAX_BYTES {
-                return Err(HubError::State(
+                return Err(VeraError::State(
                     "token query exceeds limit; use certified prefix pages".into(),
                 ));
             }
             let value = if indexed {
                 let hash = extract_hash_from_index_suffix(&key[prefix.len()..])
-                    .ok_or_else(|| HubError::State("invalid token index key".into()))?;
+                    .ok_or_else(|| VeraError::State("invalid token index key".into()))?;
                 if value != [1] {
-                    return Err(HubError::State("invalid token index value".into()));
+                    return Err(VeraError::State("invalid token index value".into()));
                 }
                 let primary_key = keys::jws_token_key(&hash);
                 let value = self
                     .store
                     .get_ref(&primary_key)
-                    .ok_or_else(|| HubError::State("indexed token missing".into()))?;
+                    .ok_or_else(|| VeraError::State("indexed token missing".into()))?;
                 bytes = bytes
                     .saturating_add(primary_key.len())
                     .saturating_add(value.len());
@@ -52,19 +52,19 @@ impl HubModule {
                 value
             };
             if bytes > MAX_BYTES {
-                return Err(HubError::State(
+                return Err(VeraError::State(
                     "token query exceeds byte limit; use certified prefix pages".into(),
                 ));
             }
             let record: JWSTokenRecord = borsh::from_slice(value)
-                .map_err(|e| HubError::State(format!("invalid token record: {e}")))?;
+                .map_err(|e| VeraError::State(format!("invalid token record: {e}")))?;
             Self::validate_token_selector(&record.token_hash)?;
             Self::validate_token_selector(&record.issuer_did)?;
             if !record.authorized_account.is_empty() {
                 Self::validate_token_selector(&record.authorized_account)?;
             }
             if record_key(&record) != key {
-                return Err(HubError::State("token index does not match record".into()));
+                return Err(VeraError::State("token index does not match record".into()));
             }
             records.push(record);
         }
@@ -94,7 +94,7 @@ mod tests {
 
     #[test]
     fn selectors_and_writes_reject_overflow_before_mutation() {
-        let mut hub = HubModule::new();
+        let mut hub = VeraModule::new();
         for account in ["".to_string(), "a".repeat(256)] {
             assert!(hub.get_jws_tokens_by_account(&account).is_err());
         }
@@ -115,7 +115,7 @@ mod tests {
 
     #[test]
     fn token_queries_are_bounded_and_reject_dangling_or_aliased_indexes() {
-        let mut hub = HubModule::new();
+        let mut hub = VeraModule::new();
         for id in 0..MAX_RECORDS {
             hub.set_jws_token(&record(&format!("hash{id}"))).unwrap();
         }
@@ -127,7 +127,7 @@ mod tests {
         hub.set_jws_token(&record("extra")).unwrap();
         assert!(hub.get_jws_tokens_by_account("account").is_err());
         assert!(hub.get_all_jws_tokens().is_err());
-        let mut hub = HubModule::new();
+        let mut hub = VeraModule::new();
         hub.set_jws_token(&record("hash")).unwrap();
         let primary = keys::jws_token_key("hash");
         hub.store.delete(&primary);
@@ -141,7 +141,7 @@ mod tests {
 
     #[test]
     fn token_queries_bound_bytes_and_validate_record_index_binding() {
-        let mut hub = HubModule::new();
+        let mut hub = VeraModule::new();
         let mut token = record("hash");
         token.bearer_token = "a".repeat(MAX_BYTES);
         hub.set_jws_token(&token).unwrap();

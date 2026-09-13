@@ -8,9 +8,9 @@ use std::path::Path;
 use serde::Serialize;
 use vera_modules::hub::administration::OperatorPolicy;
 
-/// Matches vera-genesis HubGenesis JSON schema exactly.
+/// Matches vera-genesis VeraGenesis JSON schema exactly.
 #[derive(Clone, Debug, Serialize)]
-pub struct HubGenesis {
+pub struct VeraGenesis {
     /// Chain ID for the test network.
     pub chain_id: u64,
     /// Initial operator approval policy.
@@ -136,7 +136,7 @@ impl GenesisBuilder {
         Self::default()
     }
 
-    /// Pre-configured for devnet (matches `HubGenesis::devnet()`).
+    /// Pre-configured for devnet (matches `VeraGenesis::devnet()`).
     pub fn devnet() -> Self {
         Self {
             chain_id: 9001,
@@ -278,8 +278,8 @@ impl GenesisBuilder {
     }
 
     /// Build the genesis configuration.
-    pub fn build(self) -> HubGenesis {
-        HubGenesis {
+    pub fn build(self) -> VeraGenesis {
+        VeraGenesis {
             chain_id: self.chain_id,
             operators: self.operators.clone(),
             chain_name: self.chain_name,
@@ -295,8 +295,8 @@ impl GenesisBuilder {
     }
 
     /// Build and write genesis.json to a directory.
-    pub fn build_and_write(&self, dir: &Path) -> eyre::Result<HubGenesis> {
-        let genesis = HubGenesis {
+    pub fn build_and_write(&self, dir: &Path) -> eyre::Result<VeraGenesis> {
+        let genesis = VeraGenesis {
             chain_id: self.chain_id,
             operators: self.operators.clone(),
             chain_name: self.chain_name.clone(),

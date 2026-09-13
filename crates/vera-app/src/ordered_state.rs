@@ -9,11 +9,11 @@ use commonware_storage::qmdb::sync::Target;
 use commonware_utils::channel::ring;
 use commonware_utils::non_empty_range;
 use vera_backend::{
-    AccountsDb, CodeDb, Ctx, HubConfig, StorageDb,
+    AccountsDb, CodeDb, Ctx, StorageDb, VeraConfig,
     native::{self, NativeConfig, NativeDb, NativeStateSet},
 };
 use vera_domain::Tx;
-use vera_executor::{BlockContext, ExecutionOutcome, HubExecutor, ModuleSnapshot};
+use vera_executor::{BlockContext, ExecutionOutcome, ModuleSnapshot, VeraExecutor};
 
 use crate::{AppError, execute_block};
 
@@ -48,7 +48,7 @@ pub use checkpoint::OrderedCheckpoint;
 /// Storage configuration and the trusted startup recovery selection.
 pub struct OrderedConfig {
     databases: Config,
-    executor: HubExecutor,
+    executor: VeraExecutor,
     recovery: Option<OrderedTargets>,
     marshal_recovery: bool,
     sync_handoff: Option<SyncHandoff>,
@@ -115,7 +115,7 @@ pub struct OrderedSealed {
 #[derive(Clone)]
 pub struct OrderedState {
     databases: OrderedDatabases,
-    executor: HubExecutor,
+    executor: VeraExecutor,
 }
 
 impl std::fmt::Debug for OrderedPending {
@@ -174,9 +174,9 @@ mod tests;
 
 /// Configure execution and native journals alongside an executor without JMT trees.
 pub fn ordered_config(
-    execution: HubConfig,
+    execution: VeraConfig,
     native: NativeConfig,
-    executor: HubExecutor,
+    executor: VeraExecutor,
 ) -> OrderedConfig {
     OrderedConfig {
         databases: (
@@ -198,7 +198,7 @@ pub fn ordered_config(
 
 impl OrderedState {
     /// Shared execution partitions for admission, indexing and peer serving.
-    pub fn execution_databases(&self) -> vera_backend::HubStateSet {
+    pub fn execution_databases(&self) -> vera_backend::VeraStateSet {
         (
             self.databases.0.clone(),
             self.databases.1.clone(),
@@ -251,12 +251,18 @@ impl OrderedState {
         Self::restore(databases, config.executor).await
     }
 
-    async fn restore(databases: OrderedDatabases, executor: HubExecutor) -> Result<Self, AppError> {
+    async fn restore(
+        databases: OrderedDatabases,
+        executor: VeraExecutor,
+    ) -> Result<Self, AppError> {
         Self::check_module_root(&databases).await?;
         Self::hydrate(databases, executor).await
     }
 
-    async fn hydrate(databases: OrderedDatabases, executor: HubExecutor) -> Result<Self, AppError> {
+    async fn hydrate(
+        databases: OrderedDatabases,
+        executor: VeraExecutor,
+    ) -> Result<Self, AppError> {
         let set = Self {
             databases,
             executor,
@@ -306,7 +312,7 @@ impl OrderedState {
     }
 
     pub(crate) async fn execute_on(
-        executor: &HubExecutor,
+        executor: &VeraExecutor,
         parent: OrderedPending,
         context: &BlockContext,
         txs: &[Tx],

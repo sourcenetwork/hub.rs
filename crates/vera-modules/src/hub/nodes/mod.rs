@@ -3,7 +3,7 @@
 mod types;
 pub use types::*;
 
-use super::{HubError, HubModule, Result};
+use super::{Result, VeraError, VeraModule};
 use crate::{kv_store::ModuleKvStore as _, types::BlockExecCtx};
 
 /// Storage key for one canonical service node identity.
@@ -12,13 +12,13 @@ pub fn node_key(key: &str) -> Result<Vec<u8>> {
     Ok(format!("orbis/node/v1/{key}").into_bytes())
 }
 
-pub(super) fn invalid(error: impl std::fmt::Display) -> HubError {
-    HubError::InvalidNodeRequest {
+pub(super) fn invalid(error: impl std::fmt::Display) -> VeraError {
+    VeraError::InvalidNodeRequest {
         reason: error.to_string(),
     }
 }
 
-impl HubModule {
+impl VeraModule {
     /// Read a service node, rejecting corrupt metadata instead of treating it as absent.
     pub fn threshold_node(&self, key: &str) -> Result<Option<NodeRecord>> {
         self.store

@@ -11,7 +11,7 @@ use revm::{
 use vera_modules::ModuleState;
 use vera_traits::StateDbRead;
 
-use crate::{ExecutionError, StateDbAdapter, precompiles::HubPrecompiles};
+use crate::{ExecutionError, StateDbAdapter, precompiles::VeraPrecompiles};
 
 /// Input for a simulation call (no signature, no RLP).
 #[derive(Debug)]
@@ -43,7 +43,7 @@ const BASE_TX_GAS: u64 = 21_000;
 
 /// Execute a read-only EVM call against the given state.
 ///
-/// Builds a full REVM context with `HubPrecompiles` so that `eth_call` to
+/// Builds a full REVM context with `VeraPrecompiles` so that `eth_call` to
 /// precompile addresses (ACP queries, etc.) works correctly. When `modules`
 /// is `Some`, the precompile instances are populated with that module state
 /// so queries see persisted data.
@@ -87,9 +87,9 @@ pub fn simulate_call<S: StateDbRead>(
         .map_err(|e| ExecutionError::TxExecution(format!("{e:?}")))?;
 
     let precompiles = modules.map_or_else(
-        || HubPrecompiles::new(SpecId::CANCUN),
+        || VeraPrecompiles::new(SpecId::CANCUN),
         |m| {
-            HubPrecompiles::with_modules(
+            VeraPrecompiles::with_modules(
                 SpecId::CANCUN,
                 m.acp.clone(),
                 m.bulletin.clone(),

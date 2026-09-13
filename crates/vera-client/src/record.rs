@@ -3,9 +3,9 @@ use vera_permission::{
     PermissionError, RECORD_PROOF_BYTES, RecordResponse, current::MAX_KEY_BYTES,
 };
 
-use crate::{ClientError, HubClient};
+use crate::{ClientError, VeraClient};
 
-impl HubClient {
+impl VeraClient {
     /// Read a native record with verified finality, request binding and a minimum revision.
     /// The caller provides the trusted consensus key and any timestamp/age requirements.
     pub async fn read_current_record(
@@ -36,7 +36,7 @@ impl HubClient {
     }
 }
 
-impl HubClient {
+impl VeraClient {
     /// Read a complete native prefix at a finalized revision with bounded evidence.
     /// The caller supplies consensus trust and any additional freshness requirements.
     pub async fn read_current_prefix(
@@ -67,7 +67,7 @@ impl HubClient {
     }
 }
 
-impl HubClient {
+impl VeraClient {
     /// Read one certified page. A continuation selects a lower bound, not a historical snapshot.
     pub async fn read_current_prefix_page(
         &self,

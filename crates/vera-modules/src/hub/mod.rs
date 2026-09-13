@@ -25,14 +25,14 @@ mod token_queries;
 /// Vera domain types.
 pub mod types;
 
-use error::HubError;
+use error::VeraError;
 use identity::Did;
-use types::{ChainConfig, HubParams, JWSTokenRecord, JWSTokenStatus};
+use types::{ChainConfig, JWSTokenRecord, JWSTokenStatus, VeraParams};
 
 use crate::kv_store::{InMemoryKvStore, ModuleKvStore};
 use crate::types::{BlockExecCtx, Timestamp, TxExecCtx};
 
-type Result<T> = std::result::Result<T, HubError>;
+type Result<T> = std::result::Result<T, VeraError>;
 
 /// Vera module.
 ///
@@ -46,7 +46,7 @@ type Result<T> = std::result::Result<T, HubError>;
 /// 0x01 || token_hash                                 → JWSTokenRecord (primary)
 /// 0x02 || len_prefix(did) || len_prefix(token_hash)  → 0x01 (DID index)
 /// 0x03 || len_prefix(acct) || len_prefix(token_hash) → 0x01 (account index)
-/// "p_hub"                                            → HubParams
+/// "p_hub"                                            → VeraParams
 /// "chain_config"                                     → ChainConfig (write-once)
 /// ```
 ///
@@ -63,12 +63,12 @@ type Result<T> = std::result::Result<T, HubError>;
 /// DID and account indices are presence markers (value=0x01);
 /// the full record lives only in the primary 0x01 store.
 #[derive(Clone, Debug, Default)]
-pub struct HubModule {
+pub struct VeraModule {
     store: InMemoryKvStore,
 }
 
 #[allow(dead_code)]
-impl HubModule {
+impl VeraModule {
     /// Create a new Vera module instance.
     pub fn new() -> Self {
         Self::default()
@@ -130,11 +130,11 @@ impl HubModule {
     ) -> Result<JWSTokenRecord> {
         let record = self
             .get_jws_token(token_hash)?
-            .ok_or_else(|| HubError::TokenNotFound {
+            .ok_or_else(|| VeraError::TokenNotFound {
                 token_hash: token_hash.to_string(),
             })?;
         if record.status == JWSTokenStatus::Invalid {
-            return Err(HubError::TokenAlreadyInvalidated {
+            return Err(VeraError::TokenAlreadyInvalidated {
                 token_hash: token_hash.to_string(),
             });
         }
@@ -142,7 +142,7 @@ impl HubModule {
         let is_authorized_account =
             !record.authorized_account.is_empty() && tx_ctx.signer == record.authorized_account;
         if !is_issuer && !is_authorized_account {
-            return Err(HubError::Unauthorized {
+            return Err(VeraError::Unauthorized {
                 reason: "caller is neither issuer DID nor authorized account".to_string(),
             });
         }
@@ -155,8 +155,8 @@ impl HubModule {
     }
 
     /// Reject legacy parameter writes without operator approvals.
-    pub fn update_params(&mut self, _authority: &Did, _params: HubParams) -> Result<()> {
-        Err(HubError::Unauthorized {
+    pub fn update_params(&mut self, _authority: &Did, _params: VeraParams) -> Result<()> {
+        Err(VeraError::Unauthorized {
             reason: "operator approvals are required".into(),
         })
     }
@@ -168,12 +168,12 @@ impl HubModule {
     /// # Flow
     ///
     /// 1. Read `"p_hub"` from the KV store.
-    /// 2. Deserialize and return `HubParams`.
-    ///    If not set, return `HubParams::default()`.
+    /// 2. Deserialize and return `VeraParams`.
+    ///    If not set, return `VeraParams::default()`.
     ///
     /// # Reads
     /// - `"p_hub"`
-    pub fn query_params(&self) -> Result<HubParams> {
+    pub fn query_params(&self) -> Result<VeraParams> {
         self.get_params()
     }
 
@@ -248,7 +248,7 @@ impl HubModule {
         }
         let zero = Timestamp::default();
         if expires_at != zero && expires_at.seconds < block_ctx.timestamp.seconds {
-            return Err(HubError::InvalidJws {
+            return Err(VeraError::InvalidJws {
                 reason: "token already expired at block time".to_string(),
             });
         }
@@ -296,14 +296,14 @@ impl HubModule {
     ) -> Result<()> {
         let mut record =
             self.get_jws_token(token_hash)?
-                .ok_or_else(|| HubError::TokenNotFound {
+                .ok_or_else(|| VeraError::TokenNotFound {
                     token_hash: token_hash.to_string(),
                 })?;
         if record.status != JWSTokenStatus::Valid
             || (record.expires_at.seconds != 0
                 && record.expires_at.seconds < block_ctx.timestamp.seconds)
         {
-            return Err(HubError::InvalidJws {
+            return Err(VeraError::InvalidJws {
                 reason: "token is invalid or expired".into(),
             });
         }
@@ -328,9 +328,9 @@ impl HubModule {
             .get(&keys::jws_token_key(token_hash))
             .map(|bytes| {
                 let record: JWSTokenRecord = borsh::from_slice(&bytes)
-                    .map_err(|e: std::io::Error| HubError::State(e.to_string()))?;
+                    .map_err(|e: std::io::Error| VeraError::State(e.to_string()))?;
                 if record.token_hash != token_hash {
-                    return Err(HubError::State("token record key mismatch".into()));
+                    return Err(VeraError::State("token record key mismatch".into()));
                 }
                 Ok(record)
             })
@@ -407,7 +407,7 @@ impl HubModule {
     ) -> Result<JWSTokenRecord> {
         let mut record =
             self.get_jws_token(token_hash)?
-                .ok_or_else(|| HubError::TokenNotFound {
+                .ok_or_else(|| VeraError::TokenNotFound {
                     token_hash: token_hash.to_string(),
                 })?;
         record.status = status;
@@ -439,9 +439,9 @@ impl HubModule {
     /// - `ChainConfigAlreadySet` — config already written
     pub fn set_chain_config(&mut self, config: ChainConfig) -> Result<()> {
         if self.store.has(keys::CHAIN_CONFIG_KEY) {
-            return Err(HubError::ChainConfigAlreadySet);
+            return Err(VeraError::ChainConfigAlreadySet);
         }
-        let bytes = borsh::to_vec(&config).map_err(|e| HubError::State(e.to_string()))?;
+        let bytes = borsh::to_vec(&config).map_err(|e| VeraError::State(e.to_string()))?;
         self.store.put(keys::CHAIN_CONFIG_KEY, bytes);
         Ok(())
     }
@@ -463,7 +463,7 @@ impl HubModule {
             }),
             |bytes| {
                 borsh::from_slice(&bytes)
-                    .map_err(|e: std::io::Error| HubError::State(e.to_string()))
+                    .map_err(|e: std::io::Error| VeraError::State(e.to_string()))
             },
         )
     }
@@ -492,7 +492,7 @@ impl HubModule {
     pub fn delete_jws_token(&mut self, token_hash: &str) -> Result<()> {
         let record = self
             .get_jws_token(token_hash)?
-            .ok_or_else(|| HubError::TokenNotFound {
+            .ok_or_else(|| VeraError::TokenNotFound {
                 token_hash: token_hash.to_string(),
             })?;
         if let Some(key) = Self::token_expiry_key(&record) {
@@ -592,11 +592,11 @@ impl HubModule {
         }
         let config = self.get_chain_config()?;
         if !config.ignore_bearer_auth && record.authorized_account.is_empty() {
-            return Err(HubError::InvalidJws {
+            return Err(VeraError::InvalidJws {
                 reason: "authorized_account required when bearer auth is enforced".to_string(),
             });
         }
-        let bytes = borsh::to_vec(record).map_err(|e| HubError::State(e.to_string()))?;
+        let bytes = borsh::to_vec(record).map_err(|e| VeraError::State(e.to_string()))?;
         if let Some(previous) = self.get_jws_token(&record.token_hash)?
             && let Some(key) = Self::token_expiry_key(&previous)
         {
@@ -623,20 +623,20 @@ impl HubModule {
     ///
     /// Flow:
     ///   1. Read value at raw KV key `"p_hub"` (no prefix store)
-    ///   2. If key absent → return default `HubParams`
+    ///   2. If key absent → return default `VeraParams`
     ///      (currently an empty struct — no tunable parameters)
-    ///   3. Deserialize stored bytes as `HubParams` (protobuf)
+    ///   3. Deserialize stored bytes as `VeraParams` (protobuf)
     ///
     /// Key: `"p_hub"` (fixed, raw store)
-    /// Value: serialized `HubParams`
+    /// Value: serialized `VeraParams`
     /// Direction: read-only
     ///
-    fn get_params(&self) -> Result<HubParams> {
+    fn get_params(&self) -> Result<VeraParams> {
         self.store.get_ref(keys::PARAMS_KEY).map_or_else(
-            || Ok(HubParams::default()),
+            || Ok(VeraParams::default()),
             |bytes| {
                 borsh::from_slice(bytes)
-                    .map_err(|e| HubError::State(format!("invalid hub parameters: {e}")))
+                    .map_err(|e| VeraError::State(format!("invalid hub parameters: {e}")))
             },
         )
     }
@@ -644,17 +644,17 @@ impl HubModule {
     /// Write module parameters to the KV store.
     ///
     /// Flow:
-    ///   1. Serialize `params` as `HubParams`
+    ///   1. Serialize `params` as `VeraParams`
     ///   2. Store at raw KV key `"p_hub"` (upsert)
     ///
     /// Key: `"p_hub"` (fixed, raw store)
-    /// Value: serialized `HubParams`
+    /// Value: serialized `VeraParams`
     /// Direction: write
     ///
     /// Returns error on marshal failure (Go uses fallible
     /// `cdc.Marshal`, not `MustMarshal`).
-    fn set_params(&mut self, params: &HubParams) -> Result<()> {
-        let bytes = borsh::to_vec(params).map_err(|e| HubError::State(e.to_string()))?;
+    fn set_params(&mut self, params: &VeraParams) -> Result<()> {
+        let bytes = borsh::to_vec(params).map_err(|e| VeraError::State(e.to_string()))?;
         self.store.put(keys::PARAMS_KEY, bytes);
         Ok(())
     }
@@ -713,7 +713,7 @@ mod tests {
         s.parse().expect("valid DID")
     }
 
-    fn sample_record(hub: &mut HubModule, block_ctx: &BlockExecCtx) -> String {
+    fn sample_record(hub: &mut VeraModule, block_ctx: &BlockExecCtx) -> String {
         let did = make_did("did:key:z6MkTest");
         hub.store_or_update_jws_token(
             block_ctx,
@@ -732,7 +732,7 @@ mod tests {
 
     #[test]
     fn set_and_get_chain_config() {
-        let mut hub = HubModule::new();
+        let mut hub = VeraModule::new();
         let config = ChainConfig {
             allow_zero_fee_txs: true,
             ignore_bearer_auth: false,
@@ -743,19 +743,19 @@ mod tests {
 
     #[test]
     fn chain_config_write_once() {
-        let mut hub = HubModule::new();
+        let mut hub = VeraModule::new();
         let config = ChainConfig {
             allow_zero_fee_txs: false,
             ignore_bearer_auth: true,
         };
         hub.set_chain_config(config.clone()).unwrap();
         let err = hub.set_chain_config(config).unwrap_err();
-        assert!(matches!(err, HubError::ChainConfigAlreadySet));
+        assert!(matches!(err, VeraError::ChainConfigAlreadySet));
     }
 
     #[test]
     fn chain_config_default_when_absent() {
-        let hub = HubModule::new();
+        let hub = VeraModule::new();
         let config = hub.get_chain_config().unwrap();
         assert!(!config.allow_zero_fee_txs);
         assert!(!config.ignore_bearer_auth);
@@ -763,24 +763,24 @@ mod tests {
 
     #[test]
     fn malformed_parameters_return_errors() {
-        let mut hub = HubModule::default();
+        let mut hub = VeraModule::default();
         hub.store.put(keys::PARAMS_KEY, vec![0]);
         assert!(hub.query_params().is_err());
     }
 
     #[test]
     fn set_and_get_params() {
-        let mut hub = HubModule::new();
-        assert_eq!(hub.get_params().unwrap(), HubParams::default());
-        let params = HubParams {};
+        let mut hub = VeraModule::new();
+        assert_eq!(hub.get_params().unwrap(), VeraParams::default());
+        let params = VeraParams {};
         hub.set_params(&params).unwrap();
         assert_eq!(hub.get_params().unwrap(), params);
     }
 
     #[test]
     fn store_token_and_retrieve() {
-        let _hub = HubModule::new();
-        let mut hub2 = HubModule::new();
+        let _hub = VeraModule::new();
+        let mut hub2 = VeraModule::new();
         hub2.set_chain_config(ChainConfig {
             allow_zero_fee_txs: false,
             ignore_bearer_auth: true,
@@ -812,7 +812,7 @@ mod tests {
 
     #[test]
     fn store_token_requires_account_when_bearer_auth_enforced() {
-        let mut hub = HubModule::new();
+        let mut hub = VeraModule::new();
         let ctx = block_ctx(100);
         let did = make_did("did:key:z6MkBob");
         let err = hub
@@ -825,12 +825,12 @@ mod tests {
                 Timestamp::default(),
             )
             .unwrap_err();
-        assert!(matches!(err, HubError::InvalidJws { .. }));
+        assert!(matches!(err, VeraError::InvalidJws { .. }));
     }
 
     #[test]
     fn store_token_rejects_pre_expired() {
-        let mut hub = HubModule::new();
+        let mut hub = VeraModule::new();
         hub.set_chain_config(ChainConfig {
             allow_zero_fee_txs: false,
             ignore_bearer_auth: true,
@@ -854,12 +854,12 @@ mod tests {
                 },
             )
             .unwrap_err();
-        assert!(matches!(err, HubError::InvalidJws { .. }));
+        assert!(matches!(err, VeraError::InvalidJws { .. }));
     }
 
     #[test]
     fn record_usage_updates_timestamps() {
-        let mut hub = HubModule::new();
+        let mut hub = VeraModule::new();
         hub.set_chain_config(ChainConfig {
             allow_zero_fee_txs: false,
             ignore_bearer_auth: true,
@@ -886,7 +886,7 @@ mod tests {
 
     #[test]
     fn idempotent_store_updates_usage() {
-        let mut hub = HubModule::new();
+        let mut hub = VeraModule::new();
         hub.set_chain_config(ChainConfig {
             allow_zero_fee_txs: false,
             ignore_bearer_auth: true,
@@ -920,7 +920,7 @@ mod tests {
 
     #[test]
     fn update_status_to_invalid() {
-        let mut hub = HubModule::new();
+        let mut hub = VeraModule::new();
         hub.set_chain_config(ChainConfig {
             allow_zero_fee_txs: false,
             ignore_bearer_auth: true,
@@ -937,7 +937,7 @@ mod tests {
         assert_eq!(record.invalidated_by, "0xAdmin");
     }
 
-    fn sample_record_ignore_bearer(hub: &mut HubModule, ctx: &BlockExecCtx) -> String {
+    fn sample_record_ignore_bearer(hub: &mut VeraModule, ctx: &BlockExecCtx) -> String {
         let did = make_did("did:key:z6MkTest2");
         hub.store_or_update_jws_token(
             ctx,
@@ -953,7 +953,7 @@ mod tests {
 
     #[test]
     fn delete_token_removes_all_indexes() {
-        let mut hub = HubModule::new();
+        let mut hub = VeraModule::new();
         let ctx = block_ctx(100);
         let hash = sample_record(&mut hub, &ctx);
         hub.delete_jws_token(&hash).unwrap();
@@ -969,14 +969,14 @@ mod tests {
 
     #[test]
     fn delete_missing_token_errors() {
-        let mut hub = HubModule::new();
+        let mut hub = VeraModule::new();
         let err = hub.delete_jws_token("nonexistent").unwrap_err();
-        assert!(matches!(err, HubError::TokenNotFound { .. }));
+        assert!(matches!(err, VeraError::TokenNotFound { .. }));
     }
 
     #[test]
     fn get_all_jws_tokens() {
-        let mut hub = HubModule::new();
+        let mut hub = VeraModule::new();
         let ctx = block_ctx(100);
         let hash = sample_record(&mut hub, &ctx);
         let all = hub.get_all_jws_tokens().unwrap();
@@ -986,7 +986,7 @@ mod tests {
 
     #[test]
     fn get_tokens_by_did() {
-        let mut hub = HubModule::new();
+        let mut hub = VeraModule::new();
         let ctx = block_ctx(100);
         let _ = sample_record(&mut hub, &ctx);
         let did = make_did("did:key:z6MkTest");
@@ -996,7 +996,7 @@ mod tests {
 
     #[test]
     fn get_tokens_by_account() {
-        let mut hub = HubModule::new();
+        let mut hub = VeraModule::new();
         let ctx = block_ctx(100);
         let _ = sample_record(&mut hub, &ctx);
         let tokens = hub.get_jws_tokens_by_account("0xAccount1").unwrap();
@@ -1005,7 +1005,7 @@ mod tests {
 
     #[test]
     fn hash_jws_token_delegates_to_keys() {
-        let h1 = HubModule::hash_jws_token("test");
+        let h1 = VeraModule::hash_jws_token("test");
         let h2 = keys::hash_jws_token("test");
         assert_eq!(h1, h2);
     }
@@ -1038,8 +1038,8 @@ mod tests {
         }
     }
 
-    fn hub_with_token() -> (HubModule, String) {
-        let mut hub = HubModule::new();
+    fn hub_with_token() -> (VeraModule, String) {
+        let mut hub = VeraModule::new();
         hub.set_chain_config(ChainConfig {
             allow_zero_fee_txs: false,
             ignore_bearer_auth: true,
@@ -1095,7 +1095,7 @@ mod tests {
         let err = hub
             .invalidate_jws(&bctx, &tctx, &creator, &hash)
             .unwrap_err();
-        assert!(matches!(err, HubError::Unauthorized { .. }));
+        assert!(matches!(err, VeraError::Unauthorized { .. }));
     }
 
     #[test]
@@ -1108,32 +1108,32 @@ mod tests {
         let err = hub
             .invalidate_jws(&bctx, &tctx, &creator, &hash)
             .unwrap_err();
-        assert!(matches!(err, HubError::TokenAlreadyInvalidated { .. }));
+        assert!(matches!(err, VeraError::TokenAlreadyInvalidated { .. }));
     }
 
     #[test]
     fn invalidate_jws_not_found() {
-        let mut hub = HubModule::new();
+        let mut hub = VeraModule::new();
         let bctx = block_ctx(200);
         let tctx = tx_ctx("0xAccount1");
         let creator = make_did("did:key:z6MkTest");
         let err = hub
             .invalidate_jws(&bctx, &tctx, &creator, "nonexistent")
             .unwrap_err();
-        assert!(matches!(err, HubError::TokenNotFound { .. }));
+        assert!(matches!(err, VeraError::TokenNotFound { .. }));
     }
 
     #[test]
     fn unauthenticated_parameter_update_is_rejected() {
-        let mut hub = HubModule::new();
+        let mut hub = VeraModule::new();
         let authority = make_did("did:key:z6MkGov");
-        assert!(hub.update_params(&authority, HubParams {}).is_err());
-        assert_eq!(hub.get_params().unwrap(), HubParams {});
+        assert!(hub.update_params(&authority, VeraParams {}).is_err());
+        assert_eq!(hub.get_params().unwrap(), VeraParams {});
     }
 
     #[test]
     fn check_and_update_expired_tokens_sweeps() {
-        let mut hub = HubModule::new();
+        let mut hub = VeraModule::new();
         hub.set_chain_config(ChainConfig {
             allow_zero_fee_txs: false,
             ignore_bearer_auth: true,
@@ -1166,7 +1166,7 @@ mod tests {
 
     #[test]
     fn check_and_update_skips_zero_expiry() {
-        let mut hub = HubModule::new();
+        let mut hub = VeraModule::new();
         hub.set_chain_config(ChainConfig {
             allow_zero_fee_txs: false,
             ignore_bearer_auth: true,

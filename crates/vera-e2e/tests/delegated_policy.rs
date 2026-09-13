@@ -7,8 +7,8 @@ use alloy_sol_types::{SolCall, SolEvent};
 use commonware_codec::Encode as _;
 use k256::ecdsa::SigningKey;
 use vera_client::{
-    ACP_ADDRESS, BlsSigner, ClientError, DelegationScope, HUB_ADDRESS, HubClient, ModuleId,
-    NativeReceipt, RECORD_PROOF_BYTES, create_bearer_token, create_scoped_bearer_token,
+    ACP_ADDRESS, BlsSigner, ClientError, DelegationScope, ModuleId, NativeReceipt,
+    RECORD_PROOF_BYTES, VERA_ADDRESS, VeraClient, create_bearer_token, create_scoped_bearer_token,
 };
 use vera_domain::{ConsensusPublicKey, NativeTx};
 use vera_e2e::cluster::{ConsensusPreset, KeySet, TestCluster};
@@ -21,7 +21,7 @@ const POLICY: &str = "name: shared\nresources:\n  - name: document\n";
 const EDITED: &str = "name: edited\nresources:\n  - name: document\n";
 
 async fn submit(
-    client: &HubClient,
+    client: &VeraClient,
     trusted: &ConsensusPublicKey,
     signer: &BlsSigner,
     target: Address,
@@ -81,7 +81,7 @@ fn created_id(receipt: &NativeReceipt, owner: &str) -> String {
 }
 
 async fn policy(
-    client: &HubClient,
+    client: &VeraClient,
     id: &str,
     minimum: u64,
     trusted: &ConsensusPublicKey,
@@ -138,7 +138,7 @@ async fn native_workers_preserve_policy_ownership_results_and_revocation() {
         .wait_ready(vera_e2e::readiness_deadline())
         .await
         .unwrap();
-    let client = HubClient::new(cluster.node(0).rpc_url());
+    let client = VeraClient::new(cluster.node(0).rpc_url());
     let actor_key = SigningKey::from_slice(&[42; 32]).unwrap();
     let owner = vera_crypto::secp256k1::did_from_secp256k1_pubkey(
         actor_key.verifying_key().to_encoded_point(true).as_bytes(),
@@ -268,7 +268,7 @@ async fn native_workers_preserve_policy_ownership_results_and_revocation() {
         &client,
         &trusted,
         &second,
-        HUB_ADDRESS,
+        VERA_ADDRESS,
         IHub::revokeDelegationCall {
             token: second_edit_token.clone(),
         },
@@ -279,14 +279,14 @@ async fn native_workers_preserve_policy_ownership_results_and_revocation() {
         &client,
         &trusted,
         &second,
-        HUB_ADDRESS,
+        VERA_ADDRESS,
         IHub::revokeDelegationCall {
             token: second_token.clone(),
         },
     )
     .await;
     assert_eq!(revoked.status, 1);
-    let replica = HubClient::new(cluster.node(3).rpc_url());
+    let replica = VeraClient::new(cluster.node(3).rpc_url());
     policy(&replica, &first_id, revoked.block_number, &trusted).await;
     cluster.restart_node(3).unwrap();
     cluster
@@ -372,7 +372,7 @@ async fn native_relay_grants_bind_workers_and_survive_revocation_restart() {
         .wait_ready(vera_e2e::readiness_deadline())
         .await
         .unwrap();
-    let client = HubClient::new(cluster.node(0).rpc_url());
+    let client = VeraClient::new(cluster.node(0).rpc_url());
     cluster
         .observe(Duration::from_millis(100))
         .wait_for_height(3, Duration::from_secs(30))
@@ -443,7 +443,7 @@ async fn native_relay_grants_bind_workers_and_survive_revocation_restart() {
         &client,
         &trusted,
         &operator_submitter,
-        HUB_ADDRESS,
+        VERA_ADDRESS,
         IHub::applyAdministrationCall {
             request: serde_json::to_vec(&approved).unwrap().into(),
         },
@@ -494,7 +494,7 @@ async fn native_relay_grants_bind_workers_and_survive_revocation_restart() {
             &client,
             &trusted,
             &first,
-            HUB_ADDRESS,
+            VERA_ADDRESS,
             IHub::revokeDelegationCall {
                 token: first_token.clone()
             }
@@ -530,7 +530,7 @@ async fn native_relay_grants_bind_workers_and_survive_revocation_restart() {
             &client,
             &trusted,
             &operator_submitter,
-            HUB_ADDRESS,
+            VERA_ADDRESS,
             IHub::applyAdministrationCall {
                 request: serde_json::to_vec(&replacement).unwrap().into()
             }
@@ -577,7 +577,7 @@ async fn native_relay_grants_bind_workers_and_survive_revocation_restart() {
         .status,
         1
     );
-    let replica = HubClient::new(cluster.node(3).rpc_url());
+    let replica = VeraClient::new(cluster.node(3).rpc_url());
     policy(&replica, &id, selected.revision, &trusted).await;
     let observed = replica
         .read_relay_grant(&issuer, selected.revision, &trusted)
@@ -607,7 +607,7 @@ async fn native_relay_grants_bind_workers_and_survive_revocation_restart() {
         &client,
         &trusted,
         &operator_submitter,
-        HUB_ADDRESS,
+        VERA_ADDRESS,
         IHub::applyAdministrationCall {
             request: serde_json::to_vec(&revoked).unwrap().into(),
         },

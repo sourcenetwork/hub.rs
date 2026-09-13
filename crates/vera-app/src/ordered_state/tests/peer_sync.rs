@@ -26,7 +26,7 @@ fn all_partitions_sync_over_authenticated_peers_and_reopen() {
             ::tokio::time::timeout(Duration::from_secs(30), async {
                 let source = OrderedState::init(
                     context.child("source"),
-                    config(&context, "source", HubExecutor::new(DEPLOYMENT)),
+                    config(&context, "source", VeraExecutor::new(DEPLOYMENT)),
                 )
                 .await;
                 source.apply(recovery::revision(&source, 1).await).await;
@@ -120,7 +120,7 @@ fn all_partitions_sync_over_authenticated_peers_and_reopen() {
                         assert!(source.finalize().await.durable().await);
                         final_target = source.committed_targets().await;
                     }
-                    let executor = HubExecutor::new(DEPLOYMENT);
+                    let executor = VeraExecutor::new(DEPLOYMENT);
                     executor
                         .modules()
                         .write()
@@ -221,7 +221,7 @@ fn all_partitions_sync_over_authenticated_peers_and_reopen() {
         Box::pin(async move {
             let replica = OrderedState::open(
                 context.child("reopen"),
-                config(&context, "replica", HubExecutor::new(DEPLOYMENT))
+                config(&context, "replica", VeraExecutor::new(DEPLOYMENT))
                     .recover_checkpoint(checkpoint),
             )
             .await

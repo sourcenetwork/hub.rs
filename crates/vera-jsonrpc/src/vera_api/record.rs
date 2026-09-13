@@ -8,11 +8,11 @@ use vera_permission::{
 };
 
 use super::{
-    HubApiImpl, HubApiServer, U64,
+    U64, VeraApiImpl, VeraApiServer,
     permission::{error, request_error, retryable},
 };
 
-impl HubApiImpl {
+impl VeraApiImpl {
     pub(super) async fn current_record_proof(
         &self,
         module: ModuleId,

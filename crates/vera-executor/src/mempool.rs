@@ -14,7 +14,7 @@ use vera_overlay::OverlayState;
 use vera_qmdb::{AccountUpdate, ChangeSet};
 use vera_traits::StateDb;
 
-use crate::precompiles::{ACP_ADDRESS, BULLETIN_ADDRESS, HUB_ADDRESS, VALIDATOR_REGISTRY_ADDRESS};
+use crate::precompiles::{ACP_ADDRESS, BULLETIN_ADDRESS, VALIDATOR_REGISTRY_ADDRESS, VERA_ADDRESS};
 use crate::{ExecutionConfig, ExecutionError, TxValidator};
 
 /// Result of validating a transaction for mempool admission.
@@ -114,7 +114,7 @@ impl<S: StateDb> MempoolValidator<S> {
 
         if native_tx.target != ACP_ADDRESS
             && native_tx.target != BULLETIN_ADDRESS
-            && native_tx.target != HUB_ADDRESS
+            && native_tx.target != VERA_ADDRESS
             && native_tx.target != VALIDATOR_REGISTRY_ADDRESS
         {
             return Err(ExecutionError::UnknownNativeTarget(native_tx.target));
@@ -145,7 +145,7 @@ impl<S: StateDb> MempoolValidator<S> {
 
         if native_tx.target != ACP_ADDRESS
             && native_tx.target != BULLETIN_ADDRESS
-            && native_tx.target != HUB_ADDRESS
+            && native_tx.target != VERA_ADDRESS
             && native_tx.target != VALIDATOR_REGISTRY_ADDRESS
         {
             return Err(ExecutionError::UnknownNativeTarget(native_tx.target));
@@ -275,7 +275,7 @@ impl<S: StateDb> MempoolValidator<S> {
 
         if native_tx.target != ACP_ADDRESS
             && native_tx.target != BULLETIN_ADDRESS
-            && native_tx.target != HUB_ADDRESS
+            && native_tx.target != VERA_ADDRESS
             && native_tx.target != VALIDATOR_REGISTRY_ADDRESS
         {
             return Err(ExecutionError::UnknownNativeTarget(native_tx.target));

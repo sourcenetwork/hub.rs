@@ -7,9 +7,10 @@ use commonware_glue::stateful::db::{
 use commonware_runtime::Handle;
 use commonware_utils::channel::mpsc;
 use vera_backend::{
-    AccountsDb, CodeDb, Ctx, HubConfig, HubMerkleized, HubSyncTargets, HubUnmerkleized, StorageDb,
+    AccountsDb, CodeDb, Ctx, StorageDb, VeraConfig, VeraMerkleized as BackendMerkleized,
+    VeraSyncTargets as BackendSyncTargets, VeraUnmerkleized as BackendUnmerkleized,
 };
-use vera_executor::{ExecutionError, HubExecutor, ModuleSnapshot};
+use vera_executor::{ExecutionError, ModuleSnapshot, VeraExecutor};
 use vera_modules::ModuleState;
 
 /// Execution partitions and native modules under one recovery lifecycle.
@@ -19,6 +20,7 @@ pub type VeraStateSet = (
     Shared<CodeDb>,
     Shared<ModuleDb>,
 );
+
 /// Pending execution and module views from the same parent revision.
 pub type VeraUnmerkleized = <VeraStateSet as DatabaseSet<Ctx>>::Unmerkleized;
 /// Sealed execution and module changes for a single revision.
@@ -76,7 +78,7 @@ impl Merkleized for ModuleBatch {
 /// Native module persistence participating in Commonware's database lifecycle.
 #[derive(Debug)]
 pub struct ModuleDb {
-    executor: HubExecutor,
+    executor: VeraExecutor,
     target: ModuleTarget,
 }
 
@@ -84,10 +86,10 @@ impl ManagedDb<Ctx> for ModuleDb {
     type Unmerkleized = ModuleBatch;
     type Merkleized = ModuleBatch;
     type Error = ExecutionError;
-    type Config = HubExecutor;
+    type Config = VeraExecutor;
     type SyncTarget = ModuleTarget;
 
-    async fn init(_context: Ctx, executor: HubExecutor) -> Result<Self, Self::Error> {
+    async fn init(_context: Ctx, executor: VeraExecutor) -> Result<Self, Self::Error> {
         let height = executor.module_height()?;
         let root = executor.snapshot()?.state_root(height);
         Ok(Self {
@@ -155,7 +157,7 @@ impl StateSyncDb<Ctx, DisabledModuleSync> for ModuleDb {
     type SyncError = ExecutionError;
     async fn sync_db(
         _context: Ctx,
-        _config: HubExecutor,
+        _config: VeraExecutor,
         _source: DisabledModuleSync,
         _target: ModuleTarget,
         _tip_updates: mpsc::Receiver<ModuleTarget>,
@@ -171,18 +173,18 @@ impl StateSyncDb<Ctx, DisabledModuleSync> for ModuleDb {
 
 /// Add native persistence to the execution partition configuration.
 pub fn vera_state_config(
-    config: HubConfig,
-    executor: HubExecutor,
+    config: VeraConfig,
+    executor: VeraExecutor,
 ) -> <VeraStateSet as DatabaseSet<Ctx>>::Config {
     (config.0, config.1, config.2, executor)
 }
 
-pub(crate) fn split_batches(batches: VeraUnmerkleized) -> (HubUnmerkleized, ModuleSnapshot) {
+pub(crate) fn split_batches(batches: VeraUnmerkleized) -> (BackendUnmerkleized, ModuleSnapshot) {
     ((batches.0, batches.1, batches.2), batches.3.snapshot)
 }
 
 pub(crate) fn seal_batches(
-    batches: HubMerkleized,
+    batches: BackendMerkleized,
     height: u64,
     modules: ModuleSnapshot,
 ) -> VeraMerkleized {
@@ -195,7 +197,7 @@ pub(crate) fn seal_batches(
 }
 
 pub(crate) const fn module_targets(
-    targets: HubSyncTargets,
+    targets: BackendSyncTargets,
     height: u64,
     root: B256,
 ) -> VeraSyncTargets {

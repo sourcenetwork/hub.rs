@@ -4,7 +4,7 @@ use crate::acp::{
     types::{AccessRequest, Actor, Operation},
 };
 
-fn fixture() -> (AcpModule, HubModule, String, AccessRequest) {
+fn fixture() -> (AcpModule, VeraModule, String, AccessRequest) {
     let mut acp = AcpModule::new();
     let owner = identity::Did::new(issuer()).unwrap();
     let policy = acp.create_policy(&owner,
@@ -29,7 +29,7 @@ fn fixture() -> (AcpModule, HubModule, String, AccessRequest) {
     .unwrap();
     (
         acp,
-        HubModule::new(),
+        VeraModule::new(),
         policy,
         AccessRequest {
             actor: Actor(target),

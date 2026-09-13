@@ -1,4 +1,4 @@
-//! EVM genesis state produced from a [`HubGenesis`](crate::HubGenesis).
+//! EVM genesis state produced from a [`VeraGenesis`](crate::VeraGenesis).
 
 use alloy_evm::revm::primitives::{Address, U256};
 

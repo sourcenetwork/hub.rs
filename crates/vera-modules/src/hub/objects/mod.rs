@@ -7,20 +7,20 @@ pub use types::*;
 #[cfg(test)]
 mod tests;
 
-use super::{HubError, HubModule, Result, rings::RingState};
+use super::{Result, VeraError, VeraModule, rings::RingState};
 use crate::kv_store::ModuleKvStore;
 use crate::{
     acp::{AcpModule, delegated_operation::DelegatedOperation},
     types::{BlockExecCtx, TxExecCtx},
 };
 
-fn invalid(error: impl std::fmt::Display) -> HubError {
-    HubError::InvalidThresholdObject {
+fn invalid(error: impl std::fmt::Display) -> VeraError {
+    VeraError::InvalidThresholdObject {
         reason: error.to_string(),
     }
 }
 
-impl HubModule {
+impl VeraModule {
     pub fn threshold_object(&self, kind: ObjectKind, id: &str) -> Result<Option<ObjectRecord>> {
         self.store
             .get(&object_key(kind, id)?)

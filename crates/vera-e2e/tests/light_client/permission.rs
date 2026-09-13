@@ -2,8 +2,8 @@ use super::{broadcast_evm_tx, parse_policy_id};
 use alloy_sol_types::SolCall;
 use commonware_codec::{Decode as _, Encode as _};
 use vera_client::{
-    ACP_ADDRESS, AccessRequest, Actor, EvmSigner, HubClient, Object, Operation, PERMISSION_LIMITS,
-    PermissionProof, PermissionRead, PermissionResponse, verify_permission_proof,
+    ACP_ADDRESS, AccessRequest, Actor, EvmSigner, Object, Operation, PERMISSION_LIMITS,
+    PermissionProof, PermissionRead, PermissionResponse, VeraClient, verify_permission_proof,
 };
 use vera_domain::{ConsensusPublicKey, verify_light_block};
 use vera_e2e::cluster::TestCluster;
@@ -13,7 +13,7 @@ pub(super) const READER_DID: &str = "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8
 
 pub(super) async fn check_permissions(
     cluster: &TestCluster,
-    client: &HubClient,
+    client: &VeraClient,
     signer: &EvmSigner,
     policy: &str,
     minimum_height: u64,
@@ -186,7 +186,7 @@ pub(super) fn request() -> AccessRequest {
 }
 
 pub(super) async fn evidence(
-    client: &HubClient,
+    client: &VeraClient,
     policy: &str,
     request: &AccessRequest,
     minimum: u64,

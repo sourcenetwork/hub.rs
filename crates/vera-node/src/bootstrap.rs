@@ -25,7 +25,7 @@ use commonware_utils::{
 };
 use vera_config::NodeConfig;
 use vera_domain::PublicKey;
-use vera_genesis::HubGenesis;
+use vera_genesis::VeraGenesis;
 
 use crate::{
     BACKFILL_CHANNEL, BROADCAST_CHANNEL, CERTIFICATE_CHANNEL, DKG_CHANNEL, FileSecretStore,
@@ -42,7 +42,7 @@ pub struct BootstrapSettings {
     /// Node config containing the validator identity and network addresses.
     pub config: NodeConfig,
     /// Genesis document that receives the completed epoch artifact.
-    pub genesis: HubGenesis,
+    pub genesis: VeraGenesis,
     /// Validators participating in the ceremony.
     pub peers: PeerSet,
     /// Secret store that receives this validator's DKG share.

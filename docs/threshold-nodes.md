@@ -8,7 +8,7 @@ records advertise threshold-service participants; they do not admit consensus
 members or initiate DKG.
 
 `vera_client::nodes::sign_node_request` signs a `NodeRequest`, and
-`HubClient::submit_node_request` relays it through an independent BLS worker.
+`VeraClient::submit_node_request` relays it through an independent BLS worker.
 The request binds the initial deployment state, deployment ID, node identity, sequence, expiry
 and command. The digest is SHA-256 over `vera/orbis/node/v1` followed by a zero
 byte and the Borsh request. Keys are canonical lowercase compressed public keys;
@@ -32,7 +32,7 @@ fails its per-node sequence check.
 
 For durable submission, open `NativeWorker` with the application's encrypted key
 store callbacks, encode the command with `encode_node_request`, and call
-`prepare(HUB_ADDRESS, calldata)` before sending. The journal retains exact signed
+`prepare(VERA_ADDRESS, calldata)` before sending. The journal retains exact signed
 bytes across restarts and refuses a different pending request. Use `acknowledge`
 with a certified receipt to advance the worker sequence after either successful
 or rejected execution. Missing receipts and transport errors leave it pending.

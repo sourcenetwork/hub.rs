@@ -15,7 +15,7 @@ use std::time::Duration;
 use alloy_primitives::{Address, Bytes, FixedBytes};
 use alloy_sol_types::SolCall;
 
-use vera_client::{ACP_ADDRESS, EvmSigner, HubClient, TransactionReceipt};
+use vera_client::{ACP_ADDRESS, EvmSigner, TransactionReceipt, VeraClient};
 use vera_e2e::cluster::{ConsensusPreset, GenesisBuilder, TestCluster};
 use vera_e2e::observe::ClusterAssertions;
 use vera_e2e::{RECEIPT_POLL_ATTEMPTS, RECEIPT_POLL_INTERVAL};
@@ -65,7 +65,7 @@ fn parse_policy_id(hex_str: &str) -> FixedBytes<32> {
 /// Sign an EVM tx and broadcast to every node so the current leader has it.
 async fn broadcast_evm_tx(
     cluster: &TestCluster,
-    client: &HubClient,
+    client: &VeraClient,
     signer: &EvmSigner,
     target: Address,
     calldata: Vec<u8>,
@@ -82,7 +82,7 @@ async fn broadcast_evm_tx(
         .map(|i| {
             let r = raw.clone();
             let url = cluster.node(i).rpc_url();
-            tokio::spawn(async move { HubClient::new(url).send_raw_transaction(&r).await })
+            tokio::spawn(async move { VeraClient::new(url).send_raw_transaction(&r).await })
         })
         .collect();
     let mut tx_hash = None;
@@ -125,7 +125,7 @@ async fn cross_object_grant_replicates_across_nodes() {
         .await
         .expect("should reach height 3");
 
-    let client = HubClient::new(cluster.node(0).rpc_url());
+    let client = VeraClient::new(cluster.node(0).rpc_url());
     let signer = EvmSigner::from_hex(HARDHAT_KEY_0, chain_id).expect("valid signer");
 
     let user_key =
@@ -199,7 +199,7 @@ async fn cross_object_grant_replicates_across_nodes() {
         .expect("nodes should advance past the seed blocks");
 
     for node_idx in 0..cluster.node_count() {
-        let node = HubClient::new(cluster.node(node_idx).rpc_url());
+        let node = VeraClient::new(cluster.node(node_idx).rpc_url());
 
         // The parent edge (EntitySet subject) is stored and queryable. Empty
         // actor → no subject filter → all subjects on document:doc1#parent.
@@ -287,7 +287,7 @@ async fn cross_object_grant_replicates_across_nodes() {
         .expect("nodes should advance past the revoke block");
 
     for node_idx in 0..cluster.node_count() {
-        let node = HubClient::new(cluster.node(node_idx).rpc_url());
+        let node = VeraClient::new(cluster.node(node_idx).rpc_url());
 
         // The parent edge is gone.
         let parent_rels = node

@@ -2,13 +2,13 @@ use super::{rollback::execute_with_executor, *};
 use alloy_primitives::{TxKind, keccak256};
 use alloy_signer_local::PrivateKeySigner;
 use alloy_sol_types::SolCall;
-use vera_executor::{HubExecutor, ModuleState, precompiles::VALIDATOR_REGISTRY_ADDRESS};
+use vera_executor::{ModuleState, VeraExecutor, precompiles::VALIDATOR_REGISTRY_ADDRESS};
 use vera_modules::{
     acp::types::{Object, PolicyCmd, PolicyMarshalingType},
     validator_registry::abi::IValidatorRegistry,
 };
 
-fn authorized_state() -> (MockStateDb, HubExecutor) {
+fn authorized_state() -> (MockStateDb, VeraExecutor) {
     let signer: PrivateKeySigner = "42".repeat(32).parse().unwrap();
     let did = vera_crypto::secp256k1::did_from_secp256k1_pubkey(
         &signer.credential().verifying_key().to_sec1_bytes(),
@@ -19,7 +19,7 @@ fn authorized_state() -> (MockStateDb, HubExecutor) {
     authorized_actor(did)
 }
 
-fn authorized_actor(did: identity::Did) -> (MockStateDb, HubExecutor) {
+fn authorized_actor(did: identity::Did) -> (MockStateDb, VeraExecutor) {
     let mut modules = ModuleState::default();
     let policy = modules.acp.create_policy(&did,
         "name: membership\nresources:\n  - name: registry\n    relations:\n      - name: admin\n    permissions:\n      - name: manage\n        expr: admin\n",
@@ -60,7 +60,7 @@ fn authorized_actor(did: identity::Did) -> (MockStateDb, HubExecutor) {
             ..Default::default()
         },
     );
-    let executor = HubExecutor::new(9001);
+    let executor = VeraExecutor::new(9001);
     executor.set_base_modules(modules);
     (state, executor)
 }

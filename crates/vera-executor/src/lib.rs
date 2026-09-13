@@ -40,7 +40,7 @@ mod executor;
 #[cfg(feature = "fault-injection")]
 mod faults;
 mod relation_index;
-pub use executor::{HubExecutor, ModuleTrees};
+pub use executor::{ModuleTrees, VeraExecutor};
 pub use vera_modules::module_state::{ModuleState, SharedModuleState};
 
 mod mempool;

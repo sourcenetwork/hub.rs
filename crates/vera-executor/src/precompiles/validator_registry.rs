@@ -12,7 +12,7 @@ use revm::context_interface::{ContextTr, JournalTr};
 use revm::precompile::PrecompileError;
 use vera_modules::acp::AcpModule;
 use vera_modules::acp::types::{AccessRequest, Actor, Object, Operation};
-use vera_modules::hub::HubModule;
+use vera_modules::hub::VeraModule;
 use vera_modules::types::TxExecCtx;
 use vera_modules::validator_registry::abi::IValidatorRegistry;
 use vera_modules::validator_registry::error::ValidatorRegistryError;
@@ -152,7 +152,7 @@ fn check_manage_access(
 
 fn load_policy_id<CTX: ContextTr>(
     context: &mut CTX,
-    hub: &HubModule,
+    hub: &VeraModule,
 ) -> Result<String, PrecompileError> {
     let state = hub
         .administration()
@@ -381,7 +381,7 @@ fn clear_validator<CTX: ContextTr>(
 pub(crate) fn dispatch_with_journal<CTX: ContextTr>(
     context: &mut CTX,
     acp: &AcpModule,
-    hub: &HubModule,
+    hub: &VeraModule,
     max_active_members: u32,
     tx_ctx: &TxExecCtx,
     input: &[u8],

@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use k256::ecdsa::SigningKey;
 use vera_client::{
-    BlsSigner, ClientError, EvmSigner, HubClient,
+    BlsSigner, ClientError, EvmSigner, VeraClient,
     administration::{AdministrativeCommand, OperatorPolicy, approve_administration},
 };
 use vera_e2e::cluster::{ConsensusPreset, GenesisBuilder, KeySet, TestCluster};
@@ -35,7 +35,7 @@ async fn operator_rotation_and_sequence_survive_replica_restart() {
         .wait_ready(vera_e2e::readiness_deadline())
         .await
         .unwrap();
-    let client = HubClient::new(cluster.node(0).rpc_url());
+    let client = VeraClient::new(cluster.node(0).rpc_url());
     let submitter = BlsSigner::new(42u64.into(), 9001).unwrap();
     let parameters = AcpParams {
         policy_command_max_expiration_delta: 3600,
@@ -101,7 +101,7 @@ async fn operator_rotation_and_sequence_survive_replica_restart() {
         .apply_administration(&evm_submitter, &rotation)
         .await
         .unwrap();
-    let replica = HubClient::new(cluster.node(3).rpc_url());
+    let replica = VeraClient::new(cluster.node(3).rpc_url());
     replica
         .wait_for_receipt(receipt.transaction_hash, Duration::from_millis(50), 600)
         .await
@@ -192,7 +192,7 @@ async fn operator_rotation_and_sequence_survive_replica_restart() {
         AcpParams::default()
     );
     for index in 0..cluster.node_count() {
-        HubClient::new(cluster.node(index).rpc_url())
+        VeraClient::new(cluster.node(index).rpc_url())
             .wait_for_receipt(applied.transaction_hash, Duration::from_millis(50), 600)
             .await
             .unwrap();

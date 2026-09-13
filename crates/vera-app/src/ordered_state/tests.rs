@@ -26,7 +26,7 @@ const DEPLOYMENT: u64 = 9001;
 fn config(
     context: &Ctx,
     prefix: &str,
-    executor: HubExecutor,
+    executor: VeraExecutor,
 ) -> <OrderedState as DatabaseSet<Ctx>>::Config {
     let cache = CacheRef::from_pooler(context, NZU16!(4084), NZUsize!(128));
     ordered_config(
@@ -129,7 +129,7 @@ fn sync_publishes_latest_modules_before_suffix_execution() {
     let runtime = tokio::Config::new().with_storage_directory(directory.path());
     let (expected, target) = tokio::Runner::new(runtime.clone()).start(|context| {
         Box::pin(async move {
-            let source_executor = HubExecutor::new(DEPLOYMENT);
+            let source_executor = VeraExecutor::new(DEPLOYMENT);
             let source = OrderedState::init(
                 context.child("source"),
                 config(&context, "source", source_executor.clone()),
@@ -173,7 +173,7 @@ fn sync_publishes_latest_modules_before_suffix_execution() {
             assert!(source.finalize().await.durable().await);
             let initial = source.committed_targets().await;
             assert_eq!(initial, sealed_target);
-            let destination_executor = HubExecutor::new(DEPLOYMENT);
+            let destination_executor = VeraExecutor::new(DEPLOYMENT);
             destination_executor
                 .modules()
                 .write()
@@ -386,7 +386,7 @@ fn sync_publishes_latest_modules_before_suffix_execution() {
         })
     });
     tokio::Runner::new(runtime).start(|context| async move {
-        let executor = HubExecutor::new(DEPLOYMENT);
+        let executor = VeraExecutor::new(DEPLOYMENT);
         let state = OrderedState::init(
             context.child("reopen"),
             config(&context, "destination", executor.clone()).recover_to(target.clone()),

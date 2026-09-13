@@ -3,7 +3,7 @@
 use alloy_primitives::B256;
 use serde_json::{Value, json};
 use std::time::Duration;
-use vera_client::HubClient;
+use vera_client::VeraClient;
 
 pub(super) struct Probe {
     queries: Vec<(&'static str, Value, Value)>,
@@ -11,7 +11,7 @@ pub(super) struct Probe {
 
 impl Probe {
     pub(super) async fn capture(
-        client: &HubClient,
+        client: &VeraClient,
         hash: B256,
         height: u64,
         revision: B256,
@@ -43,7 +43,7 @@ impl Probe {
         Self { queries }
     }
 
-    pub(super) async fn check(&self, client: &HubClient) {
+    pub(super) async fn check(&self, client: &VeraClient) {
         for (method, params, expected) in &self.queries {
             let actual: Value = client.rpc_call_typed(method, params.clone()).await.unwrap();
             assert_eq!(&actual, expected, "historical {method} changed");
@@ -51,7 +51,7 @@ impl Probe {
     }
 }
 
-pub(super) async fn wait(clients: &[HubClient], height: u64) {
+pub(super) async fn wait(clients: &[VeraClient], height: u64) {
     tokio::time::timeout(Duration::from_secs(600), async {
         loop {
             let mut ready = true;

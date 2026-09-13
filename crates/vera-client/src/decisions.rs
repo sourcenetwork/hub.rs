@@ -7,7 +7,7 @@ use vera_modules::{
 };
 use vera_permission::{ModuleId, RECORD_PROOF_BYTES};
 
-use crate::{ClientError, HubClient};
+use crate::{ClientError, VeraClient};
 
 /// A decision valid at the selected revision, or certified absence.
 #[derive(Clone, Debug)]
@@ -20,7 +20,7 @@ pub struct DecisionRecord {
     pub value: Option<AccessDecision>,
 }
 
-impl HubClient {
+impl VeraClient {
     /// Verify a recorded decision's request, issuance and lifetime at certified state.
     /// This does not re-evaluate permission after subsequent policy changes.
     pub async fn read_access_decision(

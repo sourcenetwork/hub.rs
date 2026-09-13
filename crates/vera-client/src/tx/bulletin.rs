@@ -3,12 +3,12 @@
 use alloy_sol_types::SolCall;
 use vera_modules::bulletin::abi::IBulletin;
 
-use crate::client::{BULLETIN_ADDRESS, HubClient};
+use crate::client::{BULLETIN_ADDRESS, VeraClient};
 use crate::error::ClientError;
 use crate::signer::EvmSigner;
 use crate::types::TransactionReceipt;
 
-impl HubClient {
+impl VeraClient {
     /// Register a new bulletin namespace.
     pub async fn register_namespace(
         &self,

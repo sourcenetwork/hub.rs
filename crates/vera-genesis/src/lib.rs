@@ -9,7 +9,7 @@
 mod config;
 mod state;
 pub use config::{
-    GenesisAllocation, GenesisContract, GenesisStorage, HubGenesis, HubGenesisError,
-    NativeMintConfig, ValidatorConfig,
+    GenesisAllocation, GenesisContract, GenesisStorage, NativeMintConfig, ValidatorConfig,
+    VeraGenesis, VeraGenesisError,
 };
 pub use state::GenesisState;

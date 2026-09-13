@@ -2,7 +2,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use k256::ecdsa::SigningKey;
 use vera_client::{
-    HubClient,
+    VeraClient,
     administration::{
         AdministrativeCommand, AdministrativeRequest, OperatorPolicy, SignedAdministrativeRequest,
         approve_administration,
@@ -29,7 +29,7 @@ pub(super) fn operators() -> OperatorPolicy {
 }
 
 pub(super) async fn approve(
-    client: &HubClient,
+    client: &VeraClient,
     command: AdministrativeCommand,
     sequence: u64,
 ) -> SignedAdministrativeRequest {

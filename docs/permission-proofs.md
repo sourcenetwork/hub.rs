@@ -35,7 +35,7 @@ and certificate lookup share a two-second timeout. An unavailable revision or
 unmet minimum returns `RESOURCE_UNAVAILABLE`; it is not proven absence. A
 deadline exceed is also `RESOURCE_UNAVAILABLE` with `retryable: true`.
 
-`HubClient::read_current_record` bounds the response before deserialization and
+`VeraClient::read_current_record` bounds the response before deserialization and
 verifies the certificate with the caller's consensus key. `RecordResponse::verify`
 binds the requested module and key, minimum revision, combined module root and
 record evidence. Callers must provide any additional timestamp or age policy.
@@ -57,7 +57,7 @@ must validate record semantics or use verified permission evaluation.
 `vera_getCurrentPrefixProof(module, prefix, minimum_height)` returns
 `{ "revision": LightBlock, "prefix": PrefixProof }`. It captures a complete
 ordered prefix under the four native partition read locks, then releases them
-before fetching the matching certificate. `HubClient::read_current_prefix`
+before fetching the matching certificate. `VeraClient::read_current_prefix`
 verifies finality, the requested module/prefix and minimum revision, combined
 roots, the prefix boundary and every successor. Omitting the first or last
 record, truncating the scan, changing a value or mixing roots fails verification.
@@ -91,7 +91,7 @@ two-second timeout; this is not a bound on synchronous evaluation or storage
 work. Exceeding it returns `RESOURCE_UNAVAILABLE` with `retryable: true`, since
 the evidence is delayed rather than absent.
 
-`HubClient::verify_current_access` fetches this response once, verifies the
+`VeraClient::verify_current_access` fetches this response once, verifies the
 certificate against the caller's independently provisioned consensus key,
 enforces the minimum height, and evaluates the requested permission using the
 authenticated evidence. It returns the verified revision and local decision.
@@ -118,7 +118,7 @@ memberships stop granting at the selected revision. Nodes and verifying consumer
 must use the same shared ACP evaluator revision; different evaluator versions can
 disagree even when they authenticate the same state.
 
-`HubClient::verify_access_at` verifies a supplied finalized revision against an independently configured consensus key, fetches bounded evidence and evaluates it locally. It checks the HTTP response size before deserialization, including chunked responses, checks the JSON-RPC request ID, and applies a ten-second request timeout. The caller controls revision freshness. The method does not fall back to an older revision or interpret unavailable evidence as a denial or grant.
+`VeraClient::verify_access_at` verifies a supplied finalized revision against an independently configured consensus key, fetches bounded evidence and evaluates it locally. It checks the HTTP response size before deserialization, including chunked responses, checks the JSON-RPC request ID, and applies a ten-second request timeout. The caller controls revision freshness. The method does not fall back to an older revision or interpret unavailable evidence as a denial or grant.
 
 Service limits are 64 operations, 64 KiB of serialized policy ID and request, 256 evaluation reads, 4,096 returned records across those reads, 1 MiB of request-key and returned-record bytes, and 4 MiB of serialized evidence. JMT complete-prefix reads also obey the relation endpoint's limits. Client transport permits the proof limit plus 1 KiB for the RPC envelope. Clients may impose tighter limits. These read limits do not bound pure expression work or establish a sustained-throughput guarantee.
 
@@ -174,7 +174,7 @@ provides arbitrary historical activity proofs.
 `vera_getCurrentPrefixPageProof(request, minimum_height)` captures one certified
 page. The request contains `module`, hex-encoded `prefix` and `start`, and `limit`
 (1–128). Start is an inclusive lower bound within the prefix; use the prefix
-itself for the first page. `HubClient::read_current_prefix_page` verifies the
+itself for the first page. `VeraClient::read_current_prefix_page` verifies the
 captured certificate, minimum revision, exact request and consecutive membership
 witnesses. `PrefixPageResponse::verify` returns entries and an authenticated
 continuation key, or no continuation when the prefix ends at that revision.

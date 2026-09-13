@@ -8,7 +8,7 @@ use vera_client::threshold_objects::{
     EncryptedDocument, KeyDerivation, ObjectKind, ThresholdObject, encode_threshold_object,
 };
 use vera_client::{
-    ACP_ADDRESS, BlsSigner, DelegationScope, HUB_ADDRESS, HubClient, NativeReceipt,
+    ACP_ADDRESS, BlsSigner, DelegationScope, NativeReceipt, VERA_ADDRESS, VeraClient,
     create_scoped_bearer_token,
     nodes::{NodeCommand, NodeInfo, NodeRequest, encode_node_request, sign_node_request},
     rings::*,
@@ -26,8 +26,8 @@ fn public(key: &SigningKey) -> String {
 }
 
 async fn execute(
-    writer: &HubClient,
-    reader: &HubClient,
+    writer: &VeraClient,
+    reader: &VeraClient,
     worker: &BlsSigner,
     trusted: &ConsensusPublicKey,
     target: Address,
@@ -85,8 +85,8 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
         .wait_for_height(3, Duration::from_secs(30))
         .await
         .unwrap();
-    let writer = HubClient::new(cluster.node(0).rpc_url());
-    let reader = HubClient::new(cluster.node(3).rpc_url());
+    let writer = VeraClient::new(cluster.node(0).rpc_url());
+    let reader = VeraClient::new(cluster.node(3).rpc_url());
     let first: serde_json::Value = writer
         .rpc_call_typed("eth_getBlockByNumber", serde_json::json!(["0x1", false]))
         .await
@@ -188,7 +188,7 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
             &reader,
             &worker,
             &trusted,
-            HUB_ADDRESS,
+            VERA_ADDRESS,
             encode_node_request(&signed).unwrap(),
             true,
         )
@@ -217,7 +217,7 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
         &reader,
         &worker,
         &trusted,
-        HUB_ADDRESS,
+        VERA_ADDRESS,
         encode_ring_command(&command, &token(DelegationScope::PolicyCommands)).unwrap(),
         false,
     )
@@ -235,7 +235,7 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
         &reader,
         &worker,
         &trusted,
-        HUB_ADDRESS,
+        VERA_ADDRESS,
         encode_ring_command(&command, &token(DelegationScope::ManageRings)).unwrap(),
         true,
     )
@@ -272,7 +272,7 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
         &reader,
         &worker,
         &trusted,
-        HUB_ADDRESS,
+        VERA_ADDRESS,
         encode_ring_participant_request(&first).unwrap(),
         true,
     )
@@ -287,7 +287,7 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
         &reader,
         &worker,
         &trusted,
-        HUB_ADDRESS,
+        VERA_ADDRESS,
         encode_ring_participant_request(&duplicate).unwrap(),
         false,
     )
@@ -302,7 +302,7 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
         &reader,
         &worker,
         &trusted,
-        HUB_ADDRESS,
+        VERA_ADDRESS,
         encode_ring_participant_request(&second).unwrap(),
         true,
     )
@@ -312,7 +312,7 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
         &reader,
         &worker,
         &trusted,
-        HUB_ADDRESS,
+        VERA_ADDRESS,
         encode_ring_participant_request(&participant(
             &ring,
             &nodes[2],
@@ -352,7 +352,7 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
             &reader,
             &worker,
             &trusted,
-            HUB_ADDRESS,
+            VERA_ADDRESS,
             encode_threshold_object(object, &object_token).unwrap(),
             true,
         )
@@ -375,7 +375,7 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
             &reader,
             &worker,
             &trusted,
-            HUB_ADDRESS,
+            VERA_ADDRESS,
             encode_threshold_object(object, &object_token).unwrap(),
             false,
         )
@@ -463,7 +463,7 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
         &reader,
         &worker,
         &trusted,
-        HUB_ADDRESS,
+        VERA_ADDRESS,
         encoded.clone(),
         true,
     )
@@ -473,7 +473,7 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
         &reader,
         &worker,
         &trusted,
-        HUB_ADDRESS,
+        VERA_ADDRESS,
         encoded,
         false,
     )
@@ -483,7 +483,7 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
         &reader,
         &worker,
         &trusted,
-        HUB_ADDRESS,
+        VERA_ADDRESS,
         encode_ring_command(
             &RingCommand::Update {
                 ring_id: ring.clone(),
@@ -579,7 +579,7 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
         &reader,
         &worker,
         &trusted,
-        HUB_ADDRESS,
+        VERA_ADDRESS,
         finalize.clone(),
         true,
     )
@@ -589,7 +589,7 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
         &reader,
         &worker,
         &trusted,
-        HUB_ADDRESS,
+        VERA_ADDRESS,
         finalize,
         false,
     )
@@ -627,7 +627,7 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
         &reader,
         &worker,
         &trusted,
-        HUB_ADDRESS,
+        VERA_ADDRESS,
         create.clone(),
         true,
     )
@@ -638,7 +638,7 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
         &reader,
         &worker,
         &trusted,
-        HUB_ADDRESS,
+        VERA_ADDRESS,
         encode_ring_participant_request(&cancel).unwrap(),
         true,
     )
@@ -658,7 +658,7 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
         &reader,
         &worker,
         &trusted,
-        HUB_ADDRESS,
+        VERA_ADDRESS,
         create,
         false,
     )
@@ -668,7 +668,7 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
         &reader,
         &worker,
         &trusted,
-        HUB_ADDRESS,
+        VERA_ADDRESS,
         encode_ring_participant_request(&participant(
             &ring,
             &nodes[1],

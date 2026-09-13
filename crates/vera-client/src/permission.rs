@@ -1,11 +1,11 @@
-use crate::{ClientError, HubClient};
+use crate::{ClientError, VeraClient};
 use vera_domain::{ConsensusPublicKey, LightBlock, verify_light_block};
 use vera_permission::{
     AccessRequest, PermissionLimits, PermissionProof, PermissionResponse, validate_request,
     verify_permission_proof,
 };
 
-impl HubClient {
+impl VeraClient {
     /// Fetch one bounded finality proof and authenticate its exact requested revision.
     pub async fn read_finalized_revision(
         &self,

@@ -5,7 +5,7 @@ use std::{path::PathBuf, time::Duration};
 use clap::{Parser, Subcommand};
 use commonware_cryptography::Signer as _;
 use vera_config::NodeConfig;
-use vera_genesis::{HubGenesis, ValidatorConfig};
+use vera_genesis::{ValidatorConfig, VeraGenesis};
 use vera_node::{NodeSettings, PeerSet, load_peers};
 
 use crate::testnet;
@@ -140,7 +140,7 @@ impl Cli {
     fn run_validator(&self, args: &ValidatorArgs) -> eyre::Result<()> {
         let config = self.load_config()?;
         let peers = load_peers(&args.peers)?;
-        let genesis = HubGenesis::load(&config.data_dir.join("genesis.json"))?;
+        let genesis = VeraGenesis::load(&config.data_dir.join("genesis.json"))?;
         let local = config.validator_key()?.public_key();
         let validator_index = peers
             .participants
@@ -172,7 +172,7 @@ impl Cli {
 
         let config = self.load_config()?;
         let peers = load_peers(&args.peers)?;
-        let genesis = HubGenesis::load(&config.data_dir.join("genesis.json"))?;
+        let genesis = VeraGenesis::load(&config.data_dir.join("genesis.json"))?;
         let storage = config.data_dir.join("bootstrap-commonware");
         let settings = vera_node::BootstrapSettings {
             secrets_path: config.data_dir.join("secrets.json"),
@@ -195,8 +195,8 @@ impl Cli {
     fn run_devnet(&self, args: &DevnetArgs) -> eyre::Result<()> {
         let mut config = self.load_config()?;
         let mut genesis = match &args.genesis {
-            Some(path) => HubGenesis::load(path)?,
-            None => HubGenesis::devnet(),
+            Some(path) => VeraGenesis::load(path)?,
+            None => VeraGenesis::devnet(),
         };
         if self.chain_id.is_none() {
             config.chain_id = genesis.chain_id;
@@ -242,7 +242,7 @@ impl Cli {
 }
 
 fn configure_devnet_membership(
-    genesis: &mut HubGenesis,
+    genesis: &mut VeraGenesis,
     local: &commonware_cryptography::ed25519::PublicKey,
     listen_addr: &str,
 ) -> eyre::Result<()> {
@@ -284,7 +284,7 @@ const DEFAULT_NULLIFY_RETRY: Duration = Duration::from_millis(500);
 
 fn node_settings(
     config: NodeConfig,
-    genesis: HubGenesis,
+    genesis: VeraGenesis,
     peers: PeerSet,
     rpc_port: u16,
     timeouts: ConsensusTimeouts,
@@ -333,7 +333,7 @@ mod tests {
     #[test]
     fn devnet_initializes_registry_membership_and_rejects_a_different_key() {
         let key = commonware_cryptography::ed25519::PrivateKey::from_seed(1).public_key();
-        let mut genesis = HubGenesis::devnet();
+        let mut genesis = VeraGenesis::devnet();
         configure_devnet_membership(&mut genesis, &key, "127.0.0.1:3000").unwrap();
         assert_eq!(
             genesis.to_genesis_state().unwrap().participant_addresses,

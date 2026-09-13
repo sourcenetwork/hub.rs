@@ -2,7 +2,7 @@
 
 use crate::types::TransactionReceipt;
 
-/// Errors returned by [`HubClient`](crate::HubClient) methods.
+/// Errors returned by [`VeraClient`](crate::VeraClient) methods.
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
     /// JSON-RPC error returned by the node.

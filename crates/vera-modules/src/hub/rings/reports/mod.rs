@@ -124,7 +124,7 @@ impl RingRecord {
     }
 }
 
-impl HubModule {
+impl VeraModule {
     pub fn node_demerits(&self, ring_id: &str, node_key: &str) -> Result<Option<NodeDemerits>> {
         self.store
             .get_ref(&demerits_key(ring_id, node_key)?)

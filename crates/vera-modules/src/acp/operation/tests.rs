@@ -11,7 +11,7 @@ use crate::{
         delegated_operation::DelegatedOperation,
         types::{Object, PolicyCmd, PolicyMarshalingType},
     },
-    hub::HubModule,
+    hub::VeraModule,
     kv_store::InMemoryKvStore,
     types::{BlockExecCtx, TxExecCtx},
 };
@@ -87,7 +87,7 @@ fn sign(claims: &JwtClaims) -> String {
 #[test]
 fn workers_recover_the_original_outcome_after_edit_and_reopen() {
     let mut acp = AcpModule::new();
-    let mut hub = HubModule::new();
+    let mut hub = VeraModule::new();
     let first = submission(7);
     let second = submission(8);
     let operation_id = id(1, 200);
@@ -235,7 +235,7 @@ fn workers_recover_the_original_outcome_after_edit_and_reopen() {
 #[test]
 fn request_binding_and_expiry_precede_effects_and_survive_pruning() {
     let mut acp = AcpModule::new();
-    let mut hub = HubModule::new();
+    let mut hub = VeraModule::new();
     let worker = submission(7);
     let operation = DelegatedOperation::CreatePolicy(POLICY, &FORMAT);
     let identity = id(1, 200);
@@ -296,7 +296,7 @@ fn request_binding_and_expiry_precede_effects_and_survive_pruning() {
 #[test]
 fn an_operation_identity_cannot_be_reused_for_different_arguments() {
     let mut acp = AcpModule::new();
-    let mut hub = HubModule::new();
+    let mut hub = VeraModule::new();
     let worker = submission(7);
     let operation_id = id(1, 200);
     let original = token(
@@ -340,7 +340,7 @@ fn an_operation_identity_cannot_be_reused_for_different_arguments() {
 #[test]
 fn repeated_edit_returns_its_original_count_without_removing_new_relationships() {
     let mut acp = AcpModule::new();
-    let mut hub = HubModule::new();
+    let mut hub = VeraModule::new();
     let owner = identity::Did::new(issuer()).unwrap();
     let original =
         "name: files\nresources:\n  - name: file\n    relations:\n      - name: reader\n";
@@ -407,7 +407,7 @@ fn repeated_edit_returns_its_original_count_without_removing_new_relationships()
 #[test]
 fn failed_or_over_budget_execution_does_not_reserve_an_operation() {
     let mut acp = AcpModule::new();
-    let mut hub = HubModule::new();
+    let mut hub = VeraModule::new();
     let worker = submission(7);
     let operation_id = id(1, 200);
     for (policy, full) in [("invalid: [", false), (POLICY, true)] {

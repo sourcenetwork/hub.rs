@@ -48,7 +48,7 @@ cannot confirm using the node's authority. Public-key declarations use lowercase
 hex; the ring lifecycle records participant agreement on those bytes. It does
 not validate a DKG transcript or select a threshold cryptographic scheme.
 
-Pass the encoded command to `NativeWorker::prepare(HUB_ADDRESS, calldata)` before
+Pass the encoded command to `NativeWorker::prepare(VERA_ADDRESS, calldata)` before
 submission. Recover the exact pending bytes after interruption and acknowledge
 only a verified receipt. `read_threshold_ring` verifies inclusion or absence
 against caller-provisioned consensus trust and a minimum revision, then validates

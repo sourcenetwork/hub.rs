@@ -5,11 +5,11 @@ use vera_permission::{
 };
 
 use super::{
-    HubApiImpl,
+    VeraApiImpl,
     permission::{error, request_error, retryable},
 };
 
-impl HubApiImpl {
+impl VeraApiImpl {
     pub(super) async fn current_prefix_page_proof(
         &self,
         request: &PrefixPageRequest,

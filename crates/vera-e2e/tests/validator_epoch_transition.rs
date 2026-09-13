@@ -19,7 +19,7 @@ use commonware_codec::Encode;
 use commonware_cryptography::{Signer as _, ed25519};
 
 use vera_client::{
-    ACP_ADDRESS, EvmSigner, HubClient, TransactionReceipt, VALIDATOR_REGISTRY_ADDRESS,
+    ACP_ADDRESS, EvmSigner, TransactionReceipt, VALIDATOR_REGISTRY_ADDRESS, VeraClient,
 };
 use vera_domain::{EpochMaterial, LightBlock, verify_light_block};
 use vera_e2e::cluster::{ConsensusPreset, GenesisBuilder, KeySet, TestCluster};
@@ -50,7 +50,7 @@ fn parse_policy_id(hex_str: &str) -> FixedBytes<32> {
 
 async fn broadcast_evm_tx(
     cluster: &TestCluster,
-    client: &HubClient,
+    client: &VeraClient,
     signer: &EvmSigner,
     target: Address,
     calldata: Vec<u8>,
@@ -64,7 +64,7 @@ async fn broadcast_evm_tx(
         .map(|i| {
             let r = raw.clone();
             let url = cluster.node(i).rpc_url();
-            tokio::spawn(async move { HubClient::new(url).send_raw_transaction(&r).await })
+            tokio::spawn(async move { VeraClient::new(url).send_raw_transaction(&r).await })
         })
         .collect();
     let mut tx_hash = None;
@@ -81,7 +81,7 @@ async fn broadcast_evm_tx(
         .expect("receipt should appear")
 }
 
-async fn eth_call_raw(client: &HubClient, target: Address, calldata: Vec<u8>) -> Vec<u8> {
+async fn eth_call_raw(client: &VeraClient, target: Address, calldata: Vec<u8>) -> Vec<u8> {
     client
         .eth_call(target, Bytes::from(calldata))
         .await
@@ -89,7 +89,7 @@ async fn eth_call_raw(client: &HubClient, target: Address, calldata: Vec<u8>) ->
         .to_vec()
 }
 
-async fn setup_acp_policy(cluster: &TestCluster, client: &HubClient, admin: &EvmSigner) {
+async fn setup_acp_policy(cluster: &TestCluster, client: &VeraClient, admin: &EvmSigner) {
     let calldata = IAcp::createPolicyCall {
         policy: REGISTRY_POLICY_YAML.as_bytes().to_vec().into(),
         marshalType: 1,
@@ -176,7 +176,7 @@ async fn validator_epoch_transition() {
         .await
         .expect("should reach height 3");
 
-    let client = HubClient::new(cluster.node(0).rpc_url());
+    let client = VeraClient::new(cluster.node(0).rpc_url());
     let admin_signer = EvmSigner::from_hex(HARDHAT_KEY_0, chain_id).expect("valid signer");
 
     // ── A: Verify genesis validators ──────────────────────────────
@@ -336,7 +336,7 @@ async fn validator_epoch_transition() {
 
     // ── G: Cross-node consistency ─────────────────────────────────
 
-    let client2 = HubClient::new(cluster.node(1).rpc_url());
+    let client2 = VeraClient::new(cluster.node(1).rpc_url());
     let calldata = IValidatorRegistry::getValidatorsCall {}.abi_encode();
     let result = eth_call_raw(&client2, VALIDATOR_REGISTRY_ADDRESS, calldata).await;
     let decoded = IValidatorRegistry::getValidatorsCall::abi_decode_returns(&result)

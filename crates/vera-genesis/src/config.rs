@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 /// - `native_mint`: NativeMint precompile configuration
 /// - `chain_name`: Human-readable chain identifier
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct HubGenesis {
+pub struct VeraGenesis {
     /// Chain ID.
     pub chain_id: u64,
     /// Initial operator approval policy. Omission disables administrative writes.
@@ -120,7 +120,7 @@ fn default_denom() -> String {
 
 /// Errors from genesis loading.
 #[derive(Debug)]
-pub enum HubGenesisError {
+pub enum VeraGenesisError {
     /// IO error reading the genesis file.
     Io(std::io::Error),
     /// JSON parsing error.
@@ -129,7 +129,7 @@ pub enum HubGenesisError {
     Parse(String),
 }
 
-impl std::fmt::Display for HubGenesisError {
+impl std::fmt::Display for VeraGenesisError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Io(e) => write!(f, "io error: {}", e),
@@ -139,23 +139,23 @@ impl std::fmt::Display for HubGenesisError {
     }
 }
 
-impl std::error::Error for HubGenesisError {}
+impl std::error::Error for VeraGenesisError {}
 
-impl From<std::io::Error> for HubGenesisError {
+impl From<std::io::Error> for VeraGenesisError {
     fn from(e: std::io::Error) -> Self {
         Self::Io(e)
     }
 }
 
-impl From<serde_json::Error> for HubGenesisError {
+impl From<serde_json::Error> for VeraGenesisError {
     fn from(e: serde_json::Error) -> Self {
         Self::Json(e)
     }
 }
 
-impl HubGenesis {
+impl VeraGenesis {
     /// Load genesis from a JSON file.
-    pub fn load(path: &Path) -> Result<Self, HubGenesisError> {
+    pub fn load(path: &Path) -> Result<Self, VeraGenesisError> {
         let content = std::fs::read_to_string(path)?;
         let genesis: Self = serde_json::from_str(&content)?;
         Ok(genesis)
@@ -172,14 +172,14 @@ impl HubGenesis {
                 commonware_utils::sequence::Unit,
             >,
         >,
-        HubGenesisError,
+        VeraGenesisError,
     > {
         let Some(raw) = self.epoch_info.as_deref() else {
             return Ok(None);
         };
         let raw = raw.strip_prefix("0x").unwrap_or(raw);
         let bytes = hex::decode(raw)
-            .map_err(|e| HubGenesisError::Parse(format!("invalid epoch_info hex: {e}")))?;
+            .map_err(|e| VeraGenesisError::Parse(format!("invalid epoch_info hex: {e}")))?;
         let info = commonware_codec::Decode::decode_cfg(
             bytes.as_slice(),
             &(
@@ -187,23 +187,23 @@ impl HubGenesis {
                 commonware_cryptography::bls12381::primitives::sharing::ModeVersion::v0(),
             ),
         )
-        .map_err(|e| HubGenesisError::Parse(format!("invalid epoch_info encoding: {e}")))?;
+        .map_err(|e| VeraGenesisError::Parse(format!("invalid epoch_info encoding: {e}")))?;
         Ok(Some(info))
     }
 
     /// Build the EVM genesis state: balances, registry storage, and code.
-    pub fn to_genesis_state(&self) -> Result<GenesisState, HubGenesisError> {
+    pub fn to_genesis_state(&self) -> Result<GenesisState, VeraGenesisError> {
         if let Some(policy) = &self.operators {
             policy
                 .validate()
-                .map_err(|error| HubGenesisError::Parse(error.to_string()))?;
+                .map_err(|error| VeraGenesisError::Parse(error.to_string()))?;
         }
         let mut genesis_alloc = Vec::with_capacity(self.allocations.len());
         for alloc in &self.allocations {
             let address = Address::from_str(&alloc.address)
-                .map_err(|e| HubGenesisError::Parse(format!("invalid address: {}", e)))?;
+                .map_err(|e| VeraGenesisError::Parse(format!("invalid address: {}", e)))?;
             let balance = U256::from_str(&alloc.balance)
-                .map_err(|e| HubGenesisError::Parse(format!("invalid balance: {}", e)))?;
+                .map_err(|e| VeraGenesisError::Parse(format!("invalid balance: {}", e)))?;
             genesis_alloc.push((address, balance));
         }
 
@@ -221,23 +221,24 @@ impl HubGenesis {
 
         for contract in &self.contracts {
             let address = Address::from_str(&contract.address)
-                .map_err(|e| HubGenesisError::Parse(format!("invalid contract address: {}", e)))?;
+                .map_err(|e| VeraGenesisError::Parse(format!("invalid contract address: {}", e)))?;
             let bytecode_hex = contract
                 .bytecode
                 .strip_prefix("0x")
                 .unwrap_or(&contract.bytecode);
-            let bytecode = hex::decode(bytecode_hex)
-                .map_err(|e| HubGenesisError::Parse(format!("invalid contract bytecode: {}", e)))?;
+            let bytecode = hex::decode(bytecode_hex).map_err(|e| {
+                VeraGenesisError::Parse(format!("invalid contract bytecode: {}", e))
+            })?;
             genesis_code.push((address, bytecode));
         }
 
         for entry in &self.extra_storage {
             let address = Address::from_str(&entry.address)
-                .map_err(|e| HubGenesisError::Parse(format!("invalid storage address: {}", e)))?;
+                .map_err(|e| VeraGenesisError::Parse(format!("invalid storage address: {}", e)))?;
             let slot = U256::from_str(&entry.slot)
-                .map_err(|e| HubGenesisError::Parse(format!("invalid storage slot: {}", e)))?;
+                .map_err(|e| VeraGenesisError::Parse(format!("invalid storage slot: {}", e)))?;
             let value = U256::from_str(&entry.value)
-                .map_err(|e| HubGenesisError::Parse(format!("invalid storage value: {}", e)))?;
+                .map_err(|e| VeraGenesisError::Parse(format!("invalid storage value: {}", e)))?;
 
             if let Some(existing) = genesis_storage.iter_mut().find(|(a, _)| *a == address) {
                 existing.1.push((slot, value));
@@ -341,32 +342,32 @@ fn vr_address_to_padded_u256(addr: Address) -> U256 {
     U256::from_be_bytes(buf)
 }
 
-fn validate_genesis_p2p_address(addr: &str) -> Result<(), HubGenesisError> {
+fn validate_genesis_p2p_address(addr: &str) -> Result<(), VeraGenesisError> {
     if addr.is_empty() {
-        return Err(HubGenesisError::Parse(
+        return Err(VeraGenesisError::Parse(
             "validator p2p address is empty".into(),
         ));
     }
     if addr.len() > MAX_P2P_ADDRESS_LEN {
-        return Err(HubGenesisError::Parse(format!(
+        return Err(VeraGenesisError::Parse(format!(
             "validator p2p address exceeds {MAX_P2P_ADDRESS_LEN} bytes: {addr}"
         )));
     }
     addr.parse::<std::net::SocketAddr>().map_err(|e| {
-        HubGenesisError::Parse(format!("invalid validator p2p address '{addr}': {e}"))
+        VeraGenesisError::Parse(format!("invalid validator p2p address '{addr}': {e}"))
     })?;
     Ok(())
 }
 
 fn validator_storage_entries(
     validators: &[ValidatorConfig],
-) -> Result<Vec<(U256, U256)>, HubGenesisError> {
+) -> Result<Vec<(U256, U256)>, VeraGenesisError> {
     let mut seen = HashSet::new();
     for v in validators {
         let addr = Address::from_str(&v.evm_address)
-            .map_err(|e| HubGenesisError::Parse(format!("invalid validator address: {e}")))?;
+            .map_err(|e| VeraGenesisError::Parse(format!("invalid validator address: {e}")))?;
         if !seen.insert(addr) {
-            return Err(HubGenesisError::Parse(format!(
+            return Err(VeraGenesisError::Parse(format!(
                 "duplicate validator address: {addr}"
             )));
         }
@@ -379,16 +380,16 @@ fn validator_storage_entries(
 
     for (i, v) in validators.iter().enumerate() {
         let addr = Address::from_str(&v.evm_address)
-            .map_err(|e| HubGenesisError::Parse(format!("invalid validator address: {e}")))?;
+            .map_err(|e| VeraGenesisError::Parse(format!("invalid validator address: {e}")))?;
         if addr == Address::ZERO {
-            return Err(HubGenesisError::Parse(
+            return Err(VeraGenesisError::Parse(
                 "validator address cannot be zero".into(),
             ));
         }
         let consensus_bytes = hex::decode(&v.consensus_pubkey)
-            .map_err(|e| HubGenesisError::Parse(format!("invalid consensus pubkey: {e}")))?;
+            .map_err(|e| VeraGenesisError::Parse(format!("invalid consensus pubkey: {e}")))?;
         if consensus_bytes.len() != 32 {
-            return Err(HubGenesisError::Parse(format!(
+            return Err(VeraGenesisError::Parse(format!(
                 "consensus pubkey must be 32 bytes, got {}",
                 consensus_bytes.len()
             )));
@@ -396,12 +397,12 @@ fn validator_storage_entries(
         let mut consensus: [u8; 32] = [0u8; 32];
         consensus.copy_from_slice(&consensus_bytes);
         if consensus == [0u8; 32] {
-            return Err(HubGenesisError::Parse(
+            return Err(VeraGenesisError::Parse(
                 "consensus pubkey cannot be all zeros".into(),
             ));
         }
         vera_domain::PublicKey::read(&mut consensus.as_slice()).map_err(|error| {
-            HubGenesisError::Parse(format!("invalid consensus pubkey: {error}"))
+            VeraGenesisError::Parse(format!("invalid consensus pubkey: {error}"))
         })?;
         validate_genesis_p2p_address(&v.p2p_address)?;
 
@@ -437,9 +438,9 @@ mod tests {
 
     #[test]
     fn devnet_genesis_roundtrip() {
-        let genesis = HubGenesis::devnet();
+        let genesis = VeraGenesis::devnet();
         let json = serde_json::to_string_pretty(&genesis).unwrap();
-        let parsed: HubGenesis = serde_json::from_str(&json).unwrap();
+        let parsed: VeraGenesis = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.chain_id, 9001);
         assert_eq!(parsed.allocations.len(), 2);
         assert_eq!(parsed.native_mint.denom, "abrl");
@@ -447,7 +448,7 @@ mod tests {
 
     #[test]
     fn devnet_to_genesis_state() {
-        let genesis = HubGenesis::devnet();
+        let genesis = VeraGenesis::devnet();
         let state = genesis.to_genesis_state().unwrap();
         assert_eq!(state.genesis_alloc.len(), 2);
         assert!(state.participant_addresses.is_empty());
@@ -455,21 +456,21 @@ mod tests {
 
     #[test]
     fn genesis_load_from_file() {
-        let genesis = HubGenesis::devnet();
+        let genesis = VeraGenesis::devnet();
         let json = serde_json::to_string_pretty(&genesis).unwrap();
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("genesis.json");
         std::fs::write(&path, &json).unwrap();
 
-        let loaded = HubGenesis::load(&path).unwrap();
+        let loaded = VeraGenesis::load(&path).unwrap();
         assert_eq!(loaded.chain_id, genesis.chain_id);
         assert_eq!(loaded.chain_name, genesis.chain_name);
     }
 
     #[test]
     fn genesis_parse_error_on_invalid_address() {
-        let genesis = HubGenesis {
+        let genesis = VeraGenesis {
             operators: None,
             chain_id: 1,
             chain_name: "test".to_string(),
@@ -489,8 +490,8 @@ mod tests {
         assert!(err.to_string().contains("invalid address"));
     }
 
-    fn genesis_with_validators(validators: Vec<ValidatorConfig>) -> HubGenesis {
-        HubGenesis {
+    fn genesis_with_validators(validators: Vec<ValidatorConfig>) -> VeraGenesis {
+        VeraGenesis {
             operators: None,
             chain_id: 1,
             chain_name: "test".to_string(),
@@ -576,7 +577,7 @@ mod tests {
         use commonware_codec::Encode as _;
         use commonware_cryptography::Signer as _;
 
-        let genesis = HubGenesis::devnet();
+        let genesis = VeraGenesis::devnet();
         assert_eq!(genesis.blocks_per_epoch, 20);
         assert!(genesis.decode_epoch_info().unwrap().is_none());
 
@@ -601,7 +602,7 @@ mod tests {
             next_players: players,
             directory: commonware_utils::sequence::Unit,
         };
-        let mut genesis = HubGenesis::devnet();
+        let mut genesis = VeraGenesis::devnet();
         genesis.epoch_info = Some(hex::encode(info.encode()));
         let decoded = genesis.decode_epoch_info().unwrap().expect("epoch info");
         assert_eq!(decoded, info);
@@ -609,7 +610,7 @@ mod tests {
 
     #[test]
     fn epoch_info_rejects_invalid_hex() {
-        let mut genesis = HubGenesis::devnet();
+        let mut genesis = VeraGenesis::devnet();
         genesis.epoch_info = Some("not-hex".to_string());
         assert!(genesis.decode_epoch_info().is_err());
     }

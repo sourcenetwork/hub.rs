@@ -8,7 +8,7 @@ use vera_permission::{
     RECORD_PROOF_BYTES,
 };
 
-use crate::{ClientError, HubClient};
+use crate::{ClientError, VeraClient};
 
 /// Policies at one finalized revision; subsequent pages may select newer state.
 #[derive(Clone, Debug)]
@@ -34,7 +34,7 @@ pub struct CertifiedPolicyRecord {
     pub value: Option<PolicyRecord>,
 }
 
-impl HubClient {
+impl VeraClient {
     /// Read a policy by ID with certified presence or absence and identity binding.
     pub async fn read_policy(
         &self,

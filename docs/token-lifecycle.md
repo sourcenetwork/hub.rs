@@ -35,7 +35,7 @@ record identities are errors. Account selectors must contain 1–255 bytes; DID
 selectors are also capped at 255 bytes. Token writes validate every index
 component before changing state, avoiding key-encoder panics and partial writes.
 
-`HubClient::read_token_record` returns lifecycle metadata or certified absence
+`VeraClient::read_token_record` returns lifecycle metadata or certified absence
 for a SHA-256 token hash at a caller-selected minimum revision. It verifies the
 certificate, record key and stored token-content hash before returning the record.
 After invalidation, read at or after the certified invalidation revision to check

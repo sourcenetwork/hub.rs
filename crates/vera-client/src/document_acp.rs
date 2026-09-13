@@ -5,7 +5,7 @@ use identity::Did;
 
 use acp::{DocumentACP, DocumentPermission, Identity, Result};
 
-use crate::client::{HubClient, parse_policy_id};
+use crate::client::{VeraClient, parse_policy_id};
 use crate::error::ClientError;
 use crate::signer::EvmSigner;
 use crate::types::TransactionReceipt;
@@ -13,16 +13,16 @@ use crate::types::TransactionReceipt;
 /// DocumentACP backed by hub's on-chain ACP precompile.
 ///
 /// Delegates write operations through [`EvmSigner`] and read operations
-/// through [`HubClient`] to the ACP precompile at `0x0810`.
+/// through [`VeraClient`] to the ACP precompile at `0x0810`.
 #[derive(Debug)]
-pub struct HubDocumentACP {
-    client: HubClient,
+pub struct VeraDocumentACP {
+    client: VeraClient,
     signer: EvmSigner,
 }
 
-impl HubDocumentACP {
-    /// Create a new `HubDocumentACP`.
-    pub const fn new(client: HubClient, signer: EvmSigner) -> Self {
+impl VeraDocumentACP {
+    /// Create a new `VeraDocumentACP`.
+    pub const fn new(client: VeraClient, signer: EvmSigner) -> Self {
         Self { client, signer }
     }
 
@@ -43,7 +43,7 @@ fn client_err(e: ClientError) -> acp::Error {
 }
 
 #[async_trait]
-impl DocumentACP for HubDocumentACP {
+impl DocumentACP for VeraDocumentACP {
     async fn register_doc_object(
         &self,
         _identity: &Did,
@@ -201,12 +201,12 @@ mod tests {
 
     #[test]
     fn hub_document_acp_construction() {
-        let client = HubClient::new("http://localhost:8545");
+        let client = VeraClient::new("http://localhost:8545");
         let signer = EvmSigner::from_hex(
             "0000000000000000000000000000000000000000000000000000000000000001",
             1337,
         )
         .unwrap();
-        let _dac = HubDocumentACP::new(client, signer);
+        let _dac = VeraDocumentACP::new(client, signer);
     }
 }

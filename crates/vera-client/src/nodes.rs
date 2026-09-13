@@ -9,7 +9,7 @@ pub use vera_modules::hub::nodes::{
     NodeCommand, NodeInfo, NodeRecord, NodeRequest, NodeTarget, SignedNodeRequest,
 };
 
-use crate::{BlsSigner, ClientError, HUB_ADDRESS, HubClient, ModuleId, RECORD_PROOF_BYTES};
+use crate::{BlsSigner, ClientError, ModuleId, RECORD_PROOF_BYTES, VERA_ADDRESS, VeraClient};
 
 /// A certified node record or absence at one revision.
 #[derive(Clone, Debug)]
@@ -57,14 +57,14 @@ pub fn encode_node_request(
     .into())
 }
 
-impl HubClient {
+impl VeraClient {
     /// Submit an authorized node command. Retain the returned ID for certified receipt recovery.
     pub async fn submit_node_request(
         &self,
         submitter: &BlsSigner,
         signed: &SignedNodeRequest,
     ) -> Result<B256, ClientError> {
-        let wire = submitter.sign_native_tx(HUB_ADDRESS, encode_node_request(signed)?)?;
+        let wire = submitter.sign_native_tx(VERA_ADDRESS, encode_node_request(signed)?)?;
         let expected: B256 = vera_domain::NativeTx::decode_wire(&wire)
             .map_err(|e| ClientError::Signing(e.to_string()))?
             .tx_id()

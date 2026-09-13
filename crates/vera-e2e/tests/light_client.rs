@@ -15,8 +15,8 @@ use jsonrpsee::core::client::SubscriptionClientT;
 use jsonrpsee::rpc_params;
 use jsonrpsee::ws_client::WsClientBuilder;
 use vera_client::{
-    ACP_ADDRESS, EvmSigner, HubClient, ModuleId, PERMISSION_LIMITS, RECORD_PROOF_BYTES,
-    TransactionReceipt,
+    ACP_ADDRESS, EvmSigner, ModuleId, PERMISSION_LIMITS, RECORD_PROOF_BYTES, TransactionReceipt,
+    VeraClient,
 };
 use vera_domain::{LightBlock, verify_light_block};
 use vera_e2e::cluster::{ConsensusPreset, GenesisBuilder, KeySet, TestCluster};
@@ -51,7 +51,7 @@ fn parse_policy_id(hex_str: &str) -> FixedBytes<32> {
 
 async fn broadcast_evm_tx(
     cluster: &TestCluster,
-    client: &HubClient,
+    client: &VeraClient,
     signer: &EvmSigner,
     target: Address,
     calldata: Vec<u8>,
@@ -69,7 +69,7 @@ async fn broadcast_evm_tx(
             let r = raw.clone();
             let url = cluster.node(i).rpc_url();
             tokio::spawn(async move {
-                let result = HubClient::new(url).send_raw_transaction(&r).await;
+                let result = VeraClient::new(url).send_raw_transaction(&r).await;
                 (i, result)
             })
         })
@@ -123,7 +123,7 @@ async fn light_client_proof_verification() {
         .await
         .expect("should reach height 3");
 
-    let client = HubClient::new(cluster.node(0).rpc_url());
+    let client = VeraClient::new(cluster.node(0).rpc_url());
     let latest: serde_json::Value = client
         .rpc_call_typed("eth_getBlockByNumber", serde_json::json!(["latest", false]))
         .await

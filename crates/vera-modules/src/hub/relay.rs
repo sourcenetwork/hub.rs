@@ -2,7 +2,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
 use vera_crypto::jwt::{DelegationScope, JwtClaims, canonical_issuer};
 
-use super::{HubError, HubModule, Result};
+use super::{Result, VeraError, VeraModule};
 use crate::kv_store::ModuleKvStore;
 
 /// Longest lifetime of a relay assertion, in seconds.
@@ -41,13 +41,13 @@ pub fn relay_key(issuer: &str) -> Result<Vec<u8>> {
     Ok(key)
 }
 
-impl HubModule {
+impl VeraModule {
     /// Read a relay grant from committed module state.
     pub fn relay(&self, issuer: &str) -> Result<Option<RelayState>> {
         self.store
             .get(&relay_key(issuer)?)
             .map(|bytes| {
-                borsh::from_slice(&bytes).map_err(|error| HubError::State(error.to_string()))
+                borsh::from_slice(&bytes).map_err(|error| VeraError::State(error.to_string()))
             })
             .transpose()
     }
@@ -109,8 +109,8 @@ impl HubModule {
     }
 }
 
-fn invalid(error: impl std::fmt::Display) -> HubError {
-    HubError::InvalidJws {
+fn invalid(error: impl std::fmt::Display) -> VeraError {
+    VeraError::InvalidJws {
         reason: error.to_string(),
     }
 }

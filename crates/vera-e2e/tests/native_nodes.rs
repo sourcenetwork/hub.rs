@@ -3,7 +3,7 @@
 use k256::ecdsa::SigningKey;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use vera_client::{
-    BlsSigner, HubClient,
+    BlsSigner, VeraClient,
     nodes::{NodeCommand, NodeInfo, NodeRequest, NodeTarget, SignedNodeRequest, sign_node_request},
 };
 use vera_domain::ConsensusPublicKey;
@@ -14,8 +14,8 @@ fn public(key: &SigningKey) -> String {
 }
 
 async fn submit(
-    writer: &HubClient,
-    reader: &HubClient,
+    writer: &VeraClient,
+    reader: &VeraClient,
     worker: &BlsSigner,
     trusted: &ConsensusPublicKey,
     request: &SignedNodeRequest,
@@ -68,8 +68,8 @@ async fn native_service_node_authority_survives_worker_changes_and_restart() {
         .wait_for_height(3, Duration::from_secs(30))
         .await
         .unwrap();
-    let writer = HubClient::new(cluster.node(0).rpc_url());
-    let reader = HubClient::new(cluster.node(3).rpc_url());
+    let writer = VeraClient::new(cluster.node(0).rpc_url());
+    let reader = VeraClient::new(cluster.node(3).rpc_url());
     let first: serde_json::Value = writer
         .rpc_call_typed("eth_getBlockByNumber", serde_json::json!(["0x1", false]))
         .await
@@ -218,7 +218,7 @@ async fn native_service_node_authority_survives_worker_changes_and_restart() {
         let mut worker = open().unwrap();
         assert_eq!(worker.next_sequence(), sequence);
         let wire = worker
-            .prepare(vera_client::HUB_ADDRESS, calldata.clone())
+            .prepare(vera_client::VERA_ADDRESS, calldata.clone())
             .unwrap()
             .to_vec();
         let id = writer.send_native_tx(&wire).await.unwrap();

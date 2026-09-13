@@ -4,10 +4,10 @@ use alloy_primitives::{Bytes, FixedBytes};
 use alloy_sol_types::SolCall;
 use vera_modules::acp::abi::IAcp;
 
-use crate::client::{ACP_ADDRESS, HubClient};
+use crate::client::{ACP_ADDRESS, VeraClient};
 use crate::error::ClientError;
 
-impl HubClient {
+impl VeraClient {
     /// Fetch a policy by ID (ABI-encoded JSON bytes).
     pub async fn get_policy(&self, policy_id: FixedBytes<32>) -> Result<Bytes, ClientError> {
         let calldata = IAcp::getPolicyCall {

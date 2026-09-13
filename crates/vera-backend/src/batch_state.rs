@@ -14,7 +14,7 @@ use vera_traits::{StateDb, StateDbError, StateDbRead, StateDbWrite};
 
 use crate::{
     BackendError,
-    state_set::{HubMerkleized, HubUnmerkleized},
+    state_set::{VeraMerkleized, VeraUnmerkleized},
     types::{AccountKey, AccountValue, CodeKey, StorageKey, StorageValue},
 };
 
@@ -23,7 +23,7 @@ type AccountRecord = (u64, U256, B256, u64);
 /// Pending EVM state: committed databases plus the batches forked for one block.
 #[derive(Clone)]
 pub struct BatchState {
-    batches: Arc<Mutex<Option<HubUnmerkleized>>>,
+    batches: Arc<Mutex<Option<VeraUnmerkleized>>>,
 }
 
 impl std::fmt::Debug for BatchState {
@@ -50,14 +50,14 @@ fn storage_err(e: impl std::fmt::Display) -> StateDbError {
 
 impl BatchState {
     /// Wrap batches forked for one block.
-    pub fn new(batches: HubUnmerkleized) -> Self {
+    pub fn new(batches: VeraUnmerkleized) -> Self {
         Self {
             batches: Arc::new(Mutex::new(Some(batches))),
         }
     }
 
     /// Take the batches back out once execution is done.
-    pub async fn into_batches(self) -> Result<HubUnmerkleized, BackendError> {
+    pub async fn into_batches(self) -> Result<VeraUnmerkleized, BackendError> {
         self.batches
             .lock()
             .await
@@ -88,9 +88,9 @@ impl BatchState {
 
     /// Write an executed change set into the batches, returning them for merkleization.
     pub async fn apply_changes(
-        mut batches: HubUnmerkleized,
+        mut batches: VeraUnmerkleized,
         changes: &ChangeSet,
-    ) -> Result<HubUnmerkleized, BackendError> {
+    ) -> Result<VeraUnmerkleized, BackendError> {
         for (address, update) in &changes.accounts {
             let key = account_key(*address);
             let current_generation = match batches.0.get(&key).await {
@@ -133,7 +133,7 @@ impl BatchState {
     }
 
     /// Merkleize the three batches.
-    pub async fn merkleize(batches: HubUnmerkleized) -> Result<HubMerkleized, BackendError> {
+    pub async fn merkleize(batches: VeraUnmerkleized) -> Result<VeraMerkleized, BackendError> {
         let (accounts, storage, code) = batches;
         let accounts = accounts
             .merkleize()

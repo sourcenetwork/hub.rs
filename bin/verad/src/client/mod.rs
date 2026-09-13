@@ -17,22 +17,22 @@ pub(crate) struct ClientArgs {
     /// JSON-RPC endpoint URL.
     #[arg(
         long,
-        env = "HUB_RPC_URL",
+        env = "VERA_RPC_URL",
         default_value = "http://localhost:8545",
         global = true
     )]
     url: String,
 
     /// Hex secp256k1 private key for EVM transaction signing.
-    #[arg(long, env = "HUB_KEY", global = true)]
+    #[arg(long, env = "VERA_KEY", global = true)]
     key: Option<String>,
 
     /// Hex BLS12-381 private key for native transaction signing.
-    #[arg(long, env = "HUB_BLS_KEY", global = true)]
+    #[arg(long, env = "VERA_BLS_KEY", global = true)]
     bls_key: Option<String>,
 
     /// Target chain ID.
-    #[arg(long, env = "HUB_CHAIN_ID", default_value = "9001", global = true)]
+    #[arg(long, env = "VERA_CHAIN_ID", default_value = "9001", global = true)]
     client_chain_id: u64,
 
     /// Output compact single-line JSON instead of pretty-printed.
@@ -71,7 +71,7 @@ enum ClientCommand {
 
     /// Vera module operations (chain config, JWS tokens).
     #[command(subcommand)]
-    Vera(hub_mod::HubCommand),
+    Vera(hub_mod::VeraCommand),
 
     /// Key management utilities.
     #[command(subcommand)]

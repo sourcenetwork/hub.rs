@@ -53,7 +53,7 @@ use vera_backend::{
 };
 use vera_consensus::components::InMemoryMempool;
 use vera_domain::EpochMaterial;
-use vera_executor::{ExecutionConfig, HubExecutor, MempoolValidator};
+use vera_executor::{ExecutionConfig, MempoolValidator, VeraExecutor};
 use vera_indexer::{BlockIndex, LightBlockIndex, StoredEpochMaterial};
 use vera_jsonrpc::{IndexedStateProvider, NodeState, RpcServer, TxSubmitCallback};
 
@@ -213,7 +213,7 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         ),
     }
 
-    let executor = HubExecutor::new(chain_id).with_membership_epochs(blocks_per_epoch);
+    let executor = VeraExecutor::new(chain_id).with_membership_epochs(blocks_per_epoch);
     #[cfg(feature = "fault-injection")]
     let executor = executor.with_crash_marker(config.data_dir.join("module-commit-crash"));
     let modules = executor.modules().clone();

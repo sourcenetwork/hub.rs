@@ -3,7 +3,7 @@
 use k256::ecdsa::{Signature, SigningKey, signature::hazmat::PrehashSigner};
 use vera_modules::{
     acp::{AcpModule, types::AcpParams},
-    hub::{HubModule, administration::*},
+    hub::{VeraModule, administration::*},
     kv_store::InMemoryKvStore,
     types::Duration,
 };
@@ -57,7 +57,7 @@ fn approve(request: AdministrativeRequest, keys: &[SigningKey]) -> SignedAdminis
 #[test]
 fn quorum_changes_parameters_once_and_survives_serialization() {
     let (policy, keys) = operators();
-    let mut hub = HubModule::new();
+    let mut hub = VeraModule::new();
     let mut acp = AcpModule::new();
     let signed = approve(request(0), &keys);
     assert!(
@@ -76,7 +76,7 @@ fn quorum_changes_parameters_once_and_survives_serialization() {
     );
     assert_eq!(hub.administration().unwrap().unwrap().sequence, 1);
     let bytes = hub.store().serialize();
-    let mut reopened = HubModule::from_store(InMemoryKvStore::deserialize(&bytes).unwrap());
+    let mut reopened = VeraModule::from_store(InMemoryKvStore::deserialize(&bytes).unwrap());
     assert!(
         reopened
             .apply_administrative_request(&mut acp, GENESIS, 100, &signed)
@@ -88,7 +88,7 @@ fn quorum_changes_parameters_once_and_survives_serialization() {
 #[test]
 fn outcome_budget_requires_operator_approval_and_survives_reopen() {
     let (policy, keys) = operators();
-    let mut hub = HubModule::new();
+    let mut hub = VeraModule::new();
     let mut acp = AcpModule::new();
     hub.initialize_administration(policy).unwrap();
     let mut change = request(0);
@@ -121,7 +121,7 @@ fn outcome_budget_requires_operator_approval_and_survives_reopen() {
 #[test]
 fn rejected_approvals_leave_both_stores_unchanged() {
     let (policy, keys) = operators();
-    let mut hub = HubModule::new();
+    let mut hub = VeraModule::new();
     let mut acp = AcpModule::new();
     hub.initialize_administration(policy).unwrap();
     let signed = approve(request(0), &keys);
@@ -167,7 +167,7 @@ fn rejected_approvals_leave_both_stores_unchanged() {
 #[test]
 fn rotation_requires_existing_quorum_and_revokes_old_keys() {
     let (policy, old_keys) = operators();
-    let mut hub = HubModule::new();
+    let mut hub = VeraModule::new();
     let mut acp = AcpModule::new();
     hub.initialize_administration(policy).unwrap();
     let next = SigningKey::from_bytes(&[9; 32].into()).unwrap();
@@ -196,7 +196,7 @@ fn rotation_requires_existing_quorum_and_revokes_old_keys() {
 #[test]
 fn invalid_rotation_does_not_consume_sequence() {
     let (mut policy, keys) = operators();
-    let mut hub = HubModule::new();
+    let mut hub = VeraModule::new();
     let mut acp = AcpModule::new();
     hub.initialize_administration(policy.clone()).unwrap();
     policy.keys[1] = policy.keys[0].clone();
@@ -250,7 +250,7 @@ fn invalid_operator_policies_cannot_initialize_authority() {
     keys.sort();
     invalid.push(OperatorPolicy { threshold: 1, keys });
     for policy in invalid {
-        let mut hub = HubModule::new();
+        let mut hub = VeraModule::new();
         assert!(hub.initialize_administration(policy).is_err());
         assert!(hub.store().is_empty());
     }
@@ -266,7 +266,7 @@ fn exhausted_sequence_cannot_change_parameters() {
     };
     let store =
         InMemoryKvStore::from_pairs(vec![(b"admin/v1".to_vec(), borsh::to_vec(&state).unwrap())]);
-    let mut hub = HubModule::from_store(store);
+    let mut hub = VeraModule::from_store(store);
     let mut acp = AcpModule::new();
     let before = (hub.store().serialize(), acp.store().serialize());
     assert!(

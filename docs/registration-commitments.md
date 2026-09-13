@@ -67,7 +67,7 @@ Each commitment has a root index entry using
 The entry remains after expiry. It is maintained with the primary record and
 included in ACP snapshots. Older stores require explicit index population.
 
-`HubClient::read_registration_commitment_ids` uses the existing certified native
+`VeraClient::read_registration_commitment_ids` uses the existing certified native
 prefix-page endpoint. Supply the root, optional continuation, a limit from 1 to
 128, a minimum revision and trusted consensus key. The result contains verified
 IDs in ascending order, its revision and an inclusive continuation for the next
@@ -84,7 +84,7 @@ when they fit within 128 records and 1 MiB of stored record bytes. Larger result
 return an explicit error directing callers to certified pages; they are never
 silently truncated. Indexed record corruption is an error rather than absence.
 
-`HubClient::read_registration_commitment` returns a typed record or certified
+`VeraClient::read_registration_commitment` returns a typed record or certified
 absence using caller-provided consensus trust and a minimum revision. The client
 checks the requested policy, commitment identifier, root width and complete record
 encoding. It preserves issuance metadata and expiry status; record presence is

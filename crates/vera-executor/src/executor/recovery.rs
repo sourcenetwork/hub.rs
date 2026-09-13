@@ -1,7 +1,7 @@
 use super::*;
 use vera_modules::kv_store::InMemoryKvStore;
 
-impl HubExecutor {
+impl VeraExecutor {
     /// Return the common persisted module height, rejecting partial commits.
     pub fn module_height(&self) -> Result<u64, ExecutionError> {
         let _guard = self.commit_lock.lock().unwrap();

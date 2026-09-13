@@ -5,12 +5,12 @@ use alloy_sol_types::SolCall;
 use vera_modules::acp::abi::IAcp;
 
 use crate::bls_signer::BlsSigner;
-use crate::client::{ACP_ADDRESS, HubClient};
+use crate::client::{ACP_ADDRESS, VeraClient};
 use crate::error::ClientError;
 use crate::subject::RelationshipSubject;
 use crate::types::TransactionReceipt;
 
-impl HubClient {
+impl VeraClient {
     /// Create a new ACP policy via native BLS transaction.
     pub async fn native_create_policy(
         &self,

@@ -15,8 +15,9 @@ pub use error::BackendError;
 
 mod state_set;
 pub use state_set::{
-    AccountsDb, CodeDb, Ctx, HubConfig, HubDatabases, HubMerkleized, HubReaders, HubStateSet,
-    HubSyncTargets, HubUnmerkleized, MerkleizedTriple, StorageDb, combined_root, state_set_config,
+    AccountsDb, CodeDb, Ctx, MerkleizedTriple, StorageDb, VeraConfig, VeraDatabases,
+    VeraMerkleized, VeraReaders, VeraStateSet, VeraSyncTargets, VeraUnmerkleized, combined_root,
+    state_set_config,
 };
 
 /// Ordered native module storage and logical record changes.

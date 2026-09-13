@@ -66,7 +66,7 @@ fn bearer_expiration_uses_execution_time_before_mutating_state() {
         let mut module = base.clone();
         let before = module.store().serialize();
         let result = module.bearer_policy_cmd(
-            &mut vera_modules::hub::HubModule::new(),
+            &mut vera_modules::hub::VeraModule::new(),
             &context,
             &transaction(&actor),
             &token,
@@ -122,7 +122,7 @@ fn delegated_scopes_authorize_only_their_operations() {
                 "scope": scope, "iat": 0, "nbf": 0, "exp": 100}),
         )
     };
-    let mut hub = vera_modules::hub::HubModule::new();
+    let mut hub = vera_modules::hub::VeraModule::new();
     let before = module.store().serialize();
     let object = Object {
         resource: "file".into(),
@@ -226,7 +226,7 @@ fn delegated_scopes_authorize_only_their_operations() {
 
 #[test]
 fn delegation_binds_caller_deployment_and_revocation() {
-    use vera_modules::hub::{HubModule, types::JWSTokenStatus};
+    use vera_modules::hub::{VeraModule, types::JWSTokenStatus};
     use vera_modules::kv_store::InMemoryKvStore;
 
     let key = SigningKey::from_slice(&[42; 32]).unwrap();
@@ -267,7 +267,7 @@ fn delegation_binds_caller_deployment_and_revocation() {
         id: "report".into(),
     };
     let command = || PolicyCmd::RegisterObject(object.clone());
-    let mut hub = HubModule::new();
+    let mut hub = VeraModule::new();
     let before = base.store().serialize();
     assert!(
         base.bearer_policy_cmd(
@@ -324,7 +324,7 @@ fn delegation_binds_caller_deployment_and_revocation() {
             .unwrap();
         assert_eq!(record.status, JWSTokenStatus::Invalid);
         assert!(record.first_used_at.is_none());
-        let mut reopened = HubModule::from_store(
+        let mut reopened = VeraModule::from_store(
             InMemoryKvStore::deserialize(&revoked.store().serialize()).unwrap(),
         );
         assert!(
@@ -399,7 +399,7 @@ fn delegation_binds_caller_deployment_and_revocation() {
 
 #[test]
 fn delegated_policy_lifecycle_preserves_ownership_and_revocation() {
-    use vera_modules::hub::HubModule;
+    use vera_modules::hub::VeraModule;
 
     let key = SigningKey::from_slice(&[42; 32]).unwrap();
     let issuer = vera_crypto::secp256k1::did_from_secp256k1_pubkey(
@@ -432,7 +432,7 @@ fn delegated_policy_lifecycle_preserves_ownership_and_revocation() {
     let edit_token = signed_token(&key, edit_claims);
     let policy = "name: files\nresources:\n  - name: file\n";
     let mut module = AcpModule::new();
-    let mut hub = HubModule::new();
+    let mut hub = VeraModule::new();
     for (field, value) in [
         ("sub", serde_json::json!(other_worker.to_string())),
         ("aud", serde_json::json!("vera:9002")),
@@ -605,7 +605,7 @@ fn delegated_policy_lifecycle_preserves_ownership_and_revocation() {
 #[test]
 fn delegated_policy_creation_rolls_back_when_usage_cannot_be_recorded() {
     use vera_modules::{
-        hub::HubModule,
+        hub::VeraModule,
         kv_store::{InMemoryKvStore, ModuleKvStore},
     };
 
@@ -650,7 +650,7 @@ fn delegated_policy_creation_rolls_back_when_usage_cannot_be_recorded() {
     };
     let mut store = InMemoryKvStore::default();
     store.put(vera_modules::hub::keys::CHAIN_CONFIG_KEY, vec![0xff]);
-    let mut hub = HubModule::from_store(store);
+    let mut hub = VeraModule::from_store(store);
     let mut module = AcpModule::new();
     let before = module.store().serialize();
     let hub_before = hub.store().serialize();

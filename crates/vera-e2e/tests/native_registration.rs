@@ -3,13 +3,15 @@
 use alloy_primitives::{B256, Bytes};
 use alloy_sol_types::{SolCall as _, SolEvent as _};
 use std::time::Duration;
-use vera_client::{ACP_ADDRESS, Actor, BlsSigner, HubClient, ModuleId, Object, RECORD_PROOF_BYTES};
+use vera_client::{
+    ACP_ADDRESS, Actor, BlsSigner, ModuleId, Object, RECORD_PROOF_BYTES, VeraClient,
+};
 use vera_domain::{ConsensusPublicKey, ExecutionReceipt, NativeTx};
 use vera_e2e::cluster::{ConsensusPreset, KeySet, TestCluster};
 use vera_modules::acp::{abi::IAcp, types::RelationshipRecord};
 
 async fn submit(
-    client: &HubClient,
+    client: &VeraClient,
     signer: &BlsSigner,
     trusted: &ConsensusPublicKey,
     call: Vec<u8>,
@@ -23,7 +25,7 @@ async fn submit(
 }
 
 async fn certified_receipt(
-    client: &HubClient,
+    client: &VeraClient,
     id: B256,
     trusted: &ConsensusPublicKey,
 ) -> (u64, ExecutionReceipt) {
@@ -77,7 +79,7 @@ async fn registration_workflow(pruning: bool) {
         .wait_ready(vera_e2e::readiness_deadline())
         .await
         .unwrap();
-    let client = HubClient::new(cluster.node(0).rpc_url());
+    let client = VeraClient::new(cluster.node(0).rpc_url());
     cluster
         .observe(Duration::from_millis(100))
         .wait_for_height(3, Duration::from_secs(30))

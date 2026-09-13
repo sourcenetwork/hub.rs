@@ -11,14 +11,14 @@ const TICK: Duration = Duration::from_secs(5);
 
 /// Advance the marshal floor to `processed_height - retained`, which lets the
 /// actor prune finalized blocks and finalizations below the new floor.
-pub(crate) type HubMarshal = Mailbox<
+pub(crate) type VeraMarshal = Mailbox<
     vera_app::ConsensusScheme,
     commonware_consensus::marshal::standard::Standard<vera_domain::Block>,
 >;
 
 pub(crate) async fn run<E: commonware_runtime::Clock>(
     context: E,
-    marshal: HubMarshal,
+    marshal: VeraMarshal,
     pruning: PruneConfig,
 ) {
     let retention = pruning.retained_marshal_blocks as u64;

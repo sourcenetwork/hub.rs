@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use alloy_sol_types::SolCall;
 use vera_client::{
-    ACP_ADDRESS, AccessRequest, Actor, BlsSigner, ClientError, HubClient, ModuleId, Object,
-    Operation, PERMISSION_LIMITS, PermissionProof, PermissionRead, RECORD_PROOF_BYTES,
+    ACP_ADDRESS, AccessRequest, Actor, BlsSigner, ClientError, ModuleId, Object, Operation,
+    PERMISSION_LIMITS, PermissionProof, PermissionRead, RECORD_PROOF_BYTES, VeraClient,
     verify_permission_proof,
 };
 use vera_domain::{ConsensusPublicKey, LightBlock, verify_finalized_block};
@@ -28,7 +28,7 @@ resources:
         expr: reader - blocked
 ";
 
-async fn submit(client: &HubClient, signer: &BlsSigner, call: impl SolCall) -> u64 {
+async fn submit(client: &VeraClient, signer: &BlsSigner, call: impl SolCall) -> u64 {
     let wire = signer
         .sign_native_tx(ACP_ADDRESS, call.abi_encode().into())
         .unwrap();
@@ -42,7 +42,7 @@ async fn submit(client: &HubClient, signer: &BlsSigner, call: impl SolCall) -> u
 }
 
 async fn current_evidence(
-    client: &HubClient,
+    client: &VeraClient,
     policy: &str,
     request: &AccessRequest,
     minimum: u64,
@@ -110,7 +110,7 @@ async fn native_permission_reads_follow_finalized_grants_and_denials() {
         .wait_for_height(3, Duration::from_secs(30))
         .await
         .unwrap();
-    let client = HubClient::new(cluster.node(0).rpc_url());
+    let client = VeraClient::new(cluster.node(0).rpc_url());
     let owner = BlsSigner::new(1u64.into(), deployment).unwrap();
     submit(
         &client,
@@ -265,7 +265,7 @@ async fn native_permission_reads_follow_finalized_grants_and_denials() {
         Err(ClientError::Rpc { code: -32002, .. })
     ));
     for index in 0..cluster.node_count() {
-        let replica = HubClient::new(cluster.node(index).rpc_url());
+        let replica = VeraClient::new(cluster.node(index).rpc_url());
         let current = replica
             .read_current_record(
                 ModuleId::Acp,
@@ -394,7 +394,7 @@ async fn native_permission_reads_follow_finalized_grants_and_denials() {
         .await
         .unwrap();
     for index in 0..cluster.node_count() {
-        let replica = HubClient::new(cluster.node(index).rpc_url());
+        let replica = VeraClient::new(cluster.node(index).rpc_url());
         let current = replica
             .read_current_prefix(
                 ModuleId::Acp,
@@ -449,7 +449,7 @@ async fn native_permission_reads_follow_finalized_grants_and_denials() {
         .wait_ready(vera_e2e::readiness_deadline())
         .await
         .unwrap();
-    let restarted = HubClient::new(cluster.node(0).rpc_url());
+    let restarted = VeraClient::new(cluster.node(0).rpc_url());
     let current = restarted
         .read_current_prefix(
             ModuleId::Acp,

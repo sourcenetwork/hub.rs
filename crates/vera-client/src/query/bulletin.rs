@@ -4,10 +4,10 @@ use alloy_primitives::Bytes;
 use alloy_sol_types::SolCall;
 use vera_modules::bulletin::abi::IBulletin;
 
-use crate::client::{BULLETIN_ADDRESS, HubClient};
+use crate::client::{BULLETIN_ADDRESS, VeraClient};
 use crate::error::ClientError;
 
-impl HubClient {
+impl VeraClient {
     /// Fetch a post by namespace and post ID.
     pub async fn get_post(&self, namespace: &str, post_id: &str) -> Result<Bytes, ClientError> {
         let calldata = IBulletin::getPostCall {

@@ -82,10 +82,10 @@ it does not impose a cap on rounds accumulated while finality is stalled.
 blocks from the mempool, executes them against forked QMDB batch state, verifies
 proposals by re-execution, and hands finalized receipts to a `FinalizedSink`
 (`NodeSink`), which indexes blocks, logs, and light blocks and feeds the RPC
-subscription channels. Block execution goes through `HubExecutor`:
+subscription channels. Block execution goes through `VeraExecutor`:
 
 ```
-                     HubExecutor
+                     VeraExecutor
                           |
           +---------------+---------------+
           |                               |
@@ -220,14 +220,14 @@ waiting; existing proof admission and two-second request deadlines still apply.
 Commonware membership, absence and complete-prefix witnesses. Generation holds
 all four native partition read locks and applies aggregate record and byte
 limits, then releases the locks before waiting for the revision's certificate.
-`HubClient::verify_current_access` verifies the certificate, caller's minimum
+`VeraClient::verify_current_access` verifies the certificate, caller's minimum
 height and evidence before running the shared ACP evaluator. Callers supply any
 additional freshness policy. The separate `vera_getPermissionProof` endpoint
 requires the requested root to remain available.
 `vera_getCurrentRecordProof` captures a native record and its certified revision;
-`HubClient::read_current_record` verifies membership or absence against the requested
+`VeraClient::read_current_record` verifies membership or absence against the requested
 module, key and minimum revision. `vera_getCurrentPrefixProof` and
-`HubClient::read_current_prefix` provide complete native prefixes with the same
+`VeraClient::read_current_prefix` provide complete native prefixes with the same
 captured-revision guarantees. `PrefixResponse::verify_object_owner` derives live
 ownership from complete owner evidence and treats archived records as unregistered. Standalone `vera_getStateProof` and
 `vera_getRelationProof` remain JMT-only and are unavailable on the native node.
@@ -329,7 +329,7 @@ vera.rs/
     bin/verad/                  # CLI binary: validator, devnet, testnet, genesis DKG, client
     crates/
         vera-app/               # Glue stateful Application around the block executor
-        vera-backend/           # Concrete QMDB backend: HubStateSet, BatchState, DbTargets
+        vera-backend/           # Concrete QMDB backend: VeraStateSet, BatchState, DbTargets
         vera-cli/               # CLI utilities (backtrace + SIGSEGV handlers)
         vera-client/            # Rust client library (EVM + BLS tx paths, typed queries)
         vera-config/            # Node configuration types (node, network, rpc, execution)
@@ -337,7 +337,7 @@ vera.rs/
         vera-crypto/            # BLS12-381, secp256k1, and JWT utilities
         vera-domain/            # Block, tx, light block, proof, and DKG payload types
         vera-e2e/               # End-to-end test harness (see crates/vera-e2e/README.md)
-        vera-executor/          # Block execution: REVM, precompiles, HubExecutor
+        vera-executor/          # Block execution: REVM, precompiles, VeraExecutor
         vera-genesis/           # Extended genesis configuration (validators, native mint)
         vera-harness/           # Node manager, cluster builder, observability (test-only)
         vera-indexer/           # Block/tx/light-block indexes backing RPC queries

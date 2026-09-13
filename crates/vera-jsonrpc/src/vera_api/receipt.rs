@@ -4,11 +4,11 @@ use vera_domain::{ExecutionReceipt, RECEIPT_RESPONSE_BYTES, ReceiptResponse};
 use vera_permission::encoded_size;
 
 use super::{
-    HubApiImpl,
+    VeraApiImpl,
     permission::{error, request_error, retryable},
 };
 
-impl HubApiImpl {
+impl VeraApiImpl {
     pub(super) async fn receipt_proof(&self, hash: B256) -> RpcResult<Option<ReceiptResponse>> {
         let index = self
             .index

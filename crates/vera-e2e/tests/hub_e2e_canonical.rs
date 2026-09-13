@@ -18,8 +18,8 @@ use jsonrpsee::core::client::SubscriptionClientT;
 use jsonrpsee::rpc_params;
 use jsonrpsee::ws_client::WsClientBuilder;
 use vera_client::{
-    ACP_ADDRESS, BULLETIN_ADDRESS, BlsSigner, ClientError, EvmSigner, HUB_ADDRESS, HubClient,
-    TransactionReceipt,
+    ACP_ADDRESS, BULLETIN_ADDRESS, BlsSigner, ClientError, EvmSigner, TransactionReceipt,
+    VERA_ADDRESS, VeraClient,
 };
 use vera_e2e::cluster::{ConsensusPreset, GenesisBuilder, KeySet, TestCluster};
 use vera_e2e::observe::ClusterAssertions;
@@ -68,7 +68,7 @@ fn parse_policy_id(hex_str: &str) -> FixedBytes<32> {
 /// robust against a node that is briefly unavailable.
 async fn broadcast_evm_tx(
     cluster: &TestCluster,
-    client: &HubClient,
+    client: &VeraClient,
     signer: &EvmSigner,
     target: Address,
     calldata: Vec<u8>,
@@ -86,7 +86,7 @@ async fn broadcast_evm_tx(
             let r = raw.clone();
             let url = cluster.node(i).rpc_url();
             tokio::spawn(async move {
-                let result = HubClient::new(url).send_raw_transaction(&r).await;
+                let result = VeraClient::new(url).send_raw_transaction(&r).await;
                 (i, result)
             })
         })
@@ -112,7 +112,7 @@ async fn broadcast_evm_tx(
 /// robust against a node that is briefly unavailable.
 async fn broadcast_native_tx(
     cluster: &TestCluster,
-    client: &HubClient,
+    client: &VeraClient,
     signer: &BlsSigner,
     target: Address,
     calldata: Vec<u8>,
@@ -126,7 +126,7 @@ async fn broadcast_native_tx(
             let w = wire.clone();
             let url = cluster.node(i).rpc_url();
             tokio::spawn(async move {
-                let result = HubClient::new(url).send_native_tx(&w).await;
+                let result = VeraClient::new(url).send_native_tx(&w).await;
                 (i, result)
             })
         })
@@ -224,7 +224,7 @@ async fn canonical_module_test() {
         .await
         .expect("should reach height 3");
 
-    let client = HubClient::new(cluster.node(0).rpc_url());
+    let client = VeraClient::new(cluster.node(0).rpc_url());
 
     let reported_chain_id = client.chain_id().await.expect("eth_chainId should work");
     assert_eq!(reported_chain_id, chain_id, "chain ID should match");
@@ -775,7 +775,7 @@ async fn canonical_module_test() {
         };
         assert_eq!(receipt.status, 0, "expired bearer command must fail");
         for i in 0..cluster.node_count() {
-            let reader = HubClient::new(cluster.node(i).rpc_url());
+            let reader = VeraClient::new(cluster.node(i).rpc_url());
             let (registered, _) = reader
                 .get_object_owner(evm_policy_id, "document", object_id)
                 .await
@@ -1077,7 +1077,7 @@ async fn canonical_module_test() {
     }
     .abi_encode();
     let g7_receipt =
-        broadcast_native_tx(&cluster, &client, &bls_signer, HUB_ADDRESS, g7_calldata).await;
+        broadcast_native_tx(&cluster, &client, &bls_signer, VERA_ADDRESS, g7_calldata).await;
     assert_eq!(
         g7_receipt.status, 0,
         "G7 BLS invalidate of non-existent token should revert"
@@ -1117,7 +1117,7 @@ async fn canonical_module_test() {
     // Bulletin's ensure_policy creates an internal ACP policy on first
     // register_namespace, so we expect 3 total: 2 user + 1 bulletin.
     for node_idx in 0..cluster.node_count() {
-        let node_client = HubClient::new(cluster.node(node_idx).rpc_url());
+        let node_client = VeraClient::new(cluster.node(node_idx).rpc_url());
 
         // Parallel per-node queries
         let (
@@ -1247,7 +1247,7 @@ async fn canonical_module_test() {
     let mut total_finalized = 0u64;
     let mut any_proposed = false;
     for node_idx in 0..cluster.node_count() {
-        let node_client = HubClient::new(cluster.node(node_idx).rpc_url());
+        let node_client = VeraClient::new(cluster.node(node_idx).rpc_url());
         let status = node_client
             .node_status()
             .await

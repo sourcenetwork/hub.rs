@@ -1,6 +1,6 @@
 use super::*;
 
-impl HubModule {
+impl VeraModule {
     pub(super) fn update_ring(
         &self,
         acp: &AcpModule,

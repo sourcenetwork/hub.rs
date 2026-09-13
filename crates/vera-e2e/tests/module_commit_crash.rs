@@ -4,7 +4,7 @@
 use std::{collections::BTreeSet, time::Duration};
 
 use alloy_sol_types::SolCall;
-use vera_client::{ACP_ADDRESS, BlsSigner, HubClient, TransactionReceipt};
+use vera_client::{ACP_ADDRESS, BlsSigner, TransactionReceipt, VeraClient};
 use vera_e2e::cluster::{ConsensusPreset, TestCluster};
 use vera_modules::acp::abi::IAcp;
 
@@ -18,7 +18,7 @@ fn deadline() -> Duration {
     Duration::from_secs(30 * scale as u64)
 }
 
-async fn create_policy(client: &HubClient, signer: &BlsSigner, name: &str) -> TransactionReceipt {
+async fn create_policy(client: &VeraClient, signer: &BlsSigner, name: &str) -> TransactionReceipt {
     let raw = signer
         .sign_native_tx(
             ACP_ADDRESS,
@@ -44,14 +44,14 @@ async fn create_policy(client: &HubClient, signer: &BlsSigner, name: &str) -> Tr
 
 async fn assert_replicas(cluster: &TestCluster, signer: &BlsSigner, receipt: &TransactionReceipt) {
     tokio::time::timeout(deadline(), async {
-        let origin = HubClient::new(cluster.node(0).rpc_url());
+        let origin = VeraClient::new(cluster.node(0).rpc_url());
         origin
             .wait_for_receipt(receipt.transaction_hash, POLL, 600)
             .await
             .unwrap();
         let expected: BTreeSet<_> = origin.get_policy_ids().await.unwrap().into_iter().collect();
         for index in 0..4 {
-            let client = HubClient::new(cluster.node(index).rpc_url());
+            let client = VeraClient::new(cluster.node(index).rpc_url());
             let actual = client
                 .wait_for_receipt(receipt.transaction_hash, POLL, 600)
                 .await
@@ -82,7 +82,7 @@ async fn recover_after_each_module_commit() {
         .await
         .unwrap();
     cluster.wait_ready(deadline()).await.unwrap();
-    let origin = HubClient::new(cluster.node(0).rpc_url());
+    let origin = VeraClient::new(cluster.node(0).rpc_url());
     let signer = BlsSigner::new(7u64.into(), 9001).unwrap();
     let baseline = create_policy(&origin, &signer, "baseline").await;
     assert_replicas(&cluster, &signer, &baseline).await;
@@ -126,7 +126,7 @@ async fn recover_after_each_module_commit() {
         cluster.wait_ready(deadline()).await.unwrap();
         assert_replicas(&cluster, &signer, &receipt).await;
 
-        let recovered = HubClient::new(cluster.node(3).rpc_url());
+        let recovered = VeraClient::new(cluster.node(3).rpc_url());
         let probe = create_policy(&recovered, &signer, &format!("after-crash-{store}")).await;
         assert_replicas(&cluster, &signer, &probe).await;
         floor = probe.block_number;

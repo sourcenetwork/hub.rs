@@ -4,11 +4,11 @@ use alloy_sol_types::SolCall;
 use vera_modules::bulletin::abi::IBulletin;
 
 use crate::bls_signer::BlsSigner;
-use crate::client::{BULLETIN_ADDRESS, HubClient};
+use crate::client::{BULLETIN_ADDRESS, VeraClient};
 use crate::error::ClientError;
 use crate::types::TransactionReceipt;
 
-impl HubClient {
+impl VeraClient {
     /// Register a new bulletin namespace via native BLS transaction.
     pub async fn native_register_namespace(
         &self,

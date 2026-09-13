@@ -5,7 +5,7 @@ use std::{
 };
 
 use vera_client::{
-    AccessRequest, Actor, HubClient, Object, Operation, PERMISSION_LIMITS, PermissionResponse,
+    AccessRequest, Actor, Object, Operation, PERMISSION_LIMITS, PermissionResponse, VeraClient,
 };
 use vera_indexer::{BlockIndex, IndexedBlock};
 use vera_jsonrpc::{JsonRpcServer, NodeState};
@@ -72,7 +72,7 @@ fn synchronized_permission_rpc_verifies_native_evidence_and_subsequent_denial() 
                 ::tokio::time::timeout(Duration::from_secs(30), async {
                     let source = OrderedState::init(
                         context.child("source"),
-                        config(&context, "source", HubExecutor::new(DEPLOYMENT)),
+                        config(&context, "source", VeraExecutor::new(DEPLOYMENT)),
                     )
                     .await;
                     let owner = BlsSigner::new(1u64.into(), DEPLOYMENT).unwrap();
@@ -138,7 +138,7 @@ fn synchronized_permission_rpc_verifies_native_evidence_and_subsequent_denial() 
                     let checkpoint = OrderedCheckpoint::verify(&light, &trusted, &proof).unwrap();
                     let (replica, reached) = OrderedState::sync_checkpoint(
                         context.child("replica"),
-                        config(&context, "replica", HubExecutor::new(DEPLOYMENT)),
+                        config(&context, "replica", VeraExecutor::new(DEPLOYMENT)),
                         sources(&source),
                         checkpoint.clone(),
                         SyncEngineConfig {
@@ -190,7 +190,7 @@ fn synchronized_permission_rpc_verifies_native_evidence_and_subsequent_denial() 
                             .start()
                             .await
                             .unwrap();
-                    let client = HubClient::new(format!("http://{address}"));
+                    let client = VeraClient::new(format!("http://{address}"));
                     let request = AccessRequest {
                         actor: Actor(actor.parse().unwrap()),
                         operations: vec![Operation {
@@ -289,7 +289,7 @@ fn synchronized_permission_rpc_verifies_native_evidence_and_subsequent_denial() 
                     let (release, held) = mpsc::channel();
                     *gate.lock().unwrap() = Some((entered, held));
                     let pending = {
-                        let client = HubClient::new(format!("http://{address}"));
+                        let client = VeraClient::new(format!("http://{address}"));
                         let policy = policy.clone();
                         let request = request.clone();
                         ::tokio::spawn(async move {

@@ -13,7 +13,7 @@ fn native_proposals_bind_every_target_and_isolate_competing_execution() {
     tokio::Runner::new(tokio::Config::new().with_storage_directory(directory.path())).start(
         |context| {
             Box::pin(async move {
-                let executor = HubExecutor::new(DEPLOYMENT);
+                let executor = VeraExecutor::new(DEPLOYMENT);
                 let initialization = OrderedState::init(
                     context.child("state"),
                     config(&context, "state", executor.clone()),

@@ -1,11 +1,11 @@
-//! Client context wrapping `HubClient` with optional signers.
+//! Client context wrapping `VeraClient` with optional signers.
 
-use vera_client::{BlsSigner, EvmSigner, HubClient};
+use vera_client::{BlsSigner, EvmSigner, VeraClient};
 
 /// Shared context for all client subcommands.
 #[derive(Debug)]
 pub(crate) struct ClientContext {
-    pub client: HubClient,
+    pub client: VeraClient,
     pub evm_signer: Option<EvmSigner>,
     pub bls_signer: Option<BlsSigner>,
     /// Raw hex key for operations that need the signing key directly (e.g. bearer tokens).
@@ -22,7 +22,7 @@ impl ClientContext {
         chain_id: u64,
         compact: bool,
     ) -> eyre::Result<Self> {
-        let client = HubClient::new(url);
+        let client = VeraClient::new(url);
 
         let evm_signer = key
             .map(|k| EvmSigner::from_hex(k, chain_id))

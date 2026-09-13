@@ -20,7 +20,7 @@ use tracing::{info, warn};
 use vera_backend::Ctx;
 use vera_consensus::{Mempool as _, TxId, components::InMemoryMempool};
 use vera_domain::{Block, BlockId, ConsensusContext, PublicKey};
-use vera_executor::{BlockContext, ExecutionReceipt, HubExecutor, receipt_commitment};
+use vera_executor::{BlockContext, ExecutionReceipt, VeraExecutor, receipt_commitment};
 
 use crate::{AppError, ConsensusScheme, FinalizedSink, ReshareInput};
 
@@ -36,7 +36,7 @@ struct PendingExecution {
 #[derive(Clone)]
 pub struct StatefulHubApp<S: FinalizedSink, D: ApplicationState = VeraStateSet> {
     storage: PhantomData<D>,
-    executor: HubExecutor,
+    executor: VeraExecutor,
     genesis: Block,
     mempool: InMemoryMempool,
     sink: S,
@@ -59,7 +59,7 @@ impl<S: FinalizedSink, D: ApplicationState> std::fmt::Debug for StatefulHubApp<S
 impl<S: FinalizedSink, D: ApplicationState> StatefulHubApp<S, D> {
     /// Create the application around an executor and the genesis block.
     pub fn new(
-        executor: HubExecutor,
+        executor: VeraExecutor,
         genesis: Block,
         mempool: InMemoryMempool,
         sink: S,

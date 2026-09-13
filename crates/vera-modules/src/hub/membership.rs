@@ -1,6 +1,6 @@
 //! Immutable consensus rosters included in native state commitments.
 
-use super::{HubError, HubModule};
+use super::{VeraError, VeraModule};
 use crate::kv_store::ModuleKvStore as _;
 
 const ROSTER_PREFIX: &[u8] = b"consensus_roster/";
@@ -11,7 +11,7 @@ fn roster_key(epoch: u64) -> Vec<u8> {
     key
 }
 
-impl HubModule {
+impl VeraModule {
     /// Read the canonical concatenation of 32-byte consensus identities.
     pub fn consensus_roster(&self, epoch: u64) -> Option<&[u8]> {
         self.store.get_ref(&roster_key(epoch))
@@ -22,9 +22,9 @@ impl HubModule {
         &mut self,
         epoch: u64,
         keys: &[[u8; 32]],
-    ) -> Result<(), HubError> {
+    ) -> Result<(), VeraError> {
         if keys.is_empty() || !keys.windows(2).all(|pair| pair[0] < pair[1]) {
-            return Err(HubError::State(
+            return Err(VeraError::State(
                 "consensus roster must be nonempty and strictly sorted".into(),
             ));
         }
@@ -33,7 +33,7 @@ impl HubModule {
             return if existing == bytes {
                 Ok(())
             } else {
-                Err(HubError::State("consensus roster already selected".into()))
+                Err(VeraError::State("consensus roster already selected".into()))
             };
         }
         let key = roster_key(epoch);
@@ -43,7 +43,7 @@ impl HubModule {
             .last()
             .is_some_and(|(latest, _)| latest >= key.as_slice())
         {
-            return Err(HubError::State(
+            return Err(VeraError::State(
                 "consensus roster is older than the retained window".into(),
             ));
         }
@@ -69,7 +69,7 @@ mod tests {
     #[test]
     fn roster_window_bounds_live_state_and_preserves_parent_snapshots() {
         let keys: Vec<_> = (1..=64).map(|byte| [byte; 32]).collect();
-        let mut hub = HubModule::default();
+        let mut hub = VeraModule::default();
         hub.record_consensus_roster(3, &keys).unwrap();
         let parent = hub.clone();
         for epoch in 4..=1003 {

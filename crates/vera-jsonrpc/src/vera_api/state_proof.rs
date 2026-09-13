@@ -1,6 +1,6 @@
 use super::*;
 
-impl HubApiImpl {
+impl VeraApiImpl {
     pub(super) async fn state_proof(
         &self,
         module: String,

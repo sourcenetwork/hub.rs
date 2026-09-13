@@ -8,7 +8,7 @@ use commonware_glue::stateful::db::{DatabaseSet, Unmerkleized as _};
 use commonware_runtime::{Runner as _, Supervisor as _, buffer::paged::CacheRef, tokio};
 use commonware_utils::{NZU16, NZUsize};
 use vera_backend::{
-    AccountKey, AccountValue, CodeKey, HubReaders, HubStateSet, StorageKey, StorageValue,
+    AccountKey, AccountValue, CodeKey, StorageKey, StorageValue, VeraReaders, VeraStateSet,
     combined_root, state_set_config,
 };
 use vera_qmdb::AccountEncoding;
@@ -34,7 +34,7 @@ fn page_cache(context: &tokio::Context) -> CacheRef {
 }
 
 async fn read_all(
-    readers: &HubReaders,
+    readers: &VeraReaders,
     seed: u8,
 ) -> (Option<AccountValue>, Option<U256>, Option<Vec<u8>>) {
     let accounts = readers.0.read().await;
@@ -60,7 +60,7 @@ fn fork_apply_finalize_and_restart() {
     let config = tokio::Config::default().with_storage_directory(dir.path().to_path_buf());
     let runner = tokio::Runner::new(config.clone());
     let root_before = runner.start(|context| async move {
-        let set = HubStateSet::init(
+        let set = VeraStateSet::init(
             context.child("set"),
             state_set_config("t", page_cache(&context)),
         )
@@ -77,7 +77,7 @@ fn fork_apply_finalize_and_restart() {
         );
         let first_root = combined_root(&first);
 
-        let (mut accounts, mut storage, mut code) = HubStateSet::fork_batches(&first);
+        let (mut accounts, mut storage, mut code) = VeraStateSet::fork_batches(&first);
         let seen = accounts.get(&account_key(1)).await.expect("read-through");
         assert_eq!(seen.map(|v| v.0), Some([0xA1; AccountEncoding::SIZE]));
         accounts = accounts.write(account_key(4), Some(account(0xD4)));
@@ -109,7 +109,7 @@ fn fork_apply_finalize_and_restart() {
 
     let runner = tokio::Runner::new(config);
     runner.start(|context| async move {
-        let set = HubStateSet::init(
+        let set = VeraStateSet::init(
             context.child("set"),
             state_set_config("t", page_cache(&context)),
         )

@@ -4,7 +4,7 @@ use alloy_primitives::{B256, FixedBytes};
 use serde_json::{Value, json};
 use tokio::{sync::OwnedSemaphorePermit, time::Instant};
 use vera_client::{
-    AccessRequest, Actor, ClientError, HubClient, Object, Operation, PERMISSION_LIMITS,
+    AccessRequest, Actor, ClientError, Object, Operation, PERMISSION_LIMITS, VeraClient,
 };
 use vera_domain::{ConsensusPublicKey, LightBlock, ReceiptResponse};
 
@@ -83,7 +83,7 @@ impl Observation {
 }
 
 pub(super) async fn observe(
-    client: Arc<HubClient>,
+    client: Arc<VeraClient>,
     request: Request,
     scheduled: Instant,
     permit: Option<OwnedSemaphorePermit>,
@@ -286,8 +286,8 @@ pub(super) enum Resolution {
 }
 
 pub(super) async fn check_recovered(
-    origin: &HubClient,
-    recovered: &HubClient,
+    origin: &VeraClient,
+    recovered: &VeraClient,
     policy_id: FixedBytes<32>,
     observation: &Observation,
 ) -> (bool, bool) {
@@ -331,7 +331,7 @@ pub(super) async fn check_recovered(
 }
 
 pub(super) async fn verify(
-    clients: &[HubClient],
+    clients: &[VeraClient],
     policy_id: FixedBytes<32>,
     observation: &Observation,
 ) -> Resolution {

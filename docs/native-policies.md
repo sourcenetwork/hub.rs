@@ -1,6 +1,6 @@
 # Native policy reads
 
-`HubClient::read_policy_page` returns policy records and creation metadata from
+`VeraClient::read_policy_page` returns policy records and creation metadata from
 certified native state. Callers supply the trusted consensus key, a minimum
 revision and a page limit. The client verifies complete-prefix evidence, decodes
 each record and checks that its canonical policy ID matches its storage key.
@@ -17,7 +17,7 @@ Pass the previous revision as the next minimum to prevent moving backward.
 Policy presence alone does not grant access; evaluate permissions using the
 certified permission APIs.
 
-`HubClient::read_policy` selects one policy by its 32-byte ID. It verifies the
+`VeraClient::read_policy` selects one policy by its 32-byte ID. It verifies the
 record proof and ID binding with the same decoder used by discovery pages,
 returning the policy definition and creation metadata or certified absence.
 The returned revision and timestamp identify the state used for the read.
@@ -30,7 +30,7 @@ and match its policy and relationship storage key. Larger enumerations use
 `vera_getCurrentPrefixPageProof` with the policy's relationship prefix and verify
 each page before applying selectors locally.
 
-`HubClient::read_relationship_page` provides typed, verified pages for that
+`VeraClient::read_relationship_page` provides typed, verified pages for that
 relationship prefix. Each record includes the relationship, archive status and
 issuance metadata. Apply object, relation, subject and archive filters locally
 after verification, and continue until the cursor is absent even if no records

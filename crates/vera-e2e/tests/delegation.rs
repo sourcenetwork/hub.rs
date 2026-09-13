@@ -5,7 +5,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use alloy_primitives::{Address, B256, Bytes};
 use alloy_sol_types::SolCall;
 use k256::ecdsa::SigningKey;
-use vera_client::{ACP_ADDRESS, BlsSigner, EvmSigner, HUB_ADDRESS, HubClient, TransactionReceipt};
+use vera_client::{
+    ACP_ADDRESS, BlsSigner, EvmSigner, TransactionReceipt, VERA_ADDRESS, VeraClient,
+};
 use vera_e2e::cluster::{ConsensusPreset, TestCluster};
 use vera_modules::{
     acp::abi::IAcp,
@@ -25,7 +27,7 @@ fn token(submitter: &str, deployment: u64, now: u64) -> String {
 }
 
 async fn evm(
-    client: &HubClient,
+    client: &VeraClient,
     signer: &EvmSigner,
     target: Address,
     data: Vec<u8>,
@@ -36,7 +38,7 @@ async fn evm(
     client.wait_for_receipt(hash, POLL, 600).await.unwrap()
 }
 
-async fn native(client: &HubClient, signer: &BlsSigner, data: Vec<u8>) -> TransactionReceipt {
+async fn native(client: &VeraClient, signer: &BlsSigner, data: Vec<u8>) -> TransactionReceipt {
     let raw = signer.sign_native_tx(ACP_ADDRESS, data.into()).unwrap();
     let hash = client.send_native_tx(&raw).await.unwrap();
     client.wait_for_receipt(hash, POLL, 600).await.unwrap()
@@ -68,7 +70,7 @@ async fn delegation_revocation_and_failed_batch_survive_restart() {
         .wait_ready(vera_e2e::readiness_deadline())
         .await
         .unwrap();
-    let client = HubClient::new(cluster.node(0).rpc_url());
+    let client = VeraClient::new(cluster.node(0).rpc_url());
     let owner = EvmSigner::from_hex(OWNER, 9001).unwrap();
     let delegate = BlsSigner::new(7u64.into(), 9001).unwrap();
     let stranger = BlsSigner::new(8u64.into(), 9001).unwrap();
@@ -194,7 +196,7 @@ async fn delegation_revocation_and_failed_batch_survive_restart() {
         let receipt = evm(
             &client,
             &owner,
-            HUB_ADDRESS,
+            VERA_ADDRESS,
             IHub::revokeDelegationCall {
                 token: bearer.clone(),
             }
@@ -205,7 +207,7 @@ async fn delegation_revocation_and_failed_batch_survive_restart() {
         revocations.push(receipt.transaction_hash);
     }
     // Establish the same finalized revocation on the replica before restarting it.
-    let replica = HubClient::new(cluster.node(3).rpc_url());
+    let replica = VeraClient::new(cluster.node(3).rpc_url());
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let (found, bytes) = replica

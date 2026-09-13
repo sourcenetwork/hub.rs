@@ -1,4 +1,4 @@
-use super::{HubApiImpl, HubApiServer};
+use super::{VeraApiImpl, VeraApiServer};
 use crate::error::codes;
 use alloy_primitives::{B256, U64};
 use jsonrpsee::{core::RpcResult, types::ErrorObjectOwned};
@@ -31,7 +31,7 @@ pub(super) fn request_error(error: PermissionError) -> ErrorObjectOwned {
     ErrorObjectOwned::owned(code, error.to_string(), None::<()>)
 }
 
-impl HubApiImpl {
+impl VeraApiImpl {
     fn permission_snapshot(&self) -> RpcResult<vera_modules::kv_store::InMemoryKvStore> {
         Ok(self
             .modules

@@ -11,7 +11,7 @@ use commonware_codec::Encode as _;
 use commonware_cryptography::{Signer as _, ed25519};
 use serde_json::json;
 use vera_client::{
-    BlsSigner, HubClient, VALIDATOR_REGISTRY_ADDRESS, administration::AdministrativeCommand,
+    BlsSigner, VALIDATOR_REGISTRY_ADDRESS, VeraClient, administration::AdministrativeCommand,
 };
 use vera_domain::{ConsensusPublicKey, EpochMaterial, LightBlock, NativeTx};
 use vera_e2e::cluster::{ConsensusPreset, GenesisBuilder, KeySet, NodeConfigBuilder, TestCluster};
@@ -26,7 +26,7 @@ fn deadline() -> Duration {
     Duration::from_secs(60 * scale as u64)
 }
 
-async fn receipt(client: &HubClient, id: B256, trusted: &ConsensusPublicKey) -> u64 {
+async fn receipt(client: &VeraClient, id: B256, trusted: &ConsensusPublicKey) -> u64 {
     tokio::time::timeout(deadline(), async {
         loop {
             if let Ok(Some(proof)) = client.read_receipt(id, trusted).await {
@@ -41,7 +41,7 @@ async fn receipt(client: &HubClient, id: B256, trusted: &ConsensusPublicKey) -> 
 }
 
 async fn submit(
-    client: &HubClient,
+    client: &VeraClient,
     signer: &BlsSigner,
     trusted: &ConsensusPublicKey,
     call: Vec<u8>,
@@ -55,7 +55,7 @@ async fn submit(
 }
 
 async fn membership(
-    client: &HubClient,
+    client: &VeraClient,
     trusted: &ConsensusPublicKey,
     minimum: u64,
     members: usize,
@@ -124,7 +124,7 @@ async fn admit_member(interrupt: bool, crash_share: bool) {
         .wait_for_height(3, Duration::from_secs(30))
         .await
         .unwrap();
-    let origin = HubClient::new(cluster.node(0).rpc_url());
+    let origin = VeraClient::new(cluster.node(0).rpc_url());
     let signer = BlsSigner::new(7u64.into(), deployment).unwrap();
     let created = origin.native_create_policy(&signer, b"name: native_membership\nresources:\n  - name: registry\n    relations:\n      - name: admin\n    permissions:\n      - name: manage\n        expr: admin\n", 1).await.unwrap();
     receipt(&origin, created.transaction_hash, &trusted).await;
@@ -241,7 +241,7 @@ async fn admit_member(interrupt: bool, crash_share: bool) {
         fs::write(&share_crash_marker, []).unwrap();
     }
     let mut incoming = command.spawn().unwrap();
-    let joining = HubClient::new(format!("http://127.0.0.1:{rpc_port}"));
+    let joining = VeraClient::new(format!("http://127.0.0.1:{rpc_port}"));
     if interrupt {
         tokio::time::timeout(deadline(), async {
             loop {

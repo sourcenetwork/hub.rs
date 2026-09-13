@@ -25,7 +25,7 @@ pub use eth_subscribe::{EthSubscriptionApiImpl, EthSubscriptionApiServer};
 mod header_subscribe;
 
 mod vera_api;
-pub use vera_api::{HubApiImpl, HubApiServer, LightBlockLookup, ReceiptProofLookup};
+pub use vera_api::{LightBlockLookup, ReceiptProofLookup, VeraApiImpl, VeraApiServer};
 
 mod server;
 pub use server::{JsonRpcServer, RpcServer, RpcServerHandle, ServerError};

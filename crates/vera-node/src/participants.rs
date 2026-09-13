@@ -93,7 +93,7 @@ impl ParticipantsProvider for RegistryParticipants {
 mod tests {
     use super::*;
     use std::sync::RwLock;
-    use vera_modules::{hub::HubModule, kv_store::InMemoryKvStore};
+    use vera_modules::{hub::VeraModule, kv_store::InMemoryKvStore};
 
     fn history() -> (tempfile::TempDir, Arc<crate::FinalizedHistory>) {
         let directory = tempfile::tempdir().unwrap();
@@ -154,7 +154,7 @@ mod tests {
         assert_eq!(provider.participants(Epoch::new(3)).await, selected);
         let stored = modules.read().unwrap().hub.store().serialize();
         let recovered = vera_modules::ModuleState {
-            hub: HubModule::from_store(InMemoryKvStore::deserialize(&stored).unwrap()),
+            hub: VeraModule::from_store(InMemoryKvStore::deserialize(&stored).unwrap()),
             ..Default::default()
         };
         let mut restarted = RegistryParticipants::new(

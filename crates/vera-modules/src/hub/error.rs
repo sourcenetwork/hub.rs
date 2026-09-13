@@ -5,7 +5,7 @@ use thiserror::Error;
 /// Errors produced by the Vera module.
 #[derive(Debug, Error)]
 #[allow(missing_docs)]
-pub enum HubError {
+pub enum VeraError {
     #[error("invalid threshold object: {reason}")]
     InvalidThresholdObject { reason: String },
     #[error("invalid ring request: {reason}")]

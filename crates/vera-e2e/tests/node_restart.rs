@@ -20,7 +20,7 @@ use std::time::Duration;
 use alloy_primitives::{Address, Bytes};
 use alloy_sol_types::SolCall;
 
-use vera_client::{ACP_ADDRESS, BlsSigner, EvmSigner, HubClient, TransactionReceipt};
+use vera_client::{ACP_ADDRESS, BlsSigner, EvmSigner, TransactionReceipt, VeraClient};
 use vera_domain::{ConsensusPublicKey, LightBlock, verify_light_block};
 use vera_e2e::cluster::{ConsensusPreset, GenesisBuilder, KeySet, TestCluster};
 use vera_e2e::{RECEIPT_POLL_ATTEMPTS, RECEIPT_POLL_INTERVAL};
@@ -40,7 +40,7 @@ resources:
 ";
 
 async fn wait_light_block(
-    client: &HubClient,
+    client: &VeraClient,
     height: u64,
     trusted_key: ConsensusPublicKey,
 ) -> LightBlock {
@@ -71,7 +71,7 @@ fn create_policy_calldata() -> Vec<u8> {
 
 async fn broadcast_evm_tx(
     cluster: &TestCluster,
-    client: &HubClient,
+    client: &VeraClient,
     signer: &EvmSigner,
     target: Address,
     calldata: Vec<u8>,
@@ -89,7 +89,7 @@ async fn broadcast_evm_tx(
             let r = raw.clone();
             let url = cluster.node(i).rpc_url();
             tokio::spawn(async move {
-                let result = HubClient::new(url).send_raw_transaction(&r).await;
+                let result = VeraClient::new(url).send_raw_transaction(&r).await;
                 (i, result)
             })
         })
@@ -110,7 +110,7 @@ async fn broadcast_evm_tx(
 
 async fn broadcast_native_tx(
     cluster: &TestCluster,
-    client: &HubClient,
+    client: &VeraClient,
     signer: &BlsSigner,
     target: Address,
     calldata: Vec<u8>,
@@ -124,7 +124,7 @@ async fn broadcast_native_tx(
             let w = wire.clone();
             let url = cluster.node(i).rpc_url();
             tokio::spawn(async move {
-                let result = HubClient::new(url).send_native_tx(&w).await;
+                let result = VeraClient::new(url).send_native_tx(&w).await;
                 (i, result)
             })
         })
@@ -145,7 +145,7 @@ async fn broadcast_native_tx(
 
 /// Send a single EVM tx directly to one node (not broadcast).
 async fn send_evm_tx_to_node(
-    client: &HubClient,
+    client: &VeraClient,
     signer: &EvmSigner,
     target: Address,
     calldata: Vec<u8>,
@@ -197,7 +197,7 @@ async fn wait_for_nonce(rpc_url: &str, address: Address, expected: u64) {
         move || {
             let rpc_url = rpc_url.clone();
             Box::pin(async move {
-                match HubClient::new(rpc_url).get_nonce(address).await {
+                match VeraClient::new(rpc_url).get_nonce(address).await {
                     Ok(nonce) if nonce >= expected => None,
                     Ok(nonce) => Some(format!("sequence {nonce}, need {expected}")),
                     Err(error) => Some(error.to_string()),
@@ -243,7 +243,7 @@ async fn node_restart_preserves_state() {
         .await
         .expect("should reach height 3");
 
-    let client = HubClient::new(cluster.node(0).rpc_url());
+    let client = VeraClient::new(cluster.node(0).rpc_url());
     let evm_signer = EvmSigner::from_hex(HARDHAT_KEY_0, chain_id).expect("valid signer");
     let bls_signer = BlsSigner::random(chain_id).expect("random BLS signer");
     let bls_did = bls_signer.did().to_owned();
@@ -306,7 +306,7 @@ async fn node_restart_preserves_state() {
         .max()
         .unwrap_or(0);
 
-    let before_restart = HubClient::new(cluster.node(3).rpc_url());
+    let before_restart = VeraClient::new(cluster.node(3).rpc_url());
     let mut history = Vec::new();
     for receipt in [&evm_receipt, &bls_receipt] {
         let confirmed = before_restart
@@ -392,7 +392,7 @@ async fn node_restart_preserves_state() {
     // These queries hit QMDB directly (not BlockIndex), so they
     // work immediately even before backfill completes.
 
-    let restarted_client = HubClient::new(cluster.node(3).rpc_url());
+    let restarted_client = VeraClient::new(cluster.node(3).rpc_url());
 
     let restarted_chain_id = restarted_client
         .chain_id()
@@ -554,7 +554,7 @@ async fn node_restart_preserves_state() {
             move || {
                 let url = url.clone();
                 Box::pin(async move {
-                    let Ok(status) = HubClient::new(url).node_status().await else {
+                    let Ok(status) = VeraClient::new(url).node_status().await else {
                         return Some("node unreachable".to_string());
                     };
                     if status.current_view > view_before

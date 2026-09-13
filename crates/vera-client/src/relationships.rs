@@ -1,6 +1,6 @@
 //! Relationship enumeration authenticated by independently configured consensus trust.
 
-use crate::{ClientError, HubClient};
+use crate::{ClientError, VeraClient};
 use alloy_primitives::{B256, Bytes};
 use vera_domain::ConsensusPublicKey;
 use vera_modules::acp::{keys, types::RelationshipRecord};
@@ -21,7 +21,7 @@ pub struct RelationshipPage {
     pub continuation: Option<Bytes>,
 }
 
-impl HubClient {
+impl VeraClient {
     /// Enumerate policy relationships, including archived records, in certified bounded pages.
     pub async fn read_relationship_page(
         &self,

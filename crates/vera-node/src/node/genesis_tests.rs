@@ -3,8 +3,8 @@ use commonware_runtime::Runner as _;
 use commonware_utils::{NZU16, NZUsize};
 use vera_modules::hub::administration::OperatorPolicy;
 
-fn configured_genesis() -> HubGenesis {
-    let mut genesis = HubGenesis::devnet();
+fn configured_genesis() -> VeraGenesis {
+    let mut genesis = VeraGenesis::devnet();
     genesis.operators = Some(OperatorPolicy {
         threshold: 1,
         keys: vec!["0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798".into()],
@@ -31,7 +31,7 @@ fn native_genesis_recovers_partial_initialization_and_binds_configuration() {
                 )
                 .unwrap();
                 let cache = CacheRef::from_pooler(&context, NZU16!(4084), NZUsize!(64));
-                let execution = HubStateSet::init(
+                let execution = VeraStateSet::init(
                     context.child("partial_execution"),
                     state_set_config(crate::node::PARTITION_PREFIX, cache.clone()),
                 )

@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use alloy_primitives::{B256, KECCAK256_EMPTY, U256, keccak256};
 use commonware_glue::stateful::db::DatabaseSet as _;
-use vera_backend::{BatchState, HubStateSet, combined_root};
+use vera_backend::{BatchState, VeraStateSet, combined_root};
 use vera_domain::{Block, BlockId, DbTargets, StateRoot};
 use vera_genesis::GenesisState;
 use vera_qmdb::{AccountUpdate, ChangeSet};
@@ -27,7 +27,7 @@ const fn fresh_account() -> AccountUpdate {
 ///
 /// Returns the combined root and per-partition targets the genesis block records.
 pub async fn apply_genesis(
-    set: &HubStateSet,
+    set: &VeraStateSet,
     genesis: &GenesisState,
 ) -> Result<(StateRoot, DbTargets), AppError> {
     let mut changes = ChangeSet::new();

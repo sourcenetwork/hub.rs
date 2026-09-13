@@ -10,7 +10,7 @@ use vera_modules::acp::types::{
     AccessRequest, AcpParams, Actor, Object, Operation, PolicyCmd, PolicyMarshalingType,
     RelationshipSelector,
 };
-use vera_modules::hub::HubModule;
+use vera_modules::hub::VeraModule;
 use vera_modules::types::{BlockExecCtx, TxExecCtx};
 
 use super::{
@@ -168,7 +168,7 @@ fn batch_error(index: usize, err: PrecompileError) -> PrecompileError {
 #[allow(clippy::too_many_lines)]
 pub(super) fn dispatch(
     module: &mut AcpModule,
-    hub: &mut HubModule,
+    hub: &mut VeraModule,
     block_ctx: &BlockExecCtx,
     tx_ctx: &TxExecCtx,
     input: &[u8],
@@ -1228,7 +1228,7 @@ resources:
 
         let result = dispatch(
             &mut module,
-            &mut HubModule::new(),
+            &mut VeraModule::new(),
             &block_ctx,
             &tx_ctx,
             &calldata,
@@ -1283,7 +1283,7 @@ resources:
 
         let result = dispatch(
             &mut module,
-            &mut HubModule::new(),
+            &mut VeraModule::new(),
             &block_ctx,
             &tx_ctx,
             &calldata,
@@ -1341,7 +1341,7 @@ resources:
 
         let err = dispatch(
             &mut module,
-            &mut HubModule::new(),
+            &mut VeraModule::new(),
             &block_ctx,
             &tx_ctx,
             &calldata,
@@ -1509,7 +1509,7 @@ resources:
         let set = fields().abi_encode();
         let dr = dispatch(
             &mut module,
-            &mut HubModule::new(),
+            &mut VeraModule::new(),
             &block_ctx,
             &tx_ctx,
             &set,
@@ -1554,7 +1554,7 @@ resources:
         .abi_encode();
         let dr = dispatch(
             &mut module,
-            &mut HubModule::new(),
+            &mut VeraModule::new(),
             &block_ctx,
             &tx_ctx,
             &del,

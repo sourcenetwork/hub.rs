@@ -4,13 +4,13 @@ use alloy_primitives::FixedBytes;
 use alloy_sol_types::SolCall;
 use vera_modules::acp::abi::IAcp;
 
-use crate::client::{ACP_ADDRESS, HubClient, parse_policy_id};
+use crate::client::{ACP_ADDRESS, VeraClient, parse_policy_id};
 use crate::error::ClientError;
 use crate::signer::EvmSigner;
 use crate::subject::RelationshipSubject;
 use crate::types::TransactionReceipt;
 
-impl HubClient {
+impl VeraClient {
     /// Execute multiple ACP calls atomically in one EVM transaction.
     pub async fn batch_policy_calls(
         &self,

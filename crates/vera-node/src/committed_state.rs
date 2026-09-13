@@ -4,7 +4,7 @@
 //! only exists to satisfy the validator's bound and always errors.
 
 use alloy_primitives::{Address, B256, Bytes, U256};
-use vera_backend::{AccountKey, CodeKey, HubStateSet, StorageKey};
+use vera_backend::{AccountKey, CodeKey, StorageKey, VeraStateSet};
 use vera_qmdb::ChangeSet;
 use vera_qmdb::{AccountEncoding, StorageKey as StorageSlotKey};
 use vera_traits::{StateDb, StateDbError, StateDbRead, StateDbWrite};
@@ -12,7 +12,7 @@ use vera_traits::{StateDb, StateDbError, StateDbRead, StateDbWrite};
 /// Committed EVM state read through the shared database set.
 #[derive(Clone)]
 pub struct CommittedState {
-    set: HubStateSet,
+    set: VeraStateSet,
 }
 
 impl std::fmt::Debug for CommittedState {
@@ -29,7 +29,7 @@ fn storage_err(e: impl std::fmt::Display) -> StateDbError {
 
 impl CommittedState {
     /// Read committed state through `set`.
-    pub const fn new(set: HubStateSet) -> Self {
+    pub const fn new(set: VeraStateSet) -> Self {
         Self { set }
     }
 

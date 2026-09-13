@@ -6,7 +6,7 @@ use alloy_sol_types::SolCall as _;
 use commonware_codec::Encode as _;
 use k256::ecdsa::SigningKey;
 use vera_client::{
-    ACP_ADDRESS, BlsSigner, DelegationScope, HUB_ADDRESS, HubClient,
+    ACP_ADDRESS, BlsSigner, DelegationScope, VERA_ADDRESS, VeraClient,
     administration::{AdministrativeCommand, SignedAdministrativeRequest},
 };
 use vera_crypto::operation::OperationId;
@@ -50,7 +50,7 @@ async fn native_go_workers_verify_policy_creation() {
         .wait_ready(vera_e2e::readiness_deadline())
         .await
         .unwrap();
-    let client = HubClient::new(cluster.node(0).rpc_url());
+    let client = VeraClient::new(cluster.node(0).rpc_url());
     let key = SigningKey::from_slice(&[42; 32]).unwrap();
     let issuer = vera_crypto::secp256k1::did_from_secp256k1_pubkey(
         key.verifying_key().to_encoded_point(true).as_bytes(),
@@ -133,7 +133,7 @@ async fn native_go_workers_verify_policy_creation() {
         .unwrap();
     let outcome: OperationRecord =
         serde_json::from_slice(outcome.record.value.as_ref().unwrap()).unwrap();
-    let replica = HubClient::new(cluster.node(3).rpc_url());
+    let replica = VeraClient::new(cluster.node(3).rpc_url());
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if let Some(proof) = replica
@@ -193,15 +193,15 @@ async fn native_go_workers_verify_policy_creation() {
 }
 
 async fn apply(
-    client: &HubClient,
-    observer: &HubClient,
+    client: &VeraClient,
+    observer: &VeraClient,
     trusted: &ConsensusPublicKey,
     operator: &BlsSigner,
     approved: &SignedAdministrativeRequest,
 ) {
     let wire = operator
         .sign_native_tx(
-            HUB_ADDRESS,
+            VERA_ADDRESS,
             IHub::applyAdministrationCall {
                 request: serde_json::to_vec(approved).unwrap().into(),
             }
@@ -273,7 +273,7 @@ async fn native_go_policy_pages() {
         .wait_ready(vera_e2e::readiness_deadline())
         .await
         .unwrap();
-    let client = HubClient::new(cluster.node(0).rpc_url());
+    let client = VeraClient::new(cluster.node(0).rpc_url());
     let signer = BlsSigner::new(7u64.into(), deployment).unwrap();
     let mut minimum = 0;
     for i in 0..3 {

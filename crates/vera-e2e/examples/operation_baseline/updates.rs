@@ -4,14 +4,14 @@ use alloy_primitives::FixedBytes;
 use alloy_sol_types::SolCall;
 use futures::{StreamExt, stream};
 use tokio::{sync::Semaphore, task::JoinSet, time::Instant};
-use vera_client::{ACP_ADDRESS, BlsSigner, HubClient};
+use vera_client::{ACP_ADDRESS, BlsSigner, VeraClient};
 use vera_domain::NativeTx;
 use vera_modules::acp::abi::IAcp;
 
 use super::{CHAIN_ID, driver};
 
 pub(super) async fn prepare(
-    client: Arc<HubClient>,
+    client: Arc<VeraClient>,
     reads: Arc<driver::ReadContext>,
     policy: FixedBytes<32>,
     count: usize,
@@ -101,7 +101,7 @@ pub(super) async fn run(
     objects: usize,
     rate: usize,
     started: Instant,
-    client: Arc<HubClient>,
+    client: Arc<VeraClient>,
     reads: Arc<driver::ReadContext>,
 ) -> Vec<driver::Observation> {
     let mut groups: Vec<Vec<_>> = (0..objects).map(|_| Vec::new()).collect();
@@ -143,7 +143,7 @@ pub(super) async fn run(
 }
 
 pub(super) async fn verify_state(
-    client: &HubClient,
+    client: &VeraClient,
     observations: &[driver::Observation],
     objects: usize,
     reads: &driver::ReadContext,

@@ -5,7 +5,7 @@ use std::time::Duration;
 #[tokio::test]
 async fn proof_admission_is_shared_and_released_on_errors() {
     let state = Arc::new(NodeState::new(1, 0, 1));
-    let api = HubApiImpl::new(Arc::new(state.as_ref().clone()), None);
+    let api = VeraApiImpl::new(Arc::new(state.as_ref().clone()), None);
     let mut permits: Vec<_> = (0..8).map(|_| state.proof_permit().unwrap()).collect();
     let error = api
         .get_current_record_proof(ModuleId::Acp, Bytes::new(), U64::ZERO)
@@ -39,7 +39,7 @@ async fn cancelled_lookup_keeps_its_permit_until_blocking_work_finishes() {
     let entered = Arc::new(tokio::sync::Notify::new());
     let signal = entered.clone();
     let api = Arc::new(
-        HubApiImpl::new(state.clone(), None).with_light_block_lookup(Arc::new(move |_| {
+        VeraApiImpl::new(state.clone(), None).with_light_block_lookup(Arc::new(move |_| {
             signal.notify_one();
             receiver
                 .lock()
@@ -114,7 +114,7 @@ async fn receipt_poll_does_not_wait_for_a_missing_certificate() {
     let calls = lookups.clone();
     let state = Arc::new(NodeState::new(1, 0, 1));
     let mut api =
-        HubApiImpl::new(state.clone(), None).with_light_block_lookup(Arc::new(move |_| {
+        VeraApiImpl::new(state.clone(), None).with_light_block_lookup(Arc::new(move |_| {
             calls.fetch_add(1, Ordering::Relaxed);
             Err("finalization certificate not found".into())
         }));
@@ -148,7 +148,7 @@ async fn receipt_poll_does_not_wait_for_a_missing_certificate() {
 async fn archived_receipt_waits_for_published_revision() {
     let state = Arc::new(NodeState::new(1, 0, 1));
     let index = Arc::new(BlockIndex::new());
-    let mut api = HubApiImpl::new(state, None).with_receipt_proof_lookup(Arc::new(|_| {
+    let mut api = VeraApiImpl::new(state, None).with_receipt_proof_lookup(Arc::new(|_| {
         Ok(Some(vera_domain::ReceiptResponse {
             revision: vera_domain::LightBlock {
                 block_hash: String::new(),
@@ -210,7 +210,7 @@ async fn cancelled_archive_receipt_keeps_blocking_lookup_bounded() {
     let entered = Arc::new(tokio::sync::Notify::new());
     let signal = entered.clone();
     let mut api =
-        HubApiImpl::new(state.clone(), None).with_receipt_proof_lookup(Arc::new(move |_| {
+        VeraApiImpl::new(state.clone(), None).with_receipt_proof_lookup(Arc::new(move |_| {
             signal.notify_one();
             receiver
                 .lock()
@@ -284,7 +284,7 @@ async fn evidence_deadline_is_a_retryable_error() {
     let (release, receiver) = std::sync::mpsc::channel();
     let receiver = std::sync::Mutex::new(receiver);
     let state = Arc::new(NodeState::new(1, 0, 1));
-    let mut api = HubApiImpl::new(state, None).with_light_block_lookup(Arc::new(move |_| {
+    let mut api = VeraApiImpl::new(state, None).with_light_block_lookup(Arc::new(move |_| {
         receiver
             .lock()
             .unwrap()

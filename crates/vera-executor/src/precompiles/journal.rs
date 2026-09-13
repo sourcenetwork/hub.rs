@@ -6,9 +6,9 @@ use revm::{
     Inspector,
     interpreter::{CallInputs, CallOutcome, CreateInputs, CreateOutcome},
 };
-use vera_modules::{acp::AcpModule, bulletin::BulletinModule, hub::HubModule};
+use vera_modules::{acp::AcpModule, bulletin::BulletinModule, hub::VeraModule};
 
-type Modules = (AcpModule, BulletinModule, HubModule);
+type Modules = (AcpModule, BulletinModule, VeraModule);
 
 #[derive(Debug, Default)]
 pub(super) struct ModuleJournal {

@@ -1,4 +1,4 @@
-//! HubExecutor — EVM executor with hub precompiles (ACP, Bulletin, Vera)
+//! VeraExecutor — EVM executor with hub precompiles (ACP, Bulletin, Vera)
 //! and native BLS transaction support.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -22,7 +22,7 @@ use vera_crypto::bls;
 use vera_domain::NativeTx;
 use vera_modules::acp::AcpModule;
 use vera_modules::bulletin::BulletinModule;
-use vera_modules::hub::HubModule;
+use vera_modules::hub::VeraModule;
 use vera_modules::module_state::{ModuleState, SharedModuleState, state_root_from_jmt};
 use vera_modules::native_account::NativeNonceStore;
 use vera_modules::types::{BlockExecCtx, Timestamp, TxExecCtx};
@@ -30,7 +30,7 @@ use vera_state::ModuleStateTree;
 use vera_traits::StateDb;
 
 use crate::precompiles::{
-    ACP_ADDRESS, BULLETIN_ADDRESS, HUB_ADDRESS, HubPrecompiles, VALIDATOR_REGISTRY_ADDRESS,
+    ACP_ADDRESS, BULLETIN_ADDRESS, VALIDATOR_REGISTRY_ADDRESS, VERA_ADDRESS, VeraPrecompiles,
     dispatch_to_module,
 };
 
@@ -51,7 +51,7 @@ pub type ModuleTrees = [Arc<Mutex<ModuleStateTree>>; 4];
 /// Shared module state serves committed queries. Consensus execution supplies
 /// an explicit parent snapshot and receives its post-execution state.
 #[derive(Clone, Debug)]
-pub struct HubExecutor {
+pub struct VeraExecutor {
     config: ExecutionConfig,
     modules: SharedModuleState,
     module_trees: Option<ModuleTrees>,
@@ -60,7 +60,7 @@ pub struct HubExecutor {
     crash_marker: Option<std::path::PathBuf>,
 }
 
-impl HubExecutor {
+impl VeraExecutor {
     /// Configure a one-shot process crash marker for persistence tests.
     #[cfg(feature = "fault-injection")]
     #[must_use]
@@ -212,7 +212,7 @@ impl HubExecutor {
         block_ctx: &BlockExecCtx,
         acp: &mut AcpModule,
         bulletin: &mut BulletinModule,
-        hub: &mut HubModule,
+        hub: &mut VeraModule,
         nonce_store: &mut NativeNonceStore,
         journal: &mut CTX,
     ) -> Result<ExecutionReceipt, ExecutionError> {
@@ -235,7 +235,7 @@ impl HubExecutor {
 
         if native_tx.target != ACP_ADDRESS
             && native_tx.target != BULLETIN_ADDRESS
-            && native_tx.target != HUB_ADDRESS
+            && native_tx.target != VERA_ADDRESS
             && native_tx.target != VALIDATOR_REGISTRY_ADDRESS
         {
             return Err(ExecutionError::UnknownNativeTarget(native_tx.target));
@@ -358,7 +358,7 @@ impl HubExecutor {
     }
 }
 
-impl HubExecutor {
+impl VeraExecutor {
     /// Execute against an owned parent snapshot without replacing query state.
     pub fn execute_with_modules<S: StateDb>(
         &self,
@@ -459,7 +459,7 @@ impl HubExecutor {
             outcome.receipts.push(receipt);
         }
 
-        let precompiles = HubPrecompiles::with_modules(
+        let precompiles = VeraPrecompiles::with_modules(
             self.config.spec_id,
             modules.acp.clone(),
             modules.bulletin.clone(),
@@ -601,7 +601,7 @@ impl HubExecutor {
     }
 }
 
-impl<S: StateDb> BlockExecutor<S> for HubExecutor {
+impl<S: StateDb> BlockExecutor<S> for VeraExecutor {
     type Tx = Bytes;
 
     fn execute(
@@ -679,8 +679,8 @@ mod tests {
         }
     }
 
-    fn test_executor() -> HubExecutor {
-        HubExecutor::new(9001)
+    fn test_executor() -> VeraExecutor {
+        VeraExecutor::new(9001)
     }
 
     fn test_block_ctx() -> BlockExecCtx {
@@ -878,7 +878,7 @@ mod tests {
             ..Default::default()
         };
         assert!(
-            <HubExecutor as BlockExecutor<MockStateDb>>::validate_header(&executor, &header)
+            <VeraExecutor as BlockExecutor<MockStateDb>>::validate_header(&executor, &header)
                 .is_ok()
         );
     }
@@ -889,7 +889,7 @@ mod tests {
         let block_ctx = test_block_ctx();
         let mut acp = AcpModule::new();
         let mut bulletin = BulletinModule::new();
-        let mut hub = HubModule::new();
+        let mut hub = VeraModule::new();
         let mut nonces = NativeNonceStore::default();
 
         // 0x45 followed by garbage
@@ -922,7 +922,7 @@ mod tests {
         let block_ctx = test_block_ctx();
         let mut acp = AcpModule::new();
         let mut bulletin = BulletinModule::new();
-        let mut hub = HubModule::new();
+        let mut hub = VeraModule::new();
         let mut nonces = NativeNonceStore::default();
 
         let result = executor.execute_native_tx(
@@ -959,7 +959,7 @@ mod tests {
         let block_ctx = test_block_ctx();
         let mut acp = AcpModule::new();
         let mut bulletin = BulletinModule::new();
-        let mut hub = HubModule::new();
+        let mut hub = VeraModule::new();
         let mut nonces = NativeNonceStore::default();
 
         let result = executor.execute_native_tx(
@@ -1012,7 +1012,7 @@ mod tests {
         let block_ctx = test_block_ctx();
         let mut acp = AcpModule::new();
         let mut bulletin = BulletinModule::new();
-        let mut hub = HubModule::new();
+        let mut hub = VeraModule::new();
         let mut nonces = NativeNonceStore::default();
 
         let result = executor.execute_native_tx(
@@ -1120,7 +1120,7 @@ mod tests {
         let block_ctx = test_block_ctx();
         let mut acp = AcpModule::new();
         let mut bulletin = BulletinModule::new();
-        let mut hub = HubModule::new();
+        let mut hub = VeraModule::new();
         let mut nonces = NativeNonceStore::default();
 
         // Passes BLS verification and nonce check, dispatches to module query_params
@@ -1206,7 +1206,7 @@ mod tests {
         let executor = test_executor();
         let block = test_block_ctx();
         let mut bulletin = BulletinModule::new();
-        let mut hub = HubModule::new();
+        let mut hub = VeraModule::new();
         let mut nonces = NativeNonceStore::default();
         for sequence in 0..2 {
             let mut tx = NativeTx {
@@ -1256,7 +1256,7 @@ mod tests {
         let block_ctx = test_block_ctx();
         let mut acp = AcpModule::new();
         let mut bulletin = BulletinModule::new();
-        let mut hub = HubModule::new();
+        let mut hub = VeraModule::new();
         let mut nonces = NativeNonceStore::default();
 
         let result = executor.execute_native_tx(
@@ -1285,7 +1285,7 @@ mod tests {
         let block_ctx = test_block_ctx();
         let mut acp = AcpModule::new();
         let mut bulletin = BulletinModule::new();
-        let mut hub = HubModule::new();
+        let mut hub = VeraModule::new();
         let mut nonces = NativeNonceStore::default();
 
         // nonce 0 passes nonce check; empty calldata fails ABI decode → failed receipt
@@ -1339,7 +1339,7 @@ mod tests {
         let block_ctx = test_block_ctx();
         let mut acp = AcpModule::new();
         let mut bulletin = BulletinModule::new();
-        let mut hub = HubModule::new();
+        let mut hub = VeraModule::new();
         let mut nonces = NativeNonceStore::default();
 
         // First: nonce 0 passes nonce check (empty calldata → failed receipt, but nonce consumed)

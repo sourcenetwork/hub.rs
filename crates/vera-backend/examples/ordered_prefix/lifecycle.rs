@@ -84,9 +84,9 @@ fn runtime(path: &Path) -> tokio::Runner {
 
 #[test]
 fn recover_checkpoint_after_process_exit() {
-    if let Ok(directory) = std::env::var("HUB_PREFIX_RECOVERY_DIR") {
+    if let Ok(directory) = std::env::var("VERA_PREFIX_RECOVERY_DIR") {
         let directory = Path::new(&directory);
-        let phase = std::env::var("HUB_PREFIX_RECOVERY_PHASE").unwrap();
+        let phase = std::env::var("VERA_PREFIX_RECOVERY_PHASE").unwrap();
         runtime(&directory.join("db")).start(|context| async move {
             let cfg = config(&context);
             let set = Set::init(context, cfg).await;
@@ -129,8 +129,8 @@ fn recover_checkpoint_after_process_exit() {
                 "lifecycle::recover_checkpoint_after_process_exit",
                 "--nocapture",
             ])
-            .env("HUB_PREFIX_RECOVERY_DIR", directory.path())
-            .env("HUB_PREFIX_RECOVERY_PHASE", phase)
+            .env("VERA_PREFIX_RECOVERY_DIR", directory.path())
+            .env("VERA_PREFIX_RECOVERY_PHASE", phase)
             .output()
             .unwrap();
         assert!(

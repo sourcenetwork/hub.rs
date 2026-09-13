@@ -23,7 +23,7 @@ fn limit() -> ErrorObjectOwned {
     )
 }
 
-impl HubApiImpl {
+impl VeraApiImpl {
     pub(super) async fn relation_proof(
         &self,
         prefix: &[u8],

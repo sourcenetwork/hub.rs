@@ -49,7 +49,7 @@ pub(super) async fn revision(set: &OrderedState, version: u8) -> OrderedSealed {
     )
     .await
     .unwrap();
-    let snapshot = HubExecutor::new(DEPLOYMENT);
+    let snapshot = VeraExecutor::new(DEPLOYMENT);
     snapshot.set_base_modules(modules);
     let module_root = native::state_root(&native);
     OrderedSealed {
@@ -127,7 +127,7 @@ fn startup_recovers_each_partial_apply_before_publication() {
             Box::pin(async move {
                 let state = OrderedState::init(
                     context.child("create"),
-                    config(&context, "recover", HubExecutor::new(DEPLOYMENT)),
+                    config(&context, "recover", VeraExecutor::new(DEPLOYMENT)),
                 )
                 .await;
                 state.apply(revision(&state, 1).await).await;
@@ -180,7 +180,7 @@ fn startup_recovers_each_partial_apply_before_publication() {
         let anchor = OrderedTargets::decode(bytes.as_slice()).unwrap();
         let next_target = runtime(directory.path()).start(|context| {
             Box::pin(async move {
-                let executor = HubExecutor::new(DEPLOYMENT);
+                let executor = VeraExecutor::new(DEPLOYMENT);
                 executor
                     .modules()
                     .write()
@@ -258,7 +258,7 @@ fn startup_recovers_each_partial_apply_before_publication() {
             Box::pin(async move {
                 let state = OrderedState::init(
                     context.child("reopen"),
-                    config(&context, "recover", HubExecutor::new(DEPLOYMENT))
+                    config(&context, "recover", VeraExecutor::new(DEPLOYMENT))
                         .recover_to(next_target.clone()),
                 )
                 .await;

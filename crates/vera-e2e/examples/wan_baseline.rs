@@ -12,7 +12,7 @@ use alloy_primitives::FixedBytes;
 use alloy_sol_types::SolCall;
 use futures::{StreamExt as _, stream};
 use tokio::{sync::Semaphore, task::JoinSet, time::Instant};
-use vera_client::{ACP_ADDRESS, BlsSigner, HubClient};
+use vera_client::{ACP_ADDRESS, BlsSigner, VeraClient};
 use vera_domain::NativeTx;
 use vera_modules::acp::abi::IAcp;
 
@@ -51,7 +51,7 @@ async fn main() {
                 .expect("trusted group key bytes")
         },
         |bytes| {
-            let genesis: vera_genesis::HubGenesis =
+            let genesis: vera_genesis::VeraGenesis =
                 serde_json::from_slice(&bytes).expect("parse genesis.json");
             *genesis
                 .decode_epoch_info()
@@ -67,7 +67,7 @@ async fn main() {
         .map(|list| list.split(',').map(str::to_string).collect::<Vec<_>>())
         .unwrap_or_default();
 
-    let client = Arc::new(HubClient::new(&args[0]));
+    let client = Arc::new(VeraClient::new(&args[0]));
     let setup = BlsSigner::new(1u64.into(), chain_id).unwrap();
     let raw = setup
         .sign_native_tx(
@@ -173,8 +173,8 @@ async fn main() {
     if !extra.is_empty() {
         let replicas: Vec<_> = extra
             .iter()
-            .map(HubClient::new)
-            .chain([HubClient::new(&args[0])])
+            .map(VeraClient::new)
+            .chain([VeraClient::new(&args[0])])
             .collect();
         let mut checks = stream::iter(observations.iter())
             .map(|observation| driver::verify(&replicas, policy_id, observation))

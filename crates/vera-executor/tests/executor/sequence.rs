@@ -4,7 +4,7 @@ use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{TxKind, keccak256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
-use vera_executor::{ExecutionError, ExecutionOutcome, HubExecutor};
+use vera_executor::{ExecutionError, ExecutionOutcome, VeraExecutor};
 
 const CONTRACT: Address = Address::repeat_byte(0x11);
 
@@ -74,7 +74,7 @@ fn execute(
     );
     context.is_verification = verify;
     if hub {
-        let executor = HubExecutor::new(9001);
+        let executor = VeraExecutor::new(9001);
         executor
             .execute_with_modules(state, &context, txs, executor.snapshot().unwrap())
             .map(|(outcome, _)| outcome)

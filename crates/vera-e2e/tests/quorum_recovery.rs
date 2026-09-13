@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use alloy_sol_types::SolCall;
-use vera_client::{BULLETIN_ADDRESS, BlsSigner, HubClient};
+use vera_client::{BULLETIN_ADDRESS, BlsSigner, VeraClient};
 use vera_e2e::cluster::{ConsensusPreset, KeySet, TestCluster};
 use vera_modules::bulletin::abi::IBulletin;
 
@@ -36,7 +36,7 @@ async fn minority_write_waits_for_quorum_and_survives_replica_recovery() {
         .await
         .unwrap();
     let clients: Vec<_> = (0..4)
-        .map(|i| HubClient::new(cluster.node(i).rpc_url()))
+        .map(|i| VeraClient::new(cluster.node(i).rpc_url()))
         .collect();
     cluster.kill_node(2);
     cluster.kill_node(3);

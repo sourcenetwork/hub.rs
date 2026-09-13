@@ -68,7 +68,7 @@ ID, and the creation revision and timestamp. Editing preserves that creation
 metadata and enforces the actor's ownership and existing policy-edit rules.
 
 `vera_getReceiptProof` returns the finalized revision and its complete ordered
-receipt commitment. `HubClient::read_receipt` verifies the certificate against
+receipt commitment. `VeraClient::read_receipt` verifies the certificate against
 configured trust, the receipt commitment and the locally computed signed
 submission ID. This authenticates success or failure and emitted events. A
 missing response means evidence is unavailable; it does not permit reusing the
@@ -149,7 +149,7 @@ retries return the original successful outcome. See
 [operation-identities.md](operation-identities.md) for deadlines, resource
 budgets, verification and recovery semantics.
 
-`HubClient::read_relay_grant` verifies an issuer's operator grant against independently
+`VeraClient::read_relay_grant` verifies an issuer's operator grant against independently
 configured consensus trust and a caller-selected minimum revision. It returns
 scopes, expiry and grant generation, or certified absence before authorization or
 after revocation. Expired grants may remain stored; presence alone does not

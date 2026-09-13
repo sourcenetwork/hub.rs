@@ -1,7 +1,7 @@
 use commonware_glue::stateful::db::DatabaseSet;
 use vera_backend::Ctx;
 use vera_domain::{Block, DbTarget, DbTargets, StateRoot, Tx};
-use vera_executor::{BlockContext, ExecutionOutcome, HubExecutor};
+use vera_executor::{BlockContext, ExecutionOutcome, VeraExecutor};
 
 use crate::{AppError, VeraStateSet, execute_block, module_db, ordered_state::OrderedState};
 
@@ -32,7 +32,7 @@ pub trait ApplicationState: DatabaseSet<Ctx> + Clone + Send + Sync + 'static {
     fn targets(block: &Block) -> Self::SyncTargets;
     /// Execute and seal one proposal against its parent's isolated batches.
     fn execute(
-        executor: &HubExecutor,
+        executor: &VeraExecutor,
         batches: Self::Unmerkleized,
         context: &BlockContext,
         txs: &[Tx],
@@ -51,7 +51,7 @@ impl ApplicationState for VeraStateSet {
         )
     }
     async fn execute(
-        executor: &HubExecutor,
+        executor: &VeraExecutor,
         batches: Self::Unmerkleized,
         context: &BlockContext,
         txs: &[Tx],
@@ -95,7 +95,7 @@ impl ApplicationState for OrderedState {
         )
     }
     async fn execute(
-        executor: &HubExecutor,
+        executor: &VeraExecutor,
         batches: Self::Unmerkleized,
         context: &BlockContext,
         txs: &[Tx],

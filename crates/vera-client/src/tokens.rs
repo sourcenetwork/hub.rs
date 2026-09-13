@@ -1,6 +1,6 @@
 //! Certified token lifecycle records.
 
-use crate::{ClientError, HubClient};
+use crate::{ClientError, VeraClient};
 use alloy_primitives::B256;
 use vera_domain::ConsensusPublicKey;
 use vera_modules::hub::{keys, types::JWSTokenRecord};
@@ -17,7 +17,7 @@ pub struct TokenRecord {
     pub value: Option<JWSTokenRecord>,
 }
 
-impl HubClient {
+impl VeraClient {
     /// Read a token by its SHA-256 hash and verify its stored content binding.
     /// Presence alone does not establish current authorization or token validity.
     pub async fn read_token_record(

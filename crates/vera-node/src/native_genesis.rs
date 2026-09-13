@@ -6,15 +6,15 @@ use commonware_codec::{Decode as _, Encode as _};
 use commonware_glue::stateful::db::DatabaseSet as _;
 use commonware_runtime::{Supervisor as _, buffer::paged::CacheRef, tokio};
 use vera_backend::{
-    HubStateSet,
+    VeraStateSet,
     native::{self, NativeStateSet},
     state_set_config,
 };
 use vera_domain::Block;
-use vera_genesis::HubGenesis;
+use vera_genesis::VeraGenesis;
 use vera_modules::ModuleState;
 
-pub(super) fn fingerprint(genesis: &HubGenesis) -> anyhow::Result<alloy_primitives::B256> {
+pub(super) fn fingerprint(genesis: &VeraGenesis) -> anyhow::Result<alloy_primitives::B256> {
     let mut bytes = b"vera/native-genesis/v2\0".to_vec();
     bytes.extend_from_slice(&serde_json::to_vec(genesis)?);
     Ok(keccak256(bytes))
@@ -24,7 +24,7 @@ pub(super) fn fingerprint(genesis: &HubGenesis) -> anyhow::Result<alloy_primitiv
 pub(super) async fn load_or_create(
     context: &tokio::Context,
     data_dir: &Path,
-    genesis: &HubGenesis,
+    genesis: &VeraGenesis,
     cache: &CacheRef,
 ) -> anyhow::Result<Block> {
     let fingerprint = fingerprint(genesis)?;
@@ -64,7 +64,7 @@ pub(super) async fn load_or_create(
             "interrupted genesis has different configuration"
         );
     }
-    let execution = HubStateSet::init(
+    let execution = VeraStateSet::init(
         context.child("genesis_execution"),
         state_set_config(super::node::PARTITION_PREFIX, cache.clone()),
     )
@@ -76,14 +76,14 @@ pub(super) async fn load_or_create(
     .await;
     if interrupted {
         execution
-            .rewind_to_targets(HubStateSet::initial_sync_targets())
+            .rewind_to_targets(VeraStateSet::initial_sync_targets())
             .await;
         native
             .rewind_to_targets(NativeStateSet::initial_sync_targets())
             .await;
     } else {
         ensure!(
-            execution.committed_targets().await == HubStateSet::initial_sync_targets()
+            execution.committed_targets().await == VeraStateSet::initial_sync_targets()
                 && native.committed_targets().await == NativeStateSet::initial_sync_targets(),
             "existing journals have no native genesis or initialization intent"
         );

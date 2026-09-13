@@ -66,7 +66,7 @@ impl RingRecord {
     }
 }
 
-impl HubModule {
+impl VeraModule {
     /// Finalize a pending reshare using the existing ring key without changing that key.
     pub fn finalize_ring_reshare(
         &mut self,

@@ -4,7 +4,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use super::{HubError, HubModule, Result};
+use super::{Result, VeraError, VeraModule};
 use crate::acp::{AcpModule, types::AcpParams};
 use crate::kv_store::ModuleKvStore;
 
@@ -121,7 +121,7 @@ pub struct SignedAdministrativeRequest {
     pub approvals: Vec<OperatorApproval>,
 }
 
-impl HubModule {
+impl VeraModule {
     /// Seed operator authority once during initialization; not a public operation.
     pub fn initialize_administration(&mut self, policy: OperatorPolicy) -> Result<()> {
         policy.validate()?;
@@ -143,7 +143,7 @@ impl HubModule {
         self.store
             .get(STATE_KEY)
             .map(|bytes| {
-                borsh::from_slice(&bytes).map_err(|error| HubError::State(error.to_string()))
+                borsh::from_slice(&bytes).map_err(|error| VeraError::State(error.to_string()))
             })
             .transpose()
     }
@@ -233,8 +233,8 @@ impl HubModule {
     }
 }
 
-fn invalid(error: impl std::fmt::Display) -> HubError {
-    HubError::InvalidAdministrativeRequest {
+fn invalid(error: impl std::fmt::Display) -> VeraError {
+    VeraError::InvalidAdministrativeRequest {
         reason: error.to_string(),
     }
 }

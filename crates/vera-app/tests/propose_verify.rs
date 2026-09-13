@@ -15,10 +15,10 @@ use commonware_utils::{NZU16, NZUsize};
 use k256::ecdsa::SigningKey;
 use vera_app::{ModuleDb, VeraStateSet};
 use vera_app::{NoopSink, ReshareInput, StatefulHubApp, apply_genesis, genesis_block};
-use vera_backend::{HubStateSet, state_set_config};
+use vera_backend::{VeraStateSet as BackendStateSet, state_set_config};
 use vera_consensus::{Mempool as _, components::InMemoryMempool};
 use vera_domain::{Block, evm::Evm};
-use vera_executor::HubExecutor;
+use vera_executor::VeraExecutor;
 use vera_genesis::GenesisState;
 use vera_modules::ModuleState;
 
@@ -37,7 +37,7 @@ fn competing_proposals_preserve_receipts() {
     tokio::Runner::new(config).start(|context| async move {
         let page_cache = CacheRef::from_pooler(&context, NZU16!(4084), NZUsize!(64));
         let set =
-            HubStateSet::init(context.child("set"), state_set_config("app", page_cache)).await;
+            BackendStateSet::init(context.child("set"), state_set_config("app", page_cache)).await;
 
         let (key, from) = signer();
         let genesis_state = GenesisState {
@@ -52,7 +52,7 @@ fn competing_proposals_preserve_receipts() {
         let tx = Evm::sign_eip1559_transfer(&key, CHAIN_ID, to, U256::from(1000u64), 0, 21_000);
         assert!(mempool.insert(tx));
 
-        let executor = HubExecutor::new(CHAIN_ID);
+        let executor = VeraExecutor::new(CHAIN_ID);
         let native = ModuleDb::init(context.child("native"), executor.clone())
             .await
             .unwrap();

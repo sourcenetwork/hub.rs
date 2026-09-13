@@ -9,14 +9,14 @@ use crate::acp::types::{
     AccessDecision, AccessRequest, PolicyCmd, PolicyCmdResult, PolicyMarshalingType, PolicyRecord,
     RecordMetadata,
 };
-use crate::hub::HubModule;
+use crate::hub::VeraModule;
 use crate::types::{BlockExecCtx, Timestamp, TxExecCtx};
 
 impl AcpModule {
     /// Create a policy owned by the actor authorizing the submitting worker.
     pub fn bearer_create_policy(
         &mut self,
-        hub: &mut HubModule,
+        hub: &mut VeraModule,
         context: &BlockExecCtx,
         submission: &TxExecCtx,
         token: &str,
@@ -56,7 +56,7 @@ impl AcpModule {
     #[allow(clippy::too_many_arguments)]
     pub fn bearer_edit_policy(
         &mut self,
-        hub: &mut HubModule,
+        hub: &mut VeraModule,
         context: &BlockExecCtx,
         submission: &TxExecCtx,
         token: &str,
@@ -80,7 +80,7 @@ impl AcpModule {
     /// Execute a caller-bound delegation and record usage only on success.
     pub fn bearer_policy_cmd(
         &mut self,
-        hub: &mut HubModule,
+        hub: &mut VeraModule,
         context: &BlockExecCtx,
         submission: &TxExecCtx,
         token: &str,
@@ -105,7 +105,7 @@ impl AcpModule {
     /// Record a decision with caller-bound recovery and the original submitting worker identity.
     pub fn bearer_check_access(
         &mut self,
-        hub: &mut HubModule,
+        hub: &mut VeraModule,
         context: &BlockExecCtx,
         submission: &TxExecCtx,
         token: &str,
@@ -133,14 +133,14 @@ impl AcpModule {
 
     pub(crate) fn with_delegation<T: Serialize + DeserializeOwned>(
         &mut self,
-        hub: &mut HubModule,
+        hub: &mut VeraModule,
         context: &BlockExecCtx,
         submission: &TxExecCtx,
         token: &str,
         delegated: (DelegationScope, [u8; 32]),
-        operation: impl FnOnce(&mut Self, &mut HubModule, &Did) -> Result<T>,
+        operation: impl FnOnce(&mut Self, &mut VeraModule, &Did) -> Result<T>,
     ) -> Result<T> {
-        let invalid = |error: crate::hub::error::HubError| AcpError::InvalidBearerToken {
+        let invalid = |error: crate::hub::error::VeraError| AcpError::InvalidBearerToken {
             reason: error.to_string(),
         };
         let caller =

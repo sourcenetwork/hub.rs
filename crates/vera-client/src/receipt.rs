@@ -1,9 +1,9 @@
 use alloy_primitives::B256;
 use vera_domain::{ConsensusPublicKey, RECEIPT_RESPONSE_BYTES, ReceiptResponse};
 
-use crate::{ClientError, HubClient};
+use crate::{ClientError, VeraClient};
 
-impl HubClient {
+impl VeraClient {
     /// Fetch and verify execution results for an exact locally computed submission ID.
     /// `None` means no evidence is available; it does not authorize sequence reuse.
     pub async fn read_receipt(

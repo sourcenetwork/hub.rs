@@ -51,7 +51,7 @@ async fn rejected_updates_preserve_results_and_stop_dependent_submissions() {
         2,
         1000,
         started,
-        Arc::new(HubClient::new(format!("http://{address}"))),
+        Arc::new(VeraClient::new(format!("http://{address}"))),
         reads,
     )
     .await;

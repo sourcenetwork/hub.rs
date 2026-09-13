@@ -1,4 +1,4 @@
-//! Core [`HubClient`] struct with JSON-RPC transport.
+//! Core [`VeraClient`] struct with JSON-RPC transport.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -17,7 +17,7 @@ pub const ACP_ADDRESS: Address = address_from_last_two_bytes(0x08, 0x10);
 pub const BULLETIN_ADDRESS: Address = address_from_last_two_bytes(0x08, 0x11);
 
 /// Vera precompile address (`0x0812`).
-pub const HUB_ADDRESS: Address = address_from_last_two_bytes(0x08, 0x12);
+pub const VERA_ADDRESS: Address = address_from_last_two_bytes(0x08, 0x12);
 
 /// ValidatorRegistry precompile address (`0x0813`).
 pub const VALIDATOR_REGISTRY_ADDRESS: Address = address_from_last_two_bytes(0x08, 0x13);
@@ -34,13 +34,13 @@ const fn address_from_last_two_bytes(hi: u8, lo: u8) -> Address {
 /// Provides Ethereum-compatible RPC methods (`eth_*`), hub-specific
 /// methods (`hub_*`), and typed query helpers for each precompile module.
 #[derive(Debug)]
-pub struct HubClient {
+pub struct VeraClient {
     rpc_url: String,
     http: reqwest::Client,
     id: AtomicU64,
 }
 
-impl HubClient {
+impl VeraClient {
     /// Create a new client targeting the given JSON-RPC endpoint.
     pub fn new(rpc_url: impl Into<String>) -> Self {
         Self {
@@ -387,7 +387,7 @@ mod tests {
             "0x0000000000000000000000000000000000000811"
         );
         assert_eq!(
-            format!("{HUB_ADDRESS:?}"),
+            format!("{VERA_ADDRESS:?}"),
             "0x0000000000000000000000000000000000000812"
         );
     }
@@ -420,7 +420,7 @@ mod tests {
 
     #[test]
     fn client_new() {
-        let client = HubClient::new("http://localhost:8545");
+        let client = VeraClient::new("http://localhost:8545");
         assert_eq!(client.rpc_url, "http://localhost:8545");
     }
 

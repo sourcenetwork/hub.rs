@@ -27,7 +27,7 @@ async fn call_transport(response: String, maximum: Option<usize>) -> Result<u64,
         input.read_exact(&mut vec![0; length]).unwrap();
         stream.write_all(response.as_bytes()).unwrap();
     });
-    let client = HubClient::new(format!("http://{address}"));
+    let client = VeraClient::new(format!("http://{address}"));
     let result = match maximum {
         Some(maximum) => {
             client

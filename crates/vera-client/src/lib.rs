@@ -1,6 +1,6 @@
 //! Rust client library for hub (EVM + BLS transaction paths).
 //!
-//! Provides [`HubClient`] for interacting with a hub node via JSON-RPC.
+//! Provides [`VeraClient`] for interacting with a hub node via JSON-RPC.
 //! Includes typed query methods for each precompile module (ACP, Bulletin, Vera)
 //! and standard Ethereum RPC wrappers.
 
@@ -58,10 +58,10 @@ pub use bearer::{
 };
 pub use bls_signer::BlsSigner;
 pub use client::{
-    ACP_ADDRESS, BULLETIN_ADDRESS, HUB_ADDRESS, HubClient, VALIDATOR_REGISTRY_ADDRESS,
+    ACP_ADDRESS, BULLETIN_ADDRESS, VALIDATOR_REGISTRY_ADDRESS, VERA_ADDRESS, VeraClient,
     parse_policy_id,
 };
-pub use document_acp::HubDocumentACP;
+pub use document_acp::VeraDocumentACP;
 pub use error::ClientError;
 pub use signer::EvmSigner;
 pub use subject::RelationshipSubject;

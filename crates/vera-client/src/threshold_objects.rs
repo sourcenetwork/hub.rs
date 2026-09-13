@@ -1,6 +1,6 @@
 //! Native encrypted-document and signing-derivation registration and certified reads.
 
-use crate::{ClientError, HubClient, ModuleId, RECORD_PROOF_BYTES};
+use crate::{ClientError, ModuleId, RECORD_PROOF_BYTES, VeraClient};
 use alloy_primitives::Bytes;
 use alloy_sol_types::SolCall as _;
 use vera_domain::ConsensusPublicKey;
@@ -39,7 +39,7 @@ pub struct ObjectRead {
     pub record: Option<ObjectRecord>,
 }
 
-impl HubClient {
+impl VeraClient {
     /// Verify the exact object identity and kind against caller-provisioned consensus trust.
     pub async fn read_threshold_object(
         &self,

@@ -6,7 +6,7 @@ use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use alloy_sol_types::SolCall;
 use vera_executor::{
-    ExecutionOutcome, HubExecutor, ModuleState,
+    ExecutionOutcome, ModuleState, VeraExecutor,
     precompiles::{ACP_ADDRESS, VALIDATOR_REGISTRY_ADDRESS},
 };
 use vera_modules::{acp::abi::IAcp, validator_registry::abi::IValidatorRegistry};
@@ -64,14 +64,14 @@ fn install(state: &MockStateDb, address: Address, code: Bytes) {
 }
 
 fn execute(state: &MockStateDb, to: TxKind, input: Bytes) -> (ExecutionOutcome, ModuleState) {
-    execute_with_executor(state, to, input, HubExecutor::new(9001))
+    execute_with_executor(state, to, input, VeraExecutor::new(9001))
 }
 
 pub(super) fn execute_with_executor(
     state: &MockStateDb,
     to: TxKind,
     input: Bytes,
-    executor: HubExecutor,
+    executor: VeraExecutor,
 ) -> (ExecutionOutcome, ModuleState) {
     let signer: PrivateKeySigner = "42".repeat(32).parse().unwrap();
     state.insert_account(
@@ -260,7 +260,7 @@ fn administrative_state_follows_outer_call_result(#[case] revert: bool) {
         request: serde_json::to_vec(&signed).unwrap().into(),
     }
     .abi_encode();
-    let executor = HubExecutor::new(9001).with_genesis_id([7; 32]);
+    let executor = VeraExecutor::new(9001).with_genesis_id([7; 32]);
     executor.set_base_modules(modules);
     let state = MockStateDb::new();
     let outer = Address::repeat_byte(0x11);
@@ -268,7 +268,7 @@ fn administrative_state_follows_outer_call_result(#[case] revert: bool) {
     install(
         &state,
         outer,
-        forwarding_code(vera_executor::precompiles::HUB_ADDRESS, end, false),
+        forwarding_code(vera_executor::precompiles::VERA_ADDRESS, end, false),
     );
     let (outcome, modules) =
         execute_with_executor(&state, TxKind::Call(outer), input.into(), executor);

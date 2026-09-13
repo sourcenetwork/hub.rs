@@ -86,7 +86,7 @@ qualification.
 VERAD_BINARY=/path/to/verad cargo test -p vera-e2e --test native_membership
 ```
 
-`HubClient::read_administration` verifies the current operator configuration and
+`VeraClient::read_administration` verifies the current operator configuration and
 next administrative sequence against independently configured consensus trust.
 It returns the selected revision, timestamp and decoded state, or certified
 absence if administration is not initialized. Decoding rejects malformed operator
@@ -98,7 +98,7 @@ response. Use the certified read when selecting an operator policy or checking
 rotation recovery. A certified operator configuration does not grant authority to
 an unlisted signer; execution still requires the configured approval threshold.
 
-`HubClient::read_acp_parameters` authenticates the ACP parameter record separately
+`VeraClient::read_acp_parameters` authenticates the ACP parameter record separately
 from operator configuration. Its value is absent until parameters are explicitly
 stored; execution then uses `AcpParams::default()`. Malformed stored bytes are
 errors and never select defaults. Parameter-dependent registration commitments

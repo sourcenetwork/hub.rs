@@ -14,11 +14,11 @@ use tracing::trace;
 use vera_app::FinalizedSink;
 use vera_consensus::components::InMemoryMempool;
 use vera_domain::{Block, GossipHeader};
-use vera_executor::{ExecutionReceipt, HubExecutor};
+use vera_executor::{ExecutionReceipt, VeraExecutor};
 use vera_indexer::{BlockIndex, LightBlockIndex, StoredFinalization};
 use vera_jsonrpc::{NodeState, RpcBlock, RpcLog};
 
-use vera_backend::HubStateSet;
+use vera_backend::VeraStateSet;
 
 use crate::{
     CommittedState, FinalizedHistory,
@@ -59,10 +59,10 @@ pub struct NodeSink {
     chain_id: u64,
     publisher_index: u32,
     gas_limit: u64,
-    executor: HubExecutor,
+    executor: VeraExecutor,
     mempool: InMemoryMempool,
     validator: SharedValidator,
-    state: Arc<OnceLock<HubStateSet>>,
+    state: Arc<OnceLock<VeraStateSet>>,
 }
 
 impl std::fmt::Debug for NodeSink {
@@ -96,7 +96,7 @@ pub struct SinkParts {
     /// Block gas limit for indexed headers.
     pub gas_limit: u64,
     /// Executor whose module state is read for native nonces.
-    pub executor: HubExecutor,
+    pub executor: VeraExecutor,
     /// Mempool to recheck after each finalized block.
     pub mempool: InMemoryMempool,
     /// Validator to reset after each finalized block.
@@ -132,7 +132,7 @@ impl NodeSink {
     }
 
     /// Attach the committed database set once the stateful actor has opened it.
-    pub fn attach_state(&self, set: HubStateSet) {
+    pub fn attach_state(&self, set: VeraStateSet) {
         let _ = self.state.set(set);
     }
 }

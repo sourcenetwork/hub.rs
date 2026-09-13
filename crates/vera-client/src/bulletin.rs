@@ -10,7 +10,7 @@ use vera_permission::{
     RECORD_PROOF_BYTES, current::MAX_KEY_BYTES,
 };
 
-use crate::{ClientError, HubClient};
+use crate::{ClientError, VeraClient};
 
 /// A value or certified absence at one revision.
 #[derive(Clone, Debug)]
@@ -78,7 +78,7 @@ fn decode_policy_id(value: &[u8]) -> Result<B256, ClientError> {
     Ok(B256::from(id))
 }
 
-impl HubClient {
+impl VeraClient {
     /// Discover the bulletin's ACP policy, with certified absence before initialization.
     pub async fn read_bulletin_policy_id(
         &self,

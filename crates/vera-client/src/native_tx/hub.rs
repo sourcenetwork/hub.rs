@@ -4,11 +4,11 @@ use alloy_sol_types::SolCall;
 use vera_modules::hub::abi::IHub;
 
 use crate::bls_signer::BlsSigner;
-use crate::client::{HUB_ADDRESS, HubClient};
+use crate::client::{VERA_ADDRESS, VeraClient};
 use crate::error::ClientError;
 use crate::types::TransactionReceipt;
 
-impl HubClient {
+impl VeraClient {
     /// Revoke a signed delegation, including one that has never been used.
     pub async fn native_revoke_delegation(
         &self,
@@ -19,7 +19,7 @@ impl HubClient {
             token: token.into(),
         }
         .abi_encode();
-        self.send_native_precompile_tx(signer, HUB_ADDRESS, calldata.into())
+        self.send_native_precompile_tx(signer, VERA_ADDRESS, calldata.into())
             .await
     }
 
@@ -33,7 +33,7 @@ impl HubClient {
             tokenHash: token_hash.into(),
         }
         .abi_encode();
-        self.send_native_precompile_tx(signer, HUB_ADDRESS, calldata.into())
+        self.send_native_precompile_tx(signer, VERA_ADDRESS, calldata.into())
             .await
     }
 }

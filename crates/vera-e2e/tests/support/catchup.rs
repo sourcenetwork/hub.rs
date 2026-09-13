@@ -5,8 +5,8 @@ use std::{fs, time::Duration};
 use commonware_codec::Encode as _;
 use serde_json::json;
 use vera_client::{
-    AccessRequest, Actor, BlsSigner, HubClient, ModuleId, Object, Operation, PERMISSION_LIMITS,
-    RECORD_PROOF_BYTES,
+    AccessRequest, Actor, BlsSigner, ModuleId, Object, Operation, PERMISSION_LIMITS,
+    RECORD_PROOF_BYTES, VeraClient,
 };
 use vera_domain::{
     ConsensusPublicKey, DkgPayload, LightBlock, verify_finalized_block, verify_light_block,
@@ -35,7 +35,7 @@ resources:
 ";
 
 async fn certified_height(
-    client: &HubClient,
+    client: &VeraClient,
     minimum: u64,
     trusted_key: &ConsensusPublicKey,
 ) -> LightBlock {
@@ -72,7 +72,7 @@ async fn certified_height(
 }
 
 async fn current_access(
-    client: &HubClient,
+    client: &VeraClient,
     policy: &str,
     request: &AccessRequest,
     minimum: u64,
@@ -86,7 +86,7 @@ async fn current_access(
 }
 
 async fn check_pruned_rosters(
-    client: &HubClient,
+    client: &VeraClient,
     minimum: u64,
     trusted: &ConsensusPublicKey,
     expected: &[u8],
@@ -184,7 +184,7 @@ pub(super) async fn recover_replica(snapshot: bool, interrupt: bool, pruning: bo
         fs::write(path, config).unwrap();
     }
 
-    let origin = HubClient::new(cluster.node(0).rpc_url());
+    let origin = VeraClient::new(cluster.node(0).rpc_url());
     tokio::time::timeout(deadline(), async {
         while origin.chain_id().await.is_err() {
             tokio::time::sleep(POLL).await;
@@ -282,7 +282,7 @@ pub(super) async fn recover_replica(snapshot: bool, interrupt: bool, pruning: bo
             "crash must occur after a durable history record"
         );
         assert!(
-            HubClient::new(cluster.node(3).rpc_url())
+            VeraClient::new(cluster.node(3).rpc_url())
                 .chain_id()
                 .await
                 .is_err()
@@ -293,7 +293,7 @@ pub(super) async fn recover_replica(snapshot: bool, interrupt: bool, pruning: bo
         cluster.restart_node(3).unwrap();
     }
     cluster.wait_ready(deadline()).await.unwrap();
-    let replica = HubClient::new(cluster.node(3).rpc_url());
+    let replica = VeraClient::new(cluster.node(3).rpc_url());
     for receipt in receipts {
         let replayed = tokio::time::timeout(
             deadline(),

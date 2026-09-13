@@ -552,7 +552,7 @@ mod tests {
 
     #[tokio::test]
     async fn archive_point_reads_match_memory_and_propagate_failures() {
-        use crate::{ArchiveReader, HubApiImpl, HubApiServer, NodeState};
+        use crate::{ArchiveReader, NodeState, VeraApiImpl, VeraApiServer};
         use std::sync::atomic::{AtomicUsize, Ordering};
         use vera_indexer::IndexQuery;
         let hash = B256::repeat_byte(7);
@@ -615,9 +615,9 @@ mod tests {
         .unwrap();
         assert_eq!(actual, expected);
         assert_eq!(calls.load(Ordering::Relaxed), 4);
-        let hot_api = HubApiImpl::new(Arc::new(state.clone()), None)
+        let hot_api = VeraApiImpl::new(Arc::new(state.clone()), None)
             .with_index_and_modules(index, default_modules());
-        let cold_api = HubApiImpl::new(Arc::new(state.clone()), None)
+        let cold_api = VeraApiImpl::new(Arc::new(state.clone()), None)
             .with_index_and_modules(evicted, default_modules())
             .with_archive(archive);
         let expected = hot_api

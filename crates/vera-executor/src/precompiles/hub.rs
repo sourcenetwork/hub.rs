@@ -5,13 +5,13 @@ use alloy_sol_types::SolCall;
 use identity::Did;
 use revm::precompile::PrecompileError;
 use vera_modules::acp::AcpModule;
-use vera_modules::hub::HubModule;
+use vera_modules::hub::VeraModule;
 use vera_modules::hub::abi::IHub;
 use vera_modules::hub::administration::SignedAdministrativeRequest;
 use vera_modules::types::{BlockExecCtx, TxExecCtx};
 
 use super::{
-    DispatchReturn, HUB_ADDRESS, decode_error, did_from_signer, err_dispatch, event_log,
+    DispatchReturn, VERA_ADDRESS, decode_error, did_from_signer, err_dispatch, event_log,
     json_bytes, ok_dispatch,
 };
 
@@ -22,7 +22,7 @@ const WRITE_GAS: u64 = 5000;
 
 /// Dispatch an ABI-encoded call to the Vera module by selector.
 pub(super) fn dispatch(
-    module: &mut HubModule,
+    module: &mut VeraModule,
     acp: &mut AcpModule,
     block_ctx: &BlockExecCtx,
     tx_ctx: &TxExecCtx,
@@ -206,7 +206,7 @@ pub(super) fn dispatch(
             Ok(ok_dispatch(
                 WRITE_GAS,
                 Vec::new(),
-                vec![event_log(HUB_ADDRESS, &event)],
+                vec![event_log(VERA_ADDRESS, &event)],
             ))
         }
         IHub::invalidateJWSCall::SELECTOR => {
@@ -228,7 +228,7 @@ pub(super) fn dispatch(
             Ok(ok_dispatch(
                 WRITE_GAS,
                 Vec::new(),
-                vec![event_log(HUB_ADDRESS, &event)],
+                vec![event_log(VERA_ADDRESS, &event)],
             ))
         }
 
@@ -238,7 +238,7 @@ pub(super) fn dispatch(
             }
             let call = IHub::updateParamsCall::abi_decode(input).map_err(decode_error)?;
             let authority = did_from_signer(&tx_ctx.signer)?;
-            let params: vera_modules::hub::types::HubParams = serde_json::from_slice(&call.params)
+            let params: vera_modules::hub::types::VeraParams = serde_json::from_slice(&call.params)
                 .map_err(|e| PrecompileError::Other(format!("params JSON decode: {e}").into()))?;
 
             match module.update_params(&authority, params) {
@@ -356,7 +356,7 @@ pub(super) fn dispatch(
 #[test]
 fn threshold_object_requires_gas_before_decoding_or_admission() {
     let result = dispatch(
-        &mut HubModule::new(),
+        &mut VeraModule::new(),
         &mut AcpModule::new(),
         &BlockExecCtx::default(),
         &TxExecCtx {
@@ -380,7 +380,7 @@ mod tests {
     fn invalidation_event_retains_issuer_when_authorized_account_revokes() {
         let issuer = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
         let account = "did:key:z6MkmjY8GnV5iJjM2BXSVn4MoDbZZbLffKHsygxC4BLd5v8P";
-        let mut module = HubModule::new();
+        let mut module = VeraModule::new();
         let mut acp = AcpModule::new();
         let block = BlockExecCtx::default();
         module

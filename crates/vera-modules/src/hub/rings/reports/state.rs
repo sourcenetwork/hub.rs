@@ -34,7 +34,7 @@ impl Retention {
         store.put(&count_key, self.count.to_be_bytes().to_vec());
     }
 }
-impl HubModule {
+impl VeraModule {
     pub(super) fn report_retention(
         &self,
         ring: &str,

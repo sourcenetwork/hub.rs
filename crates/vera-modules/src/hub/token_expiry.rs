@@ -2,7 +2,7 @@ use super::*;
 
 const EXPIRY_BATCH_SIZE: usize = 128;
 
-impl HubModule {
+impl VeraModule {
     pub(super) fn token_expiry_key(record: &JWSTokenRecord) -> Option<Vec<u8>> {
         if record.status == JWSTokenStatus::Invalid || record.expires_at == Timestamp::default() {
             return None;
@@ -23,7 +23,7 @@ impl HubModule {
         let mut expired = Vec::new();
         for (index, value) in self.store.prefix_iter(prefix).take(EXPIRY_BATCH_SIZE) {
             if index.len() <= prefix.len() + 8 || !value.is_empty() {
-                return Err(HubError::State("invalid token expiry index".into()));
+                return Err(VeraError::State("invalid token expiry index".into()));
             }
             if &index[prefix.len()..prefix.len() + 8]
                 >= block_ctx.timestamp.seconds.to_be_bytes().as_slice()
@@ -31,12 +31,12 @@ impl HubModule {
                 break;
             }
             let hash = std::str::from_utf8(&index[prefix.len() + 8..])
-                .map_err(|error| HubError::State(format!("invalid expiry token hash: {error}")))?;
+                .map_err(|error| VeraError::State(format!("invalid expiry token hash: {error}")))?;
             let record = self
                 .get_jws_token(hash)?
-                .ok_or_else(|| HubError::State("expiry token missing".into()))?;
+                .ok_or_else(|| VeraError::State("expiry token missing".into()))?;
             if Self::token_expiry_key(&record).as_deref() != Some(index) {
-                return Err(HubError::State("token expiry index mismatch".into()));
+                return Err(VeraError::State("token expiry index mismatch".into()));
             }
             expired.push(hash.to_owned());
         }
@@ -62,7 +62,7 @@ mod tests {
         }
     }
 
-    fn token(hub: &mut HubModule, name: &str, expiry: u64) -> String {
+    fn token(hub: &mut VeraModule, name: &str, expiry: u64) -> String {
         hub.store_or_update_jws_token(
             &context(100),
             name,
@@ -80,7 +80,7 @@ mod tests {
 
     #[test]
     fn expiry_batches_resume_after_restore_without_extending_token_validity() {
-        let mut hub = HubModule::new();
+        let mut hub = VeraModule::new();
         for id in 0..(EXPIRY_BATCH_SIZE * 2 + 1) {
             token(&mut hub, &id.to_string(), 150);
         }
@@ -104,10 +104,10 @@ mod tests {
         );
         assert!(matches!(
             hub.record_jws_token_usage(&context(151), &hash),
-            Err(HubError::InvalidJws { .. })
+            Err(VeraError::InvalidJws { .. })
         ));
         let mut restored =
-            HubModule::from_store(InMemoryKvStore::deserialize(&hub.store.serialize()).unwrap());
+            VeraModule::from_store(InMemoryKvStore::deserialize(&hub.store.serialize()).unwrap());
         restored.validate_restored_tokens().unwrap();
         for remaining in [1, 0] {
             restored
@@ -133,7 +133,7 @@ mod tests {
 
     #[test]
     fn deleting_tokens_removes_deadlines_before_recovery() {
-        let mut hub = HubModule::new();
+        let mut hub = VeraModule::new();
         for (name, expiry, invalidate) in [
             ("active", 150, false),
             ("invalid", 150, true),
@@ -164,13 +164,13 @@ mod tests {
             let before = hub.store.serialize();
             assert!(matches!(
                 hub.delete_jws_token(&hash),
-                Err(HubError::TokenNotFound { .. })
+                Err(VeraError::TokenNotFound { .. })
             ));
             assert_eq!(hub.store.serialize(), before);
         }
         let due = token(&mut hub, "remaining", 150);
         let mut restored =
-            HubModule::from_store(InMemoryKvStore::deserialize(&hub.store.serialize()).unwrap());
+            VeraModule::from_store(InMemoryKvStore::deserialize(&hub.store.serialize()).unwrap());
         restored
             .check_and_update_expired_tokens(&context(151))
             .unwrap();
@@ -189,7 +189,7 @@ mod tests {
 
     #[test]
     fn token_expiry_retains_history_and_recovers_active_deadlines() {
-        let mut hub = HubModule::new();
+        let mut hub = VeraModule::new();
         for id in 0..2000 {
             let hash = token(&mut hub, &id.to_string(), 150);
             hub.update_jws_token_status(&context(101), &hash, JWSTokenStatus::Invalid, "operator")
@@ -204,7 +204,7 @@ mod tests {
             2
         );
         let mut hub =
-            HubModule::from_store(InMemoryKvStore::deserialize(&hub.store.serialize()).unwrap());
+            VeraModule::from_store(InMemoryKvStore::deserialize(&hub.store.serialize()).unwrap());
         hub.check_and_update_expired_tokens(&context(150)).unwrap();
         assert_eq!(
             hub.get_jws_token(&due).unwrap().unwrap().status,
@@ -242,7 +242,7 @@ mod tests {
 
     #[test]
     fn token_expiry_rejects_mismatched_records_before_mutation() {
-        let mut hub = HubModule::new();
+        let mut hub = VeraModule::new();
         let first = token(&mut hub, "first", 150);
         let second = token(&mut hub, "second", 150);
         let bytes = hub.store.get(&keys::jws_token_key(&first)).unwrap();

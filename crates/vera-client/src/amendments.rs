@@ -1,6 +1,6 @@
 //! Certified ownership-amendment history and native hijack reports.
 
-use crate::{ClientError, HubClient};
+use crate::{ClientError, VeraClient};
 use alloy_primitives::{B256, Bytes};
 use vera_domain::ConsensusPublicKey;
 use vera_modules::acp::{keys, types::AmendmentEvent};
@@ -31,7 +31,7 @@ pub struct AmendmentRecord {
     pub value: Option<AmendmentEvent>,
 }
 
-impl HubClient {
+impl VeraClient {
     /// Read an amendment with certified absence and explicit policy/identifier binding.
     /// A reporting flag records an allegation, not an independent finding.
     pub async fn read_amendment(

@@ -6,7 +6,7 @@ use vera_permission::{
     RECORD_PROOF_BYTES,
 };
 
-use crate::{ClientError, HubClient};
+use crate::{ClientError, VeraClient};
 
 /// Build commitment material locally without disclosing object identifiers to a server.
 /// This does not check policy existence, resource validity or current ownership.
@@ -45,7 +45,7 @@ pub struct CommitmentRecord {
     pub value: Option<RegistrationsCommitment>,
 }
 
-impl HubClient {
+impl VeraClient {
     /// Read a commitment with certified absence and explicit policy/identifier binding.
     /// Presence does not establish that the commitment remains usable for a reveal.
     pub async fn read_registration_commitment(

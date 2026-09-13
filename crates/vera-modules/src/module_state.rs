@@ -5,7 +5,7 @@ use std::sync::{Arc, RwLock};
 use alloy_primitives::{B256, keccak256};
 
 use crate::{
-    acp::AcpModule, bulletin::BulletinModule, hub::HubModule, kv_store::InMemoryKvStore,
+    acp::AcpModule, bulletin::BulletinModule, hub::VeraModule, kv_store::InMemoryKvStore,
     native_account::NativeNonceStore,
 };
 
@@ -23,7 +23,7 @@ pub struct ModuleState {
     /// Bulletin module.
     pub bulletin: BulletinModule,
     /// Vera module.
-    pub hub: HubModule,
+    pub hub: VeraModule,
     /// Native account nonce store.
     pub nonces: NativeNonceStore,
 }
@@ -81,7 +81,7 @@ impl ModuleState {
         Self {
             acp: AcpModule::from_store(acp_store),
             bulletin: BulletinModule::from_store(bulletin_store),
-            hub: HubModule::from_store(hub_store),
+            hub: VeraModule::from_store(hub_store),
             nonces: NativeNonceStore::from_store(nonce_store),
         }
     }

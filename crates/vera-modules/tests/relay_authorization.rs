@@ -13,7 +13,7 @@ use vera_modules::{
         delegated_operation::DelegatedOperation,
         types::{Object, PolicyCmd, PolicyMarshalingType},
     },
-    hub::{HubModule, administration::*, relay::RelayGrant},
+    hub::{VeraModule, administration::*, relay::RelayGrant},
     kv_store::InMemoryKvStore,
     types::{BlockExecCtx, Timestamp, TxExecCtx},
 };
@@ -90,10 +90,10 @@ fn sign_json(typ: &str, payload: &str) -> String {
     format!("{message}.{}", URL_SAFE_NO_PAD.encode(signature.to_bytes()))
 }
 fn admin(
-    hub: &mut HubModule,
+    hub: &mut VeraModule,
     acp: &mut AcpModule,
     command: AdministrativeCommand,
-) -> Result<(), vera_modules::hub::error::HubError> {
+) -> Result<(), vera_modules::hub::error::VeraError> {
     let request = AdministrativeRequest {
         genesis_id: GENESIS,
         sequence: hub.administration()?.unwrap().sequence,
@@ -114,8 +114,8 @@ fn admin(
         },
     )
 }
-fn modules() -> (HubModule, AcpModule) {
-    let mut hub = HubModule::new();
+fn modules() -> (VeraModule, AcpModule) {
+    let mut hub = VeraModule::new();
     hub.initialize_administration(OperatorPolicy {
         threshold: 1,
         keys: vec![hex::encode(key().verifying_key().to_sec1_bytes())],
@@ -126,7 +126,7 @@ fn modules() -> (HubModule, AcpModule) {
     (hub, acp)
 }
 fn create(
-    hub: &mut HubModule,
+    hub: &mut VeraModule,
     acp: &mut AcpModule,
     token: &str,
 ) -> Result<vera_modules::acp::types::PolicyRecord, vera_modules::acp::error::AcpError> {
@@ -275,7 +275,7 @@ fn relay_assertions_fail_closed_without_mutations() {
         vera_crypto::jwt::verify_bearer_token(&sign_json("vera-relay-v1+jwt", &duplicate)).is_err()
     );
     let token = sign(&base);
-    assert!(create(&mut HubModule::new(), &mut AcpModule::new(), &token).is_err());
+    assert!(create(&mut VeraModule::new(), &mut AcpModule::new(), &token).is_err());
     let (mut hub, mut acp) = modules();
     let mut restricted = grant();
     restricted.scopes = vec![DelegationScope::PolicyCommands];
@@ -315,7 +315,7 @@ fn relay_and_assertion_revocations_survive_reopen_and_regrant() {
     )
     .unwrap();
     let bytes = hub.store().serialize();
-    hub = HubModule::from_store(InMemoryKvStore::deserialize(&bytes).unwrap());
+    hub = VeraModule::from_store(InMemoryKvStore::deserialize(&bytes).unwrap());
     assert!(create(&mut hub, &mut acp, &unused).is_err());
     admin(&mut hub, &mut acp, AdministrativeCommand::SetRelay(grant())).unwrap();
     assert!(create(&mut hub, &mut acp, &unused).is_err());

@@ -1,6 +1,6 @@
 //! Relay authority authenticated against independently configured consensus trust.
 
-use crate::{ClientError, HubClient};
+use crate::{ClientError, VeraClient};
 use vera_domain::ConsensusPublicKey;
 use vera_modules::hub::relay::{RelayState, relay_key};
 use vera_permission::{ModuleId, RECORD_PROOF_BYTES};
@@ -16,7 +16,7 @@ pub struct RelayRecord {
     pub value: Option<RelayState>,
 }
 
-impl HubClient {
+impl VeraClient {
     /// Read a canonical relay issuer's grant, including absence after revocation.
     /// Presence alone does not authorize an assertion; its scope, generation and expiry still apply.
     pub async fn read_relay_grant(

@@ -14,11 +14,11 @@ use commonware_runtime::{Runner as _, Supervisor as _, buffer::paged::CacheRef, 
 use commonware_utils::{NZU16, NZUsize};
 use vera_app::{ModuleDb, VeraStateSet, VeraUnmerkleized};
 use vera_app::{NoopSink, ReshareInput, StatefulHubApp, apply_genesis, genesis_block};
-use vera_backend::{Ctx, HubStateSet, state_set_config};
+use vera_backend::{Ctx, VeraStateSet as BackendStateSet, state_set_config};
 use vera_client::{ACP_ADDRESS, BlsSigner};
 use vera_consensus::{Mempool as _, components::InMemoryMempool};
 use vera_domain::{Block, Tx};
-use vera_executor::{HubExecutor, ModuleTrees};
+use vera_executor::{ModuleTrees, VeraExecutor};
 use vera_genesis::GenesisState;
 use vera_modules::module_state::state_root_from_jmt;
 use vera_modules::{ModuleState, acp::abi::IAcp};
@@ -87,7 +87,7 @@ fn check_pending_branches(persistent: bool) {
     let config = tokio::Config::default().with_storage_directory(dir.path().to_path_buf());
     tokio::Runner::new(config).start(|context| async move {
         let page_cache = CacheRef::from_pooler(&context, NZU16!(4084), NZUsize!(64));
-        let set = HubStateSet::init(
+        let set = BackendStateSet::init(
             context.child("set"),
             state_set_config("modules", page_cache),
         )
@@ -101,7 +101,7 @@ fn check_pending_branches(persistent: bool) {
                 ))
             })
         });
-        let mut executor = HubExecutor::new(CHAIN_ID);
+        let mut executor = VeraExecutor::new(CHAIN_ID);
         if let Some(trees) = &trees {
             executor = executor.with_module_trees(trees.clone());
         }

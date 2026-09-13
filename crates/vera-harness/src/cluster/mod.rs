@@ -8,8 +8,8 @@ pub use node_config::{ConsensusParams, ConsensusPreset, NodeConfigBuilder};
 
 mod genesis;
 pub use genesis::{
-    GenesisAllocation, GenesisBuilder, GenesisContract, GenesisStorage, HubGenesis,
-    NativeMintConfig, ValidatorConfig,
+    GenesisAllocation, GenesisBuilder, GenesisContract, GenesisStorage, NativeMintConfig,
+    ValidatorConfig, VeraGenesis,
 };
 
 mod builder;

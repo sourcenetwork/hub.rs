@@ -4,7 +4,7 @@ use std::{
     collections::BTreeMap,
     sync::{Mutex, RwLock, mpsc},
 };
-use vera_client::{HubClient, ModuleId, RECORD_PROOF_BYTES};
+use vera_client::{ModuleId, RECORD_PROOF_BYTES, VeraClient};
 use vera_indexer::BlockIndex;
 use vera_jsonrpc::{JsonRpcServer, NodeState};
 
@@ -17,7 +17,7 @@ fn native_record_rpc_keeps_the_captured_revision_across_finalization() {
                 ::tokio::time::timeout(Duration::from_secs(20), async {
                     let set = OrderedState::init(
                         context.child("records"),
-                        config(&context, "records", HubExecutor::new(DEPLOYMENT)),
+                        config(&context, "records", VeraExecutor::new(DEPLOYMENT)),
                     )
                     .await;
                     let owner = BlsSigner::new(1u64.into(), DEPLOYMENT).unwrap();
@@ -82,7 +82,7 @@ fn native_record_rpc_keeps_the_captured_revision_across_finalization() {
                             .start()
                             .await
                             .unwrap();
-                    let client = HubClient::new(format!("http://{address}"));
+                    let client = VeraClient::new(format!("http://{address}"));
                     let record = client
                         .read_current_record(ModuleId::Acp, &key, 1, &trusted, RECORD_PROOF_BYTES)
                         .await
@@ -135,7 +135,7 @@ fn native_record_rpc_keeps_the_captured_revision_across_finalization() {
                     let (release, held) = mpsc::channel();
                     *gate.lock().unwrap() = Some((entered, held));
                     let pending = {
-                        let client = HubClient::new(format!("http://{address}"));
+                        let client = VeraClient::new(format!("http://{address}"));
                         let key = key.clone();
                         ::tokio::spawn(async move {
                             client

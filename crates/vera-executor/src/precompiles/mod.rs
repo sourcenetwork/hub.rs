@@ -31,7 +31,7 @@ use revm::{
 };
 use vera_modules::acp::AcpModule;
 use vera_modules::bulletin::BulletinModule;
-use vera_modules::hub::HubModule;
+use vera_modules::hub::VeraModule;
 use vera_modules::types::{BlockExecCtx, Timestamp, TxExecCtx};
 
 /// ACP precompile address.
@@ -41,7 +41,7 @@ pub const ACP_ADDRESS: Address = address_from_last_two_bytes(0x08, 0x10);
 pub const BULLETIN_ADDRESS: Address = address_from_last_two_bytes(0x08, 0x11);
 
 /// Vera precompile address.
-pub const HUB_ADDRESS: Address = address_from_last_two_bytes(0x08, 0x12);
+pub const VERA_ADDRESS: Address = address_from_last_two_bytes(0x08, 0x12);
 
 /// ValidatorRegistry precompile address.
 pub const VALIDATOR_REGISTRY_ADDRESS: Address = address_from_last_two_bytes(0x08, 0x13);
@@ -128,7 +128,7 @@ const fn stub_precompile(_input: &[u8], _gas_limit: u64) -> PrecompileResult {
 /// Vera precompile provider that extends standard Ethereum precompiles
 /// with ABI-dispatching precompiles for ACP, Bulletin, and Vera modules.
 #[derive(Debug)]
-pub struct HubPrecompiles {
+pub struct VeraPrecompiles {
     eth: EthPrecompiles,
     custom: Precompiles,
     journal: Arc<Mutex<ModuleJournal>>,
@@ -146,7 +146,7 @@ pub struct HubPrecompiles {
 pub fn dispatch_to_module(
     acp: &mut AcpModule,
     bulletin: &mut BulletinModule,
-    hub: &mut HubModule,
+    hub: &mut VeraModule,
     target: Address,
     calldata: &[u8],
     block_ctx: &BlockExecCtx,
@@ -161,7 +161,7 @@ pub fn dispatch_to_module(
         Some(bulletin::dispatch(
             bulletin, acp, block_ctx, tx_ctx, calldata, gas_limit,
         ))
-    } else if target == HUB_ADDRESS {
+    } else if target == VERA_ADDRESS {
         Some(hub::dispatch(
             hub, acp, block_ctx, tx_ctx, calldata, gas_limit,
         ))
@@ -179,7 +179,7 @@ fn new_custom_precompiles() -> Precompiles {
             BULLETIN_ADDRESS,
             stub_precompile,
         ),
-        Precompile::new(PrecompileId::custom("vera"), HUB_ADDRESS, stub_precompile),
+        Precompile::new(PrecompileId::custom("vera"), VERA_ADDRESS, stub_precompile),
         Precompile::new(
             PrecompileId::custom("validator_registry"),
             VALIDATOR_REGISTRY_ADDRESS,
@@ -189,7 +189,7 @@ fn new_custom_precompiles() -> Precompiles {
     custom
 }
 
-impl HubPrecompiles {
+impl VeraPrecompiles {
     /// Create a new hub precompile provider for the given spec.
     pub fn new(spec: SpecId) -> Self {
         Self {
@@ -208,7 +208,7 @@ impl HubPrecompiles {
         spec: SpecId,
         acp_module: AcpModule,
         bulletin_module: BulletinModule,
-        hub_module: HubModule,
+        hub_module: VeraModule,
     ) -> Self {
         Self {
             eth: EthPrecompiles::new(spec),
@@ -265,14 +265,14 @@ impl HubPrecompiles {
     }
 
     /// Extract module state after block execution.
-    pub fn take_modules(self) -> (AcpModule, BulletinModule, HubModule) {
+    pub fn take_modules(self) -> (AcpModule, BulletinModule, VeraModule) {
         let mut journal = self.journal.lock().unwrap();
         journal.finish(true);
         std::mem::take(&mut journal.modules)
     }
 }
 
-impl<CTX: ContextTr> PrecompileProvider<CTX> for HubPrecompiles {
+impl<CTX: ContextTr> PrecompileProvider<CTX> for VeraPrecompiles {
     type Output = InterpreterResult;
 
     fn set_spec(&mut self, spec: <CTX::Cfg as Cfg>::Spec) -> bool {
@@ -357,7 +357,7 @@ impl<CTX: ContextTr> PrecompileProvider<CTX> for HubPrecompiles {
     }
 }
 
-impl HubPrecompiles {
+impl VeraPrecompiles {
     fn dispatch_result_to_interpreter(
         inputs: &CallInputs,
         dispatch_result: DispatchReturn,
@@ -453,15 +453,15 @@ mod tests {
 
     type TestCtx = MainnetContext<EmptyDB>;
 
-    fn test_precompiles() -> HubPrecompiles {
-        HubPrecompiles::new(SpecId::CANCUN)
+    fn test_precompiles() -> VeraPrecompiles {
+        VeraPrecompiles::new(SpecId::CANCUN)
     }
 
     #[test]
     fn precompile_addresses_are_nonzero() {
         assert_ne!(ACP_ADDRESS, Address::ZERO);
         assert_ne!(BULLETIN_ADDRESS, Address::ZERO);
-        assert_ne!(HUB_ADDRESS, Address::ZERO);
+        assert_ne!(VERA_ADDRESS, Address::ZERO);
         assert_ne!(VALIDATOR_REGISTRY_ADDRESS, Address::ZERO);
     }
 
@@ -470,7 +470,7 @@ mod tests {
         let addrs = [
             ACP_ADDRESS,
             BULLETIN_ADDRESS,
-            HUB_ADDRESS,
+            VERA_ADDRESS,
             VALIDATOR_REGISTRY_ADDRESS,
         ];
         for i in 0..addrs.len() {
@@ -495,7 +495,7 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(
-            HUB_ADDRESS,
+            VERA_ADDRESS,
             "0x0000000000000000000000000000000000000812"
                 .parse::<Address>()
                 .unwrap()
@@ -511,19 +511,19 @@ mod tests {
     #[test]
     fn hub_precompiles_contains_custom() {
         let precompiles = test_precompiles();
-        assert!(<HubPrecompiles as PrecompileProvider<TestCtx>>::contains(
+        assert!(<VeraPrecompiles as PrecompileProvider<TestCtx>>::contains(
             &precompiles,
             &ACP_ADDRESS
         ));
-        assert!(<HubPrecompiles as PrecompileProvider<TestCtx>>::contains(
+        assert!(<VeraPrecompiles as PrecompileProvider<TestCtx>>::contains(
             &precompiles,
             &BULLETIN_ADDRESS
         ));
-        assert!(<HubPrecompiles as PrecompileProvider<TestCtx>>::contains(
+        assert!(<VeraPrecompiles as PrecompileProvider<TestCtx>>::contains(
             &precompiles,
-            &HUB_ADDRESS
+            &VERA_ADDRESS
         ));
-        assert!(<HubPrecompiles as PrecompileProvider<TestCtx>>::contains(
+        assert!(<VeraPrecompiles as PrecompileProvider<TestCtx>>::contains(
             &precompiles,
             &VALIDATOR_REGISTRY_ADDRESS
         ));
@@ -535,7 +535,7 @@ mod tests {
             .parse::<Address>()
             .unwrap();
         let precompiles = test_precompiles();
-        assert!(<HubPrecompiles as PrecompileProvider<TestCtx>>::contains(
+        assert!(<VeraPrecompiles as PrecompileProvider<TestCtx>>::contains(
             &precompiles,
             &ecrecover
         ));
@@ -545,10 +545,11 @@ mod tests {
     fn hub_precompiles_warm_addresses_include_custom() {
         let precompiles = test_precompiles();
         let warm: Vec<Address> =
-            <HubPrecompiles as PrecompileProvider<TestCtx>>::warm_addresses(&precompiles).collect();
+            <VeraPrecompiles as PrecompileProvider<TestCtx>>::warm_addresses(&precompiles)
+                .collect();
         assert!(warm.contains(&ACP_ADDRESS));
         assert!(warm.contains(&BULLETIN_ADDRESS));
-        assert!(warm.contains(&HUB_ADDRESS));
+        assert!(warm.contains(&VERA_ADDRESS));
         assert!(warm.contains(&VALIDATOR_REGISTRY_ADDRESS));
     }
 }

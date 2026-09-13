@@ -8,7 +8,7 @@ pub use reshare::{RingReshareRequest, ring_deployment_label};
 pub use types::*;
 pub use vera_crypto::threshold::ThresholdScheme;
 
-use super::{HubError, HubModule, Result};
+use super::{Result, VeraError, VeraModule};
 use crate::{
     acp::{
         AcpModule,
@@ -20,8 +20,8 @@ use crate::{
 };
 use identity::Did;
 
-pub(super) fn invalid(error: impl std::fmt::Display) -> HubError {
-    HubError::InvalidRingRequest {
+pub(super) fn invalid(error: impl std::fmt::Display) -> VeraError {
+    VeraError::InvalidRingRequest {
         reason: error.to_string(),
     }
 }
@@ -34,7 +34,7 @@ pub fn ring_key(id: &str) -> Result<Vec<u8>> {
     Ok(format!("orbis/ring/v1/{id}").into_bytes())
 }
 
-impl HubModule {
+impl VeraModule {
     /// Decode and validate a ring from stored state, distinguishing corruption from absence.
     pub fn threshold_ring(&self, id: &str) -> Result<Option<RingRecord>> {
         self.store

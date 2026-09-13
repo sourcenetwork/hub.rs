@@ -33,36 +33,36 @@ pub type StorageDb =
 pub type CodeDb = variable::Db<mmr::Family, Ctx, CodeKey, Vec<u8>, Sha256, EightCap, Sequential>;
 
 /// The tuple that carries glue's blanket [`DatabaseSet`] implementation.
-pub type HubDatabases = (Shared<AccountsDb>, Shared<StorageDb>, Shared<CodeDb>);
+pub type VeraDatabases = (Shared<AccountsDb>, Shared<StorageDb>, Shared<CodeDb>);
 /// Read-only handles over committed state, in accounts, storage, code order.
-pub type HubReaders = (Reader<AccountsDb>, Reader<StorageDb>, Reader<CodeDb>);
+pub type VeraReaders = (Reader<AccountsDb>, Reader<StorageDb>, Reader<CodeDb>);
 /// Pending batches forked from committed or pending state.
-pub type HubUnmerkleized = (
+pub type VeraUnmerkleized = (
     <AccountsDb as ManagedDb<Ctx>>::Unmerkleized,
     <StorageDb as ManagedDb<Ctx>>::Unmerkleized,
     <CodeDb as ManagedDb<Ctx>>::Unmerkleized,
 );
 /// Merkleized batches ready to apply on finalization.
-pub type HubMerkleized = (
+pub type VeraMerkleized = (
     <AccountsDb as ManagedDb<Ctx>>::Merkleized,
     <StorageDb as ManagedDb<Ctx>>::Merkleized,
     <CodeDb as ManagedDb<Ctx>>::Merkleized,
 );
 /// Per-database sync targets, in accounts, storage, code order.
-pub type HubSyncTargets = (
+pub type VeraSyncTargets = (
     <AccountsDb as ManagedDb<Ctx>>::SyncTarget,
     <StorageDb as ManagedDb<Ctx>>::SyncTarget,
     <CodeDb as ManagedDb<Ctx>>::SyncTarget,
 );
 /// Per-database configuration, in accounts, storage, code order.
-pub type HubConfig = (
+pub type VeraConfig = (
     VariableConfig<EightCap, ((), ()), Sequential>,
     VariableConfig<EightCap, ((), ()), Sequential>,
     VariableConfig<EightCap, ((), (RangeCfg<usize>, ())), Sequential>,
 );
 
 /// Build the three partition configs under `prefix`, sharing `page_cache`.
-pub fn state_set_config(prefix: &str, page_cache: CacheRef) -> HubConfig {
+pub fn state_set_config(prefix: &str, page_cache: CacheRef) -> VeraConfig {
     (
         store_config(prefix, "accounts", page_cache.clone(), ((), ())),
         store_config(prefix, "storage", page_cache.clone(), ((), ())),
@@ -103,10 +103,10 @@ fn store_config<C>(
 }
 
 /// The EVM state backend: glue's tuple [`DatabaseSet`] over the three partitions.
-pub type HubStateSet = HubDatabases;
+pub type VeraStateSet = VeraDatabases;
 
 /// Combined EVM state root over merkleized batches.
-pub fn combined_root(merkleized: &HubMerkleized) -> B256 {
+pub fn combined_root(merkleized: &VeraMerkleized) -> B256 {
     let (accounts, storage, code) = merkleized.roots();
     StateRoot::compute(accounts, storage, code)
 }

@@ -4,17 +4,17 @@ use alloy_primitives::{Address, Bytes};
 use alloy_sol_types::SolCall;
 use vera_modules::hub::abi::IHub;
 
-use crate::client::{HUB_ADDRESS, HubClient};
+use crate::client::{VERA_ADDRESS, VeraClient};
 use crate::error::ClientError;
 
-impl HubClient {
+impl VeraClient {
     /// Look up a JWS token record by hash.
     pub async fn get_jws_token(&self, token_hash: &str) -> Result<(bool, Bytes), ClientError> {
         let calldata = IHub::getJWSTokenCall {
             tokenHash: token_hash.into(),
         }
         .abi_encode();
-        let result = self.eth_call(HUB_ADDRESS, calldata.into()).await?;
+        let result = self.eth_call(VERA_ADDRESS, calldata.into()).await?;
         let decoded = IHub::getJWSTokenCall::abi_decode_returns(&result)
             .map_err(|e| ClientError::AbiDecode(e.to_string()))?;
         Ok((decoded.found, decoded.record))
@@ -23,7 +23,7 @@ impl HubClient {
     /// Look up all JWS tokens issued by a DID.
     pub async fn get_jws_tokens_by_did(&self, did: &str) -> Result<Bytes, ClientError> {
         let calldata = IHub::getJWSTokensByDidCall { did: did.into() }.abi_encode();
-        let result = self.eth_call(HUB_ADDRESS, calldata.into()).await?;
+        let result = self.eth_call(VERA_ADDRESS, calldata.into()).await?;
         let decoded = IHub::getJWSTokensByDidCall::abi_decode_returns(&result)
             .map_err(|e| ClientError::AbiDecode(e.to_string()))?;
         Ok(decoded)
@@ -32,7 +32,7 @@ impl HubClient {
     /// Look up all JWS tokens authorized for an account.
     pub async fn get_jws_tokens_by_account(&self, account: Address) -> Result<Bytes, ClientError> {
         let calldata = IHub::getJWSTokensByAccountCall { account }.abi_encode();
-        let result = self.eth_call(HUB_ADDRESS, calldata.into()).await?;
+        let result = self.eth_call(VERA_ADDRESS, calldata.into()).await?;
         let decoded = IHub::getJWSTokensByAccountCall::abi_decode_returns(&result)
             .map_err(|e| ClientError::AbiDecode(e.to_string()))?;
         Ok(decoded)
@@ -47,7 +47,7 @@ impl HubClient {
             submitter: submitter.into(),
         }
         .abi_encode();
-        let result = self.eth_call(HUB_ADDRESS, calldata.into()).await?;
+        let result = self.eth_call(VERA_ADDRESS, calldata.into()).await?;
         IHub::getDelegationsBySubmitterCall::abi_decode_returns(&result)
             .map_err(|e| ClientError::AbiDecode(e.to_string()))
     }
@@ -55,7 +55,7 @@ impl HubClient {
     /// Fetch the chain configuration.
     pub async fn get_chain_config(&self) -> Result<Bytes, ClientError> {
         let calldata = IHub::getChainConfigCall {}.abi_encode();
-        let result = self.eth_call(HUB_ADDRESS, calldata.into()).await?;
+        let result = self.eth_call(VERA_ADDRESS, calldata.into()).await?;
         let decoded = IHub::getChainConfigCall::abi_decode_returns(&result)
             .map_err(|e| ClientError::AbiDecode(e.to_string()))?;
         Ok(decoded)
@@ -64,7 +64,7 @@ impl HubClient {
     /// Fetch current Vera module parameters.
     pub async fn get_hub_params(&self) -> Result<Bytes, ClientError> {
         let calldata = IHub::getParamsCall {}.abi_encode();
-        let result = self.eth_call(HUB_ADDRESS, calldata.into()).await?;
+        let result = self.eth_call(VERA_ADDRESS, calldata.into()).await?;
         let decoded = IHub::getParamsCall::abi_decode_returns(&result)
             .map_err(|e| ClientError::AbiDecode(e.to_string()))?;
         Ok(decoded)

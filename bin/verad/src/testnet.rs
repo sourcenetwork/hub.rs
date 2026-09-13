@@ -15,7 +15,7 @@ use std::{
 use commonware_codec::Encode;
 use commonware_cryptography::{Signer as _, ed25519};
 use tracing::info;
-use vera_genesis::{HubGenesis, ValidatorConfig};
+use vera_genesis::{ValidatorConfig, VeraGenesis};
 
 /// CLI arguments for the testnet command.
 #[derive(clap::Args, Debug)]
@@ -157,9 +157,9 @@ pub(crate) fn run(chain_id: u64, data_dir: PathBuf, args: &TestnetArgs) -> eyre:
     // ── Phase 3: Write genesis.json to each node ─────────────────────────────
 
     let mut genesis = if let Some(ref path) = args.genesis {
-        HubGenesis::load(path).map_err(|e| eyre::eyre!("Failed to load genesis: {}", e))?
+        VeraGenesis::load(path).map_err(|e| eyre::eyre!("Failed to load genesis: {}", e))?
     } else {
-        HubGenesis::devnet()
+        VeraGenesis::devnet()
     };
     let (epoch_info, shares) = vera_node::trusted_setup(seed, participants.iter().cloned())
         .map_err(crate::cli::anyhow_to_eyre)?;

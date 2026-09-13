@@ -6,7 +6,7 @@ use clap::Subcommand;
 use super::context::ClientContext;
 
 #[derive(Subcommand, Debug)]
-pub(crate) enum HubCommand {
+pub(crate) enum VeraCommand {
     /// Read an operator relay grant with verified finality.
     RelayGrant {
         /// Canonical relay issuer DID.
@@ -44,7 +44,7 @@ pub(crate) enum HubCommand {
     },
 }
 
-impl HubCommand {
+impl VeraCommand {
     pub(super) async fn run(self, ctx: &ClientContext) -> eyre::Result<()> {
         match self {
             Self::RelayGrant {

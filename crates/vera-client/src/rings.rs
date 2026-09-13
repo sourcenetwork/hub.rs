@@ -14,9 +14,9 @@ pub use vera_modules::hub::rings::{
     ScheduledUpgrade, SignedRingParticipantRequest, ThresholdScheme, ring_deployment_label,
 };
 
-use crate::{ClientError, HubClient, ModuleId, RECORD_PROOF_BYTES};
+use crate::{ClientError, ModuleId, RECORD_PROOF_BYTES, VeraClient};
 
-/// Encode a delegated command for `NativeWorker::prepare(HUB_ADDRESS, calldata)`.
+/// Encode a delegated command for `NativeWorker::prepare(VERA_ADDRESS, calldata)`.
 pub fn encode_ring_command(command: &RingCommand, token: &str) -> Result<Bytes, ClientError> {
     Ok(IHub::applyRingCommandCall {
         request: request_bytes(command)?,
@@ -130,7 +130,7 @@ pub struct NodeDemeritsRead {
     pub record: Option<NodeDemerits>,
 }
 
-impl HubClient {
+impl VeraClient {
     /// Read recorded fault points; apply the ring's reset interval with `effective_points`.
     pub async fn read_threshold_node_demerits(
         &self,

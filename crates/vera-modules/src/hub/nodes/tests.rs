@@ -49,7 +49,7 @@ fn registration(controller: &SigningKey) -> NodeCommand {
         allowed_ring_ids: vec![],
     })
 }
-fn rejected(module: &mut HubModule, request: &SignedNodeRequest) {
+fn rejected(module: &mut VeraModule, request: &SignedNodeRequest) {
     let before = module.store().serialize();
     assert!(module.apply_node_request(&context(), request).is_err());
     assert_eq!(module.store().serialize(), before);
@@ -58,7 +58,7 @@ fn rejected(module: &mut HubModule, request: &SignedNodeRequest) {
 #[test]
 fn node_controller_transfer_revokes_old_authority_and_preserves_sequence() {
     let (node, controller, next) = (key(1), key(2), key(3));
-    let mut module = HubModule::new();
+    let mut module = VeraModule::new();
     rejected(
         &mut module,
         &sign(&node, &controller, 0, registration(&controller)),
@@ -83,7 +83,7 @@ fn node_controller_transfer_revokes_old_authority_and_preserves_sequence() {
         NodeCommand::TransferController(public(&next)),
     );
     module.apply_node_request(&context(), &transfer).unwrap();
-    let mut module = HubModule::from_store(module.store().clone());
+    let mut module = VeraModule::from_store(module.store().clone());
     rejected(
         &mut module,
         &sign(&node, &controller, 2, NodeCommand::SetPeer("wrong".into())),
@@ -125,7 +125,7 @@ fn node_controller_transfer_revokes_old_authority_and_preserves_sequence() {
 #[test]
 fn node_requests_bind_context_sequence_payload_and_signature() {
     let node = key(1);
-    let mut module = HubModule::new();
+    let mut module = VeraModule::new();
     module
         .apply_node_request(&context(), &sign(&node, &node, 0, registration(&node)))
         .unwrap();
@@ -157,7 +157,7 @@ fn node_requests_bind_context_sequence_payload_and_signature() {
 #[test]
 fn node_record_and_request_limits_fail_without_mutation() {
     let node = key(1);
-    let mut module = HubModule::new();
+    let mut module = VeraModule::new();
     let NodeCommand::Register(base) = registration(&node) else {
         unreachable!()
     };

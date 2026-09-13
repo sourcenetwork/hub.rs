@@ -26,7 +26,7 @@ use crate::{
     state::NodeState,
     state_provider::{NoopStateProvider, StateProvider},
     types::{RpcBlock, RpcLog},
-    vera_api::{HubApiImpl, HubApiServer, LightBlockLookup, ReceiptProofLookup},
+    vera_api::{LightBlockLookup, ReceiptProofLookup, VeraApiImpl, VeraApiServer},
 };
 
 /// Error type for RPC server operations.
@@ -406,7 +406,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             let net_api = NetApiImpl::new(chain_id);
             let web3_api = Web3ApiImpl::new();
             let vera_api = {
-                let mut api = HubApiImpl::new(node_state_for_jsonrpc, tx_submit);
+                let mut api = VeraApiImpl::new(node_state_for_jsonrpc, tx_submit);
                 if let (Some(idx), Some(mods)) = (hub_index, vera_modules) {
                     api = api.with_index_and_modules(idx, mods);
                 }
@@ -803,7 +803,7 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
         module.merge(web3_api.into_rpc())?;
         if let Some(node_state) = self.node_state {
             let vera_api = {
-                let mut api = HubApiImpl::new(node_state, self.tx_submit);
+                let mut api = VeraApiImpl::new(node_state, self.tx_submit);
                 if let (Some(idx), Some(mods)) = (self.hub_index, self.vera_modules) {
                     api = api.with_index_and_modules(idx, mods);
                 }

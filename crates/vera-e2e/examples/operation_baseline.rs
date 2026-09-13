@@ -21,7 +21,7 @@ use alloy_primitives::FixedBytes;
 use alloy_sol_types::SolCall;
 use futures::{StreamExt, stream};
 use tokio::{sync::Semaphore, task::JoinSet, time::Instant};
-use vera_client::{ACP_ADDRESS, BlsSigner, HubClient};
+use vera_client::{ACP_ADDRESS, BlsSigner, VeraClient};
 use vera_domain::NativeTx;
 use vera_e2e::cluster::{ConsensusPreset, GenesisBuilder, KeySet, TestCluster};
 use vera_modules::acp::abi::IAcp;
@@ -115,7 +115,7 @@ async fn main() {
         .wait_ready(Duration::from_secs(30))
         .await
         .expect("ready cluster");
-    let client = Arc::new(HubClient::new(cluster.node(0).rpc_url()));
+    let client = Arc::new(VeraClient::new(cluster.node(0).rpc_url()));
     let setup = BlsSigner::new(((count + 1) as u64).into(), CHAIN_ID).unwrap();
     let raw = setup
         .sign_native_tx(
@@ -292,7 +292,7 @@ async fn main() {
     }
 
     let replica_clients: Vec<_> = (0..cluster.node_count())
-        .map(|i| HubClient::new(cluster.node(i).rpc_url()))
+        .map(|i| VeraClient::new(cluster.node(i).rpc_url()))
         .collect();
     let verification_concurrency = (rpc_connections.get() as usize).min(8);
     let mut checks = stream::iter(observations.iter())
@@ -379,7 +379,7 @@ async fn main() {
         .await
         .expect("restarted RPC ready");
     let rpc_ready_ms = restart.elapsed().as_secs_f64() * 1000.0;
-    let recovered = HubClient::new(cluster.node(3).rpc_url());
+    let recovered = VeraClient::new(cluster.node(3).rpc_url());
     let recovered_receipt = tokio::time::timeout(
         driver::REQUEST_TIMEOUT,
         recovered.wait_for_receipt(probe_receipt.transaction_hash, driver::POLL_INTERVAL, 600),

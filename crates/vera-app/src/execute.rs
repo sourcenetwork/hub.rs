@@ -1,16 +1,16 @@
 //! Execute a block's transactions against forked state batches.
 
 use alloy_primitives::Bytes;
-use vera_backend::{BatchState, HubMerkleized, HubUnmerkleized, combined_root};
+use vera_backend::{BatchState, VeraMerkleized, VeraUnmerkleized, combined_root};
 use vera_domain::{DbTargets, StateRoot, Tx};
-use vera_executor::{BlockContext, ExecutionOutcome, HubExecutor, ModuleSnapshot};
+use vera_executor::{BlockContext, ExecutionOutcome, ModuleSnapshot, VeraExecutor};
 
 use crate::{AppError, db_targets_from_merkleized};
 
 /// Result of executing transactions on top of a parent's pending state.
 pub struct Executed {
     /// Merkleized batches holding the post-execution state.
-    pub merkleized: HubMerkleized,
+    pub merkleized: VeraMerkleized,
     /// Combined EVM state root.
     pub state_root: StateRoot,
     /// Per-partition targets for the block.
@@ -33,8 +33,8 @@ impl std::fmt::Debug for Executed {
 
 /// Run `txs` through the executor on `batches`, write the resulting changes, and merkleize.
 pub async fn execute_block(
-    executor: &HubExecutor,
-    batches: HubUnmerkleized,
+    executor: &VeraExecutor,
+    batches: VeraUnmerkleized,
     context: &BlockContext,
     txs: &[Tx],
     modules: ModuleSnapshot,

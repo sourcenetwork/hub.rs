@@ -11,7 +11,7 @@ use commonware_cryptography::ed25519;
 use thiserror::Error;
 use vera_config::NodeConfig;
 use vera_domain::PublicKey;
-use vera_genesis::HubGenesis;
+use vera_genesis::VeraGenesis;
 
 /// Errors reading `peers.json`.
 #[derive(Debug, Error)]
@@ -75,7 +75,7 @@ pub struct NodeSettings {
     /// Node config (chain id, data dir, network, rpc).
     pub config: NodeConfig,
     /// Chain genesis.
-    pub genesis: HubGenesis,
+    pub genesis: VeraGenesis,
     /// Validators and bootstrappers.
     pub peers: PeerSet,
     /// Where the DKG share and dealings live.

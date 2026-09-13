@@ -369,7 +369,7 @@ async fn indirect_proof_survives_reopen_and_uses_the_rpc_history_lookup() {
     use commonware_utils::non_empty;
     use vera_app::ConsensusScheme;
     use vera_domain::{ConsensusDigest, verify_light_block};
-    use vera_jsonrpc::{HubApiImpl, HubApiServer, NodeState};
+    use vera_jsonrpc::{NodeState, VeraApiImpl, VeraApiServer};
 
     let public = ed25519::PrivateKey::from_seed(7).public_key();
     let (mut info, shares) = crate::trusted_setup(7, [public.clone()]).unwrap();
@@ -454,7 +454,7 @@ async fn indirect_proof_survives_reopen_and_uses_the_rpc_history_lookup() {
         .unwrap();
     assert!(epochs.get_finalization(&first.digest().0).is_none());
     let calls = Arc::new(AtomicUsize::new(0));
-    let api = HubApiImpl::new(Arc::new(NodeState::new(1, 0, 1)), None)
+    let api = VeraApiImpl::new(Arc::new(NodeState::new(1, 0, 1)), None)
         .with_index_and_modules(
             index.clone(),
             Arc::new(std::sync::RwLock::new(vera_modules::ModuleState::default())),
@@ -523,7 +523,7 @@ async fn indirect_proof_survives_reopen_and_uses_the_rpc_history_lookup() {
     assert_eq!(calls.load(Ordering::Relaxed), 3);
     // Archived reads share the node's recovered index; the publication gate drops
     // proofs ahead of its head while still routing unindexed receipts to history.
-    let archive_api = HubApiImpl::new(Arc::new(NodeState::new(1, 0, 1)), None)
+    let archive_api = VeraApiImpl::new(Arc::new(NodeState::new(1, 0, 1)), None)
         .with_index_and_modules(
             index.clone(),
             Arc::new(std::sync::RwLock::new(vera_modules::ModuleState::default())),
@@ -660,7 +660,7 @@ async fn pruned_roster_selection_survives_history_and_module_reopen() {
     use commonware_glue::dkg::ParticipantsProvider as _;
     use commonware_utils::ordered::Set;
     use std::{num::NonZeroU64, sync::RwLock};
-    use vera_modules::{ModuleState, hub::HubModule, kv_store::InMemoryKvStore};
+    use vera_modules::{ModuleState, hub::VeraModule, kv_store::InMemoryKvStore};
 
     let genesis_key = ed25519::PrivateKey::from_seed(7).public_key();
     let selected = ed25519::PrivateKey::from_seed(8).public_key();
@@ -723,7 +723,7 @@ async fn pruned_roster_selection_survives_history_and_module_reopen() {
         .await
         .unwrap();
     let modules = ModuleState {
-        hub: HubModule::from_store(InMemoryKvStore::deserialize(&encoded_store).unwrap()),
+        hub: VeraModule::from_store(InMemoryKvStore::deserialize(&encoded_store).unwrap()),
         ..Default::default()
     };
     let mut restarted = crate::RegistryParticipants::new(

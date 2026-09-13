@@ -1,10 +1,10 @@
 use identity::Did;
 use vera_crypto::jwt::{DelegationScope, JwtClaims, matches_issuer, verify_bearer_token};
 
-use super::{HubError, HubModule, JWSTokenRecord, JWSTokenStatus, Result};
+use super::{JWSTokenRecord, JWSTokenStatus, Result, VeraError, VeraModule};
 use crate::types::{BlockExecCtx, Timestamp};
 
-impl HubModule {
+impl VeraModule {
     /// Verify a delegation against the authenticated caller and current revocations.
     pub fn authorize_delegation(
         &self,
@@ -66,7 +66,7 @@ impl HubModule {
             })
             || (!matches_issuer(&claims.iss, &caller) && caller != claims.sub)
         {
-            return Err(HubError::Unauthorized {
+            return Err(VeraError::Unauthorized {
                 reason: "delegation revocation is not authorized".into(),
             });
         }
@@ -93,7 +93,7 @@ impl HubModule {
                 invalidated_by: String::new(),
             });
         if record.status == JWSTokenStatus::Invalid {
-            return Err(HubError::TokenAlreadyInvalidated {
+            return Err(VeraError::TokenAlreadyInvalidated {
                 token_hash: record.token_hash,
             });
         }
@@ -105,8 +105,8 @@ impl HubModule {
     }
 }
 
-fn invalid(error: impl std::fmt::Display) -> HubError {
-    HubError::InvalidJws {
+fn invalid(error: impl std::fmt::Display) -> VeraError {
+    VeraError::InvalidJws {
         reason: error.to_string(),
     }
 }

@@ -42,7 +42,7 @@ pub type ReceiptProofLookup =
 ///
 /// Provides methods specific to hub node operations.
 #[rpc(server, namespace = "vera")]
-pub trait HubApi {
+pub trait VeraApi {
     /// Returns the current node status including consensus information.
     #[method(name = "nodeStatus")]
     async fn node_status(&self) -> RpcResult<NodeStatus>;
@@ -148,7 +148,7 @@ pub trait HubApi {
 }
 
 /// Implementation of the hub RPC API.
-pub struct HubApiImpl {
+pub struct VeraApiImpl {
     state: Arc<NodeState>,
     tx_submit: Option<TxSubmitCallback>,
     index: Option<Arc<BlockIndex>>,
@@ -161,9 +161,9 @@ pub struct HubApiImpl {
     archive: Option<crate::ArchiveReader>,
 }
 
-impl std::fmt::Debug for HubApiImpl {
+impl std::fmt::Debug for VeraApiImpl {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HubApiImpl")
+        f.debug_struct("VeraApiImpl")
             .field("state", &self.state)
             .field("tx_submit", &self.tx_submit.is_some())
             .field("index", &self.index.is_some())
@@ -176,7 +176,7 @@ impl std::fmt::Debug for HubApiImpl {
     }
 }
 
-impl HubApiImpl {
+impl VeraApiImpl {
     /// Create a new hub API implementation.
     #[must_use]
     pub fn new(state: Arc<NodeState>, tx_submit: Option<TxSubmitCallback>) -> Self {
@@ -253,7 +253,7 @@ impl HubApiImpl {
 }
 
 #[jsonrpsee::core::async_trait]
-impl HubApiServer for HubApiImpl {
+impl VeraApiServer for VeraApiImpl {
     async fn node_status(&self) -> RpcResult<NodeStatus> {
         Ok(self.state.status())
     }
@@ -523,8 +523,8 @@ mod tests {
         });
 
         let state = Arc::new(NodeState::new(1, 0, 1));
-        let api = HubApiImpl::new(state, Some(callback));
-        let result = HubApiServer::send_native_tx(&api, wire).await;
+        let api = VeraApiImpl::new(state, Some(callback));
+        let result = VeraApiServer::send_native_tx(&api, wire).await;
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), expected);
@@ -534,9 +534,9 @@ mod tests {
     #[tokio::test]
     async fn send_native_tx_rejects_evm_bytes() {
         let state = Arc::new(NodeState::new(1, 0, 1));
-        let api = HubApiImpl::new(state, None);
+        let api = VeraApiImpl::new(state, None);
         let evm_data = Bytes::from(vec![0x02, 0xAA, 0xBB]);
-        let result = HubApiServer::send_native_tx(&api, evm_data).await;
+        let result = VeraApiServer::send_native_tx(&api, evm_data).await;
 
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -546,8 +546,8 @@ mod tests {
     #[tokio::test]
     async fn send_native_tx_rejects_empty() {
         let state = Arc::new(NodeState::new(1, 0, 1));
-        let api = HubApiImpl::new(state, None);
-        let result = HubApiServer::send_native_tx(&api, Bytes::new()).await;
+        let api = VeraApiImpl::new(state, None);
+        let result = VeraApiServer::send_native_tx(&api, Bytes::new()).await;
 
         assert!(result.is_err());
         let err = result.unwrap_err();

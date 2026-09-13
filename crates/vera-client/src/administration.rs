@@ -9,7 +9,7 @@ pub use vera_modules::hub::administration::{
     OperatorPolicy, SignedAdministrativeRequest,
 };
 
-use crate::{BlsSigner, ClientError, EvmSigner, HUB_ADDRESS, HubClient, TransactionReceipt};
+use crate::{BlsSigner, ClientError, EvmSigner, TransactionReceipt, VERA_ADDRESS, VeraClient};
 
 /// Sign an explicit request using this key's index in the current operator policy.
 pub fn approve_administration(
@@ -61,7 +61,7 @@ pub struct AcpParameterRecord {
     pub value: Option<vera_modules::acp::types::AcpParams>,
 }
 
-impl HubClient {
+impl VeraClient {
     /// Read ACP parameters from certified native state, distinguishing absence from corruption.
     pub async fn read_acp_parameters(
         &self,
@@ -125,7 +125,7 @@ impl HubClient {
     pub async fn administration(&self) -> Result<Option<AdministrationState>, ClientError> {
         let result = self
             .eth_call(
-                HUB_ADDRESS,
+                VERA_ADDRESS,
                 IHub::getAdministrationCall {}.abi_encode().into(),
             )
             .await?;
@@ -144,7 +144,7 @@ impl HubClient {
             request: serde_json::to_vec(signed)?.into(),
         }
         .abi_encode();
-        self.send_native_precompile_tx(submitter, HUB_ADDRESS, calldata.into())
+        self.send_native_precompile_tx(submitter, VERA_ADDRESS, calldata.into())
             .await
     }
 
@@ -158,7 +158,7 @@ impl HubClient {
             request: serde_json::to_vec(signed)?.into(),
         }
         .abi_encode();
-        self.send_precompile_tx(submitter, HUB_ADDRESS, calldata.into())
+        self.send_precompile_tx(submitter, VERA_ADDRESS, calldata.into())
             .await
     }
 }

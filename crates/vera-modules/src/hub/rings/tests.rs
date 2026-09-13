@@ -91,11 +91,11 @@ fn delegated_token(
     let signature: Signature = key.sign(message.as_bytes());
     format!("{message}.{}", URL_SAFE_NO_PAD.encode(signature.to_bytes()))
 }
-fn fixture(policy: &str) -> (HubModule, AcpModule, RingConfig) {
+fn fixture(policy: &str) -> (VeraModule, AcpModule, RingConfig) {
     fixture_nodes(policy, &[2, 3])
 }
-fn fixture_nodes(policy: &str, nodes: &[u8]) -> (HubModule, AcpModule, RingConfig) {
-    let mut hub = HubModule::new();
+fn fixture_nodes(policy: &str, nodes: &[u8]) -> (VeraModule, AcpModule, RingConfig) {
+    let mut hub = VeraModule::new();
     let mut acp = AcpModule::new();
     let policy_id = acp
         .create_policy(&actor(), policy, PolicyMarshalingType::ShortYaml)
@@ -196,7 +196,7 @@ fn confirm(ring: &str, n: u8, key: &str) -> SignedRingParticipantRequest {
     )
 }
 fn apply(
-    hub: &mut HubModule,
+    hub: &mut VeraModule,
     acp: &mut AcpModule,
     command: &RingCommand,
     entropy: u8,
@@ -239,7 +239,7 @@ fn ring_creation_is_atomic_and_confirmations_require_unanimity() {
             .is_err()
     );
     assert_eq!(hub.store().serialize(), before);
-    let mut restored = HubModule::from_store(hub.store().clone());
+    let mut restored = VeraModule::from_store(hub.store().clone());
     let active = restored
         .apply_ring_participant_request(&context(), &confirm(&record.id, 3, "aabb"))
         .unwrap();
@@ -638,7 +638,7 @@ fn ring_reporting_relays_and_reshare_targets_preserve_controller_constraints() {
         removed.current_settings().trusted_auth_relay_dids,
         Some(Vec::new())
     );
-    let restored = HubModule::from_store(hub.store().clone());
+    let restored = VeraModule::from_store(hub.store().clone());
     assert_eq!(
         restored.threshold_ring(&initial.id).unwrap().unwrap(),
         removed
@@ -717,7 +717,7 @@ fn reshare_finalization_preserves_key_and_rejects_replay_and_changed_authority()
     stale.expected_sequence = changed.sequence;
     assert!(hub.finalize_ring_reshare(&context(), &stale).is_err());
     let signed = sign(&changed);
-    let change_permission = |hub: &mut HubModule, sequence, command| {
+    let change_permission = |hub: &mut VeraModule, sequence, command| {
         let request = NodeRequest {
             deployment_root: context().genesis_id,
             deployment_id: context().deployment_id,
@@ -1065,7 +1065,7 @@ fn threshold_objects_require_active_ring_and_scoped_actor_and_rollback_on_failed
         hub.store_threshold_object(&mut acp, &context(), &submission(), &assertion, &object)
             .is_err()
     );
-    let mut restored = HubModule::from_store(
+    let mut restored = VeraModule::from_store(
         crate::kv_store::InMemoryKvStore::deserialize(&hub.store().serialize()).unwrap(),
     );
     assert_eq!(
@@ -1117,7 +1117,7 @@ fn threshold_objects_require_active_ring_and_scoped_actor_and_rollback_on_failed
         b"{}".to_vec(),
     );
     assert!(
-        HubModule::from_store(corrupt)
+        VeraModule::from_store(corrupt)
             .threshold_object(stored.kind, &stored.id)
             .is_err()
     );

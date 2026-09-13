@@ -94,7 +94,7 @@ fn checkpoint_rejects_bad_evidence_and_checks_rebuilt_state_before_publication()
             Box::pin(async move {
                 let source = OrderedState::init(
                     context.child("source"),
-                    config(&context, "source", HubExecutor::new(DEPLOYMENT)),
+                    config(&context, "source", VeraExecutor::new(DEPLOYMENT)),
                 )
                 .await;
                 source.apply(recovery::revision(&source, 1).await).await;
@@ -148,7 +148,7 @@ fn checkpoint_rejects_bad_evidence_and_checks_rebuilt_state_before_publication()
                 ]);
                 let (light, _) = certify(&block, 42);
                 let checkpoint = OrderedCheckpoint::verify(&light, &key, &inconsistent).unwrap();
-                let executor = HubExecutor::new(DEPLOYMENT);
+                let executor = VeraExecutor::new(DEPLOYMENT);
                 executor
                     .modules()
                     .write()

@@ -6,7 +6,7 @@ use commonware_storage::{
     qmdb::sync::Target,
 };
 use commonware_utils::non_empty_range;
-use vera_backend::{HubMerkleized, HubSyncTargets};
+use vera_backend::{VeraMerkleized, VeraSyncTargets};
 use vera_domain::{ConsensusDigest, DbTarget, DbTargets};
 
 type SyncTarget = Target<mmr::Family, ConsensusDigest>;
@@ -27,7 +27,7 @@ pub(crate) fn sync_from_target(target: &DbTarget) -> SyncTarget {
 }
 
 /// Targets recorded by a block, read back from committed sync targets.
-pub fn db_targets_from_sync(targets: &HubSyncTargets) -> DbTargets {
+pub fn db_targets_from_sync(targets: &VeraSyncTargets) -> DbTargets {
     DbTargets {
         accounts: target_from_sync(&targets.0),
         storage: target_from_sync(&targets.1),
@@ -36,7 +36,7 @@ pub fn db_targets_from_sync(targets: &HubSyncTargets) -> DbTargets {
 }
 
 /// Targets recorded by a block, derived from the merkleized batches it produced.
-pub fn db_targets_from_merkleized(merkleized: &HubMerkleized) -> DbTargets {
+pub fn db_targets_from_merkleized(merkleized: &VeraMerkleized) -> DbTargets {
     fn one<M: Merkleized<Digest = ConsensusDigest>>(
         m: &M,
         bounds_floor: u64,
@@ -60,7 +60,7 @@ pub fn db_targets_from_merkleized(merkleized: &HubMerkleized) -> DbTargets {
 }
 
 /// Glue sync targets for a block's recorded [`DbTargets`].
-pub fn sync_targets(targets: &DbTargets) -> HubSyncTargets {
+pub fn sync_targets(targets: &DbTargets) -> VeraSyncTargets {
     (
         sync_from_target(&targets.accounts),
         sync_from_target(&targets.storage),
