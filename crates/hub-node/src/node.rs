@@ -63,7 +63,7 @@ use crate::{
     MAX_BLOCK_TXS, MAX_MESSAGE_SIZE, MAX_PARTICIPANTS, MAX_SUPPORTED_MODE, MAX_TX_BYTES,
     MEMPOOL_CHANNEL, MESSAGE_RATE, NAMESPACE, NodeSettings, P2P_SUFFIX, PAGE_CACHE_SIZE, PAGE_SIZE,
     RESOLVER_CHANNEL, REVEAL, Registrar, RegistryParticipants, SHARING_MODE, TxGossip,
-    VOTE_CHANNEL, VrfElectorConfig,
+    VOTE_CHANNEL, VrfElectorConfig, rejoin,
     sink::{FinalizationArtifacts, FinalizationLookup, NodeSink, SinkParts},
     spawn_tx_receiver,
     tx_gossip::SharedValidator,
@@ -276,14 +276,50 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     let probe_handle = probe_actor.start(dkg_probe_network);
 
     let stateful_startup = context.child("stateful_startup");
+    let history = Arc::new(crate::FinalizedHistory::open(
+        config.data_dir.join("history"),
+        &genesis_block,
+    )?);
     let mut plan = SyncPlan::init(&stateful_startup, PARTITION_PREFIX).await;
     let completed_sync_height = plan.sync_height();
-    let snapshot_sync = plan.should_state_sync(config.snapshot.is_some());
-    let probe_artifact = if snapshot_sync {
-        let artifact = probe_mailbox
-            .subscribe()
-            .await
-            .map_err(|e| anyhow::anyhow!("dkg probe stopped before state sync: {e:?}"))?;
+    let mut snapshot_sync = plan.should_state_sync(config.snapshot.is_some());
+    let mut probe_artifact = None;
+    if !snapshot_sync && history.head_height() > 0 {
+        // A completed state sync skips peer synchronization forever, which
+        // strands a restart that fell too far behind to follow reshare
+        // ceremonies forward. Ask the network for its epoch before
+        // proceeding; a bounded wait keeps peerless cluster restarts on the
+        // plain backfill path.
+        let our_epoch = history.head_height() / blocks_per_epoch.get();
+        match ::tokio::time::timeout(Duration::from_secs(30), probe_mailbox.subscribe()).await {
+            Ok(Ok(artifact))
+                if rejoin::stranded(our_epoch, artifact.floor.proposal.round.epoch().get()) =>
+            {
+                tracing::warn!(
+                    our_epoch,
+                    network_epoch = artifact.floor.proposal.round.epoch().get(),
+                    "durable state predates reachable reshare ceremonies; re-arming state sync"
+                );
+                rejoin::reset_sync_bookkeeping(&config.data_dir);
+                plan = SyncPlan::init(&stateful_startup, PARTITION_PREFIX).await;
+                snapshot_sync = true;
+                probe_artifact = Some(artifact);
+            }
+            _ => {}
+        }
+    }
+    let probe_artifact = match probe_artifact {
+        artifact @ Some(_) => artifact,
+        // Fresh or resumed joins wait for the probe unconditionally.
+        None if snapshot_sync => Some(
+            probe_mailbox
+                .subscribe()
+                .await
+                .map_err(|e| anyhow::anyhow!("dkg probe stopped before state sync: {e:?}"))?,
+        ),
+        None => None,
+    };
+    if let Some(artifact) = &probe_artifact {
         provider.register(
             artifact.info.epoch,
             ConsensusScheme::verifier(
@@ -293,10 +329,7 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
             ),
         );
         plan = plan.with_floor(artifact.floor.clone());
-        Some(artifact)
-    } else {
-        None
-    };
+    }
 
     let (marshal_actor, marshal, floor) = MarshalActor::init(
         context.child("marshal"),
@@ -344,10 +377,6 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     )
     .await;
     let (fence, gate) = Fence::new(fence_epoch);
-    let history = Arc::new(crate::FinalizedHistory::open(
-        config.data_dir.join("history"),
-        &genesis_block,
-    )?);
     let participants_provider = RegistryParticipants::new(
         modules.clone(),
         players.clone(),

@@ -108,6 +108,11 @@ pub struct FinalizedHistory {
 }
 
 impl FinalizedHistory {
+    /// Height of the durable history head (zero before the first record).
+    pub fn head_height(&self) -> u64 {
+        self.head.lock().0
+    }
+
     /// Non-atomic backend memory counters; unsupported properties remain absent.
     pub(crate) fn memory_usage(
         &self,
