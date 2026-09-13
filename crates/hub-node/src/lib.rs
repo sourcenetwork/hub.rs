@@ -41,7 +41,9 @@ pub use participants::{RegistryParticipants, validator_address};
 
 mod provider;
 mod rejoin;
+mod watchdog;
 pub use provider::{DynamicProvider, Registrar};
+pub(crate) use watchdog::run as run_watchdog;
 
 mod secret_store;
 pub use secret_store::FileSecretStore;

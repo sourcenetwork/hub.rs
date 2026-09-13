@@ -92,6 +92,18 @@ pub struct NodeConfig {
     /// Enable coordinated journal pruning; omission retains consensus history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pruning: Option<PruningConfig>,
+
+    /// Fail the process after this many seconds without a new finalization
+    /// while peers remain connected, so supervision restarts into rejoin.
+    /// Zero disables the watchdog.
+    #[serde(default = "default_watchdog_stall_seconds")]
+    pub watchdog_stall_seconds: u64,
+}
+
+const DEFAULT_WATCHDOG_STALL_SECONDS: u64 = 600;
+
+const fn default_watchdog_stall_seconds() -> u64 {
+    DEFAULT_WATCHDOG_STALL_SECONDS
 }
 
 impl Default for NodeConfig {
@@ -104,6 +116,7 @@ impl Default for NodeConfig {
             rpc: RpcConfig::default(),
             snapshot: None,
             pruning: None,
+            watchdog_stall_seconds: DEFAULT_WATCHDOG_STALL_SECONDS,
         }
     }
 }

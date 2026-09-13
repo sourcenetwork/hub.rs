@@ -146,6 +146,11 @@ impl NodeState {
         self.inner.peer_count.store(count, Ordering::Relaxed);
     }
 
+    /// Current peer count.
+    pub fn peer_count(&self) -> u64 {
+        self.inner.peer_count.load(Ordering::Relaxed)
+    }
+
     /// Set whether this node is backfilling historical blocks.
     pub fn set_backfilling(&self, backfilling: bool) {
         self.inner.backfilling.store(backfilling, Ordering::Relaxed);

@@ -69,6 +69,10 @@ rejected and require an explicit migration decision, not silent reset.
   size deployments accordingly.
 - **Snapshot catch-up** (`[snapshot]`): opt-in for newly admitted members;
   `record_bytes` and `peer_timeout_ms` must be positive.
+- **Finality watchdog** (`watchdog_stall_seconds`, default 600, `0` disables): fails the
+  process after that long without a new finalization while peers stay connected, so supervised
+  restarts re-enter the boot-time rejoin that re-syncs from a current floor. It arms only after
+  the first finalization, so initial synchronization is never interrupted.
 - **History backend**: default RocksDB; the `regolith-history` build feature
   selects Regolith with synchronous writes. The two backends reject each
   other's directory layouts — pick one per deployment.
