@@ -27,7 +27,7 @@ records and 1 MiB of keys and encoded values within the selected policy prefix.
 These limits apply before selector filtering. Exceeding either limit returns an
 error, never a truncated result. Every inspected record must decode completely
 and match its policy and relationship storage key. Larger enumerations use
-`hub_getCurrentPrefixPageProof` with the policy's relationship prefix and verify
+`vera_getCurrentPrefixPageProof` with the policy's relationship prefix and verify
 each page before applying selectors locally.
 
 `HubClient::read_relationship_page` provides typed, verified pages for that

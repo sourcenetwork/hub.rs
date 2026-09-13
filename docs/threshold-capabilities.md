@@ -59,9 +59,9 @@ Source references:
 
 - Commonware [DKG modules](https://github.com/commonwarexyz/monorepo/blob/d476a2361ce6840d2b9d0aa6fb30a924429046d4/cryptography/src/bls12381/dkg/mod.rs)
   and [BLS variants](https://github.com/commonwarexyz/monorepo/blob/d476a2361ce6840d2b9d0aa6fb30a924429046d4/cryptography/src/bls12381/primitives/variant.rs).
-- Vera's [consensus bootstrap](../crates/hub-node/src/bootstrap.rs),
-  [provider](../crates/hub-node/src/provider.rs), and
-  [secret store](../crates/hub-node/src/secret_store.rs).
+- Vera's [consensus bootstrap](../crates/vera-node/src/bootstrap.rs),
+  [provider](../crates/vera-node/src/provider.rs), and
+  [secret store](../crates/vera-node/src/secret_store.rs).
 - Orbis [crypto selection](https://github.com/sourcenetwork/orbis-rs/blob/c613da8651aad16978ec051701625d1bae191b7e/crates/crypto/src/lib.rs),
   [application signing](https://github.com/sourcenetwork/orbis-rs/blob/c613da8651aad16978ec051701625d1bae191b7e/crates/crypto/src/bls12_381/sign.rs),
   and [proxy re-encryption](https://github.com/sourcenetwork/orbis-rs/blob/c613da8651aad16978ec051701625d1bae191b7e/crates/crypto/src/bls12_381/pre.rs).

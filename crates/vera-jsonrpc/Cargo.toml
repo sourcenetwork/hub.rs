@@ -1,0 +1,60 @@
+[package]
+name = "vera-jsonrpc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "RPC server for hub nodes"
+
+[lints]
+workspace = true
+
+[dependencies]
+# HTTP server
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+
+# JSON-RPC
+jsonrpsee.workspace = true
+jsonrpsee-server = { path = "../../vendor/jsonrpsee-server" }
+
+# Alloy types
+alloy-primitives = { workspace = true, features = ["serde"] }
+
+# Async
+tokio = { workspace = true, features = ["net", "sync"] }
+async-trait.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Encoding
+hex.workspace = true
+
+# Error handling
+thiserror.workspace = true
+
+# Tracing
+tracing.workspace = true
+
+# Misc
+parking_lot.workspace = true
+
+# Commonware
+commonware-cryptography.workspace = true
+
+# Hub crates
+vera-domain.workspace = true
+vera-backend.workspace = true
+vera-permission.workspace = true
+vera-executor.workspace = true
+vera-indexer.workspace = true
+vera-modules.workspace = true
+vera-traits.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+jsonrpsee = { workspace = true, features = ["ws-client"] }

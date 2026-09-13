@@ -1,0 +1,37 @@
+[package]
+name = "vera-modules"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Hub module implementations (ACP, Bulletin, Hub)"
+
+[dependencies]
+acp.workspace = true
+vera-crypto.workspace = true
+identity.workspace = true
+orbis-reporting = { git = "https://github.com/sourcenetwork/orbis-rs", rev = "d189e0965d387c9b371a464340bf936ab35bee7f" }
+zanzibar.workspace = true
+
+alloy-sol-types.workspace = true
+alloy-primitives.workspace = true
+async-trait.workspace = true
+borsh.workspace = true
+bytes.workspace = true
+bs58 = "0.5"
+futures.workspace = true
+hex.workspace = true
+# Versions 6 and 7 skip changed keys in ordered diffs across shared leaves.
+imbl = "5.0.0"
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+prost = "0.14"
+thiserror.workspace = true
+
+[dev-dependencies]
+blst = "0.3"
+base64.workspace = true
+k256.workspace = true
+
+[lints]
+workspace = true

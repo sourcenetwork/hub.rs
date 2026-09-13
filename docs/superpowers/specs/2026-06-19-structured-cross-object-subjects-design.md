@@ -4,7 +4,7 @@
 **Status:** design — pending review
 **Context:** zanzibar-rl#66 follow-up. The chain now *resolves* cross-object
 TupleToUserset (PR #87), but the *set* path is actor-only: the ACP precompile
-constructs `Subject::entity(actor_did)` and hub-client takes `target: &Did`.
+constructs `Subject::entity(actor_did)` and vera-client takes `target: &Did`.
 This widens the write path so a cross-object / userset subject can be set and
 deleted through the normal precompile + client API, with the #1059 soundness
 floor enforced on store.
@@ -12,7 +12,7 @@ floor enforced on store.
 ## Goal
 
 Let a relationship's subject be any `zanzibar::Subject` — not just an entity —
-when set/deleted through the ACP precompile and hub-client, carried as
+when set/deleted through the ACP precompile and vera-client, carried as
 **structured fields** (never a parsed string), and validated against the
 relation's declared subject restriction before it is stored.
 
@@ -137,22 +137,22 @@ to the Go-compat behavior.
 
 ## Components
 
-1. **`crates/hub-modules/src/acp/abi.rs`** — add the two `*Subject` methods and
+1. **`crates/vera-modules/src/acp/abi.rs`** — add the two `*Subject` methods and
    the two new `RelationshipSubject{Set,Deleted}` event types. Existing methods
    and events untouched.
-2. **`crates/hub-executor/src/precompiles/acp.rs`** — `decode_subject(kind,
+2. **`crates/vera-executor/src/precompiles/acp.rs`** — `decode_subject(kind,
    resource, object_id, relation) -> Result<acp::Subject, PrecompileError>`
    shared by both new handlers; handlers mirror the existing set/delete
    (auth via `did_from_signer`, dispatch via `direct_policy_cmd`) but emit the
    new `RelationshipSubject{Set,Deleted}` events.
-3. **`crates/hub-modules/src/acp/mod.rs`** — `cmd_set_relationship` calls
+3. **`crates/vera-modules/src/acp/mod.rs`** — `cmd_set_relationship` calls
    `rel.validate(&policy)` (the floor) and maps the error to `AcpError`. The
    delete counterpart is unchanged beyond accepting the decoded subject.
-4. **`crates/hub-client`** — `enum RelationshipSubject { Entity(String),
+4. **`crates/vera-client`** — `enum RelationshipSubject { Entity(String),
    Wildcard, Object { resource, object_id }, Userset { resource, object_id,
    relation } }` with an encoder to the ABI fields; `set_relationship_subject` /
    `delete_relationship_subject` (EVM) + `native_*` variants.
-5. **`crates/hub-e2e/tests/cross_object_acp.rs`** — seed the parent edge via the
+5. **`crates/vera-e2e/tests/cross_object_acp.rs`** — seed the parent edge via the
    new tx method (replacing the bearer-cmd JSON workaround), keep the resolution
    assertion, then **delete** the child grant via `deleteRelationshipSubject`
    and assert access is revoked on every node.
@@ -172,11 +172,11 @@ defradb provider / wallet
 
 ## Testing
 
-- **Unit (hub-modules):** `decode_subject` for each kind incl. rejects; floor
+- **Unit (vera-modules):** `decode_subject` for each kind incl. rejects; floor
   rejects a subject that violates a relation's `subject_restriction`; floor
   rejects an EntitySet referencing an undeclared resource/relation; entity path
   still passes the floor when unrestricted.
-- **Unit (hub-client):** `RelationshipSubject` → ABI field round-trip per kind.
+- **Unit (vera-client):** `RelationshipSubject` → ABI field round-trip per kind.
 - **e2e:** set object-edge + userset via tx → resolve (read-only access check
   inherits across the edge) → delete child grant → access revoked, on every
   node of a 4-node cluster.

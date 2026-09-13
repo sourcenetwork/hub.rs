@@ -1,0 +1,49 @@
+[package]
+name = "vera-e2e"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "End-to-end test harness for hub"
+
+[features]
+fault-injection = []
+
+[[test]]
+name = "module_commit_crash"
+required-features = ["fault-injection"]
+
+[[test]]
+name = "snapshot_interrupt"
+required-features = ["fault-injection"]
+
+[dependencies]
+vera-genesis.workspace = true
+vera-harness.workspace = true
+vera-node.workspace = true
+
+[dev-dependencies]
+orbis-reporting = { git = "https://github.com/sourcenetwork/orbis-rs", rev = "d189e0965d387c9b371a464340bf936ab35bee7f" }
+blst = "0.3"
+tempfile.workspace = true
+acp = { workspace = true, default-features = false }
+alloy-primitives.workspace = true
+alloy-sol-types.workspace = true
+commonware-codec.workspace = true
+commonware-cryptography.workspace = true
+futures.workspace = true
+hex.workspace = true
+vera-client.workspace = true
+vera-domain.workspace = true
+vera-crypto.workspace = true
+vera-modules.workspace = true
+vera-permission.workspace = true
+identity.workspace = true
+k256.workspace = true
+jsonrpsee.workspace = true
+jsonrpsee-server = { path = "../../vendor/jsonrpsee-server" }
+reqwest.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["full", "test-util"] }
+
+[lints]
+workspace = true

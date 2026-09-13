@@ -2,7 +2,7 @@
 
 Native threshold objects bind an encrypted document or a signing derivation to
 an active ring and a policy resource/permission. Register them through
-`hub_client::threshold_objects::encode_threshold_object` and a durable
+`vera_client::threshold_objects::encode_threshold_object` and a durable
 `NativeWorker`. The actor delegates `orbis:object:store` to the worker; the
 registered creator is the actor, not the submission key. Ring-management and ACP
 policy scopes cannot authorize registration.

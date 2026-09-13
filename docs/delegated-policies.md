@@ -57,7 +57,7 @@ bearerEditPolicy(bearerToken, policyId, policy, marshalType)
 ```
 
 `marshalType = 1` selects YAML; `marshalType = 2` selects JSON with the same policy fields. These calls can be
-encoded as native submission payloads and sent through `hub_sendNativeTx`.
+encoded as native submission payloads and sent through `vera_sendNativeTx`.
 Every consensus member must run a version supporting the new calls and scopes
 before operators enable their use.
 
@@ -67,16 +67,16 @@ the actor as owner, the authenticated worker as signer, the signed submission
 ID, and the creation revision and timestamp. Editing preserves that creation
 metadata and enforces the actor's ownership and existing policy-edit rules.
 
-`hub_getReceiptProof` returns the finalized revision and its complete ordered
+`vera_getReceiptProof` returns the finalized revision and its complete ordered
 receipt commitment. `HubClient::read_receipt` verifies the certificate against
 configured trust, the receipt commitment and the locally computed signed
 submission ID. This authenticates success or failure and emitted events. A
 missing response means evidence is unavailable; it does not permit reusing the
-submission sequence. The older `hub_getTransactionReceipt` response by itself
+submission sequence. The older `vera_getTransactionReceipt` response by itself
 does not authenticate execution.
 
 Use the policy ID from the verified creation event to obtain the current record
-from `hub_getCurrentRecordProof` using `policy/objs/<policy-id>` in the ACP
+from `vera_getCurrentRecordProof` using `policy/objs/<policy-id>` in the ACP
 namespace. Verify its certificate and record proof, then compare the policy ID,
 owner, worker, signed submission ID, definition and creation revision with the
 request. This lets concurrent creators identify their own policies without
@@ -158,7 +158,7 @@ authorize an assertion. Consumers still check its scope, generation and lifetime
 Operators can inspect the same certified grant from the CLI:
 
 ```sh
-hubd client --url "$VERA_URL" hub relay-grant "$RELAY_ISSUER" \
+verad client --url "$VERA_URL" hub relay-grant "$RELAY_ISSUER" \
   --trusted-key "$VERA_TRUSTED_KEY" --minimum-revision "$MINIMUM_REVISION"
 ```
 

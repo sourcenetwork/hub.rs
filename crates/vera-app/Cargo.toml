@@ -1,0 +1,51 @@
+[package]
+name = "vera-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Glue stateful application around the hub block executor"
+
+[features]
+fault-injection = ["vera-executor/fault-injection"]
+
+[lints]
+workspace = true
+
+[dependencies]
+vera-backend.workspace = true
+vera-consensus.workspace = true
+vera-domain.workspace = true
+vera-executor.workspace = true
+vera-genesis.workspace = true
+vera-modules.workspace = true
+vera-qmdb.workspace = true
+
+commonware-consensus.workspace = true
+commonware-cryptography.workspace = true
+commonware-glue.workspace = true
+commonware-runtime.workspace = true
+commonware-storage.workspace = true
+commonware-utils.workspace = true
+
+alloy-consensus.workspace = true
+alloy-primitives.workspace = true
+futures.workspace = true
+parking_lot.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+vera-indexer.workspace = true
+serde_json.workspace = true
+vera-jsonrpc.workspace = true
+commonware-parallel.workspace = true
+commonware-p2p.workspace = true
+commonware-codec.workspace = true
+vera-state.workspace = true
+vera-client.workspace = true
+alloy-sol-types.workspace = true
+vera-domain = { workspace = true, features = ["evm"] }
+alloy-primitives.workspace = true
+k256.workspace = true
+tempfile.workspace = true
+tokio.workspace = true

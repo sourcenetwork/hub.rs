@@ -50,7 +50,7 @@ This changes execution commitments at epoch boundaries and requires a fresh
 deployment; it is not a rolling upgrade for existing data.
 
 Membership writes use `VALIDATOR_REGISTRY_ADDRESS` with the request bindings in
-`hub_modules::validator_registry::abi`. Persist the signed submission before sending, retain its identifier,
+`vera_modules::validator_registry::abi`. Persist the signed submission before sending, retain its identifier,
 and use `read_receipt` with independently provisioned consensus trust to verify
 the result. A successful receipt records the registry update. The effective
 committee changes after successful distributed resharing, so inspect verified
@@ -83,7 +83,7 @@ power-loss behavior and broader network/storage faults require additional
 qualification.
 
 ```sh
-HUBD_BINARY=/path/to/hubd cargo test -p hub-e2e --test native_membership
+VERAD_BINARY=/path/to/verad cargo test -p vera-e2e --test native_membership
 ```
 
 `HubClient::read_administration` verifies the current operator configuration and

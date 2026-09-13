@@ -34,7 +34,7 @@ original recorded outcome; read the ring again to obtain its current state.
 
 ## Native client
 
-Use `hub_client::rings::encode_ring_command` with an `orbis:ring` delegation for
+Use `vera_client::rings::encode_ring_command` with an `orbis:ring` delegation for
 creation, administration or creator cancellation. Delegations use the existing expiry,
 revocation, relay authorization and optional exact-operation binding checks.
 `DelegatedOperation::RingCommand` supplies the digest for a relay assertion or

@@ -7,7 +7,7 @@ allowed-policy/ring changes require the current controller's signature. These
 records advertise threshold-service participants; they do not admit consensus
 members or initiate DKG.
 
-`hub_client::nodes::sign_node_request` signs a `NodeRequest`, and
+`vera_client::nodes::sign_node_request` signs a `NodeRequest`, and
 `HubClient::submit_node_request` relays it through an independent BLS worker.
 The request binds the initial deployment state, deployment ID, node identity, sequence, expiry
 and command. The digest is SHA-256 over `vera/orbis/node/v1` followed by a zero

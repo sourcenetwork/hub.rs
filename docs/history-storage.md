@@ -9,7 +9,7 @@ Normal builds use RocksDB in the node's `history` directory. The opt-in
 `regolith-history` build uses Regolith in `history/regolith`:
 
 ```sh
-cargo build --frozen -p hubd --features regolith-history
+cargo build --frozen -p verad --features regolith-history
 ```
 
 Regolith is pinned to the revision used by DefraDB. History writes explicitly
@@ -47,8 +47,8 @@ To exercise authenticated snapshot import from pruned peers with Regolith,
 build the feature above, then point the harness at that binary:
 
 ```sh
-HUBD_BINARY="$PWD/target/debug/hubd" RUST_LOG=warn,hub_storage=info \
-  cargo test --frozen -p hub-e2e --test snapshot_catchup \
+VERAD_BINARY="$PWD/target/debug/verad" RUST_LOG=warn,vera_storage=info \
+  cargo test --frozen -p vera-e2e --test snapshot_catchup \
   snapshot_replica_recovers_from_pruned_peers -- --exact
 ```
 
@@ -61,5 +61,5 @@ combines pruning with a process abort after a durable history-import record.
 It removes the explicit snapshot request before restarting, exercising automatic
 import resumption. Run it with both the node and test built with
 `fault-injection`, and the node additionally built with `regolith-history`.
-Keep `hub_storage=info` enabled. This checks process-crash recovery, not power-loss
+Keep `vera_storage=info` enabled. This checks process-crash recovery, not power-loss
 or failed-write behavior.
