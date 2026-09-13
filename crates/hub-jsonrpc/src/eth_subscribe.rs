@@ -133,7 +133,12 @@ impl EthSubscriptionApiServer for EthSubscriptionApiImpl {
                 let mut rx = self.heads_tx.subscribe();
                 tokio::spawn(async move {
                     loop {
-                        match rx.recv().await {
+                        let received = tokio::select! {
+                            biased;
+                            () = sink.closed() => break,
+                            received = rx.recv() => received,
+                        };
+                        match received {
                             Ok(block) => {
                                 let value = match serde_json::to_value(&block) {
                                     Ok(v) => v,
@@ -156,6 +161,7 @@ impl EthSubscriptionApiServer for EthSubscriptionApiImpl {
                             }
                             Err(broadcast::error::RecvError::Lagged(n)) => {
                                 warn!(lagged = n, "newHeads subscriber lagged, dropping");
+                                signal_lag(&sink, n).await;
                                 break;
                             }
                             Err(broadcast::error::RecvError::Closed) => break,
@@ -198,7 +204,15 @@ impl EthSubscriptionApiServer for EthSubscriptionApiImpl {
                 let mut rx = self.logs_tx.subscribe();
                 tokio::spawn(async move {
                     loop {
-                        match rx.recv().await {
+                        // Observe disconnects even when the filter never
+                        // matches: without this select a quiet filter keeps
+                        // the task and its broadcast receiver alive forever.
+                        let received = tokio::select! {
+                            biased;
+                            () = sink.closed() => break,
+                            received = rx.recv() => received,
+                        };
+                        match received {
                             Ok(logs) => {
                                 for log in &logs {
                                     if !matches_filter(log, &filter) {
@@ -226,6 +240,7 @@ impl EthSubscriptionApiServer for EthSubscriptionApiImpl {
                             }
                             Err(broadcast::error::RecvError::Lagged(n)) => {
                                 warn!(lagged = n, "logs subscriber lagged, dropping");
+                                signal_lag(&sink, n).await;
                                 break;
                             }
                             Err(broadcast::error::RecvError::Closed) => break,
@@ -244,6 +259,19 @@ impl EthSubscriptionApiServer for EthSubscriptionApiImpl {
             }
         }
         Ok(())
+    }
+}
+
+/// Deliver a terminal signal to a subscriber dropped for lagging, so a slow
+/// consumer learns the feed ended instead of waiting on silence.
+async fn signal_lag(sink: &jsonrpsee::core::server::SubscriptionSink, missed: u64) {
+    let notice = serde_json::json!({
+        "error": format!("subscription lagged by {missed} messages; resubscribe"),
+    });
+    if let Ok(message) = SubscriptionMessage::from_json(&notice)
+        && sink.send(message).await.is_err()
+    {
+        trace!("lagging subscriber already disconnected");
     }
 }
 

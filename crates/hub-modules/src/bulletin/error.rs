@@ -9,6 +9,9 @@ pub enum BulletinError {
     #[error("namespace must be nonempty")]
     InvalidNamespace,
 
+    #[error("post payload must be between 1 and {0} bytes")]
+    PostPayloadTooLarge(usize),
+
     #[error("namespace not found: {namespace}")]
     NamespaceNotFound { namespace: String },
 

@@ -3840,6 +3840,7 @@ version = "0.1.0"
 dependencies = [
  "commonware-codec",
  "commonware-cryptography",
+ "hub-cli",
  "rand 0.8.5",
  "rstest",
  "serde",

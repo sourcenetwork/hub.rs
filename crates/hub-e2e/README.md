@@ -102,3 +102,7 @@ When a test fails, the cluster's run directory is the primary diagnostic: node
 logs under `node{i}/logs/`, per-node config/genesis, and data dirs. Re-run the
 failing target with `HUB_E2E_KEEP=1` to retain the whole run directory for
 inspection instead of letting RAII cleanup remove it.
+
+### `HUB_E2E_DEADLINE_SCALE`
+
+Multiplies the 30-second cluster-readiness base deadline; CI sets 8 (Linux native) or 4 (studio e2e).

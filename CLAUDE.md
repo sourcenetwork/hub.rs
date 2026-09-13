@@ -107,7 +107,7 @@ subscription channels. Block execution goes through `HubExecutor`:
 |---------|--------|---------|
 | `0x0810` | ACP | Access control policies (Zanzibar relation tuples) |
 | `0x0811` | Bulletin | Coordination / DKG messages / posts |
-| `0x0812` | Hub | Identity / JWS token lifecycle |
+| `0x0812` | Hub | Identity / JWT token lifecycle |
 | `0x0813` | ValidatorRegistry | Validator identity management (feeds resharing) |
 
 ### Shared module pattern
@@ -345,10 +345,12 @@ hub.rs/
         hub-modules/           # ACP, Bulletin, Hub, ValidatorRegistry module logic
         hub-node/              # Validator assembly: p2p, marshal, DKG, stateful glue, RPC
         hub-overlay/           # Overlay state for unpersisted QMDB changes
+        hub-permission/        # Permission/record/prefix evidence types and verification
         hub-qmdb/              # Core QMDB abstractions and traits
         hub-state/             # JMT-backed module state trees (RocksDB persistence)
         hub-traits/            # StateDb trait abstractions for storage/consensus
         test-infra/            # Shared test primitives: process, ports, logs, binary resolver
+        vera-verifier/          # C shared-library verifier for receipts, records, prefixes and policies
 ```
 
 ## Building

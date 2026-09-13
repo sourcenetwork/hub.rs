@@ -84,11 +84,16 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         timeout_retry,
     } = settings;
     let chain_id = config.chain_id;
+    anyhow::ensure!(
+        chain_id == genesis.chain_id,
+        "config chain_id {chain_id} does not match genesis chain_id {}; fix the config",
+        genesis.chain_id
+    );
     let gas_limit = config.execution.gas_limit;
     let snapshot = config.snapshot.clone().unwrap_or_default();
     anyhow::ensure!(
-        snapshot.record_bytes > 0 && snapshot.peer_timeout_ms > 0,
-        "snapshot byte limit and peer deadline must be positive"
+        snapshot.record_bytes > 0 && snapshot.peer_timeout_ms > 0 && snapshot.logs > 0,
+        "snapshot byte limit, log limit and peer deadline must be positive"
     );
     let blocks_per_epoch = std::num::NonZeroU64::new(genesis.blocks_per_epoch)
         .ok_or_else(|| anyhow::anyhow!("genesis blocks_per_epoch must be non-zero"))?;
@@ -310,13 +315,27 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     }
     let probe_artifact = match probe_artifact {
         artifact @ Some(_) => artifact,
-        // Fresh or resumed joins wait for the probe unconditionally.
-        None if snapshot_sync => Some(
-            probe_mailbox
-                .subscribe()
-                .await
-                .map_err(|e| anyhow::anyhow!("dkg probe stopped before state sync: {e:?}"))?,
-        ),
+        // Fresh or resumed joins need the probe artifact to sync, but waiting
+        // forever hides a committee that can never answer (rotated past
+        // genesis, or every bootstrapper down): fail fast with an actionable
+        // error instead of hanging before consensus starts.
+        None if snapshot_sync => {
+            let wait = Duration::from_secs(300);
+            match ::tokio::time::timeout(wait, probe_mailbox.subscribe()).await {
+                Ok(Ok(artifact)) => Some(artifact),
+                Ok(Err(e)) => {
+                    return Err(anyhow::anyhow!(
+                        "dkg probe stopped before state sync: {e:?}"
+                    ));
+                }
+                Err(_) => {
+                    return Err(anyhow::anyhow!(
+                        "no peers answered the epoch probe within {}s; check peers.json                          bootstrappers and network reachability",
+                        wait.as_secs()
+                    ));
+                }
+            }
+        }
         None => None,
     };
     if let Some(artifact) = &probe_artifact {
@@ -436,6 +455,18 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         validator_index as u32,
         peers.participants.len() as u32,
     );
+    // The watchdog runs before any blocking startup await: the state-sync
+    // handoff below can itself stall, and that stall must be recoverable.
+    if config.watchdog_stall_seconds > 0 {
+        let stall = Duration::from_secs(config.watchdog_stall_seconds);
+        let watchdog_state = node_state.clone();
+        // Existence of the history directory means this node finalized in a
+        // prior run; the store itself opens later and must not be opened twice.
+        let has_durable_history = config.data_dir.join("history").is_dir();
+        state_resolver_handles.push(context.child("watchdog").spawn(move |_| async move {
+            crate::run_watchdog(watchdog_state, stall, has_durable_history).await;
+        }));
+    }
     if let Some(height) = completed_sync_height {
         node_state.set_snapshot_revision(height.get());
     }
@@ -665,13 +696,13 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         let _ = validator.set(::tokio::sync::Mutex::new(admission));
     }
     let gossip = TxGossip::new(mempool.clone(), validator.clone(), chain_id, mempool_sender);
-    spawn_tx_receiver(
+    state_resolver_handles.push(spawn_tx_receiver(
         context.child("tx_receiver"),
         mempool_receiver,
         mempool.clone(),
         validator.clone(),
         chain_id,
-    );
+    ));
     let tx_submit: TxSubmitCallback = Arc::new(move |bytes| {
         let gossip = gossip.clone();
         Box::pin(async move { gossip.submit(bytes).await })
@@ -741,14 +772,7 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
             },
         ));
     }
-    if config.watchdog_stall_seconds > 0 {
-        let stall = Duration::from_secs(config.watchdog_stall_seconds);
-        let watchdog_state = node_state.clone();
-        let has_durable_history = history.head_height() > 0;
-        state_resolver_handles.push(context.child("watchdog").spawn(move |_| async move {
-            crate::run_watchdog(watchdog_state, stall, has_durable_history).await;
-        }));
-    }
+
     let rpc_handle = RpcServer::with_state_provider(node_state, rpc_addr, chain_id, state_provider)
         .with_max_connections(config.rpc.max_connections.get())
         .with_tx_submit(tx_submit)

@@ -51,6 +51,7 @@ impl KeysCommand {
                 ctx.print_json(&serde_json::json!({
                     "did": signer.did(),
                     "pubkey": format!("0x{}", hex::encode(signer.pubkey_bytes())),
+                    "private_key": format!("0x{}", hex::encode(signer.secret_key_bytes()?)),
                 }))?;
             }
             Self::ShowEvm { key } => {
@@ -79,6 +80,7 @@ impl KeysCommand {
                 ctx.print_json(&serde_json::json!({
                     "did": signer.did(),
                     "pubkey": format!("0x{}", hex::encode(signer.pubkey_bytes())),
+                    "private_key": format!("0x{}", hex::encode(signer.secret_key_bytes()?)),
                 }))?;
             }
             Self::BearerToken { subject, expiry } => {

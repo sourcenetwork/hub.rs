@@ -87,7 +87,5 @@ retaining the same operation claim. Execution rejects substituted arguments and
 returns the retained original outcome for an authorized retry. The operation ID
 and expiry rules still apply after the outcome is pruned.
 
-This is the native alternative to the legacy signed-policy-command payload. It
-uses the native JWT format and execution timestamps in seconds, not the legacy
-protobuf payload or revision-based expiration field. The legacy endpoint remains
-unsupported. Broad scoped bearer tokens remain a separate delegation choice.
+It uses the native JWT format and execution timestamps in seconds. Broad
+scoped bearer tokens remain a separate delegation choice.

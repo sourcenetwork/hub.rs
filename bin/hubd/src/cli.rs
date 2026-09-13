@@ -290,12 +290,17 @@ fn node_settings(
     timeouts: ConsensusTimeouts,
 ) -> eyre::Result<NodeSettings> {
     let secrets_path = config.data_dir.join("secrets.json");
+    let rpc_addr = config
+        .rpc
+        .http_addr
+        .parse()
+        .or_else(|_| format!("0.0.0.0:{rpc_port}").parse())?;
     Ok(NodeSettings {
         config,
         genesis,
         peers,
         secrets_path,
-        rpc_addr: format!("0.0.0.0:{rpc_port}").parse()?,
+        rpc_addr,
         leader_timeout: timeouts
             .leader_timeout_ms
             .map_or(DEFAULT_LEADER_TIMEOUT, Duration::from_millis),

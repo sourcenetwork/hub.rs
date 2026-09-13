@@ -309,8 +309,13 @@ impl HubClient {
         max_attempts: u32,
     ) -> Result<TransactionReceipt, ClientError> {
         for _ in 0..max_attempts {
-            if let Some(receipt) = self.get_transaction_receipt(tx_hash).await? {
-                return Ok(receipt);
+            match self.get_transaction_receipt(tx_hash).await {
+                Ok(Some(receipt)) => return Ok(receipt),
+                Ok(None) => {}
+                // Throttling is transient: the submission already succeeded,
+                // so aborting here would report a spurious failure.
+                Err(error) if error.is_throttled() => {}
+                Err(error) => return Err(error),
             }
             tokio::time::sleep(interval).await;
         }

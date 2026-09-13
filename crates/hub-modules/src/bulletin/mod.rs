@@ -36,6 +36,10 @@ resources:
 
 const MODULE_DID: &str = "did:key:bulletin";
 
+/// Maximum accepted post payload; keeps any single post far below the
+/// per-namespace read budget so reads cannot be bricked by one write.
+const MAX_POST_PAYLOAD_BYTES: usize = 64 * 1024;
+
 /// Bulletin module.
 ///
 /// Manages namespaces, posts, and collaborator access. Authorization
@@ -212,6 +216,9 @@ impl BulletinModule {
             });
         }
 
+        if payload.len() > MAX_POST_PAYLOAD_BYTES {
+            return Err(BulletinError::PostPayloadTooLarge(MAX_POST_PAYLOAD_BYTES));
+        }
         if payload.is_empty() {
             return Err(BulletinError::InvalidPostPayload);
         }

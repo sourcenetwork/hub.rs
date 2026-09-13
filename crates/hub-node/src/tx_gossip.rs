@@ -145,7 +145,7 @@ pub fn spawn_tx_receiver<E: Spawner, R: Receiver + Send + 'static>(
     mempool: InMemoryMempool,
     validator: SharedValidator,
     chain_id: u64,
-) {
+) -> commonware_runtime::Handle<()> {
     context.spawn(move |_| async move {
         loop {
             match receiver.recv().await {
@@ -163,5 +163,5 @@ pub fn spawn_tx_receiver<E: Spawner, R: Receiver + Send + 'static>(
                 }
             }
         }
-    });
+    })
 }

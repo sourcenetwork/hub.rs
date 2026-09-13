@@ -33,7 +33,9 @@ impl AcpModule {
                     "relationship record identity mismatch".into(),
                 ));
             }
-            if self.matches_selector(&record, selector) {
+            // Archived objects are absent to evaluation and ownership
+            // queries; relationship listings must agree with them.
+            if !record.archived && self.matches_selector(&record, selector) {
                 records.push(record);
             }
         }

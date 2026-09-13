@@ -36,7 +36,7 @@ impl ArchiveReader {
         let lookup = self.lookup.clone();
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            let mut remaining_bytes = usize::MAX;
+            let mut remaining_bytes = 64 << 20;
             lookup(query, &mut remaining_bytes)
         })
         .await

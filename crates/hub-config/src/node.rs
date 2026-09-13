@@ -208,8 +208,8 @@ impl NodeConfig {
                     })?;
                 }
 
-                // Write key to disk
-                std::fs::write(&key_path, seed).map_err(|e| ConfigError::Write {
+                // Write key to disk with owner-only permissions.
+                hub_cli::write_private(&key_path, &seed[..]).map_err(|e| ConfigError::Write {
                     path: key_path.clone(),
                     source: e,
                 })?;
