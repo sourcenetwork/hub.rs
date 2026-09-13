@@ -92,7 +92,7 @@ jobs:
         if: always()
         run: |
           git checkout -- .
-          git clean -fd
+          git clean -fdx -e '/target'
 
   e2e-canonical:
     name: "E2E (canonical)"
@@ -136,7 +136,7 @@ jobs:
         if: always()
         run: |
           git checkout -- .
-          git clean -fd
+          git clean -fdx -e '/target'
           python3 .github/scripts/stop-test-nodes.py "$VERAD_BINARY"
           rm -rf "$TMPDIR"
 
@@ -193,7 +193,7 @@ jobs:
         if: always()
         run: |
           git checkout -- .
-          git clean -fd
+          git clean -fdx -e '/target'
           python3 .github/scripts/stop-test-nodes.py "$VERAD_BINARY"
           rm -rf "$TMPDIR"
 
@@ -233,7 +233,7 @@ jobs:
         if: always()
         run: |
           git checkout -- .
-          git clean -fd
+          git clean -fdx -e '/target'
 
   linux-native:
     name: Linux native service
