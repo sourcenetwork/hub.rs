@@ -2,51 +2,13 @@
 
 use std::collections::BTreeSet;
 
-use vera_domain::{ConsensusDigest, StateRoot, Tx, TxId as DomainTxId};
-use vera_qmdb::ChangeSet;
-use vera_traits::StateDb;
-
-use crate::ConsensusError;
+use vera_domain::{ConsensusDigest, Tx, TxId as DomainTxId};
 
 /// Transaction identifier type.
 pub type TxId = DomainTxId;
 
 /// Consensus digest type.
 pub type Digest = ConsensusDigest;
-
-/// A snapshot of execution state at a specific block.
-#[derive(Clone, Debug)]
-pub struct Snapshot<S> {
-    /// Parent block digest.
-    pub parent: Option<Digest>,
-    /// State database at this point.
-    pub state: S,
-    /// Computed state root.
-    pub state_root: StateRoot,
-    /// Pending state changes not yet persisted.
-    pub changes: ChangeSet,
-    /// Transaction IDs included in this snapshot's block.
-    pub tx_ids: BTreeSet<TxId>,
-}
-
-impl<S> Snapshot<S> {
-    /// Create a new snapshot.
-    pub const fn new(
-        parent: Option<Digest>,
-        state: S,
-        state_root: StateRoot,
-        changes: ChangeSet,
-        tx_ids: BTreeSet<TxId>,
-    ) -> Self {
-        Self {
-            parent,
-            state,
-            state_root,
-            changes,
-            tx_ids,
-        }
-    }
-}
 
 /// Mempool provides access to pending transactions for block building.
 ///
@@ -72,58 +34,5 @@ pub trait Mempool: Clone + Send + Sync + 'static {
     /// Check if the mempool is empty.
     fn is_empty(&self) -> bool {
         self.len() == 0
-    }
-}
-
-/// Manages execution snapshots keyed by block digest.
-///
-/// Snapshots allow replaying execution from any ancestor and computing
-/// speculative state roots before finalization.
-pub trait SnapshotStore<S: StateDb>: Clone + Send + Sync + 'static {
-    /// Get a snapshot by digest.
-    fn get(&self, digest: &Digest) -> Option<Snapshot<S>>;
-
-    /// Insert a new snapshot.
-    fn insert(&self, digest: Digest, snapshot: Snapshot<S>);
-
-    /// Check if a digest has been persisted to the underlying state db.
-    fn is_persisted(&self, digest: &Digest) -> bool;
-
-    /// Mark a chain of digests as persisted.
-    fn mark_persisted(&self, digests: &[Digest]);
-
-    /// Get merged changes from the last persisted ancestor up to and including
-    /// the given parent, then merge with the provided new changes.
-    fn merged_changes(
-        &self,
-        parent: Digest,
-        new_changes: ChangeSet,
-    ) -> Result<ChangeSet, ConsensusError>;
-
-    /// Get the chain of unpersisted digests and merged changes for persistence.
-    fn changes_for_persist(
-        &self,
-        digest: Digest,
-    ) -> Result<(Vec<Digest>, ChangeSet), ConsensusError>;
-}
-
-#[cfg(test)]
-mod tests {
-    use alloy_primitives::B256;
-    use vera_domain::StateRoot;
-
-    use super::*;
-
-    #[test]
-    fn snapshot_new() {
-        let snapshot: Snapshot<()> = Snapshot::new(
-            None,
-            (),
-            StateRoot(B256::ZERO),
-            ChangeSet::new(),
-            BTreeSet::new(),
-        );
-        assert!(snapshot.parent.is_none());
-        assert_eq!(snapshot.state_root, StateRoot(B256::ZERO));
     }
 }

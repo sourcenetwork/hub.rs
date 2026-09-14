@@ -4,9 +4,6 @@
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
-mod batch;
-pub use batch::StoreBatches;
-
 mod changes;
 pub use changes::{AccountUpdate, ChangeSet};
 
@@ -18,9 +15,3 @@ pub use error::QmdbError;
 
 mod root;
 pub use root::StateRoot;
-
-mod store;
-pub use store::{QmdbStore, Stores};
-
-mod traits;
-pub use traits::{QmdbBatchable, QmdbGettable};

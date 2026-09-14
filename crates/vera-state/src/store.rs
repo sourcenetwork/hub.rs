@@ -23,10 +23,10 @@ const META_VERSION_KEY: &[u8] = b"\x00__canonical_version__";
 
 /// Well-known key in `raw_kv` for persisting the canonical height.
 const META_HEIGHT_KEY: &[u8] = b"\x00__canonical_height__";
+const RESTORE_MARKER_KEY: &[u8] = b"\x00__restore_in_progress__";
 const HEIGHT_PREFIX: &[u8] = b"\x00__height_version__";
 
 mod recovery;
-mod transfer;
 use recovery::{UNDO_PREFIX, height_key};
 
 /// RocksDB-backed JMT store with four column families:
@@ -107,6 +107,15 @@ impl JmtStore {
     }
 
     /// Read the persisted canonical height from `raw_kv` metadata.
+    /// Whether an interrupted legacy module restore marker is present.
+    ///
+    /// Only the removed snapshot-restore path ever wrote this marker; existing
+    /// stores reject reopening until it is absent.
+    pub fn restore_in_progress(&self) -> Result<bool> {
+        Ok(self.get_raw(CF_VALUES, RESTORE_MARKER_KEY)?.is_some())
+    }
+
+    /// Read the canonical height metadata.
     pub fn read_canonical_height(&self) -> Result<Option<u64>> {
         match self.get_raw(CF_RAW_KV, META_HEIGHT_KEY)? {
             Some(bytes) => {

@@ -8050,20 +8050,11 @@ dependencies = [
 name = "vera-consensus"
 version = "0.1.0"
 dependencies = [
- "alloy-consensus",
- "alloy-primitives",
  "commonware-codec",
- "commonware-cryptography",
- "futures",
  "parking_lot",
  "rstest",
- "thiserror 2.0.18",
  "tokio",
- "vera-config",
  "vera-domain",
- "vera-executor",
- "vera-qmdb",
- "vera-traits",
 ]
 
 [[package]]
