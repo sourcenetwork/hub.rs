@@ -35,6 +35,7 @@ pub struct IndexedStateProvider<S> {
     chain_id: u64,
     block_gas_limit: u64,
     modules: SharedModuleState,
+    archive: Option<crate::ArchiveReader>,
 }
 
 impl<S> IndexedStateProvider<S> {
@@ -53,7 +54,16 @@ impl<S> IndexedStateProvider<S> {
             chain_id,
             block_gas_limit,
             modules,
+            archive: None,
         }
+    }
+}
+
+impl<S> IndexedStateProvider<S> {
+    /// Enable bounded historical point reads when entries are absent from memory.
+    pub fn with_archive(mut self, archive: crate::ArchiveReader) -> Self {
+        self.archive = Some(archive);
+        self
     }
 }
 
@@ -65,6 +75,7 @@ impl<S: Clone> Clone for IndexedStateProvider<S> {
             chain_id: self.chain_id,
             block_gas_limit: self.block_gas_limit,
             modules: Arc::clone(&self.modules),
+            archive: self.archive.clone(),
         }
     }
 }
@@ -120,22 +131,54 @@ impl<S: StateDbRead + Send + Sync + 'static> StateProvider for IndexedStateProvi
 
     async fn block_by_number(&self, block: BlockNumberOrTag) -> Result<Option<RpcBlock>, RpcError> {
         let block_num = self.resolve_block_number(&block)?;
-        let indexed = self.index.get_block_by_number(block_num);
+        let mut indexed = self.index.get_block_by_number(block_num);
+        if indexed.is_none()
+            && let Some(archive) = &self.archive
+        {
+            indexed = archive
+                .read(hub_indexer::IndexQuery::Revision(block_num))
+                .await?
+                .and_then(|index| index.get_block_by_number(block_num));
+        }
         Ok(indexed.map(indexed_block_to_rpc))
     }
 
     async fn block_by_hash(&self, hash: B256) -> Result<Option<RpcBlock>, RpcError> {
-        let indexed = self.index.get_block_by_hash(&hash);
+        let mut indexed = self.index.get_block_by_hash(&hash);
+        if indexed.is_none()
+            && let Some(archive) = &self.archive
+        {
+            indexed = archive
+                .read(hub_indexer::IndexQuery::RevisionHash(hash))
+                .await?
+                .and_then(|index| index.get_block_by_hash(&hash));
+        }
         Ok(indexed.map(indexed_block_to_rpc))
     }
 
     async fn transaction_by_hash(&self, hash: B256) -> Result<Option<RpcTransaction>, RpcError> {
-        let indexed = self.index.get_transaction(&hash);
+        let mut indexed = self.index.get_transaction(&hash);
+        if indexed.is_none()
+            && let Some(archive) = &self.archive
+        {
+            indexed = archive
+                .read(hub_indexer::IndexQuery::Submission(hash))
+                .await?
+                .and_then(|index| index.get_transaction(&hash));
+        }
         Ok(indexed.map(indexed_tx_to_rpc))
     }
 
     async fn receipt_by_hash(&self, hash: B256) -> Result<Option<RpcTransactionReceipt>, RpcError> {
-        let indexed = self.index.get_receipt(&hash);
+        let mut indexed = self.index.get_receipt(&hash);
+        if indexed.is_none()
+            && let Some(archive) = &self.archive
+        {
+            indexed = archive
+                .read(hub_indexer::IndexQuery::Submission(hash))
+                .await?
+                .and_then(|index| index.get_receipt(&hash));
+        }
         Ok(indexed.map(indexed_receipt_to_rpc))
     }
 
@@ -173,7 +216,13 @@ impl<S: StateDbRead + Send + Sync + 'static> StateProvider for IndexedStateProvi
             }
         }
 
-        let indexed_logs = self.index.get_logs(&log_filter);
+        let indexed_logs = if let Some(archive) = &self.archive {
+            archive.logs(self.index.clone(), log_filter).await?
+        } else {
+            self.index
+                .get_logs(&log_filter)
+                .map_err(crate::archive::log_error)?
+        };
         let logs = indexed_logs
             .into_iter()
             .map(|log| RpcLog {
@@ -393,6 +442,221 @@ mod tests {
     use hub_indexer::IndexedLog;
 
     use super::*;
+
+    #[tokio::test]
+    async fn log_query_limits_reach_rpc_clients() {
+        let provider = IndexedStateProvider::new(
+            Arc::new(BlockIndex::new()),
+            MockState,
+            1,
+            30_000_000,
+            default_modules(),
+        );
+        let filter = RpcLogFilter {
+            to_block: Some(BlockNumberOrTag::Number(U64::from(u64::MAX))),
+            ..Default::default()
+        };
+        let error: jsonrpsee::types::ErrorObjectOwned =
+            provider.get_logs(filter).await.unwrap_err().into();
+        assert_eq!(error.code(), crate::error::codes::LIMIT_EXCEEDED);
+        let filter = RpcLogFilter {
+            from_block: Some(BlockNumberOrTag::Number(U64::from(2))),
+            to_block: Some(BlockNumberOrTag::Number(U64::from(1))),
+            ..Default::default()
+        };
+        let error: jsonrpsee::types::ErrorObjectOwned =
+            provider.get_logs(filter).await.unwrap_err().into();
+        assert_eq!(error.code(), crate::error::codes::INVALID_PARAMS);
+    }
+
+    #[tokio::test]
+    async fn archive_log_ranges_share_limits_with_resident_revisions() {
+        use crate::{ArchiveReader, NodeState};
+        use hub_indexer::{IndexQuery, IndexedLog};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let resident = Arc::new(BlockIndex::new());
+        let retained = Arc::new(BlockIndex::new());
+        for (height, index) in [(1, &retained), (2, &resident)] {
+            let hash = B256::with_last_byte(height as u8);
+            let mut receipt = create_test_receipt(hash, hash, height);
+            receipt.logs = vec![
+                IndexedLog {
+                    address: Address::ZERO,
+                    topics: vec![],
+                    data: Bytes::new(),
+                    log_index: 0,
+                    block_hash: hash,
+                    block_number: height,
+                    transaction_hash: hash,
+                    transaction_index: 0,
+                };
+                501
+            ];
+            index.insert_block(create_test_block(height, hash), vec![], vec![receipt]);
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let state = NodeState::new(1, 0, 1);
+        let archive = ArchiveReader::new(state.clone(), {
+            let calls = calls.clone();
+            let retained = retained.clone();
+            Arc::new(move |query, budget| {
+                calls.fetch_add(1, Ordering::Relaxed);
+                assert!(matches!(query, IndexQuery::Revision(1)));
+                assert_eq!(*budget, 64 << 20);
+                Ok(Some(retained.clone()))
+            })
+        });
+        let filter = LogFilter::new().from_block(1).to_block(2);
+        assert!(matches!(
+            archive.logs(resident.clone(), filter.clone()).await,
+            Err(RpcError::LimitExceeded(_))
+        ));
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        let logs = archive
+            .logs(resident.clone(), LogFilter::new().from_block(2).to_block(2))
+            .await
+            .unwrap();
+        assert_eq!(logs.len(), 501);
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        let logs = archive
+            .logs(resident.clone(), LogFilter::new().from_block(1).to_block(1))
+            .await
+            .unwrap();
+        assert_eq!(logs.len(), 501);
+        assert!(logs.iter().all(|log| log.block_number == 1));
+        let unmatched = filter.clone().address(vec![Address::repeat_byte(1)]);
+        assert!(
+            archive
+                .logs(resident.clone(), unmatched)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let permits = (0..8)
+            .map(|_| state.light_lookup_permit().unwrap())
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            archive.logs(resident.clone(), filter.clone()).await,
+            Err(RpcError::HistoryBusy)
+        ));
+        drop(permits);
+        let broken = ArchiveReader::new(
+            state,
+            Arc::new(|_, _| Err(RpcError::StateError("unready".into()))),
+        );
+        assert!(matches!(
+            broken.logs(resident, filter).await,
+            Err(RpcError::StateError(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn archive_point_reads_match_memory_and_propagate_failures() {
+        use crate::{ArchiveReader, HubApiImpl, HubApiServer, NodeState};
+        use hub_indexer::IndexQuery;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let hash = B256::repeat_byte(7);
+        let tx_hash = B256::repeat_byte(8);
+        let index = Arc::new(BlockIndex::new());
+        let mut block = create_test_block(1, hash);
+        block.transaction_hashes = vec![tx_hash];
+        let mut tx = create_test_tx(tx_hash, hash, 1);
+        tx.nonce = 73;
+        tx.signer_did = Some("did:key:retained-owner".into());
+        let mut receipt = create_test_receipt(tx_hash, hash, 1);
+        receipt.signer_did = tx.signer_did.clone();
+        let evicted = Arc::new(BlockIndex::new());
+        evicted.insert_block(block.clone(), vec![tx.clone()], vec![receipt.clone()]);
+        for number in 2..=hub_indexer::MAX_CACHED_REVISIONS as u64 + 1 {
+            evicted.insert_block(
+                create_test_block(number, B256::from(U256::from(number))),
+                vec![],
+                vec![],
+            );
+        }
+        assert!(evicted.get_receipt(&tx_hash).is_none());
+        index.insert_block(block, vec![tx], vec![receipt]);
+        let state = NodeState::new(1, 0, 1);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let archive = ArchiveReader::new(state.clone(), {
+            let calls = calls.clone();
+            let index = index.clone();
+            Arc::new(move |query, _remaining_bytes| {
+                calls.fetch_add(1, Ordering::Relaxed);
+                Ok(match query {
+                    IndexQuery::Revision(1) => Some(index.clone()),
+                    IndexQuery::RevisionHash(id) if id == hash => Some(index.clone()),
+                    IndexQuery::Submission(id) if id == tx_hash => Some(index.clone()),
+                    _ => None,
+                })
+            })
+        });
+        let hot =
+            IndexedStateProvider::new(index.clone(), MockState, 1, 30_000_000, default_modules())
+                .with_archive(archive.clone());
+        let cold =
+            IndexedStateProvider::new(evicted.clone(), MockState, 1, 30_000_000, default_modules())
+                .with_archive(archive.clone());
+        let height = BlockNumberOrTag::Number(U64::from(1));
+        let expected = serde_json::to_value((
+            hot.block_by_number(height.clone()).await.unwrap(),
+            hot.block_by_hash(hash).await.unwrap(),
+            hot.transaction_by_hash(tx_hash).await.unwrap(),
+            hot.receipt_by_hash(tx_hash).await.unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        let actual = serde_json::to_value((
+            cold.block_by_number(height).await.unwrap(),
+            cold.block_by_hash(hash).await.unwrap(),
+            cold.transaction_by_hash(tx_hash).await.unwrap(),
+            cold.receipt_by_hash(tx_hash).await.unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(calls.load(Ordering::Relaxed), 4);
+        let hot_api = HubApiImpl::new(Arc::new(state.clone()), None)
+            .with_index_and_modules(index, default_modules());
+        let cold_api = HubApiImpl::new(Arc::new(state.clone()), None)
+            .with_index_and_modules(evicted, default_modules())
+            .with_archive(archive);
+        let expected = hot_api
+            .get_transaction_receipt(tx_hash)
+            .await
+            .unwrap()
+            .unwrap();
+        let actual = cold_api
+            .get_transaction_receipt(tx_hash)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(actual.native_nonce, Some(U64::from(73)));
+        assert_eq!(
+            serde_json::to_value(actual).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
+        assert!(
+            cold.transaction_by_hash(B256::ZERO)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let _held: Vec<_> = (0..8)
+            .map(|_| state.light_lookup_permit().unwrap())
+            .collect();
+        let error: jsonrpsee::types::ErrorObjectOwned =
+            cold.receipt_by_hash(tx_hash).await.unwrap_err().into();
+        assert_eq!(error.code(), crate::error::codes::RESOURCE_UNAVAILABLE);
+        assert_eq!(error.data().unwrap().get(), r#"{"retryable":true}"#);
+        let broken = cold.with_archive(ArchiveReader::new(
+            NodeState::new(1, 0, 1),
+            Arc::new(|_, _| Err(RpcError::StateError("unready archive".into()))),
+        ));
+        assert!(matches!(
+            broken.block_by_hash(hash).await,
+            Err(RpcError::StateError(_))
+        ));
+    }
 
     fn default_modules() -> SharedModuleState {
         Arc::new(RwLock::new(ModuleState::default()))

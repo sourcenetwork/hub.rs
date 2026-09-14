@@ -11,8 +11,10 @@ description = "Rust client library for hub (EVM + BLS transaction paths)"
 workspace = true
 
 [dependencies]
+borsh.workspace = true
 hub-crypto.workspace = true
 hub-domain.workspace = true
+hub-permission.workspace = true
 hub-modules.workspace = true
 
 acp = { workspace = true, default-features = false }
@@ -32,6 +34,8 @@ ark-ec.workspace = true
 ark-ff.workspace = true
 ark-serialize.workspace = true
 rand.workspace = true
+zeroize = "1.8"
+tempfile.workspace = true
 
 base64.workspace = true
 reqwest.workspace = true

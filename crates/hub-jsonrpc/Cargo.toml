@@ -18,6 +18,7 @@ tower-http.workspace = true
 
 # JSON-RPC
 jsonrpsee.workspace = true
+jsonrpsee-server = { path = "../../vendor/jsonrpsee-server" }
 
 # Alloy types
 alloy-primitives = { workspace = true, features = ["serde"] }
@@ -47,8 +48,11 @@ commonware-cryptography.workspace = true
 
 # Hub crates
 hub-domain.workspace = true
+hub-backend.workspace = true
+hub-permission.workspace = true
 hub-executor.workspace = true
 hub-indexer.workspace = true
+hub-modules.workspace = true
 hub-traits.workspace = true
 
 [dev-dependencies]

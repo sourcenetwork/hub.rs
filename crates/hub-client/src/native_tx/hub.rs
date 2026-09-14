@@ -9,6 +9,20 @@ use crate::error::ClientError;
 use crate::types::TransactionReceipt;
 
 impl HubClient {
+    /// Revoke a signed delegation, including one that has never been used.
+    pub async fn native_revoke_delegation(
+        &self,
+        signer: &BlsSigner,
+        token: &str,
+    ) -> Result<TransactionReceipt, ClientError> {
+        let calldata = IHub::revokeDelegationCall {
+            token: token.into(),
+        }
+        .abi_encode();
+        self.send_native_precompile_tx(signer, HUB_ADDRESS, calldata.into())
+            .await
+    }
+
     /// Invalidate a JWS token by its hash via native BLS transaction.
     pub async fn native_invalidate_jws(
         &self,

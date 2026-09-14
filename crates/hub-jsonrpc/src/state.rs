@@ -30,6 +30,22 @@ struct NodeStateInner {
     peer_count: AtomicU64,
     is_leader: RwLock<bool>,
     backfilling: AtomicBool,
+    snapshot_revision: AtomicU64,
+    proof_requests: Arc<tokio::sync::Semaphore>,
+    light_lookups: Arc<tokio::sync::Semaphore>,
+    proof_progress: tokio::sync::watch::Sender<()>,
+}
+
+fn acquire(
+    semaphore: &Arc<tokio::sync::Semaphore>,
+) -> jsonrpsee::core::RpcResult<tokio::sync::OwnedSemaphorePermit> {
+    semaphore.clone().try_acquire_owned().map_err(|_| {
+        jsonrpsee::types::ErrorObjectOwned::owned(
+            crate::error::codes::RESOURCE_UNAVAILABLE,
+            "proof service busy; retry later",
+            Some(serde_json::json!({"retryable": true})),
+        )
+    })
 }
 
 impl NodeState {
@@ -49,8 +65,33 @@ impl NodeState {
                 peer_count: AtomicU64::new(0),
                 is_leader: RwLock::new(false),
                 backfilling: AtomicBool::new(false),
+                snapshot_revision: AtomicU64::new(0),
+                proof_requests: Arc::new(tokio::sync::Semaphore::new(8)),
+                light_lookups: Arc::new(tokio::sync::Semaphore::new(8)),
+                proof_progress: tokio::sync::watch::channel(()).0,
             }),
         }
+    }
+
+    pub(crate) fn proof_permit(
+        &self,
+    ) -> jsonrpsee::core::RpcResult<tokio::sync::OwnedSemaphorePermit> {
+        acquire(&self.inner.proof_requests)
+    }
+
+    pub(crate) fn light_lookup_permit(
+        &self,
+    ) -> jsonrpsee::core::RpcResult<tokio::sync::OwnedSemaphorePermit> {
+        acquire(&self.inner.light_lookups)
+    }
+
+    /// Wake proof readers after publishing an execution index or finality evidence.
+    pub fn notify_proof_progress(&self) {
+        self.inner.proof_progress.send_replace(());
+    }
+
+    pub(crate) fn proof_updates(&self) -> tokio::sync::watch::Receiver<()> {
+        self.inner.proof_progress.subscribe()
     }
 
     /// Update the current view.
@@ -105,6 +146,11 @@ impl NodeState {
         self.inner.peer_count.store(count, Ordering::Relaxed);
     }
 
+    /// Current peer count.
+    pub fn peer_count(&self) -> u64 {
+        self.inner.peer_count.load(Ordering::Relaxed)
+    }
+
     /// Set whether this node is backfilling historical blocks.
     pub fn set_backfilling(&self, backfilling: bool) {
         self.inner.backfilling.store(backfilling, Ordering::Relaxed);
@@ -115,6 +161,13 @@ impl NodeState {
         self.inner.backfilling.load(Ordering::Relaxed)
     }
 
+    /// Record the revision recovered through snapshot transfer or its persisted startup floor.
+    pub fn set_snapshot_revision(&self, revision: u64) {
+        self.inner
+            .snapshot_revision
+            .store(revision, Ordering::Relaxed);
+    }
+
     /// Get the finalized block count.
     pub fn finalized_count(&self) -> u64 {
         self.inner.finalized_count.load(Ordering::Relaxed)
@@ -122,6 +175,7 @@ impl NodeState {
 
     /// Get current node status.
     pub fn status(&self) -> NodeStatus {
+        let snapshot_revision = self.inner.snapshot_revision.load(Ordering::Relaxed);
         NodeStatus {
             chain_id: self.inner.chain_id,
             validator_index: self.inner.validator_index,
@@ -134,6 +188,7 @@ impl NodeState {
             peer_count: self.inner.peer_count.load(Ordering::Relaxed),
             is_leader: *self.inner.is_leader.read(),
             backfilling: self.inner.backfilling.load(Ordering::Relaxed),
+            snapshot_revision: (snapshot_revision > 0).then_some(snapshot_revision),
         }
     }
 }
@@ -164,6 +219,9 @@ pub struct NodeStatus {
     pub is_leader: bool,
     /// Whether this node is backfilling historical blocks.
     pub backfilling: bool,
+    /// Revision recovered through snapshot transfer, or its persisted recovery floor on restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_revision: Option<u64>,
 }
 
 #[cfg(test)]
@@ -184,6 +242,7 @@ mod tests {
             peer_count: 3,
             is_leader: true,
             backfilling: false,
+            snapshot_revision: None,
         };
 
         let json = serde_json::to_string(&status).unwrap();
@@ -203,6 +262,24 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_revision_is_optional_and_serialized() {
+        let state = NodeState::new(1, 0, 4);
+        let before = serde_json::to_value(state.status()).unwrap();
+        assert!(before.get("snapshotRevision").is_none());
+        assert!(
+            serde_json::from_value::<NodeStatus>(before)
+                .unwrap()
+                .snapshot_revision
+                .is_none()
+        );
+        state.set_snapshot_revision(42);
+        assert_eq!(
+            serde_json::to_value(state.status()).unwrap()["snapshotRevision"],
+            42
+        );
+    }
+
+    #[test]
     fn node_status_json_uses_camel_case() {
         let status = NodeStatus {
             chain_id: 1,
@@ -216,6 +293,7 @@ mod tests {
             peer_count: 0,
             is_leader: false,
             backfilling: false,
+            snapshot_revision: None,
         };
 
         let json = serde_json::to_string(&status).unwrap();

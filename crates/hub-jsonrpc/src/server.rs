@@ -3,7 +3,7 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use axum::{Router, extract::State, http::StatusCode, response::IntoResponse, routing::get};
-use jsonrpsee::server::{Server, ServerHandle};
+use jsonrpsee_server::{BatchRequestConfig, Server, ServerHandle};
 use tokio::sync::broadcast;
 use tower::limit::ConcurrencyLimitLayer;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
@@ -14,6 +14,8 @@ use hub_indexer::{BlockIndex, LightBlockIndex};
 
 use hub_domain::GossipHeader;
 
+use crate::header_subscribe::{HeaderSubscriptionApiImpl, HeaderSubscriptionApiServer};
+
 use crate::{
     config::{CorsConfig, RpcServerConfig},
     eth::{
@@ -21,7 +23,7 @@ use crate::{
         Web3ApiServer,
     },
     eth_subscribe::{EthSubscriptionApiImpl, EthSubscriptionApiServer},
-    hub_api::{HubApiImpl, HubApiServer},
+    hub_api::{HubApiImpl, HubApiServer, LightBlockLookup, ReceiptProofLookup},
     state::NodeState,
     state_provider::{NoopStateProvider, StateProvider},
     types::{RpcBlock, RpcLog},
@@ -101,7 +103,11 @@ pub struct RpcServer<S: StateProvider = NoopStateProvider> {
     hub_index: Option<Arc<BlockIndex>>,
     hub_modules: Option<SharedModuleState>,
     hub_module_trees: Option<ModuleTrees>,
+    hub_native_modules: Option<(hub_backend::native::NativeStateSet, SharedModuleState)>,
     hub_light_block_index: Option<Arc<LightBlockIndex>>,
+    hub_light_block_lookup: Option<LightBlockLookup>,
+    hub_receipt_proof_lookup: Option<ReceiptProofLookup>,
+    hub_archive: Option<crate::ArchiveReader>,
 }
 
 impl<S: StateProvider> std::fmt::Debug for RpcServer<S> {
@@ -134,7 +140,11 @@ impl RpcServer<NoopStateProvider> {
             hub_index: None,
             hub_modules: None,
             hub_module_trees: None,
+            hub_native_modules: None,
             hub_light_block_index: None,
+            hub_light_block_lookup: None,
+            hub_receipt_proof_lookup: None,
+            hub_archive: None,
         }
     }
 
@@ -155,7 +165,11 @@ impl RpcServer<NoopStateProvider> {
             hub_index: None,
             hub_modules: None,
             hub_module_trees: None,
+            hub_native_modules: None,
             hub_light_block_index: None,
+            hub_light_block_lookup: None,
+            hub_receipt_proof_lookup: None,
+            hub_archive: None,
         }
     }
 }
@@ -183,7 +197,11 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             hub_index: None,
             hub_modules: None,
             hub_module_trees: None,
+            hub_native_modules: None,
             hub_light_block_index: None,
+            hub_light_block_lookup: None,
+            hub_receipt_proof_lookup: None,
+            hub_archive: None,
         }
     }
 
@@ -220,7 +238,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
         self
     }
 
-    /// Enable gossip header subscriptions via `eth_subscribe("headers")`.
+    /// Enable native finalized-header subscriptions via `hub_subscribeHeaders`.
     #[must_use]
     pub fn with_headers_subscription(
         mut self,
@@ -256,6 +274,36 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
         self
     }
 
+    /// Serve native permission proofs from the ordered module databases and query snapshot.
+    #[must_use]
+    pub fn with_hub_native_modules(
+        mut self,
+        databases: hub_backend::native::NativeStateSet,
+        modules: SharedModuleState,
+    ) -> Self {
+        self.hub_native_modules = Some((databases, modules));
+        self
+    }
+
+    /// Serve light blocks from durable history, including descendant certificates.
+    #[must_use]
+    pub fn with_hub_light_block_lookup(mut self, lookup: LightBlockLookup) -> Self {
+        self.hub_light_block_lookup = Some(lookup);
+        self
+    }
+
+    /// Configure durable receipt evidence for cache misses.
+    pub fn with_hub_receipt_proof_lookup(mut self, lookup: ReceiptProofLookup) -> Self {
+        self.hub_receipt_proof_lookup = Some(lookup);
+        self
+    }
+
+    /// Enable durable point reads for native receipts.
+    pub fn with_hub_archive(mut self, archive: crate::ArchiveReader) -> Self {
+        self.hub_archive = Some(archive);
+        self
+    }
+
     /// Set the light block index for `hub_getLightBlock` queries.
     #[must_use]
     pub fn with_hub_light_block_index(mut self, index: Arc<LightBlockIndex>) -> Self {
@@ -280,7 +328,11 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             hub_index: None,
             hub_modules: None,
             hub_module_trees: None,
+            hub_native_modules: None,
             hub_light_block_index: None,
+            hub_light_block_lookup: None,
+            hub_receipt_proof_lookup: None,
+            hub_archive: None,
         }
     }
 
@@ -302,7 +354,11 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
         let hub_index = self.hub_index;
         let hub_modules = self.hub_modules;
         let hub_module_trees = self.hub_module_trees;
+        let hub_native_modules = self.hub_native_modules;
         let hub_light_block_index = self.hub_light_block_index;
+        let hub_light_block_lookup = self.hub_light_block_lookup;
+        let hub_receipt_proof_lookup = self.hub_receipt_proof_lookup;
+        let hub_archive = self.hub_archive;
 
         // Signal from the JSON-RPC task to the HTTP task indicating whether it
         // successfully bound the port. The HTTP status server waits for this
@@ -315,7 +371,18 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
 
         let jsonrpc_handle = tokio::spawn(async move {
             let server = match Server::builder()
+                // Subscription acknowledgements echo the client's request id;
+                // keeping the response budget above the request budget keeps
+                // that echo from overflowing the response limit.
+                .max_request_body_size(hub_domain::SUBMISSION_REQUEST_BYTES)
+                .max_response_body_size(
+                    hub_permission::PERMISSION_RESPONSE_BYTES
+                        .max(hub_domain::RECEIPT_RESPONSE_BYTES) as u32,
+                )
                 .max_connections(max_connections)
+                .set_batch_request_config(BatchRequestConfig::Limit(64))
+                .max_subscriptions_per_connection(8)
+                .set_message_buffer_capacity(8)
                 .build(addr)
                 .await
             {
@@ -346,6 +413,18 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
                 if let Some(trees) = hub_module_trees {
                     api = api.with_module_trees(trees);
                 }
+                if let Some((databases, modules)) = hub_native_modules {
+                    api = api.with_native_modules(databases, modules);
+                }
+                if let Some(archive) = hub_archive {
+                    api = api.with_archive(archive);
+                }
+                if let Some(lookup) = hub_receipt_proof_lookup {
+                    api = api.with_receipt_proof_lookup(lookup);
+                }
+                if let Some(lookup) = hub_light_block_lookup {
+                    api = api.with_light_block_lookup(lookup);
+                }
                 if let Some(lbi) = hub_light_block_index {
                     api = api.with_light_block_index(lbi);
                 }
@@ -370,6 +449,13 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             }
             if let Err(e) = module.merge(hub_api.into_rpc()) {
                 error!(error = %e, "Failed to merge hub API");
+                let _ = jsonrpc_ready_tx.send(false);
+                return None;
+            }
+            if let Some(headers) = subscription_headers.as_ref()
+                && let Err(e) = module.merge(HeaderSubscriptionApiImpl(headers.clone()).into_rpc())
+            {
+                error!(error = %e, "Failed to merge header subscription API");
                 let _ = jsonrpc_ready_tx.send(false);
                 return None;
             }
@@ -495,7 +581,11 @@ pub struct JsonRpcServer<S: StateProvider = NoopStateProvider> {
     hub_index: Option<Arc<BlockIndex>>,
     hub_modules: Option<SharedModuleState>,
     hub_module_trees: Option<ModuleTrees>,
+    hub_native_modules: Option<(hub_backend::native::NativeStateSet, SharedModuleState)>,
     hub_light_block_index: Option<Arc<LightBlockIndex>>,
+    hub_light_block_lookup: Option<LightBlockLookup>,
+    hub_receipt_proof_lookup: Option<ReceiptProofLookup>,
+    hub_archive: Option<crate::ArchiveReader>,
 }
 
 impl<S: StateProvider> std::fmt::Debug for JsonRpcServer<S> {
@@ -525,7 +615,11 @@ impl JsonRpcServer<NoopStateProvider> {
             hub_index: None,
             hub_modules: None,
             hub_module_trees: None,
+            hub_native_modules: None,
             hub_light_block_index: None,
+            hub_light_block_lookup: None,
+            hub_receipt_proof_lookup: None,
+            hub_archive: None,
         }
     }
 }
@@ -547,7 +641,11 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
             hub_index: None,
             hub_modules: None,
             hub_module_trees: None,
+            hub_native_modules: None,
             hub_light_block_index: None,
+            hub_light_block_lookup: None,
+            hub_receipt_proof_lookup: None,
+            hub_archive: None,
         }
     }
 
@@ -584,7 +682,7 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
         self
     }
 
-    /// Enable gossip header subscriptions via `eth_subscribe("headers")`.
+    /// Enable native finalized-header subscriptions via `hub_subscribeHeaders`.
     #[must_use]
     pub fn with_headers_subscription(
         mut self,
@@ -620,6 +718,36 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
         self
     }
 
+    /// Serve native permission proofs from the ordered module databases and query snapshot.
+    #[must_use]
+    pub fn with_hub_native_modules(
+        mut self,
+        databases: hub_backend::native::NativeStateSet,
+        modules: SharedModuleState,
+    ) -> Self {
+        self.hub_native_modules = Some((databases, modules));
+        self
+    }
+
+    /// Serve light blocks from durable history, including descendant certificates.
+    #[must_use]
+    pub fn with_hub_light_block_lookup(mut self, lookup: LightBlockLookup) -> Self {
+        self.hub_light_block_lookup = Some(lookup);
+        self
+    }
+
+    /// Configure durable receipt evidence for cache misses.
+    pub fn with_hub_receipt_proof_lookup(mut self, lookup: ReceiptProofLookup) -> Self {
+        self.hub_receipt_proof_lookup = Some(lookup);
+        self
+    }
+
+    /// Enable durable point reads for native receipts.
+    pub fn with_hub_archive(mut self, archive: crate::ArchiveReader) -> Self {
+        self.hub_archive = Some(archive);
+        self
+    }
+
     /// Set the light block index for `hub_getLightBlock` queries.
     #[must_use]
     pub fn with_hub_light_block_index(mut self, index: Arc<LightBlockIndex>) -> Self {
@@ -632,7 +760,15 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
     /// Returns the server handle and the actual bound address (useful when binding to port 0).
     pub async fn start(self) -> Result<(ServerHandle, SocketAddr), ServerError> {
         let server = Server::builder()
+            .max_request_body_size(hub_domain::SUBMISSION_REQUEST_BYTES)
+            .max_response_body_size(
+                hub_permission::PERMISSION_RESPONSE_BYTES.max(hub_domain::RECEIPT_RESPONSE_BYTES)
+                    as u32,
+            )
             .max_connections(self.max_connections)
+            .set_batch_request_config(BatchRequestConfig::Limit(64))
+            .max_subscriptions_per_connection(8)
+            .set_message_buffer_capacity(8)
             .build(self.addr)
             .await
             .map_err(|e| ServerError::Build(e.to_string()))?;
@@ -674,12 +810,27 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
                 if let Some(trees) = self.hub_module_trees {
                     api = api.with_module_trees(trees);
                 }
+                if let Some((databases, modules)) = self.hub_native_modules {
+                    api = api.with_native_modules(databases, modules);
+                }
+                if let Some(archive) = self.hub_archive {
+                    api = api.with_archive(archive);
+                }
+                if let Some(lookup) = self.hub_receipt_proof_lookup {
+                    api = api.with_receipt_proof_lookup(lookup);
+                }
+                if let Some(lookup) = self.hub_light_block_lookup {
+                    api = api.with_light_block_lookup(lookup);
+                }
                 if let Some(lbi) = self.hub_light_block_index {
                     api = api.with_light_block_index(lbi);
                 }
                 api
             };
             module.merge(hub_api.into_rpc())?;
+        }
+        if let Some(headers) = self.subscription_headers.as_ref() {
+            module.merge(HeaderSubscriptionApiImpl(headers.clone()).into_rpc())?;
         }
         if let (Some(heads_tx), Some(logs_tx)) = (self.subscription_heads, self.subscription_logs) {
             let mut sub_api = EthSubscriptionApiImpl::new(heads_tx, logs_tx);

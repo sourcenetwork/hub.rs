@@ -56,53 +56,70 @@ impl HubClient {
 
     // ── Low-level transport ─────────────────────────────────────────
 
-    /// Send a raw JSON-RPC request and return the `result` field.
-    async fn rpc_call(
-        &self,
-        method: &str,
-        params: serde_json::Value,
-    ) -> Result<serde_json::Value, ClientError> {
-        let body = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": params,
-            "id": self.next_id(),
-        });
-
-        debug!(method, "JSON-RPC request");
-
-        let resp: serde_json::Value = self
-            .http
-            .post(&self.rpc_url)
-            .json(&body)
-            .send()
-            .await?
-            .json()
-            .await?;
-
-        if let Some(error) = resp.get("error") {
-            let code = error.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
-            let message = error
-                .get("message")
-                .and_then(|m| m.as_str())
-                .unwrap_or("unknown")
-                .to_string();
-            return Err(ClientError::Rpc { code, message });
-        }
-
-        resp.get("result")
-            .cloned()
-            .ok_or(ClientError::MissingResult)
-    }
-
     /// Send a JSON-RPC request and deserialize the `result` into `T`.
+    ///
+    /// Responses must match the request ID and protocol version, fit within the
+    /// server's largest response budget, and arrive within ten seconds.
     pub async fn rpc_call_typed<T: DeserializeOwned>(
         &self,
         method: &str,
         params: serde_json::Value,
     ) -> Result<T, ClientError> {
-        let value = self.rpc_call(method, params).await?;
-        Ok(serde_json::from_value(value)?)
+        self.rpc_call_bounded(
+            method,
+            params,
+            hub_permission::PERMISSION_RESPONSE_BYTES.max(hub_domain::RECEIPT_RESPONSE_BYTES),
+        )
+        .await
+    }
+
+    pub(crate) async fn rpc_call_bounded<T: DeserializeOwned>(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+        maximum: usize,
+    ) -> Result<T, ClientError> {
+        debug!(method, "JSON-RPC request");
+        let id = self.next_id();
+        let mut response = self
+            .http
+            .post(&self.rpc_url)
+            .timeout(std::time::Duration::from_secs(10))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0", "method": method, "params": params, "id": id,
+            }))
+            .send()
+            .await?
+            .error_for_status()?;
+        if response
+            .content_length()
+            .is_some_and(|size| size > maximum as u64)
+        {
+            return Err(ClientError::ResponseTooLarge(maximum));
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            if chunk.len() > maximum - bytes.len() {
+                return Err(ClientError::ResponseTooLarge(maximum));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let mut value: serde_json::Value = serde_json::from_slice(&bytes)?;
+        if value.get("id").and_then(serde_json::Value::as_u64) != Some(id)
+            || value.get("jsonrpc").and_then(serde_json::Value::as_str) != Some("2.0")
+        {
+            return Err(ClientError::InvalidResponse(
+                "request ID or protocol version mismatch",
+            ));
+        }
+        if let Some(error) = value.get("error") {
+            return Err(ClientError::from_rpc(error));
+        }
+        let result = value
+            .get_mut("result")
+            .map(serde_json::Value::take)
+            .ok_or(ClientError::MissingResult)?;
+        Ok(serde_json::from_value(result)?)
     }
 
     // ── Ethereum RPC wrappers ───────────────────────────────────────
@@ -177,18 +194,11 @@ impl HubClient {
         &self,
         tx_hash: B256,
     ) -> Result<Option<TransactionReceipt>, ClientError> {
-        let result = self
-            .rpc_call(
-                "eth_getTransactionReceipt",
-                serde_json::json!([format!("{tx_hash:?}")]),
-            )
-            .await?;
-
-        if result.is_null() {
-            return Ok(None);
-        }
-
-        Ok(Some(serde_json::from_value(result)?))
+        self.rpc_call_typed(
+            "eth_getTransactionReceipt",
+            serde_json::json!([format!("{tx_hash:?}")]),
+        )
+        .await
     }
 
     /// Return the current gas price (`eth_gasPrice`).
@@ -225,18 +235,11 @@ impl HubClient {
         &self,
         tx_hash: B256,
     ) -> Result<Option<NativeReceipt>, ClientError> {
-        let result = self
-            .rpc_call(
-                "hub_getTransactionReceipt",
-                serde_json::json!([format!("{tx_hash:?}")]),
-            )
-            .await?;
-
-        if result.is_null() {
-            return Ok(None);
-        }
-
-        Ok(Some(serde_json::from_value(result)?))
+        self.rpc_call_typed(
+            "hub_getTransactionReceipt",
+            serde_json::json!([format!("{tx_hash:?}")]),
+        )
+        .await
     }
 
     /// Fetch the on-chain native nonce for a BLS identity (`hub_getNativeNonce`).
@@ -306,8 +309,13 @@ impl HubClient {
         max_attempts: u32,
     ) -> Result<TransactionReceipt, ClientError> {
         for _ in 0..max_attempts {
-            if let Some(receipt) = self.get_transaction_receipt(tx_hash).await? {
-                return Ok(receipt);
+            match self.get_transaction_receipt(tx_hash).await {
+                Ok(Some(receipt)) => return Ok(receipt),
+                Ok(None) => {}
+                // Throttling is transient: the submission already succeeded,
+                // so aborting here would report a spurious failure.
+                Err(error) if error.is_throttled() => {}
+                Err(error) => return Err(error),
             }
             tokio::time::sleep(interval).await;
         }
@@ -442,3 +450,6 @@ mod tests {
         assert!(err.to_string().contains("invalid policy ID"));
     }
 }
+
+#[cfg(test)]
+mod permission_transport;
