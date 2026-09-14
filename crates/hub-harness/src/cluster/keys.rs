@@ -83,7 +83,7 @@ impl KeySet {
             let dir = dir.as_ref();
             std::fs::create_dir_all(dir)?;
             let key_bytes = Encode::encode(&self.identity_keys[i]);
-            std::fs::write(dir.join("validator.key"), key_bytes.as_ref())?;
+            hub_cli::write_private(dir.join("validator.key"), key_bytes.as_ref())?;
             let share = self
                 .share(i)
                 .cloned()
