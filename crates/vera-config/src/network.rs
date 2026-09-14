@@ -16,10 +16,6 @@ pub struct NetworkConfig {
     /// Use this when behind NAT/firewall to specify the publicly reachable address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dialable_addr: Option<String>,
-
-    /// Bootstrap peers to connect to on startup.
-    #[serde(default)]
-    pub bootstrap_peers: Vec<String>,
 }
 
 impl Default for NetworkConfig {
@@ -27,7 +23,6 @@ impl Default for NetworkConfig {
         Self {
             listen_addr: DEFAULT_LISTEN_ADDR.to_string(),
             dialable_addr: None,
-            bootstrap_peers: Vec::new(),
         }
     }
 }
@@ -45,7 +40,6 @@ mod tests {
         let config = NetworkConfig::default();
         assert_eq!(config.listen_addr, DEFAULT_LISTEN_ADDR);
         assert!(config.dialable_addr.is_none());
-        assert!(config.bootstrap_peers.is_empty());
     }
 
     #[test]
@@ -53,7 +47,6 @@ mod tests {
         let config = NetworkConfig {
             listen_addr: "127.0.0.1:9000".to_string(),
             dialable_addr: Some("1.2.3.4:9000".to_string()),
-            bootstrap_peers: vec!["peer1:30303".to_string()],
         };
         let serialized = serde_json::to_string(&config).expect("serialize");
         let deserialized: NetworkConfig = serde_json::from_str(&serialized).expect("deserialize");
@@ -65,7 +58,6 @@ mod tests {
         let config = NetworkConfig {
             listen_addr: "0.0.0.0:8080".to_string(),
             dialable_addr: None,
-            bootstrap_peers: vec!["node1.example.com:30303".to_string()],
         };
         let serialized = toml::to_string(&config).expect("serialize toml");
         let deserialized: NetworkConfig = toml::from_str(&serialized).expect("deserialize toml");
@@ -77,7 +69,6 @@ mod tests {
         let config: NetworkConfig = serde_json::from_str("{}").expect("deserialize");
         assert_eq!(config.listen_addr, DEFAULT_LISTEN_ADDR);
         assert!(config.dialable_addr.is_none());
-        assert!(config.bootstrap_peers.is_empty());
     }
 
     #[test]
@@ -102,7 +93,6 @@ mod tests {
         let config = NetworkConfig {
             listen_addr: "10.0.0.1:5555".to_string(),
             dialable_addr: Some("external.host:5555".to_string()),
-            bootstrap_peers: vec!["a".to_string()],
         };
         assert_eq!(config, config.clone());
         assert_ne!(config, NetworkConfig::default());

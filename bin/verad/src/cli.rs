@@ -21,10 +21,6 @@ pub(crate) struct Cli {
     #[arg(short, long, value_name = "FILE", global = true)]
     pub config: Option<PathBuf>,
 
-    /// Enable verbose logging.
-    #[arg(short, long, global = true)]
-    pub verbose: bool,
-
     /// Override chain ID.
     #[arg(long, global = true)]
     pub chain_id: Option<u64>,

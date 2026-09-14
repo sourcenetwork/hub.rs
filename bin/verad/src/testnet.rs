@@ -202,7 +202,6 @@ pub(crate) fn run(chain_id: u64, data_dir: PathBuf, args: &TestnetArgs) -> eyre:
             network: vera_config::NetworkConfig {
                 listen_addr: format!("0.0.0.0:{}", p2p_ports[i]),
                 dialable_addr: None,
-                bootstrap_peers: Vec::new(), // loaded from --peers flag at runtime
             },
             rpc: vera_config::RpcConfig {
                 http_addr: format!("0.0.0.0:{}", rpc_ports[i]),
