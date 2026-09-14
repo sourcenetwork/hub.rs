@@ -15,6 +15,7 @@ commonware-cryptography.workspace = true
 commonware-glue.workspace = true
 commonware-utils.workspace = true
 hub-domain.workspace = true
+hub-modules.workspace = true
 
 [dev-dependencies]
 commonware-consensus.workspace = true

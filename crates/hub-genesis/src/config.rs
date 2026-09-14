@@ -4,6 +4,7 @@ use std::{collections::HashSet, path::Path, str::FromStr};
 
 use crate::state::GenesisState;
 use alloy_evm::revm::primitives::{Address, U256, keccak256};
+use commonware_codec::ReadExt as _;
 use serde::{Deserialize, Serialize};
 
 /// Hub-extended genesis configuration.
@@ -15,6 +16,9 @@ use serde::{Deserialize, Serialize};
 pub struct HubGenesis {
     /// Chain ID.
     pub chain_id: u64,
+    /// Initial operator approval policy. Omission disables administrative writes.
+    #[serde(default)]
+    pub operators: Option<hub_modules::hub::administration::OperatorPolicy>,
     /// Chain name (e.g., "hub-devnet").
     #[serde(default = "default_chain_name")]
     pub chain_name: String,
@@ -189,6 +193,11 @@ impl HubGenesis {
 
     /// Build the EVM genesis state: balances, registry storage, and code.
     pub fn to_genesis_state(&self) -> Result<GenesisState, HubGenesisError> {
+        if let Some(policy) = &self.operators {
+            policy
+                .validate()
+                .map_err(|error| HubGenesisError::Parse(error.to_string()))?;
+        }
         let mut genesis_alloc = Vec::with_capacity(self.allocations.len());
         for alloc in &self.allocations {
             let address = Address::from_str(&alloc.address)
@@ -258,6 +267,7 @@ impl HubGenesis {
     #[must_use]
     pub fn devnet() -> Self {
         Self {
+            operators: None,
             chain_id: 9001,
             chain_name: "hub-devnet".to_string(),
             timestamp: 0,
@@ -390,6 +400,9 @@ fn validator_storage_entries(
                 "consensus pubkey cannot be all zeros".into(),
             ));
         }
+        hub_domain::PublicKey::read(&mut consensus.as_slice()).map_err(|error| {
+            HubGenesisError::Parse(format!("invalid consensus pubkey: {error}"))
+        })?;
         validate_genesis_p2p_address(&v.p2p_address)?;
 
         let addr_slot = vr_array_element_slot(SLOT_VALIDATORS_ARRAY_BASE, i as u64);
@@ -457,6 +470,7 @@ mod tests {
     #[test]
     fn genesis_parse_error_on_invalid_address() {
         let genesis = HubGenesis {
+            operators: None,
             chain_id: 1,
             chain_name: "test".to_string(),
             timestamp: 0,
@@ -477,6 +491,7 @@ mod tests {
 
     fn genesis_with_validators(validators: Vec<ValidatorConfig>) -> HubGenesis {
         HubGenesis {
+            operators: None,
             chain_id: 1,
             chain_name: "test".to_string(),
             timestamp: 0,
@@ -517,6 +532,16 @@ mod tests {
         }]);
         let err = genesis.to_genesis_state().unwrap_err();
         assert!(err.to_string().contains("invalid validator p2p address"));
+    }
+
+    #[test]
+    fn genesis_rejects_malformed_consensus_key() {
+        let genesis = genesis_with_validators(vec![ValidatorConfig {
+            evm_address: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266".into(),
+            consensus_pubkey: "dd".repeat(32),
+            p2p_address: "127.0.0.1:30300".into(),
+        }]);
+        assert!(genesis.to_genesis_state().is_err());
     }
 
     #[test]

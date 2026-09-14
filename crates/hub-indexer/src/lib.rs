@@ -11,10 +11,18 @@ mod filter;
 pub use filter::LogFilter;
 
 mod light_block_store;
-pub use light_block_store::{LightBlockIndex, StoredEpochMaterial, StoredFinalization};
+pub use light_block_store::{
+    LightBlockIndex, LightBlockStats, MAX_CACHED_EPOCHS, MAX_CACHED_FINALIZATIONS,
+    StoredEpochMaterial, StoredFinalization,
+};
 
 mod store;
-pub use store::BlockIndex;
+pub use store::{BlockIndex, IndexedRevision, MAX_CACHED_REVISIONS};
+
+mod log_query;
+pub use log_query::LogQuery;
 
 mod types;
-pub use types::{IndexStats, IndexedBlock, IndexedLog, IndexedReceipt, IndexedTransaction};
+pub use types::{
+    IndexQuery, IndexStats, IndexedBlock, IndexedLog, IndexedReceipt, IndexedTransaction,
+};

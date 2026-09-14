@@ -20,6 +20,7 @@ alloy-primitives.workspace = true
 alloy-consensus.workspace = true
 
 # Commonware
+commonware-codec.workspace = true
 commonware-cryptography.workspace = true
 
 # Synchronization

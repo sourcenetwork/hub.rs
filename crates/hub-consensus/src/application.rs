@@ -144,6 +144,8 @@ mod tests {
                 module_state_root: alloy_primitives::B256::ZERO,
                 txs: Vec::new(),
                 payload: None,
+                native_targets: None,
+                receipt_commitment: None,
                 db_targets: hub_domain::DbTargets::default(),
             })
         }
@@ -179,6 +181,8 @@ mod tests {
             module_state_root: alloy_primitives::B256::ZERO,
             txs: Vec::new(),
             payload: None,
+            native_targets: None,
+            receipt_commitment: None,
             db_targets: hub_domain::DbTargets::default(),
         };
         let digest = app.verify(&block).unwrap();
