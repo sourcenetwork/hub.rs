@@ -16,10 +16,13 @@ use revm::{
         transaction::{AccessList, AccessListItem},
     },
     database::State,
-    primitives::{TxKind, hardfork::SpecId},
+    primitives::TxKind,
     state::{EvmState, EvmStorageSlot},
 };
 use vera_qmdb::{AccountUpdate, ChangeSet};
+
+/// The EVM specification revision used for execution.
+pub use revm::primitives::hardfork::SpecId;
 use vera_traits::StateDb;
 
 use crate::{

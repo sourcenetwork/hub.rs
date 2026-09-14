@@ -23,7 +23,7 @@ pub use vera_domain::receipt_commitment;
 
 mod revm;
 pub use revm::{
-    RevmExecutor, build_receipt, calculate_base_fee, convert_access_list,
+    RevmExecutor, SpecId, build_receipt, calculate_base_fee, convert_access_list,
     convert_authorization_list, convert_tx_kind, decode_evm_tx, decode_tx_env, extract_changes,
 };
 

@@ -214,6 +214,7 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     }
 
     let executor = VeraExecutor::new(chain_id).with_membership_epochs(blocks_per_epoch);
+    let executor_spec = executor.spec_id();
     #[cfg(feature = "fault-injection")]
     let executor = executor.with_crash_marker(config.data_dir.join("module-commit-crash"));
     let modules = executor.modules().clone();
@@ -750,6 +751,7 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         block_index.clone(),
         committed_state,
         chain_id,
+        executor_spec,
         gas_limit,
         modules.clone(),
     )

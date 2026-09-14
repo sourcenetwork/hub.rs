@@ -50,6 +50,7 @@ const BASE_TX_GAS: u64 = 21_000;
 pub fn simulate_call<S: StateDbRead>(
     state: &S,
     chain_id: u64,
+    spec_id: SpecId,
     request: &SimulateRequest,
     block_gas_limit: u64,
     modules: Option<&ModuleState>,
@@ -63,7 +64,7 @@ pub fn simulate_call<S: StateDbRead>(
 
     let tx_kind = request.to.map_or(TxKind::Create, TxKind::Call);
 
-    let ctx: Context<BlockEnv, _, _, Db<S>, Journal<Db<S>>, ()> = Context::new(db, SpecId::CANCUN);
+    let ctx: Context<BlockEnv, _, _, Db<S>, Journal<Db<S>>, ()> = Context::new(db, spec_id);
     let ctx = ctx
         .modify_cfg_chained(|cfg| {
             cfg.chain_id = chain_id;
@@ -87,10 +88,10 @@ pub fn simulate_call<S: StateDbRead>(
         .map_err(|e| ExecutionError::TxExecution(format!("{e:?}")))?;
 
     let precompiles = modules.map_or_else(
-        || VeraPrecompiles::new(SpecId::CANCUN),
+        || VeraPrecompiles::new(spec_id),
         |m| {
             VeraPrecompiles::with_modules(
-                SpecId::CANCUN,
+                spec_id,
                 m.acp.clone(),
                 m.bulletin.clone(),
                 m.vera.clone(),
@@ -139,6 +140,7 @@ pub fn simulate_call<S: StateDbRead>(
 pub fn estimate_gas<S: StateDbRead>(
     state: &S,
     chain_id: u64,
+    spec_id: SpecId,
     request: &SimulateRequest,
     block_gas_limit: u64,
     modules: Option<&ModuleState>,
@@ -153,7 +155,14 @@ pub fn estimate_gas<S: StateDbRead>(
         data: request.data.clone(),
         gas: Some(cap),
     };
-    let result = simulate_call(state, chain_id, &req_at_cap, block_gas_limit, modules)?;
+    let result = simulate_call(
+        state,
+        chain_id,
+        spec_id,
+        &req_at_cap,
+        block_gas_limit,
+        modules,
+    )?;
     if !result.success {
         return Err(ExecutionError::TxExecution(
             "execution reverted at gas cap".to_string(),
@@ -166,7 +175,14 @@ pub fn estimate_gas<S: StateDbRead>(
     while lo + 1 < hi {
         let mid = lo + (hi - lo) / 2;
         req_at_cap.gas = Some(mid);
-        let result = simulate_call(state, chain_id, &req_at_cap, block_gas_limit, modules)?;
+        let result = simulate_call(
+            state,
+            chain_id,
+            spec_id,
+            &req_at_cap,
+            block_gas_limit,
+            modules,
+        )?;
         if result.success {
             hi = mid;
         } else {
@@ -216,7 +232,7 @@ mod tests {
             gas: None,
         };
 
-        let result = simulate_call(&state, 1, &request, 30_000_000, None).unwrap();
+        let result = simulate_call(&state, 1, SpecId::CANCUN, &request, 30_000_000, None).unwrap();
         assert!(result.success);
         assert!(result.gas_used >= BASE_TX_GAS);
     }
@@ -232,7 +248,7 @@ mod tests {
             gas: None,
         };
 
-        let gas = estimate_gas(&state, 1, &request, 30_000_000, None).unwrap();
+        let gas = estimate_gas(&state, 1, SpecId::CANCUN, &request, 30_000_000, None).unwrap();
         assert!(gas >= BASE_TX_GAS);
     }
 
@@ -247,7 +263,7 @@ mod tests {
             gas: Some(100_000),
         };
 
-        let result = simulate_call(&state, 1, &request, 30_000_000, None).unwrap();
+        let result = simulate_call(&state, 1, SpecId::CANCUN, &request, 30_000_000, None).unwrap();
         assert!(result.success);
     }
 }

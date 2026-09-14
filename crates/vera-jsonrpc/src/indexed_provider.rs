@@ -11,7 +11,8 @@ use vera_indexer::{BlockIndex, IndexedBlock, IndexedReceipt, IndexedTransaction,
 use vera_traits::{StateDbError, StateDbRead};
 
 use vera_executor::{
-    SharedModuleState, SimulateRequest, estimate_gas as executor_estimate_gas, simulate_call,
+    SharedModuleState, SimulateRequest, SpecId, estimate_gas as executor_estimate_gas,
+    simulate_call,
 };
 
 use crate::{
@@ -33,6 +34,7 @@ pub struct IndexedStateProvider<S> {
     index: Arc<BlockIndex>,
     state: S,
     chain_id: u64,
+    spec_id: SpecId,
     block_gas_limit: u64,
     modules: SharedModuleState,
     archive: Option<crate::ArchiveReader>,
@@ -45,6 +47,7 @@ impl<S> IndexedStateProvider<S> {
         index: Arc<BlockIndex>,
         state: S,
         chain_id: u64,
+        spec_id: SpecId,
         block_gas_limit: u64,
         modules: SharedModuleState,
     ) -> Self {
@@ -52,6 +55,7 @@ impl<S> IndexedStateProvider<S> {
             index,
             state,
             chain_id,
+            spec_id,
             block_gas_limit,
             modules,
             archive: None,
@@ -73,6 +77,7 @@ impl<S: Clone> Clone for IndexedStateProvider<S> {
             index: Arc::clone(&self.index),
             state: self.state.clone(),
             chain_id: self.chain_id,
+            spec_id: self.spec_id,
             block_gas_limit: self.block_gas_limit,
             modules: Arc::clone(&self.modules),
             archive: self.archive.clone(),
@@ -254,6 +259,7 @@ impl<S: StateDbRead + Send + Sync + 'static> StateProvider for IndexedStateProvi
         let result = simulate_call(
             &self.state,
             self.chain_id,
+            self.spec_id,
             &sim_request,
             self.block_gas_limit,
             Some(&*modules),
@@ -283,6 +289,7 @@ impl<S: StateDbRead + Send + Sync + 'static> StateProvider for IndexedStateProvi
         executor_estimate_gas(
             &self.state,
             self.chain_id,
+            self.spec_id,
             &sim_request,
             self.block_gas_limit,
             Some(&*modules),
@@ -442,6 +449,7 @@ mod tests {
     use vera_indexer::IndexedLog;
 
     use super::*;
+    use vera_executor::SpecId;
 
     #[tokio::test]
     async fn log_query_limits_reach_rpc_clients() {
@@ -449,6 +457,7 @@ mod tests {
             Arc::new(BlockIndex::new()),
             MockState,
             1,
+            SpecId::CANCUN,
             30_000_000,
             default_modules(),
         );
@@ -591,12 +600,24 @@ mod tests {
                 })
             })
         });
-        let hot =
-            IndexedStateProvider::new(index.clone(), MockState, 1, 30_000_000, default_modules())
-                .with_archive(archive.clone());
-        let cold =
-            IndexedStateProvider::new(evicted.clone(), MockState, 1, 30_000_000, default_modules())
-                .with_archive(archive.clone());
+        let hot = IndexedStateProvider::new(
+            index.clone(),
+            MockState,
+            1,
+            SpecId::CANCUN,
+            30_000_000,
+            default_modules(),
+        )
+        .with_archive(archive.clone());
+        let cold = IndexedStateProvider::new(
+            evicted.clone(),
+            MockState,
+            1,
+            SpecId::CANCUN,
+            30_000_000,
+            default_modules(),
+        )
+        .with_archive(archive.clone());
         let height = BlockNumberOrTag::Number(U64::from(1));
         let expected = serde_json::to_value((
             hot.block_by_number(height.clone()).await.unwrap(),
@@ -749,8 +770,14 @@ mod tests {
     #[tokio::test]
     async fn test_balance() {
         let index = Arc::new(BlockIndex::new());
-        let provider =
-            IndexedStateProvider::new(index, MockState, 1, 30_000_000, default_modules());
+        let provider = IndexedStateProvider::new(
+            index,
+            MockState,
+            1,
+            SpecId::CANCUN,
+            30_000_000,
+            default_modules(),
+        );
 
         let balance = provider.balance(Address::ZERO, None).await.unwrap();
         assert_eq!(balance, U256::from(1000));
@@ -759,8 +786,14 @@ mod tests {
     #[tokio::test]
     async fn test_nonce() {
         let index = Arc::new(BlockIndex::new());
-        let provider =
-            IndexedStateProvider::new(index, MockState, 1, 30_000_000, default_modules());
+        let provider = IndexedStateProvider::new(
+            index,
+            MockState,
+            1,
+            SpecId::CANCUN,
+            30_000_000,
+            default_modules(),
+        );
 
         let nonce = provider.nonce(Address::ZERO, None).await.unwrap();
         assert_eq!(nonce, 42);
@@ -772,8 +805,14 @@ mod tests {
         let block_hash = B256::repeat_byte(1);
         index.insert_block(create_test_block(1, block_hash), vec![], vec![]);
 
-        let provider =
-            IndexedStateProvider::new(index, MockState, 1, 30_000_000, default_modules());
+        let provider = IndexedStateProvider::new(
+            index,
+            MockState,
+            1,
+            SpecId::CANCUN,
+            30_000_000,
+            default_modules(),
+        );
 
         let block = provider
             .block_by_number(BlockNumberOrTag::Number(U64::from(1)))
@@ -789,8 +828,14 @@ mod tests {
         let block_hash = B256::repeat_byte(1);
         index.insert_block(create_test_block(1, block_hash), vec![], vec![]);
 
-        let provider =
-            IndexedStateProvider::new(index, MockState, 1, 30_000_000, default_modules());
+        let provider = IndexedStateProvider::new(
+            index,
+            MockState,
+            1,
+            SpecId::CANCUN,
+            30_000_000,
+            default_modules(),
+        );
 
         let block = provider.block_by_hash(block_hash).await.unwrap();
         assert!(block.is_some());
@@ -808,8 +853,14 @@ mod tests {
             vec![],
         );
 
-        let provider =
-            IndexedStateProvider::new(index, MockState, 1, 30_000_000, default_modules());
+        let provider = IndexedStateProvider::new(
+            index,
+            MockState,
+            1,
+            SpecId::CANCUN,
+            30_000_000,
+            default_modules(),
+        );
 
         let tx = provider.transaction_by_hash(tx_hash).await.unwrap();
         assert!(tx.is_some());
@@ -827,8 +878,14 @@ mod tests {
             vec![create_test_receipt(tx_hash, block_hash, 1)],
         );
 
-        let provider =
-            IndexedStateProvider::new(index, MockState, 1, 30_000_000, default_modules());
+        let provider = IndexedStateProvider::new(
+            index,
+            MockState,
+            1,
+            SpecId::CANCUN,
+            30_000_000,
+            default_modules(),
+        );
 
         let receipt = provider.receipt_by_hash(tx_hash).await.unwrap();
         assert!(receipt.is_some());
@@ -842,8 +899,14 @@ mod tests {
         let index = Arc::new(BlockIndex::new());
         index.insert_block(create_test_block(5, B256::repeat_byte(5)), vec![], vec![]);
 
-        let provider =
-            IndexedStateProvider::new(index, MockState, 1, 30_000_000, default_modules());
+        let provider = IndexedStateProvider::new(
+            index,
+            MockState,
+            1,
+            SpecId::CANCUN,
+            30_000_000,
+            default_modules(),
+        );
 
         let num = provider.block_number().await.unwrap();
         assert_eq!(num, 5);
@@ -854,8 +917,14 @@ mod tests {
         let index = Arc::new(BlockIndex::new());
         index.insert_block(create_test_block(10, B256::repeat_byte(10)), vec![], vec![]);
 
-        let provider =
-            IndexedStateProvider::new(index, MockState, 1, 30_000_000, default_modules());
+        let provider = IndexedStateProvider::new(
+            index,
+            MockState,
+            1,
+            SpecId::CANCUN,
+            30_000_000,
+            default_modules(),
+        );
 
         let block = provider
             .block_by_number(BlockNumberOrTag::Tag(BlockTag::Latest))

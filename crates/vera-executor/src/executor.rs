@@ -16,6 +16,7 @@ use revm::{
     context_interface::{ContextTr, JournalTr},
     database::State,
     precompile::PrecompileError,
+    primitives::hardfork::SpecId,
 };
 use tracing::warn;
 use vera_crypto::bls;
@@ -61,6 +62,11 @@ pub struct VeraExecutor {
 }
 
 impl VeraExecutor {
+    /// The EVM specification revision used for execution.
+    pub const fn spec_id(&self) -> SpecId {
+        self.config.spec_id
+    }
+
     /// Configure a one-shot process crash marker for persistence tests.
     #[cfg(feature = "fault-injection")]
     #[must_use]
