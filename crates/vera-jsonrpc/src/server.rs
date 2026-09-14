@@ -2,7 +2,7 @@
 
 use std::{net::SocketAddr, sync::Arc};
 
-use jsonrpsee_server::{BatchRequestConfig, Server, ServerHandle};
+use jsonrpsee_server::{BatchRequestConfig, PingConfig, Server, ServerHandle};
 use tokio::sync::broadcast;
 use tracing::{error, info};
 
@@ -298,6 +298,11 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
                 .set_batch_request_config(BatchRequestConfig::Limit(64))
                 .max_subscriptions_per_connection(8)
                 .set_message_buffer_capacity(8)
+                .enable_ws_ping(
+                    PingConfig::default()
+                        .ping_interval(std::time::Duration::from_secs(30))
+                        .max_failures(2),
+                )
                 .build(addr)
                 .await
             {
