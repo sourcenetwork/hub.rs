@@ -1,0 +1,22 @@
+//! verad — SourceHub validator node.
+
+#![recursion_limit = "256"]
+
+use clap::Parser;
+use tracing_subscriber::prelude::*;
+
+mod cli;
+mod client;
+mod testnet;
+
+fn main() -> eyre::Result<()> {
+    vera_cli::Backtracing::enable();
+    vera_cli::SigsegvHandler::install();
+
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer())
+        .with(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+
+    cli::Cli::parse().run()
+}

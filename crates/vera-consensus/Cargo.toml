@@ -1,0 +1,27 @@
+[package]
+name = "vera-consensus"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Consensus application layer for vera"
+
+[dependencies]
+# Local crates
+vera-domain.workspace = true
+
+# Commonware
+commonware-codec.workspace = true
+
+# Synchronization
+parking_lot.workspace = true
+
+# Async
+
+[dev-dependencies]
+rstest.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true

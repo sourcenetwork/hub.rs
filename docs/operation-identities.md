@@ -52,7 +52,7 @@ historical authorization-state retention.
 
 `acp::operation::operation_key(actor, id)` derives the native ACP key:
 `operation/v1/ || SHA256("vera/operation-actor/v1\0" || canonical_actor) || id`.
-`hub_getCurrentRecordProof` serves its membership or absence with certified state.
+`vera_getCurrentRecordProof` serves its membership or absence with certified state.
 The budget and encoded-byte counter use `operation-budget/v1` and
 `operation-bytes/v1`, respectively, as eight-byte big-endian integers.
 

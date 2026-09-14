@@ -75,24 +75,24 @@ jobs:
         run: cargo fetch --locked
 
       - name: Unit tests
-        run: cargo test --frozen --workspace --exclude hub-e2e
+        run: cargo test --frozen --workspace --exclude vera-e2e
 
-      - name: Build hubd
-        run: cargo build --frozen -p hubd
+      - name: Build verad
+        run: cargo build --frozen -p verad
 
-      - name: Cache hubd binary for backbone CI
+      - name: Cache verad binary for backbone CI
         run: |
           HASH=$(git rev-parse HEAD)
-          CACHE_DIR="$HOME/.sourcenetwork/bin/hub.rs/$HASH"
+          CACHE_DIR="$HOME/.sourcenetwork/bin/vera.rs/$HASH"
           mkdir -p "$CACHE_DIR"
-          cp target/debug/hubd "$CACHE_DIR/hubd" || cp target/release/hubd "$CACHE_DIR/hubd" || true
-          [ -f "$CACHE_DIR/hubd" ] && ln -sf "$CACHE_DIR/hubd" "$HOME/.sourcenetwork/bin/hubd"
+          cp target/debug/verad "$CACHE_DIR/verad" || cp target/release/verad "$CACHE_DIR/verad" || true
+          [ -f "$CACHE_DIR/verad" ] && ln -sf "$CACHE_DIR/verad" "$HOME/.sourcenetwork/bin/verad"
 
       - name: Cleanup
         if: always()
         run: |
           git checkout -- .
-          git clean -fd
+          git clean -fdx -e '/target'
 
   e2e-canonical:
     name: "E2E (canonical)"
@@ -100,9 +100,9 @@ jobs:
     needs: [build]
     timeout-minutes: 20
     env:
-      HUB_E2E_DEADLINE_SCALE: "4"
-      HUBD_BINARY: ${{ github.workspace }}/target/debug/hubd
-      TMPDIR: $RUNNER_TEMP/hub-e2e-${{ github.run_id }}-${{ github.run_attempt }}-canonical
+      VERA_E2E_DEADLINE_SCALE: "4"
+      VERAD_BINARY: ${{ github.workspace }}/target/debug/verad
+      TMPDIR: $RUNNER_TEMP/vera-e2e-${{ github.run_id }}-${{ github.run_attempt }}-canonical
     steps:
       - uses: actions/checkout@v4
         with:
@@ -123,21 +123,21 @@ jobs:
       - name: Prepare test workspace
         run: |
           mkdir -p "$TMPDIR"
-          python3 .github/scripts/stop-test-nodes.py "$HUBD_BINARY"
+          python3 .github/scripts/stop-test-nodes.py "$VERAD_BINARY"
 
-      - name: Build hubd
-        run: cargo build --frozen -p hubd
+      - name: Build verad
+        run: cargo build --frozen -p verad
 
       - name: Run e2e tests
-        run: cargo test --frozen -p hub-e2e --test hub_e2e_canonical -- --nocapture
+        run: cargo test --frozen -p vera-e2e --test vera_e2e_canonical -- --nocapture
         timeout-minutes: 15
 
       - name: Cleanup
         if: always()
         run: |
           git checkout -- .
-          git clean -fd
-          python3 .github/scripts/stop-test-nodes.py "$HUBD_BINARY"
+          git clean -fdx -e '/target'
+          python3 .github/scripts/stop-test-nodes.py "$VERAD_BINARY"
           rm -rf "$TMPDIR"
 
   e2e-extended:
@@ -148,9 +148,9 @@ jobs:
     needs: [e2e-canonical]
     timeout-minutes: 20
     env:
-      HUB_E2E_DEADLINE_SCALE: "4"
-      HUBD_BINARY: ${{ github.workspace }}/target/debug/hubd
-      TMPDIR: $RUNNER_TEMP/hub-e2e-${{ github.run_id }}-${{ github.run_attempt }}-extended
+      VERA_E2E_DEADLINE_SCALE: "4"
+      VERAD_BINARY: ${{ github.workspace }}/target/debug/verad
+      TMPDIR: $RUNNER_TEMP/vera-e2e-${{ github.run_id }}-${{ github.run_attempt }}-extended
     steps:
       - uses: actions/checkout@v4
         with:
@@ -171,14 +171,14 @@ jobs:
       - name: Prepare test workspace
         run: |
           mkdir -p "$TMPDIR"
-          python3 .github/scripts/stop-test-nodes.py "$HUBD_BINARY"
+          python3 .github/scripts/stop-test-nodes.py "$VERAD_BINARY"
 
-      - name: Build hubd
-        run: cargo build --frozen -p hubd
+      - name: Build verad
+        run: cargo build --frozen -p verad
 
       - name: Run e2e tests
         run: >-
-          cargo test --frozen -p hub-e2e
+          cargo test --frozen -p vera-e2e
           --test core_chain
           --test contract_deploy
           --test light_client
@@ -193,8 +193,8 @@ jobs:
         if: always()
         run: |
           git checkout -- .
-          git clean -fd
-          python3 .github/scripts/stop-test-nodes.py "$HUBD_BINARY"
+          git clean -fdx -e '/target'
+          python3 .github/scripts/stop-test-nodes.py "$VERAD_BINARY"
           rm -rf "$TMPDIR"
 
   artifacts:
@@ -219,21 +219,21 @@ jobs:
           GIT_CONFIG_VALUE_0: https://github.com/sourcenetwork/
         run: cargo fetch --locked
 
-      - name: Build release hubd
-        run: cargo build --frozen --release -p hubd
+      - name: Build release verad
+        run: cargo build --frozen --release -p verad
 
-      - name: Upload hubd
+      - name: Upload verad
         uses: actions/upload-artifact@v4
         with:
-          name: hubd-aarch64-apple-darwin
-          path: target/release/hubd
+          name: verad-aarch64-apple-darwin
+          path: target/release/verad
           retention-days: 30
 
       - name: Cleanup
         if: always()
         run: |
           git checkout -- .
-          git clean -fd
+          git clean -fdx -e '/target'
 
   linux-native:
     name: Linux native service
@@ -243,8 +243,8 @@ jobs:
       contents: read
     env:
       CARGO_BUILD_JOBS: 2
-      HUBD_BINARY: ${{ github.workspace }}/target/debug/hubd
-      HUB_E2E_DEADLINE_SCALE: "8"
+      VERAD_BINARY: ${{ github.workspace }}/target/debug/verad
+      VERA_E2E_DEADLINE_SCALE: "8"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -278,17 +278,17 @@ jobs:
 
       - name: Native module and storage checks
         run: |
-          cargo test --frozen -p hub-modules --lib
-          cargo test --frozen -p hub-backend --lib
-          cargo test --frozen -p hub-backend --test native_state --test native_hydration
-          cargo test --frozen -p hub-e2e --example operation_baseline rejected_updates_preserve_results_and_stop_dependent_submissions
+          cargo test --frozen -p vera-modules --lib
+          cargo test --frozen -p vera-backend --lib
+          cargo test --frozen -p vera-backend --test native_state --test native_hydration
+          cargo test --frozen -p vera-e2e --example operation_baseline rejected_updates_preserve_results_and_stop_dependent_submissions
 
       - name: Build native node
-        run: cargo build --frozen -p hubd
+        run: cargo build --frozen -p verad
 
       - name: Native lifecycle and recovery
         run: >-
-          cargo test --frozen -p hub-e2e
+          cargo test --frozen -p vera-e2e
           --test native_permission
           --test native_signed_operation
           --test native_bulletin
@@ -300,67 +300,67 @@ jobs:
 
       - name: Pruned snapshot catch-up
         env:
-          HUB_E2E_DEADLINE_SCALE: "16"
-          HUB_E2E_DIR: ${{ runner.temp }}/e2e-logs
-          HUB_E2E_KEEP: "1"
+          VERA_E2E_DEADLINE_SCALE: "16"
+          VERA_E2E_DIR: ${{ runner.temp }}/e2e-logs
+          VERA_E2E_KEEP: "1"
         run: >-
-          cargo test --frozen -p hub-e2e
+          cargo test --frozen -p vera-e2e
           --test snapshot_catchup
           -- --test-threads=1 --nocapture
 
       - name: Regolith history invariants
-        run: cargo test --frozen -p hub-node --lib --features regolith-history "history::"
+        run: cargo test --frozen -p vera-node --lib --features regolith-history "history::"
 
       - name: Build Regolith node
-        run: cargo build --frozen -p hubd --features regolith-history
+        run: cargo build --frozen -p verad --features regolith-history
 
       - name: Regolith recovery from pruned peers
         env:
-          RUST_LOG: warn,hub_storage=info
-          HUB_E2E_DEADLINE_SCALE: "16"
-          HUB_E2E_DIR: ${{ runner.temp }}/e2e-logs
-          HUB_E2E_KEEP: "1"
+          RUST_LOG: warn,vera_storage=info
+          VERA_E2E_DEADLINE_SCALE: "16"
+          VERA_E2E_DIR: ${{ runner.temp }}/e2e-logs
+          VERA_E2E_KEEP: "1"
         run: >-
-          cargo test --frozen -p hub-e2e --test snapshot_catchup
+          cargo test --frozen -p vera-e2e --test snapshot_catchup
           snapshot_replica_recovers_from_pruned_peers
           -- --exact --nocapture
 
       - name: Build Regolith crash-injection node
-        run: cargo build --frozen -p hubd --features regolith-history,fault-injection
+        run: cargo build --frozen -p verad --features regolith-history,fault-injection
 
       - name: Interrupted Regolith recovery from pruned peers
         env:
-          RUST_LOG: warn,hub_storage=info
-          HUB_E2E_DEADLINE_SCALE: "16"
-          HUB_E2E_DIR: ${{ runner.temp }}/e2e-logs
-          HUB_E2E_KEEP: "1"
+          RUST_LOG: warn,vera_storage=info
+          VERA_E2E_DEADLINE_SCALE: "16"
+          VERA_E2E_DIR: ${{ runner.temp }}/e2e-logs
+          VERA_E2E_KEEP: "1"
         run: >-
-          cargo test --frozen -p hub-e2e --features fault-injection
+          cargo test --frozen -p vera-e2e --features fault-injection
           --test snapshot_interrupt interrupted_snapshot_resumes_from_pruned_peers
           -- --exact --nocapture
 
       - name: Build crash-injection node
-        run: cargo build --frozen -p hubd --features fault-injection
+        run: cargo build --frozen -p verad --features fault-injection
 
       - name: Interrupted commit recovery
         run: >-
-          cargo test --frozen -p hub-e2e --features fault-injection
+          cargo test --frozen -p vera-e2e --features fault-injection
           --test module_commit_crash
           -- --test-threads=1 --nocapture
 
       - name: Interrupted snapshot recovery
         env:
-          HUB_E2E_DEADLINE_SCALE: "16"
-          HUB_E2E_DIR: ${{ runner.temp }}/e2e-logs
-          HUB_E2E_KEEP: "1"
+          VERA_E2E_DEADLINE_SCALE: "16"
+          VERA_E2E_DIR: ${{ runner.temp }}/e2e-logs
+          VERA_E2E_KEEP: "1"
         run: >-
-          cargo test --frozen -p hub-e2e --features fault-injection
+          cargo test --frozen -p vera-e2e --features fault-injection
           --test snapshot_interrupt
           -- --test-threads=1 --nocapture
 
       - name: Recover membership after share persistence crash
         run: >-
-          cargo test --frozen -p hub-e2e --features fault-injection
+          cargo test --frozen -p vera-e2e --features fault-injection
           --test native_membership native_member_recovers_after_share_persistence_crash
           -- --exact --nocapture
 
@@ -373,4 +373,4 @@ jobs:
           if-no-files-found: ignore
 
       - name: Build release node without fault injection
-        run: cargo build --frozen --release -p hubd
+        run: cargo build --frozen --release -p verad

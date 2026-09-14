@@ -20,7 +20,7 @@ the JSON-RPC port of that node's `config.toml`.
 1. On any machine, generate the deployment once and distribute it:
 
    ```sh
-   hubd --chain-id <id> testnet --nodes 4 --seed <seed> \
+   verad --chain-id <id> testnet --nodes 4 --seed <seed> \
         --base-p2p-port 31000 --base-rpc-port 8545 \
         --data-dir ./deployment --init-only
    ```
@@ -35,7 +35,7 @@ the JSON-RPC port of that node's `config.toml`.
 3. Start each node:
 
    ```sh
-   hubd --config nodeN/config.toml --data-dir nodeN \
+   verad --config nodeN/config.toml --data-dir nodeN \
         --chain-id <id> validator --peers peers.json
    ```
 
@@ -43,10 +43,10 @@ the JSON-RPC port of that node's `config.toml`.
 
    ```sh
    curl -s <host>:<rpc_port> -X POST -H 'content-type: application/json' \
-        -d '{"jsonrpc":"2.0","id":1,"method":"hub_nodeStatus"}'
+        -d '{"jsonrpc":"2.0","id":1,"method":"vera_nodeStatus"}'
    ```
 
-Production deployments replace step 1 with `hubd genesis --peers peers.json`
+Production deployments replace step 1 with `verad genesis --peers peers.json`
 (the distributed epoch-0 DKG) instead of the trusted-dealer testnet generator.
 
 ## Driving the gate
@@ -55,7 +55,7 @@ Run the driver from a fifth vantage point (or one of the regions, excluding
 its own RPC) so submission latency crosses the WAN:
 
 ```sh
-cargo build --release -p hub-e2e --example wan_baseline
+cargo build --release -p vera-e2e --example wan_baseline
 ./target/release/examples/wan_baseline \
     http://<region-a-rpc>:<port> \
     node0/genesis.json \
@@ -89,7 +89,7 @@ fixed geography.
 
 ## Evidence retention
 
-Store the driver output, the RTT matrix and per-node `hub_nodeStatus` samples
+Store the driver output, the RTT matrix and per-node `vera_nodeStatus` samples
 with the release records. Node-side resource sampling is out of scope for the
 remote driver; collect host metrics (`vmstat`, disk utilisation) separately if
 a run needs diagnosis.

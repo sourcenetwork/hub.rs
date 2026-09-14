@@ -18,7 +18,7 @@ Receipt request:
 {"kind":"receipt","trusted_key":"<96-byte hex key>","submission":"0x<32-byte ID>","proof":{}}
 ```
 
-`proof` is the unmodified `hub_getReceiptProof` result. Success returns
+`proof` is the unmodified `vera_getReceiptProof` result. Success returns
 `{"result":{"height":0,"timestamp":0,"submission":"0x...","success":true,"logs":[]}}`
 with actual verified values. A successful verification can report an unsuccessful
 operation. A missing RPC receipt is not proof of rejection.
@@ -29,8 +29,8 @@ Current-record request:
 {"kind":"record","trusted_key":"<96-byte hex key>","module":"acp","key":"0x<key bytes>","minimum_height":1,"proof":{}}
 ```
 
-`proof` is the `hub_getCurrentRecordProof` result. Modules are `acp`, `bulletin`,
-`hub` and `native_nonce`. Success returns
+`proof` is the `vera_getCurrentRecordProof` result. Modules are `acp`, `bulletin`,
+`vera` and `native_nonce`. Success returns
 `{"result":{"height":0,"timestamp":0,"value":"0x..."}}`; certified absence
 returns a null value. The requested module, key and minimum height are verified.
 Applications must also bind record contents to their operation and apply any
@@ -42,7 +42,7 @@ Current object-owner request:
 {"kind":"object_owner","trusted_key":"<96-byte hex key>","policy_id":"<policy ID>","object":{"resource":"document","id":"report"},"minimum_height":1,"proof":{}}
 ```
 
-`proof` is the `hub_getCurrentPrefixProof` result for
+`proof` is the `vera_getCurrentPrefixProof` result for
 `object_owner_prefix(policy_id, object)` in the ACP module. The verifier derives
 the prefix again, authenticates complete coverage and the selected revision,
 and returns `{"result":{"height":0,"timestamp":0,"owner":"did:..."}}` with
@@ -58,7 +58,7 @@ Current permission request:
 {"kind":"permission","trusted_key":"<96-byte hex key>","policy_id":"<policy ID>","request":{"operations":[{"object":{"resource":"document","id":"report"},"permission":"read"}],"actor":"did:..."},"minimum_height":1,"proof":{}}
 ```
 
-`proof` is the `hub_getCurrentPermissionProof` result. The verifier authenticates
+`proof` is the `vera_getCurrentPermissionProof` result. The verifier authenticates
 its revision and evidence, then evaluates the request with the shared ACP engine
 and `PERMISSION_LIMITS`. Success returns
 `{"result":{"height":0,"timestamp":0,"allowed":false}}` with verified values.
@@ -99,7 +99,7 @@ native crypto dependencies separate from a consumer's own copies. On macOS the
 install name is `@rpath/libvera_verifier.dylib`; the consumer supplies its runtime
 search path. Linux uses `libvera_verifier.so` and the platform loader search path.
 
-The ignored `hub-e2e` test `native_go_client` runs a prebuilt Trust API test binary
+The ignored `vera-e2e` test `native_go_client` runs a prebuilt Trust API test binary
 from `TRUST_NATIVE_TEST_BINARY`. It checks independent Go/Rust signing and
 operation commitments, concurrent provider-owned policy creation, receipt and
 record verification, object registration/archive/reactivation, altered owner

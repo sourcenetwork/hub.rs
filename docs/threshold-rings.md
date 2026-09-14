@@ -34,12 +34,12 @@ original recorded outcome; read the ring again to obtain its current state.
 
 ## Native client
 
-Use `hub_client::rings::encode_ring_command` with an `orbis:ring` delegation for
+Use `vera_client::rings::encode_ring_command` with an `orbis:ring` delegation for
 creation, administration or creator cancellation. Delegations use the existing expiry,
 revocation, relay authorization and optional exact-operation binding checks.
 `DelegatedOperation::RingCommand` supplies the digest for a relay assertion or
 operation-bound delegation. Failed admission, including outcome-storage budget
-exhaustion, rolls back both Hub and ACP changes.
+exhaustion, rolls back both Vera and ACP changes.
 
 Participants use `sign_ring_participant_request` and
 `encode_ring_participant_request`. These signatures bind the deployment root and
@@ -48,7 +48,7 @@ cannot confirm using the node's authority. Public-key declarations use lowercase
 hex; the ring lifecycle records participant agreement on those bytes. It does
 not validate a DKG transcript or select a threshold cryptographic scheme.
 
-Pass the encoded command to `NativeWorker::prepare(HUB_ADDRESS, calldata)` before
+Pass the encoded command to `NativeWorker::prepare(VERA_ADDRESS, calldata)` before
 submission. Recover the exact pending bytes after interruption and acknowledge
 only a verified receipt. `read_threshold_ring` verifies inclusion or absence
 against caller-provisioned consensus trust and a minimum revision, then validates

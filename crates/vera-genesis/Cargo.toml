@@ -1,0 +1,25 @@
+[package]
+name = "vera-genesis"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Extended genesis configuration for vera"
+
+[dependencies]
+alloy-evm.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+commonware-codec.workspace = true
+commonware-cryptography.workspace = true
+commonware-glue.workspace = true
+commonware-utils.workspace = true
+vera-domain.workspace = true
+vera-modules.workspace = true
+
+[dev-dependencies]
+commonware-consensus.workspace = true
+tempfile = "3"
+
+[lints]
+workspace = true

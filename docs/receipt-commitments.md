@@ -5,7 +5,7 @@ the ordered execution receipts and execution gas limit. Proposal verification
 re-executes the operations and requires the same commitment. Missing commitments
 are rejected by the native application and native checkpoint verifier.
 
-`hub_executor::receipt_commitment` computes the commitment without constructing
+`vera_executor::receipt_commitment` computes the commitment without constructing
 an intermediate receipt buffer. Its input encoding is:
 
 | Field | Encoding |
