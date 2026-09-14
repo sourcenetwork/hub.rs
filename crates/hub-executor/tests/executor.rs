@@ -26,6 +26,8 @@ struct MockAccount {
 /// Stores account state in memory using a HashMap.
 #[derive(Clone, Debug, Default)]
 struct MockStateDb {
+    unreadable_account: Option<Address>,
+    unreadable_storage: Option<(Address, U256)>,
     /// Accounts indexed by address.
     accounts: Arc<RwLock<HashMap<Address, MockAccount>>>,
     /// Contract code indexed by code hash.
@@ -53,6 +55,11 @@ impl MockStateDb {
 
 impl StateDbRead for MockStateDb {
     async fn nonce(&self, address: &Address) -> Result<u64, StateDbError> {
+        if self.unreadable_account == Some(*address) {
+            return Err(StateDbError::Storage(
+                "injected account read failure".into(),
+            ));
+        }
         self.accounts
             .read()
             .unwrap()
@@ -89,6 +96,11 @@ impl StateDbRead for MockStateDb {
     }
 
     async fn storage(&self, address: &Address, slot: &U256) -> Result<U256, StateDbError> {
+        if self.unreadable_storage == Some((*address, *slot)) {
+            return Err(StateDbError::Storage(
+                "injected storage read failure".into(),
+            ));
+        }
         let accounts = self.accounts.read().unwrap();
         Ok(accounts
             .get(address)
@@ -633,3 +645,12 @@ fn test_execute_with_populated_state() {
     assert!(outcome.receipts.is_empty());
     assert_eq!(outcome.gas_used, 0);
 }
+
+#[path = "executor/rollback.rs"]
+mod rollback;
+
+#[path = "executor/sequence.rs"]
+mod sequence;
+
+#[path = "executor/registry_storage.rs"]
+mod registry_storage;

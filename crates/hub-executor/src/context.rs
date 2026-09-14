@@ -23,7 +23,8 @@ pub struct BlockContext {
     pub is_verification: bool,
     /// Expected module state root from the block being verified.
     pub expected_module_state_root: Option<B256>,
-    /// When true, skip JMT tree writes (receipt-only re-execution).
+    /// Skip executor-owned module commitments when reconstructing receipts or
+    /// sealing the logical changes in external authenticated storage.
     pub receipt_only: bool,
 }
 
@@ -56,7 +57,7 @@ impl BlockContext {
         self
     }
 
-    /// Mark this execution as receipt-only (skips JMT tree writes).
+    /// Skip module commitment work, including JMT preparation and full-store hashing.
     #[must_use]
     pub const fn with_receipt_only(mut self) -> Self {
         self.receipt_only = true;
@@ -131,12 +132,14 @@ mod tests {
 
     #[test]
     fn parent_block_from_header() {
-        let mut header = Header::default();
-        header.number = 100;
-        header.timestamp = 1234567890;
-        header.gas_limit = 30_000_000;
-        header.gas_used = 15_000_000;
-        header.base_fee_per_gas = Some(1000);
+        let header = Header {
+            number: 100,
+            timestamp: 1234567890,
+            gas_limit: 30_000_000,
+            gas_used: 15_000_000,
+            base_fee_per_gas: Some(1000),
+            ..Default::default()
+        };
 
         let hash = B256::repeat_byte(0xab);
         let parent = ParentBlock::from_header(&header, hash);

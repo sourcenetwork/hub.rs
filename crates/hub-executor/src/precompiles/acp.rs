@@ -5,9 +5,10 @@ use alloy_sol_types::SolCall;
 use hub_modules::acp::AcpModule;
 use hub_modules::acp::abi::IAcp;
 use hub_modules::acp::types::{
-    AccessRequest, AcpParams, Actor, ContentType, Object, Operation, PolicyCmd,
-    PolicyMarshalingType, RelationshipSelector,
+    AccessRequest, AcpParams, Actor, Object, Operation, PolicyCmd, PolicyMarshalingType,
+    RelationshipSelector,
 };
+use hub_modules::hub::HubModule;
 use hub_modules::types::{BlockExecCtx, TxExecCtx};
 use identity::Did;
 use revm::precompile::{PrecompileError, PrecompileOutput};
@@ -110,13 +111,6 @@ const fn marshal_type_from_u8(v: u8) -> PolicyMarshalingType {
     }
 }
 
-const fn content_type_from_u8(v: u8) -> ContentType {
-    match v {
-        1 => ContentType::Jws,
-        _ => ContentType::Unknown,
-    }
-}
-
 fn build_operations(
     resources: &[String],
     object_ids: &[String],
@@ -174,7 +168,8 @@ fn batch_error(index: usize, err: PrecompileError) -> PrecompileError {
 #[allow(clippy::too_many_lines)]
 pub(super) fn dispatch(
     module: &mut AcpModule,
-    _block_ctx: &BlockExecCtx,
+    hub: &mut HubModule,
+    block_ctx: &BlockExecCtx,
     tx_ctx: &TxExecCtx,
     input: &[u8],
     gas_limit: u64,
@@ -190,7 +185,7 @@ pub(super) fn dispatch(
         // ── Write methods ────────────────────────────────────────────
         IAcp::batchCallsCall::SELECTOR => {
             let call = IAcp::batchCallsCall::abi_decode(input).map_err(decode_error)?;
-            let snapshot = module.clone();
+            let snapshot = (module.clone(), hub.clone());
             let mut results = Vec::with_capacity(call.calls.len());
             let mut logs = Vec::new();
             let mut gas_used = 0u64;
@@ -199,14 +194,15 @@ pub(super) fn dispatch(
                 let remaining_gas = gas_limit.saturating_sub(gas_used);
                 let inner = match dispatch(
                     module,
-                    _block_ctx,
+                    hub,
+                    block_ctx,
                     tx_ctx,
                     inner_call.as_ref(),
                     remaining_gas,
                 ) {
                     Ok(inner) => inner,
                     Err(err) => {
-                        *module = snapshot;
+                        (*module, *hub) = snapshot;
                         return Err(batch_error(index, err));
                     }
                 };
@@ -214,13 +210,13 @@ pub(super) fn dispatch(
                 let inner_gas = match gas_used.checked_add(inner.precompile.gas_used) {
                     Some(total) => total,
                     None => {
-                        *module = snapshot;
+                        (*module, *hub) = snapshot;
                         return Err(PrecompileError::OutOfGas);
                     }
                 };
 
                 if inner.precompile.reverted {
-                    *module = snapshot;
+                    (*module, *hub) = snapshot;
                     return Ok(batch_revert(index, inner_gas, &inner.precompile.bytes));
                 }
 
@@ -231,6 +227,72 @@ pub(super) fn dispatch(
 
             let ret = IAcp::batchCallsCall::abi_encode_returns(&results);
             Ok(ok_dispatch(gas_used, ret, logs))
+        }
+
+        IAcp::bearerCreatePolicyCall::SELECTOR => {
+            if gas_limit < WRITE_GAS {
+                return Err(PrecompileError::OutOfGas);
+            }
+            let call = IAcp::bearerCreatePolicyCall::abi_decode(input).map_err(decode_error)?;
+            let policy = std::str::from_utf8(&call.policy)
+                .map_err(|_| PrecompileError::Other("invalid UTF-8 in policy".into()))?;
+            let record = match module.bearer_create_policy(
+                hub,
+                block_ctx,
+                tx_ctx,
+                &call.bearerToken,
+                policy,
+                marshal_type_from_u8(call.marshalType),
+            ) {
+                Ok(record) => record,
+                Err(error) => return Ok(err_dispatch(error)),
+            };
+            let event = IAcp::DelegatedPolicyCreated {
+                policyId: record.policy.id.parse().map_err(|_| {
+                    PrecompileError::Other("invalid created policy identifier".into())
+                })?,
+                creator: record.metadata.owner_did.clone(),
+            };
+            Ok(ok_dispatch(
+                WRITE_GAS,
+                IAcp::bearerCreatePolicyCall::abi_encode_returns(&json_bytes(&record)),
+                vec![event_log(ACP_ADDRESS, &event)],
+            ))
+        }
+
+        IAcp::bearerEditPolicyCall::SELECTOR => {
+            if gas_limit < WRITE_GAS {
+                return Err(PrecompileError::OutOfGas);
+            }
+            let call = IAcp::bearerEditPolicyCall::abi_decode(input).map_err(decode_error)?;
+            let policy = std::str::from_utf8(&call.policy)
+                .map_err(|_| PrecompileError::Other("invalid UTF-8 in policy".into()))?;
+            let policy_id = policy_id_to_string(&call.policyId);
+            let (removed, record) = match module.bearer_edit_policy(
+                hub,
+                block_ctx,
+                tx_ctx,
+                &call.bearerToken,
+                &policy_id,
+                policy,
+                marshal_type_from_u8(call.marshalType),
+            ) {
+                Ok(result) => result,
+                Err(error) => return Ok(err_dispatch(error)),
+            };
+            let event = IAcp::PolicyEdited {
+                policyId: alloy_primitives::keccak256(policy_id.as_bytes()),
+                creator: record.metadata.owner_did.clone(),
+                relationshipsRemoved: alloy_primitives::U256::from(removed),
+            };
+            Ok(ok_dispatch(
+                WRITE_GAS,
+                IAcp::bearerEditPolicyCall::abi_encode_returns(&IAcp::bearerEditPolicyReturn {
+                    relationshipsRemoved: removed,
+                    record: json_bytes(&record),
+                }),
+                vec![event_log(ACP_ADDRESS, &event)],
+            ))
         }
 
         IAcp::createPolicyCall::SELECTOR => {
@@ -309,10 +371,11 @@ pub(super) fn dispatch(
                 acp::Subject::entity(actor_did),
             ));
 
-            let result = match module.direct_policy_cmd(&creator, &policy_id, cmd) {
-                Ok(r) => r,
-                Err(e) => return Ok(err_dispatch(e)),
-            };
+            let result =
+                match module.execute_policy_cmd(&creator, &policy_id, cmd, block_ctx, tx_ctx) {
+                    Ok(r) => r,
+                    Err(e) => return Ok(err_dispatch(e)),
+                };
 
             let (record_existed, record) = match result {
                 hub_modules::acp::types::PolicyCmdResult::SetRelationship {
@@ -355,10 +418,11 @@ pub(super) fn dispatch(
                 acp::Subject::entity(actor_did),
             ));
 
-            let result = match module.direct_policy_cmd(&creator, &policy_id, cmd) {
-                Ok(r) => r,
-                Err(e) => return Ok(err_dispatch(e)),
-            };
+            let result =
+                match module.execute_policy_cmd(&creator, &policy_id, cmd, block_ctx, tx_ctx) {
+                    Ok(r) => r,
+                    Err(e) => return Ok(err_dispatch(e)),
+                };
 
             let record_found = match result {
                 hub_modules::acp::types::PolicyCmdResult::DeleteRelationship { record_found } => {
@@ -402,10 +466,11 @@ pub(super) fn dispatch(
                 subject,
             ));
 
-            let result = match module.direct_policy_cmd(&creator, &policy_id, cmd) {
-                Ok(r) => r,
-                Err(e) => return Ok(err_dispatch(e)),
-            };
+            let result =
+                match module.execute_policy_cmd(&creator, &policy_id, cmd, block_ctx, tx_ctx) {
+                    Ok(r) => r,
+                    Err(e) => return Ok(err_dispatch(e)),
+                };
 
             let (record_existed, record) = match result {
                 hub_modules::acp::types::PolicyCmdResult::SetRelationship {
@@ -459,10 +524,11 @@ pub(super) fn dispatch(
                 subject,
             ));
 
-            let result = match module.direct_policy_cmd(&creator, &policy_id, cmd) {
-                Ok(r) => r,
-                Err(e) => return Ok(err_dispatch(e)),
-            };
+            let result =
+                match module.execute_policy_cmd(&creator, &policy_id, cmd, block_ctx, tx_ctx) {
+                    Ok(r) => r,
+                    Err(e) => return Ok(err_dispatch(e)),
+                };
 
             let record_found = match result {
                 hub_modules::acp::types::PolicyCmdResult::DeleteRelationship { record_found } => {
@@ -503,10 +569,11 @@ pub(super) fn dispatch(
                 id: call.objectId,
             });
 
-            let result = match module.direct_policy_cmd(&creator, &policy_id, cmd) {
-                Ok(r) => r,
-                Err(e) => return Ok(err_dispatch(e)),
-            };
+            let result =
+                match module.execute_policy_cmd(&creator, &policy_id, cmd, block_ctx, tx_ctx) {
+                    Ok(r) => r,
+                    Err(e) => return Ok(err_dispatch(e)),
+                };
 
             let record = match result {
                 hub_modules::acp::types::PolicyCmdResult::RegisterObject { record } => record,
@@ -541,10 +608,11 @@ pub(super) fn dispatch(
                 id: call.objectId,
             });
 
-            let result = match module.direct_policy_cmd(&creator, &policy_id, cmd) {
-                Ok(r) => r,
-                Err(e) => return Ok(err_dispatch(e)),
-            };
+            let result =
+                match module.execute_policy_cmd(&creator, &policy_id, cmd, block_ctx, tx_ctx) {
+                    Ok(r) => r,
+                    Err(e) => return Ok(err_dispatch(e)),
+                };
 
             let (found, relationships_removed) = match result {
                 hub_modules::acp::types::PolicyCmdResult::ArchiveObject {
@@ -582,10 +650,11 @@ pub(super) fn dispatch(
                 id: call.objectId,
             });
 
-            let result = match module.direct_policy_cmd(&creator, &policy_id, cmd) {
-                Ok(r) => r,
-                Err(e) => return Ok(err_dispatch(e)),
-            };
+            let result =
+                match module.execute_policy_cmd(&creator, &policy_id, cmd, block_ctx, tx_ctx) {
+                    Ok(r) => r,
+                    Err(e) => return Ok(err_dispatch(e)),
+                };
 
             let (record, relationship_modified) = match result {
                 hub_modules::acp::types::PolicyCmdResult::UnarchiveObject {
@@ -613,10 +682,11 @@ pub(super) fn dispatch(
                 commitment: call.commitment.to_vec(),
             };
 
-            let result = match module.direct_policy_cmd(&creator, &policy_id, cmd) {
-                Ok(r) => r,
-                Err(e) => return Ok(err_dispatch(e)),
-            };
+            let result =
+                match module.execute_policy_cmd(&creator, &policy_id, cmd, block_ctx, tx_ctx) {
+                    Ok(r) => r,
+                    Err(e) => return Ok(err_dispatch(e)),
+                };
 
             let commitment_id = match result {
                 hub_modules::acp::types::PolicyCmdResult::CommitRegistrations {
@@ -626,7 +696,16 @@ pub(super) fn dispatch(
             };
 
             let ret = IAcp::commitRegistrationsCall::abi_encode_returns(&commitment_id);
-            Ok(ok_dispatch(WRITE_GAS, ret, vec![]))
+            let event = IAcp::RegistrationsCommitted {
+                commitmentId: commitment_id,
+                policyId: call.policyId,
+                commitment: alloy_primitives::B256::from_slice(&call.commitment),
+            };
+            Ok(ok_dispatch(
+                WRITE_GAS,
+                ret,
+                vec![event_log(ACP_ADDRESS, &event)],
+            ))
         }
 
         IAcp::revealRegistrationCall::SELECTOR => {
@@ -644,11 +723,15 @@ pub(super) fn dispatch(
                 proof,
             };
 
-            // policy_id is not needed — the commitment record carries it.
-            let result = match module.direct_policy_cmd(&creator, "", cmd) {
-                Ok(r) => r,
-                Err(e) => return Ok(err_dispatch(e)),
+            let policy_id = match module.query_registrations_commitment(call.commitmentId) {
+                Ok(commitment) => commitment.policy_id,
+                Err(error) => return Ok(err_dispatch(error)),
             };
+            let result =
+                match module.execute_policy_cmd(&creator, &policy_id, cmd, block_ctx, tx_ctx) {
+                    Ok(r) => r,
+                    Err(e) => return Ok(err_dispatch(e)),
+                };
 
             let encoded = serde_json::to_vec(&result).unwrap_or_default();
             let ret_bytes = Bytes::from(encoded);
@@ -666,13 +749,20 @@ pub(super) fn dispatch(
                 event_id: call.eventId,
             };
 
-            // policy_id is empty — FlagHijackAttempt looks up the amendment
-            // event by event_id; the event record itself carries the policy_id.
-            // The module implementation must ignore policy_id for this variant.
-            let result = match module.direct_policy_cmd(&creator, "", cmd) {
-                Ok(r) => r,
+            let policy_id = match module.get_amendment_event_by_id(call.eventId) {
+                Ok(Some(event)) => event.policy_id,
+                Ok(None) => {
+                    return Ok(err_dispatch(hub_modules::acp::error::AcpError::State(
+                        format!("amendment event {} not found", call.eventId),
+                    )));
+                }
                 Err(e) => return Ok(err_dispatch(e)),
             };
+            let result =
+                match module.execute_policy_cmd(&creator, &policy_id, cmd, block_ctx, tx_ctx) {
+                    Ok(r) => r,
+                    Err(e) => return Ok(err_dispatch(e)),
+                };
 
             let event = match result {
                 hub_modules::acp::types::PolicyCmdResult::FlagHijackAttempt { event } => event,
@@ -681,6 +771,38 @@ pub(super) fn dispatch(
 
             let ret = IAcp::flagHijackAttemptCall::abi_encode_returns(&json_bytes(&event));
             Ok(ok_dispatch(WRITE_GAS, ret, vec![]))
+        }
+
+        IAcp::bearerCheckAccessCall::SELECTOR => {
+            if gas_limit < WRITE_GAS {
+                return Err(PrecompileError::OutOfGas);
+            }
+            let call = IAcp::bearerCheckAccessCall::abi_decode(input).map_err(decode_error)?;
+            if call.request.len() > 64 << 10 {
+                return Err(PrecompileError::Other(
+                    "access request exceeds byte limit".into(),
+                ));
+            }
+            let request: AccessRequest =
+                serde_json::from_slice(&call.request).map_err(|error| {
+                    PrecompileError::Other(format!("access request JSON decode: {error}").into())
+                })?;
+            let decision = match module.bearer_check_access(
+                hub,
+                block_ctx,
+                tx_ctx,
+                &call.bearerToken,
+                &policy_id_to_string(&call.policyId),
+                &request,
+            ) {
+                Ok(decision) => decision,
+                Err(error) => return Ok(err_dispatch(error)),
+            };
+            Ok(ok_dispatch(
+                WRITE_GAS,
+                IAcp::bearerCheckAccessCall::abi_encode_returns(&json_bytes(&decision)),
+                vec![],
+            ))
         }
 
         IAcp::checkAccessCall::SELECTOR => {
@@ -697,10 +819,12 @@ pub(super) fn dispatch(
                 actor: Actor(actor_did),
             };
 
-            let decision = match module.check_access(&creator, &policy_id, &access_request) {
-                Ok(d) => d,
-                Err(e) => return Ok(err_dispatch(e)),
-            };
+            let decision =
+                match module.check_access(&creator, &policy_id, &access_request, block_ctx, tx_ctx)
+                {
+                    Ok(d) => d,
+                    Err(e) => return Ok(err_dispatch(e)),
+                };
 
             let ret = IAcp::checkAccessCall::abi_encode_returns(&json_bytes(&decision));
             Ok(ok_dispatch(WRITE_GAS, ret, vec![]))
@@ -728,40 +852,26 @@ pub(super) fn dispatch(
             Ok(ok_dispatch(READ_GAS, ret, vec![]))
         }
 
-        IAcp::signedPolicyCmdCall::SELECTOR => {
-            if gas_limit < WRITE_GAS {
-                return Err(PrecompileError::OutOfGas);
-            }
-            let call = IAcp::signedPolicyCmdCall::abi_decode(input).map_err(decode_error)?;
-            let creator = did_from_signer(&tx_ctx.signer)?;
-            let payload_str = String::from_utf8(call.payload.to_vec())
-                .map_err(|_| PrecompileError::Other("invalid UTF-8 in payload".into()))?;
-            let content_type = content_type_from_u8(call.contentType);
-
-            let result = match module.signed_policy_cmd(&creator, &payload_str, content_type) {
-                Ok(r) => r,
-                Err(e) => return Ok(err_dispatch(e)),
-            };
-
-            let ret = IAcp::signedPolicyCmdCall::abi_encode_returns(&json_bytes(&result));
-            Ok(ok_dispatch(WRITE_GAS, ret, vec![]))
-        }
-
         IAcp::bearerPolicyCmdCall::SELECTOR => {
             if gas_limit < WRITE_GAS {
                 return Err(PrecompileError::OutOfGas);
             }
             let call = IAcp::bearerPolicyCmdCall::abi_decode(input).map_err(decode_error)?;
-            let creator = did_from_signer(&tx_ctx.signer)?;
             let policy_id = policy_id_to_string(&call.policyId);
             let cmd: PolicyCmd = serde_json::from_slice(&call.cmd)
                 .map_err(|e| PrecompileError::Other(format!("cmd JSON decode: {e}").into()))?;
 
-            let result =
-                match module.bearer_policy_cmd(&creator, &call.bearerToken, &policy_id, cmd) {
-                    Ok(r) => r,
-                    Err(e) => return Ok(err_dispatch(e)),
-                };
+            let result = match module.bearer_policy_cmd(
+                hub,
+                block_ctx,
+                tx_ctx,
+                &call.bearerToken,
+                &policy_id,
+                cmd,
+            ) {
+                Ok(r) => r,
+                Err(e) => return Ok(err_dispatch(e)),
+            };
 
             let ret = IAcp::bearerPolicyCmdCall::abi_encode_returns(&json_bytes(&result));
             Ok(ok_dispatch(WRITE_GAS, ret, vec![]))
@@ -1103,17 +1213,27 @@ resources:
 
         let mut module = AcpModule::new();
         let block_ctx = BlockExecCtx {
+            genesis_id: [0; 32],
+            deployment_id: 9001,
             timestamp: Timestamp {
                 seconds: 1000,
                 block_height: 5,
             },
         };
         let tx_ctx = TxExecCtx {
+            sequence: 0,
             tx_hash: vec![1; 32],
             signer: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK".to_string(),
         };
 
-        let result = dispatch(&mut module, &block_ctx, &tx_ctx, &calldata, 1_000_000);
+        let result = dispatch(
+            &mut module,
+            &mut HubModule::new(),
+            &block_ctx,
+            &tx_ctx,
+            &calldata,
+            1_000_000,
+        );
         match &result {
             Ok(dr) => {
                 assert!(
@@ -1148,17 +1268,28 @@ resources:
 
         let mut module = AcpModule::new();
         let block_ctx = BlockExecCtx {
+            genesis_id: [0; 32],
+            deployment_id: 9001,
             timestamp: Timestamp {
                 seconds: 1000,
                 block_height: 5,
             },
         };
         let tx_ctx = TxExecCtx {
+            sequence: 0,
             tx_hash: vec![1; 32],
             signer: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK".to_string(),
         };
 
-        let result = dispatch(&mut module, &block_ctx, &tx_ctx, &calldata, 1_000_000).unwrap();
+        let result = dispatch(
+            &mut module,
+            &mut HubModule::new(),
+            &block_ctx,
+            &tx_ctx,
+            &calldata,
+            1_000_000,
+        )
+        .unwrap();
         assert!(!result.precompile.reverted);
         assert_eq!(result.logs.len(), 2);
         assert_eq!(module.query_policy_ids().unwrap().len(), 2);
@@ -1167,12 +1298,15 @@ resources:
     #[test]
     fn dispatch_batch_calls_rollback_on_failure() {
         let block_ctx = BlockExecCtx {
+            genesis_id: [0; 32],
+            deployment_id: 9001,
             timestamp: Timestamp {
                 seconds: 1000,
                 block_height: 5,
             },
         };
         let tx_ctx = TxExecCtx {
+            sequence: 0,
             tx_hash: vec![1; 32],
             signer: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK".to_string(),
         };
@@ -1205,7 +1339,15 @@ resources:
         }
         .abi_encode();
 
-        let err = dispatch(&mut module, &block_ctx, &tx_ctx, &calldata, 1_000_000).unwrap_err();
+        let err = dispatch(
+            &mut module,
+            &mut HubModule::new(),
+            &block_ctx,
+            &tx_ctx,
+            &calldata,
+            1_000_000,
+        )
+        .unwrap_err();
         match err {
             PrecompileError::Other(message) => {
                 assert!(message.contains("batch call 2"), "{message}");
@@ -1333,12 +1475,15 @@ resources:
 
         let mut module = AcpModule::new();
         let block_ctx = BlockExecCtx {
+            genesis_id: [0; 32],
+            deployment_id: 9001,
             timestamp: Timestamp {
                 seconds: 1000,
                 block_height: 5,
             },
         };
         let tx_ctx = TxExecCtx {
+            sequence: 0,
             tx_hash: vec![1; 32],
             signer: ALICE_DID.to_string(),
         };
@@ -1347,7 +1492,7 @@ resources:
         let record = module
             .create_policy(&creator, CROSS_POLICY_YAML, PolicyMarshalingType::ShortYaml)
             .unwrap();
-        let policy_id = record.policy.id.clone();
+        let policy_id = record.policy.id;
         let pid = policy_fixed(&policy_id);
 
         let fields = || IAcp::setRelationshipSubjectCall {
@@ -1362,7 +1507,15 @@ resources:
         };
 
         let set = fields().abi_encode();
-        let dr = dispatch(&mut module, &block_ctx, &tx_ctx, &set, 1_000_000).unwrap();
+        let dr = dispatch(
+            &mut module,
+            &mut HubModule::new(),
+            &block_ctx,
+            &tx_ctx,
+            &set,
+            1_000_000,
+        )
+        .unwrap();
         assert!(
             !dr.precompile.reverted,
             "set subject should not revert: {}",
@@ -1399,7 +1552,15 @@ resources:
             subjectRelation: c.subjectRelation,
         }
         .abi_encode();
-        let dr = dispatch(&mut module, &block_ctx, &tx_ctx, &del, 1_000_000).unwrap();
+        let dr = dispatch(
+            &mut module,
+            &mut HubModule::new(),
+            &block_ctx,
+            &tx_ctx,
+            &del,
+            1_000_000,
+        )
+        .unwrap();
         assert!(!dr.precompile.reverted, "delete subject should not revert");
         let rels = module
             .query_filter_relationships(&policy_id, &selector)

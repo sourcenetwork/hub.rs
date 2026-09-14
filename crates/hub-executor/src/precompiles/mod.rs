@@ -11,6 +11,12 @@ mod bulletin;
 mod hub;
 pub(crate) mod validator_registry;
 
+use std::sync::{Arc, Mutex};
+
+mod journal;
+pub use journal::ModuleInspector;
+use journal::ModuleJournal;
+
 use alloy_primitives::{Address, B256, Bytes, Log};
 use hub_modules::acp::AcpModule;
 use hub_modules::bulletin::BulletinModule;
@@ -19,7 +25,7 @@ use hub_modules::types::{BlockExecCtx, Timestamp, TxExecCtx};
 use identity::Did;
 use revm::{
     context::Cfg,
-    context_interface::{Block, ContextTr, JournalTr},
+    context_interface::{Block, ContextTr, JournalTr, Transaction},
     handler::{EthPrecompiles, PrecompileProvider},
     interpreter::{CallInputs, InterpreterResult},
     precompile::{
@@ -121,15 +127,15 @@ const fn stub_precompile(_input: &[u8], _gas_limit: u64) -> PrecompileResult {
 
 /// Hub precompile provider that extends standard Ethereum precompiles
 /// with ABI-dispatching precompiles for ACP, Bulletin, and Hub modules.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct HubPrecompiles {
     eth: EthPrecompiles,
     custom: Precompiles,
-    acp_module: AcpModule,
-    bulletin_module: BulletinModule,
-    hub_module: HubModule,
+    journal: Arc<Mutex<ModuleJournal>>,
     current_tx_hash: B256,
     current_signer_did: String,
+    genesis_id: [u8; 32],
+    max_active_members: u32,
 }
 
 /// Route calldata to the appropriate module based on the target precompile address.
@@ -148,13 +154,17 @@ pub fn dispatch_to_module(
     gas_limit: u64,
 ) -> Option<DispatchReturn> {
     if target == ACP_ADDRESS {
-        Some(acp::dispatch(acp, block_ctx, tx_ctx, calldata, gas_limit))
+        Some(acp::dispatch(
+            acp, hub, block_ctx, tx_ctx, calldata, gas_limit,
+        ))
     } else if target == BULLETIN_ADDRESS {
         Some(bulletin::dispatch(
             bulletin, acp, block_ctx, tx_ctx, calldata, gas_limit,
         ))
     } else if target == HUB_ADDRESS {
-        Some(hub::dispatch(hub, block_ctx, tx_ctx, calldata, gas_limit))
+        Some(hub::dispatch(
+            hub, acp, block_ctx, tx_ctx, calldata, gas_limit,
+        ))
     } else {
         None
     }
@@ -185,11 +195,11 @@ impl HubPrecompiles {
         Self {
             eth: EthPrecompiles::new(spec),
             custom: new_custom_precompiles(),
-            acp_module: AcpModule::new(),
-            bulletin_module: BulletinModule::new(),
-            hub_module: HubModule::new(),
+            journal: Arc::default(),
             current_tx_hash: B256::ZERO,
             current_signer_did: String::new(),
+            genesis_id: [0; 32],
+            max_active_members: hub_domain::MAX_DKG_PARTICIPANTS.get(),
         }
     }
 
@@ -203,12 +213,30 @@ impl HubPrecompiles {
         Self {
             eth: EthPrecompiles::new(spec),
             custom: new_custom_precompiles(),
-            acp_module,
-            bulletin_module,
-            hub_module,
+            journal: Arc::new(Mutex::new(ModuleJournal::new((
+                acp_module,
+                bulletin_module,
+                hub_module,
+            )))),
             current_tx_hash: B256::ZERO,
             current_signer_did: String::new(),
+            genesis_id: [0; 32],
+            max_active_members: hub_domain::MAX_DKG_PARTICIPANTS.get(),
         }
+    }
+
+    /// Enforce the configured epoch capacity on membership commands.
+    #[must_use]
+    pub const fn with_membership_limit(mut self, limit: u32) -> Self {
+        self.max_active_members = limit;
+        self
+    }
+
+    /// Bind administrative approvals to the deployment genesis record.
+    #[must_use]
+    pub const fn with_genesis_id(mut self, genesis_id: [u8; 32]) -> Self {
+        self.genesis_id = genesis_id;
+        self
     }
 
     /// Set the tx hash for the current EVM transaction being executed.
@@ -221,9 +249,26 @@ impl HubPrecompiles {
         self.current_signer_did = did;
     }
 
+    /// Inspector required to align module mutations with call-frame outcomes.
+    pub fn inspector(&self) -> ModuleInspector {
+        ModuleInspector(self.journal.clone())
+    }
+
+    /// Retain a transaction checkpoint through post-execution validation.
+    pub fn begin_transaction(&self) {
+        self.journal.lock().unwrap().begin();
+    }
+
+    /// Commit or restore module changes after the complete execution result.
+    pub fn finish_transaction(&self, success: bool) {
+        self.journal.lock().unwrap().finish(success);
+    }
+
     /// Extract module state after block execution.
     pub fn take_modules(self) -> (AcpModule, BulletinModule, HubModule) {
-        (self.acp_module, self.bulletin_module, self.hub_module)
+        let mut journal = self.journal.lock().unwrap();
+        journal.finish(true);
+        std::mem::take(&mut journal.modules)
     }
 }
 
@@ -242,22 +287,45 @@ impl<CTX: ContextTr> PrecompileProvider<CTX> for HubPrecompiles {
         if self.custom.contains(&inputs.bytecode_address) {
             let block = context.block();
             let block_ctx = BlockExecCtx {
+                genesis_id: self.genesis_id,
+                deployment_id: context.cfg().chain_id(),
                 timestamp: Timestamp {
                     seconds: block.timestamp().as_limbs()[0],
                     block_height: block.number().as_limbs()[0],
                 },
             };
+            let direct_caller = inputs.caller == context.tx().caller();
             let tx_ctx = TxExecCtx {
+                sequence: context.tx().nonce(),
                 tx_hash: self.current_tx_hash.to_vec(),
-                signer: self.current_signer_did.clone(),
+                // A contract cannot inherit the submitting key's module authority.
+                signer: if direct_caller {
+                    self.current_signer_did.clone()
+                } else {
+                    String::new()
+                },
             };
             let calldata = inputs.input.bytes(context);
 
             if inputs.bytecode_address == VALIDATOR_REGISTRY_ADDRESS {
+                if !direct_caller && !validator_registry::is_query(&calldata) {
+                    return Self::dispatch_result_to_interpreter(
+                        inputs,
+                        Err(PrecompileError::Other(
+                            "module write requires an authenticated caller".into(),
+                        )),
+                    )
+                    .map(|(result, _)| result);
+                }
+                if inputs.is_static && !validator_registry::is_query(&calldata) {
+                    return Ok(Some(Self::static_write_error(inputs)));
+                }
+                let journal = self.journal.lock().unwrap();
                 let dispatch_result = validator_registry::dispatch_with_journal(
                     context,
-                    &self.acp_module,
-                    &block_ctx,
+                    &journal.modules.0,
+                    &journal.modules.2,
+                    self.max_active_members,
                     &tx_ctx,
                     &calldata,
                     inputs.gas_limit,
@@ -333,6 +401,14 @@ impl HubPrecompiles {
         }
     }
 
+    const fn static_write_error(inputs: &CallInputs) -> InterpreterResult {
+        InterpreterResult {
+            result: revm::interpreter::InstructionResult::StateChangeDuringStaticCall,
+            gas: revm::interpreter::Gas::new(inputs.gas_limit),
+            output: Bytes::new(),
+        }
+    }
+
     fn run_custom(
         &mut self,
         inputs: &CallInputs,
@@ -340,20 +416,32 @@ impl HubPrecompiles {
         block_ctx: &BlockExecCtx,
         tx_ctx: &TxExecCtx,
     ) -> Result<(Option<InterpreterResult>, Vec<Log>), String> {
-        let dispatch_result = match dispatch_to_module(
-            &mut self.acp_module,
-            &mut self.bulletin_module,
-            &mut self.hub_module,
-            inputs.bytecode_address,
-            calldata,
-            block_ctx,
-            tx_ctx,
-            inputs.gas_limit,
-        ) {
-            Some(r) => r,
-            None => return Ok((None, vec![])),
+        let mut journal = self.journal.lock().unwrap();
+        journal.checkpoint()?;
+        let (acp, bulletin, hub) = &mut journal.modules;
+        let dispatch_result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            dispatch_to_module(
+                acp,
+                bulletin,
+                hub,
+                inputs.bytecode_address,
+                calldata,
+                block_ctx,
+                tx_ctx,
+                inputs.gas_limit,
+            )
+        })) {
+            Ok(Some(result)) => result,
+            Ok(None) => return Ok((None, vec![])),
+            Err(_) => {
+                tracing::warn!("module call panicked");
+                Err(PrecompileError::Other("module execution failed".into()))
+            }
         };
 
+        if inputs.is_static && journal.changed() {
+            return Ok((Some(Self::static_write_error(inputs)), vec![]));
+        }
         Self::dispatch_result_to_interpreter(inputs, dispatch_result)
     }
 }

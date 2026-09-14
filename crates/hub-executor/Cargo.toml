@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 description = "Block execution abstractions, REVM implementation, and hub precompiles"
 
+[features]
+fault-injection = []
+
 [dependencies]
 hub-crypto.workspace = true
 hub-domain.workspace = true
@@ -15,6 +18,7 @@ hub-traits.workspace = true
 hub-qmdb.workspace = true
 
 acp.workspace = true
+commonware-codec.workspace = true
 alloy-consensus.workspace = true
 alloy-eips.workspace = true
 alloy-primitives.workspace = true

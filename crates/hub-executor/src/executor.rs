@@ -1,17 +1,17 @@
 //! HubExecutor — EVM executor with hub precompiles (ACP, Bulletin, Hub)
 //! and native BLS transaction support.
 
-use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex, RwLock};
 
 use crate::{
     BlockContext, BlockExecutor, ExecutionConfig, ExecutionError, ExecutionOutcome,
-    ExecutionReceipt, StateDbAdapter, build_receipt, decode_evm_tx, extract_changes,
+    ExecutionReceipt, ModuleSnapshot, StateDbAdapter, build_receipt, decode_evm_tx,
+    extract_changes,
 };
 use alloy_primitives::{B256, Bytes, U256, keccak256};
 use hub_crypto::bls;
-use hub_domain::{BlockId, NativeTx};
+use hub_domain::NativeTx;
 use hub_modules::acp::AcpModule;
 use hub_modules::bulletin::BulletinModule;
 use hub_modules::hub::HubModule;
@@ -21,10 +21,11 @@ use hub_modules::types::{BlockExecCtx, Timestamp, TxExecCtx};
 use hub_state::ModuleStateTree;
 use hub_traits::StateDb;
 use revm::{
-    Context, ExecuteEvm, Journal, MainBuilder,
+    Context, ExecuteCommitEvm, InspectEvm, Journal, MainBuilder,
     context::{block::BlockEnv, result::ExecutionResult},
-    context_interface::ContextSetters,
+    context_interface::{ContextTr, JournalTr},
     database::State,
+    precompile::PrecompileError,
 };
 use tracing::warn;
 
@@ -36,14 +37,7 @@ use crate::precompiles::{
 /// Gas budget for native BLS transactions dispatched to modules.
 const NATIVE_TX_GAS_LIMIT: u64 = 1_000_000;
 
-/// Per-block receipt cache: height → (receipts, total gas used).
-type ReceiptCache = Arc<Mutex<HashMap<u64, (Vec<ExecutionReceipt>, u64)>>>;
-
-/// Per-block module state cache: height → post-execution ModuleState.
-type ModuleCache = Arc<Mutex<HashMap<u64, ModuleState>>>;
-
-/// Fork-safe module snapshots: block ID → (height, post-execution state).
-type BlockModuleCache = Arc<Mutex<HashMap<BlockId, (u64, ModuleState)>>>;
+mod recovery;
 
 /// Per-module JMT-backed state trees: [acp, bulletin, hub, nonces].
 pub type ModuleTrees = [Arc<Mutex<ModuleStateTree>>; 4];
@@ -54,32 +48,43 @@ pub type ModuleTrees = [Arc<Mutex<ModuleStateTree>>; 4];
 /// (BLS12-381) in block order. The first byte of each transaction determines
 /// the path: `0x45` → native BLS, anything else → REVM.
 ///
-/// Module state persists across block executions via `SharedModuleState`.
-/// Post-execution module state is cached per height so consensus can chain
-/// parent→child state across proposals, and finalization can commit the
-/// winning fork's state.
-/// Receipts are cached per block height so the finalized block reporter
-/// can retrieve them without re-executing (which would fail nonce checks).
+/// Shared module state serves committed queries. Consensus execution supplies
+/// an explicit parent snapshot and receives its post-execution state.
 #[derive(Clone, Debug)]
 pub struct HubExecutor {
     config: ExecutionConfig,
     modules: SharedModuleState,
-    receipt_cache: ReceiptCache,
-    module_cache: ModuleCache,
-    block_module_cache: BlockModuleCache,
     module_trees: Option<ModuleTrees>,
+    commit_lock: Arc<Mutex<()>>,
+    #[cfg(feature = "fault-injection")]
+    crash_marker: Option<std::path::PathBuf>,
 }
 
 impl HubExecutor {
+    /// Configure a one-shot process crash marker for persistence tests.
+    #[cfg(feature = "fault-injection")]
+    #[must_use]
+    pub fn with_crash_marker(mut self, path: std::path::PathBuf) -> Self {
+        self.crash_marker = Some(path);
+        self
+    }
+
+    /// Abort at a selected module boundary in fault-injection builds.
+    #[cfg(feature = "fault-injection")]
+    pub fn after_module_commit(&self, height: u64, index: usize) {
+        if let Some(marker) = &self.crash_marker {
+            crate::faults::after_module_commit(marker, height, index);
+        }
+    }
     /// Create a new hub executor.
     pub fn new(chain_id: u64) -> Self {
         Self {
             config: ExecutionConfig::new(chain_id),
             modules: Arc::new(RwLock::new(ModuleState::default())),
-            receipt_cache: Arc::new(Mutex::new(HashMap::new())),
-            module_cache: Arc::new(Mutex::new(HashMap::new())),
-            block_module_cache: Arc::new(Mutex::new(HashMap::new())),
             module_trees: None,
+            commit_lock: Arc::default(),
+            #[cfg(feature = "fault-injection")]
+            crash_marker: None,
         }
     }
 
@@ -88,10 +93,10 @@ impl HubExecutor {
         Self {
             config,
             modules: Arc::new(RwLock::new(ModuleState::default())),
-            receipt_cache: Arc::new(Mutex::new(HashMap::new())),
-            module_cache: Arc::new(Mutex::new(HashMap::new())),
-            block_module_cache: Arc::new(Mutex::new(HashMap::new())),
             module_trees: None,
+            commit_lock: Arc::default(),
+            #[cfg(feature = "fault-injection")]
+            crash_marker: None,
         }
     }
 
@@ -99,6 +104,20 @@ impl HubExecutor {
     #[must_use]
     pub fn with_module_trees(mut self, trees: ModuleTrees) -> Self {
         self.module_trees = Some(trees);
+        self
+    }
+
+    /// Select future consensus rosters at the configured epoch boundaries.
+    #[must_use]
+    pub const fn with_membership_epochs(mut self, length: std::num::NonZeroU64) -> Self {
+        self.config.membership_epoch_length = Some(length);
+        self
+    }
+
+    /// Bind administrative execution to the deployment genesis record.
+    #[must_use]
+    pub const fn with_genesis_id(mut self, genesis_id: [u8; 32]) -> Self {
+        self.config.genesis_id = genesis_id;
         self
     }
 
@@ -122,59 +141,72 @@ impl HubExecutor {
         self.module_trees.as_ref()
     }
 
-    /// Associate the current base module state with a block that predates execution.
-    pub fn seed_block_modules(&self, block: BlockId, height: u64) {
-        let modules = self.modules.read().unwrap().clone();
-        self.block_module_cache
-            .lock()
-            .unwrap()
-            .insert(block, (height, modules));
-    }
-
-    /// Associate the most recently executed state at `height` with its block ID.
-    pub fn cache_block_modules(&self, block: BlockId, height: u64) {
-        let modules = self
-            .module_cache
-            .lock()
-            .unwrap()
-            .get(&height)
-            .cloned()
-            .expect("executed block must have a module snapshot");
-        self.block_module_cache
-            .lock()
-            .unwrap()
-            .insert(block, (height, modules));
-    }
-
-    /// Get the cached module state for a given block (clone without removing).
-    pub fn get_cached_modules(&self, block: BlockId) -> Option<ModuleState> {
-        self.block_module_cache
-            .lock()
-            .unwrap()
-            .get(&block)
-            .map(|(_, modules)| modules.clone())
-    }
-
-    /// Remove module cache entries at or below the given height.
-    pub fn cleanup_module_cache(&self, up_to_height: u64) {
-        self.module_cache
-            .lock()
-            .unwrap()
-            .retain(|&h, _| h > up_to_height);
-        self.block_module_cache
-            .lock()
-            .unwrap()
-            .retain(|_, (height, _)| *height > up_to_height);
-    }
-
-    /// Write module state to `SharedModuleState` (used by build/verify
-    /// to set parent state before execute, and by finalization to commit).
+    /// Install module state loaded at startup or selected by finalization.
     pub fn set_base_modules(&self, modules: ModuleState) {
         *self.modules.write().unwrap() = modules;
     }
 
+    /// Capture module values and tree views from the same committed revision.
+    pub fn snapshot(&self) -> Result<ModuleSnapshot, ExecutionError> {
+        let _guard = self.commit_lock.lock().unwrap();
+        let trees = self
+            .module_trees
+            .as_ref()
+            .map(|trees| {
+                let snapshots = trees
+                    .iter()
+                    .map(|tree| tree.lock().unwrap().snapshot())
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| ExecutionError::ModuleTree(e.to_string()))?;
+                Ok::<_, ExecutionError>(snapshots.try_into().expect("four module trees"))
+            })
+            .transpose()?;
+        Ok(ModuleSnapshot {
+            modules: self.modules.read().unwrap().clone(),
+            trees,
+        })
+    }
+
+    /// Persist selected tree updates before replacing the shared module values.
+    pub fn commit_snapshot(
+        &self,
+        height: u64,
+        snapshot: ModuleSnapshot,
+    ) -> Result<(), ExecutionError> {
+        let _guard = self.commit_lock.lock().unwrap();
+        match (&self.module_trees, &snapshot.trees) {
+            (Some(trees), Some(snapshots)) => {
+                #[cfg(feature = "fault-injection")]
+                let changed = trees.iter().zip(snapshots).any(|(tree, snapshot)| {
+                    tree.lock().unwrap().root().expect("read module root") != snapshot.root()
+                });
+                for (index, (tree, snapshot)) in trees.iter().zip(snapshots).enumerate() {
+                    tree.lock()
+                        .unwrap()
+                        .commit_prepared(height, snapshot)
+                        .map_err(|e| ExecutionError::ModuleTree(e.to_string()))?;
+                    #[cfg(feature = "fault-injection")]
+                    if changed && let Some(marker) = &self.crash_marker {
+                        crate::faults::after_module_commit(marker, height, index);
+                    }
+                    #[cfg(not(feature = "fault-injection"))]
+                    let _ = index;
+                }
+            }
+            (None, None) => {}
+            _ => {
+                return Err(ExecutionError::ModuleTree(
+                    "module snapshot has incompatible trees".into(),
+                ));
+            }
+        }
+        self.set_base_modules(snapshot.modules);
+        Ok(())
+    }
+
     /// Execute a native BLS transaction: verify signature, derive DID, dispatch to module.
-    fn execute_native_tx(
+    #[allow(clippy::too_many_arguments)]
+    fn execute_native_tx<CTX: ContextTr>(
         &self,
         tx_bytes: &[u8],
         block_ctx: &BlockExecCtx,
@@ -182,6 +214,7 @@ impl HubExecutor {
         bulletin: &mut BulletinModule,
         hub: &mut HubModule,
         nonce_store: &mut NativeNonceStore,
+        journal: &mut CTX,
     ) -> Result<ExecutionReceipt, ExecutionError> {
         let native_tx = NativeTx::decode_wire(tx_bytes)
             .map_err(|e| ExecutionError::TxDecode(format!("native tx: {e}")))?;
@@ -193,15 +226,20 @@ impl HubExecutor {
             });
         }
 
-        let pubkey = bls::deserialize_pubkey(native_tx.bls_pubkey.as_slice())
-            .map_err(|e| ExecutionError::BlsVerification(format!("pubkey: {e}")))?;
+        let signer_did = bls::verify_and_identify(
+            native_tx.bls_pubkey.as_slice(),
+            &native_tx.signing_data(),
+            native_tx.signature.as_slice(),
+        )
+        .map_err(|e| ExecutionError::BlsVerification(format!("signature: {e}")))?;
 
-        let signing_data = native_tx.signing_data();
-        bls::verify(&pubkey, &signing_data, native_tx.signature.as_slice())
-            .map_err(|e| ExecutionError::BlsVerification(format!("signature: {e}")))?;
-
-        let signer_did = bls::did_from_bls_pubkey(&pubkey)
-            .map_err(|e| ExecutionError::BlsVerification(format!("DID: {e}")))?;
+        if native_tx.target != ACP_ADDRESS
+            && native_tx.target != BULLETIN_ADDRESS
+            && native_tx.target != HUB_ADDRESS
+            && native_tx.target != VALIDATOR_REGISTRY_ADDRESS
+        {
+            return Err(ExecutionError::UnknownNativeTarget(native_tx.target));
+        }
 
         nonce_store
             .check_and_increment(&signer_did, native_tx.nonce)
@@ -212,27 +250,41 @@ impl HubExecutor {
                 hub_modules::native_account::NonceError::Overflow(did) => {
                     ExecutionError::InvalidTx(format!("nonce overflow for {did}"))
                 }
+                hub_modules::native_account::NonceError::Malformed(did) => {
+                    ExecutionError::InvalidTx(format!("stored nonce for {did} is malformed"))
+                }
             })?;
-
-        if native_tx.target == VALIDATOR_REGISTRY_ADDRESS {
-            return Err(ExecutionError::InvalidTx(
-                "ValidatorRegistry does not support native transactions".to_string(),
-            ));
-        }
-        if native_tx.target != ACP_ADDRESS
-            && native_tx.target != BULLETIN_ADDRESS
-            && native_tx.target != HUB_ADDRESS
-        {
-            return Err(ExecutionError::UnknownNativeTarget(native_tx.target));
-        }
 
         let tx_hash = native_tx.tx_id().0;
         let tx_ctx = TxExecCtx {
+            sequence: native_tx.nonce,
             tx_hash: tx_hash.to_vec(),
             signer: signer_did,
         };
 
+        let before = (acp.clone(), bulletin.clone(), hub.clone());
+        let checkpoint = journal.journal_mut().checkpoint();
         let dispatch_result = catch_unwind(AssertUnwindSafe(|| {
+            if native_tx.target == VALIDATOR_REGISTRY_ADDRESS {
+                journal
+                    .journal_mut()
+                    .load_account(VALIDATOR_REGISTRY_ADDRESS)
+                    .map_err(|error| {
+                        PrecompileError::Fatal(format!("membership account read failed: {error:?}"))
+                    })?;
+                journal
+                    .journal_mut()
+                    .touch_account(VALIDATOR_REGISTRY_ADDRESS);
+                return crate::precompiles::validator_registry::dispatch_with_journal(
+                    journal,
+                    acp,
+                    hub,
+                    self.config.max_active_members(),
+                    &tx_ctx,
+                    &native_tx.calldata,
+                    NATIVE_TX_GAS_LIMIT,
+                );
+            }
             dispatch_to_module(
                 acp,
                 bulletin,
@@ -245,6 +297,13 @@ impl HubExecutor {
             )
             .expect("target validated above")
         }));
+
+        if !matches!(&dispatch_result, Ok(Ok(result)) if !result.precompile.reverted) {
+            (*acp, *bulletin, *hub) = before;
+            journal.journal_mut().checkpoint_revert(checkpoint);
+        } else {
+            journal.journal_mut().checkpoint_commit();
+        }
 
         let failed_receipt = || {
             ExecutionReceipt::new(
@@ -273,6 +332,7 @@ impl HubExecutor {
                     None,
                 ))
             }
+            Ok(Err(PrecompileError::Fatal(message))) => Err(ExecutionError::TxExecution(message)),
             Ok(Err(_)) => Ok(failed_receipt()),
             Err(_) => {
                 warn!(%tx_hash, "native tx module panicked");
@@ -282,30 +342,40 @@ impl HubExecutor {
     }
 
     /// Run end-of-block hooks for modules that need per-block maintenance.
-    fn run_end_block_hooks(modules: &mut ModuleState, block_ctx: &BlockExecCtx) {
-        if let Err(e) = modules.acp.end_blocker(block_ctx) {
-            warn!(?e, "ACP end_blocker failed");
-        }
-
-        if let Err(e) = modules.hub.check_and_update_expired_tokens(block_ctx) {
-            warn!(?e, "Hub expired token sweep failed");
-        }
+    fn run_end_block_hooks(
+        modules: &mut ModuleState,
+        block_ctx: &BlockExecCtx,
+    ) -> Result<(), ExecutionError> {
+        modules
+            .acp
+            .end_blocker(block_ctx)
+            .map_err(|error| ExecutionError::BlockValidation(format!("ACP lifecycle: {error}")))?;
+        modules
+            .hub
+            .check_and_update_expired_tokens(block_ctx)
+            .map_err(|error| ExecutionError::BlockValidation(format!("Hub lifecycle: {error}")))?;
+        Ok(())
     }
 }
 
-impl<S: StateDb> BlockExecutor<S> for HubExecutor {
-    type Tx = Bytes;
-
-    fn execute(
+impl HubExecutor {
+    /// Execute against an owned parent snapshot without replacing query state.
+    pub fn execute_with_modules<S: StateDb>(
         &self,
         state: &S,
         context: &BlockContext,
-        txs: &[Self::Tx],
-    ) -> Result<ExecutionOutcome, ExecutionError> {
-        let base_modules = self.modules.read().unwrap().clone();
+        txs: &[Bytes],
+        parent: ModuleSnapshot,
+    ) -> Result<(ExecutionOutcome, ModuleSnapshot), ExecutionError> {
+        let ModuleSnapshot {
+            modules: base_modules,
+            trees: mut snapshots,
+        } = parent;
         let mut modules = base_modules.clone();
 
         let block_ctx = BlockExecCtx {
+            genesis_id: self.config.genesis_id,
+            deployment_id: self.config.chain_id,
             timestamp: Timestamp {
                 seconds: context.header.timestamp,
                 block_height: context.header.number,
@@ -316,6 +386,25 @@ impl<S: StateDb> BlockExecutor<S> for HubExecutor {
         let mut cumulative_gas = 0u64;
         let building = !context.is_verification;
         let mut executed_indices: Vec<usize> = Vec::new();
+
+        let adapter = StateDbAdapter::new(state.clone());
+        let db = State::builder().with_database_ref(adapter).build();
+
+        type Db<S> = State<revm::database::WrapDatabaseRef<StateDbAdapter<S>>>;
+        let ctx: Context<BlockEnv, _, _, Db<S>, Journal<Db<S>>, ()> =
+            Context::new(db, self.config.spec_id);
+        let mut ctx = ctx
+            .modify_cfg_chained(|cfg| {
+                cfg.chain_id = self.config.chain_id;
+            })
+            .modify_block_chained(|blk: &mut BlockEnv| {
+                blk.number = U256::from(context.header.number);
+                blk.timestamp = U256::from(context.header.timestamp);
+                blk.beneficiary = context.header.beneficiary;
+                blk.gas_limit = context.header.gas_limit;
+                blk.basefee = context.header.base_fee_per_gas.unwrap_or_default();
+                blk.prevrandao = Some(context.prevrandao);
+            });
 
         for (i, tx_bytes) in txs.iter().enumerate() {
             if tx_bytes.is_empty() || !NativeTx::is_native_tx(tx_bytes[0]) {
@@ -329,8 +418,10 @@ impl<S: StateDb> BlockExecutor<S> for HubExecutor {
                 &mut modules.bulletin,
                 &mut modules.hub,
                 &mut modules.nonces,
+                &mut ctx,
             ) {
                 Ok(r) => r,
+                Err(error @ ExecutionError::TxExecution(_)) => return Err(error),
                 Err(e) if building => {
                     let tx_hash = keccak256(tx_bytes);
                     warn!(%tx_hash, ?e, "skipping native tx");
@@ -338,6 +429,26 @@ impl<S: StateDb> BlockExecutor<S> for HubExecutor {
                 }
                 Err(e) => return Err(e),
             };
+
+            let journaled = ctx.journal_mut().finalize();
+            outcome.changes.merge(extract_changes(&journaled));
+            // Native module storage is retained even when its account has no balance or code.
+            for (address, account) in journaled {
+                if account.is_touched() {
+                    let storage = account
+                        .storage
+                        .into_iter()
+                        .map(|(slot, value)| (slot, value.into()))
+                        .collect();
+                    ctx.journal_mut()
+                        .db_mut()
+                        .cache
+                        .accounts
+                        .get_mut(&address)
+                        .expect("journaled account was loaded into the proposal cache")
+                        .change(account.info, storage);
+                }
+            }
 
             executed_indices.push(i);
             let gas_used = receipt.gas_used;
@@ -348,33 +459,17 @@ impl<S: StateDb> BlockExecutor<S> for HubExecutor {
             outcome.receipts.push(receipt);
         }
 
-        let adapter = StateDbAdapter::new(state.clone());
-        let db = State::builder().with_database_ref(adapter).build();
-
-        type Db<S> = State<revm::database::WrapDatabaseRef<StateDbAdapter<S>>>;
-        let ctx: Context<BlockEnv, _, _, Db<S>, Journal<Db<S>>, ()> =
-            Context::new(db, self.config.spec_id);
-        let ctx = ctx
-            .modify_cfg_chained(|cfg| {
-                cfg.chain_id = self.config.chain_id;
-            })
-            .modify_block_chained(|blk: &mut BlockEnv| {
-                blk.number = U256::from(context.header.number);
-                blk.timestamp = U256::from(context.header.timestamp);
-                blk.beneficiary = context.header.beneficiary;
-                blk.gas_limit = context.header.gas_limit;
-                blk.basefee = context.header.base_fee_per_gas.unwrap_or_default();
-                blk.prevrandao = Some(context.prevrandao);
-            });
-
+        let precompiles = HubPrecompiles::with_modules(
+            self.config.spec_id,
+            modules.acp.clone(),
+            modules.bulletin.clone(),
+            modules.hub.clone(),
+        )
+        .with_genesis_id(self.config.genesis_id)
+        .with_membership_limit(self.config.max_active_members());
         let mut evm = ctx
-            .build_mainnet()
-            .with_precompiles(HubPrecompiles::with_modules(
-                self.config.spec_id,
-                modules.acp.clone(),
-                modules.bulletin.clone(),
-                modules.hub.clone(),
-            ));
+            .build_mainnet_with_inspector(precompiles.inspector())
+            .with_precompiles(precompiles);
 
         for (i, tx_bytes) in txs.iter().enumerate() {
             if !tx_bytes.is_empty() && NativeTx::is_native_tx(tx_bytes[0]) {
@@ -392,11 +487,14 @@ impl<S: StateDb> BlockExecutor<S> for HubExecutor {
                 Err(e) => return Err(e),
             };
 
-            evm.set_tx(tx_env);
             evm.precompiles.set_tx_hash(tx_hash);
             evm.precompiles.set_signer_did(signer_did);
 
-            let result_and_state = match evm.replay() {
+            evm.precompiles.begin_transaction();
+            let execution = evm.inspect_tx(tx_env);
+            evm.precompiles
+                .finish_transaction(execution.as_ref().is_ok_and(|r| r.result.is_success()));
+            let result_and_state = match execution {
                 Ok(r) => r,
                 Err(e) if building => {
                     warn!(%tx_hash, ?e, "skipping tx: execution error");
@@ -427,7 +525,9 @@ impl<S: StateDb> BlockExecutor<S> for HubExecutor {
                 build_receipt(&result_and_state.result, tx_hash, gas_used, cumulative_gas);
             outcome.receipts.push(receipt);
 
-            let changes = extract_changes(result_and_state.state);
+            let changes = extract_changes(&result_and_state.state);
+            // Advance the proposal cache without writing canonical state.
+            evm.commit(result_and_state.state);
             outcome.changes.merge(changes);
         }
 
@@ -436,7 +536,23 @@ impl<S: StateDb> BlockExecutor<S> for HubExecutor {
         modules.bulletin = bulletin;
         modules.hub = hub;
 
-        Self::run_end_block_hooks(&mut modules, &block_ctx);
+        if let Some(length) = self.config.membership_epoch_length {
+            let height = context.header.number;
+            if height % length.get() == length.get() - 1 {
+                let epoch = (height / length.get()).checked_add(3).ok_or_else(|| {
+                    ExecutionError::TxExecution("membership epoch overflow".into())
+                })?;
+                let keys =
+                    crate::precompiles::validator_registry::active_consensus_keys(&mut evm.ctx)
+                        .map_err(|error| ExecutionError::TxExecution(error.to_string()))?;
+                modules
+                    .hub
+                    .record_consensus_roster(epoch, &keys)
+                    .map_err(|error| ExecutionError::TxExecution(error.to_string()))?;
+            }
+        }
+
+        Self::run_end_block_hooks(&mut modules, &block_ctx)?;
 
         if building {
             outcome.executed_tx_indices = Some(executed_indices);
@@ -452,52 +568,22 @@ impl<S: StateDb> BlockExecutor<S> for HubExecutor {
                 modules.hub.store(),
                 modules.nonces.store(),
             ];
-            let base_stores = [
-                base_modules.acp.store(),
-                base_modules.bulletin.store(),
-                base_modules.hub.store(),
-                base_modules.nonces.store(),
-            ];
+            let changes = modules.diff_from(&base_modules);
 
-            // Phase 1: Begin execution and populate overlays on all trees.
-            let height = context.header.number;
-            for (i, tree_lock) in trees.iter().enumerate() {
-                let dirty = stores[i].diff_from(base_stores[i]);
-                let mut tree = tree_lock.lock().unwrap();
-                tree.begin_execution(height);
-                for (key, value) in &dirty {
-                    tree.put(key, value.clone())
-                        .map_err(|e| ExecutionError::ModuleTree(e.to_string()))?;
+            let parents = snapshots
+                .as_mut()
+                .ok_or_else(|| ExecutionError::ModuleTree("missing parent tree views".into()))?;
+            for (i, (tree_lock, mut dirty)) in trees.iter().zip(changes).enumerate() {
+                if i == 0 {
+                    crate::relation_index::index_relationships(&parents[i], stores[i], &mut dirty)?;
                 }
+                parents[i] = tree_lock
+                    .lock()
+                    .unwrap()
+                    .prepare(&parents[i], dirty)
+                    .map_err(|e| ExecutionError::ModuleTree(e.to_string()))?;
             }
-
-            // Phase 2: Compute speculative roots from overlays (no persistence).
-            let mut jmt_roots = [[0u8; 32]; 4];
-            for (i, tree_lock) in trees.iter().enumerate() {
-                let tree = tree_lock.lock().unwrap();
-                jmt_roots[i] = tree
-                    .root()
-                    .map_err(|e| ExecutionError::ModuleTree(e.to_string()))?
-                    .0;
-            }
-
-            // Phase 3: Flush all overlays. If any fails, discard remaining.
-            let mut flush_error = None;
-            for (i, tree_lock) in trees.iter().enumerate() {
-                let mut tree = tree_lock.lock().unwrap();
-                if flush_error.is_some() {
-                    tree.discard_overlay();
-                } else if let Err(e) = tree.flush_overlay() {
-                    flush_error = Some((i, e));
-                    tree.discard_overlay();
-                }
-            }
-            if let Some((idx, e)) = flush_error {
-                return Err(ExecutionError::ModuleTree(format!(
-                    "flush failed on tree {idx}: {e}"
-                )));
-            }
-
+            let jmt_roots = std::array::from_fn(|i| parents[i].root().0);
             state_root_from_jmt(&jmt_roots)
         } else {
             // Fallback for tests without JMT trees. Production code always
@@ -505,17 +591,28 @@ impl<S: StateDb> BlockExecutor<S> for HubExecutor {
             modules.state_root()
         };
 
-        self.receipt_cache.lock().unwrap().insert(
-            context.header.number,
-            (outcome.receipts.clone(), cumulative_gas),
-        );
+        Ok((
+            outcome,
+            ModuleSnapshot {
+                modules,
+                trees: snapshots,
+            },
+        ))
+    }
+}
 
-        self.module_cache
-            .lock()
-            .unwrap()
-            .insert(context.header.number, modules);
+impl<S: StateDb> BlockExecutor<S> for HubExecutor {
+    type Tx = Bytes;
 
-        Ok(outcome)
+    fn execute(
+        &self,
+        state: &S,
+        context: &BlockContext,
+        txs: &[Self::Tx],
+    ) -> Result<ExecutionOutcome, ExecutionError> {
+        let modules = self.snapshot()?;
+        self.execute_with_modules(state, context, txs, modules)
+            .map(|(outcome, _)| outcome)
     }
 
     fn validate_header(&self, header: &alloy_consensus::Header) -> Result<(), ExecutionError> {
@@ -532,24 +629,6 @@ impl<S: StateDb> BlockExecutor<S> for HubExecutor {
             )));
         }
         Ok(())
-    }
-
-    fn mark_height_verified(&self, _height: u64) {}
-
-    fn cached_receipts(&self, height: u64) -> Option<(Vec<ExecutionReceipt>, u64)> {
-        self.receipt_cache.lock().unwrap().remove(&height)
-    }
-
-    fn get_cached_modules(&self, block: BlockId) -> Option<ModuleState> {
-        self.get_cached_modules(block)
-    }
-
-    fn set_base_modules(&self, modules: ModuleState) {
-        self.set_base_modules(modules);
-    }
-
-    fn cleanup_module_cache(&self, up_to_height: u64) {
-        self.cleanup_module_cache(up_to_height);
     }
 }
 
@@ -606,11 +685,21 @@ mod tests {
 
     fn test_block_ctx() -> BlockExecCtx {
         BlockExecCtx {
+            genesis_id: [0; 32],
+            deployment_id: 9001,
             timestamp: Timestamp {
                 seconds: 1_700_000_000,
                 block_height: 1,
             },
         }
+    }
+
+    fn test_journal()
+    -> Context<BlockEnv, revm::context::TxEnv, revm::context::CfgEnv, revm::database::EmptyDB> {
+        Context::new(
+            revm::database::EmptyDB::default(),
+            revm::primitives::hardfork::SpecId::default(),
+        )
     }
 
     #[test]
@@ -641,10 +730,153 @@ mod tests {
     }
 
     #[test]
+    fn expiry_batches_match_proposal_verification_and_leave_parent_unchanged() {
+        use hub_modules::{hub::keys::JWS_TOKEN_EXPIRY_PREFIX, kv_store::InMemoryKvStore};
+
+        let executor = test_executor();
+        let mut modules = ModuleState::default();
+        let issued = test_block_ctx();
+        let issuer = identity::Did::new("did:key:issuer").unwrap();
+        for id in 0..257 {
+            modules
+                .hub
+                .store_or_update_jws_token(
+                    &issued,
+                    &id.to_string(),
+                    &issuer,
+                    "account",
+                    issued.timestamp.clone(),
+                    Timestamp {
+                        seconds: issued.timestamp.seconds + 1,
+                        block_height: 0,
+                    },
+                )
+                .unwrap();
+        }
+        let mut parent = ModuleSnapshot {
+            modules,
+            trees: None,
+        };
+        let published = executor.snapshot().unwrap().modules.serialize_stores();
+        for (offset, remaining) in [129, 1, 0].into_iter().enumerate() {
+            let before = parent.modules.serialize_stores();
+            let context = BlockContext::new(
+                alloy_consensus::Header {
+                    number: offset as u64 + 2,
+                    timestamp: issued.timestamp.seconds + offset as u64 + 2,
+                    gas_limit: 30_000_000,
+                    base_fee_per_gas: Some(0),
+                    ..Default::default()
+                },
+                B256::ZERO,
+                B256::ZERO,
+            );
+            let (proposed, next) = executor
+                .execute_with_modules(&MockStateDb, &context, &[], parent.clone())
+                .unwrap();
+            let mut verification =
+                context.with_expected_module_state_root(proposed.module_state_root);
+            verification.is_verification = true;
+            let (verified, verified_state) = executor
+                .execute_with_modules(&MockStateDb, &verification, &[], parent.clone())
+                .unwrap();
+            assert_eq!(verified.module_state_root, proposed.module_state_root);
+            assert_eq!(
+                verified_state.modules.serialize_stores(),
+                next.modules.serialize_stores()
+            );
+            assert_eq!(
+                next.modules
+                    .hub
+                    .store()
+                    .prefix_iter(JWS_TOKEN_EXPIRY_PREFIX)
+                    .count(),
+                remaining
+            );
+            assert!(proposed.receipts.is_empty());
+            assert_eq!(parent.modules.serialize_stores(), before);
+            assert_eq!(
+                executor.snapshot().unwrap().modules.serialize_stores(),
+                published
+            );
+            let stores = next
+                .modules
+                .serialize_stores()
+                .map(|bytes| InMemoryKvStore::deserialize(&bytes).unwrap());
+            parent = ModuleSnapshot {
+                modules: ModuleState::from_stores(stores),
+                trees: None,
+            };
+            parent.modules.hub.validate_restored_tokens().unwrap();
+        }
+    }
+
+    #[test]
+    fn lifecycle_corruption_rejects_proposals_and_preserves_parent() {
+        use hub_modules::kv_store::{InMemoryKvStore, ModuleKvStore};
+        for (partition, key, expected) in [
+            (
+                0,
+                b"commitment_expiry/seconds/bad".to_vec(),
+                "ACP lifecycle",
+            ),
+            (
+                2,
+                hub_modules::hub::keys::jws_token_key("bad"),
+                "Hub lifecycle",
+            ),
+        ] {
+            let executor = test_executor();
+            let mut stores = std::array::from_fn(|_| InMemoryKvStore::default());
+            stores[partition].put(&key, vec![0]);
+            if partition == 2 {
+                let index = [
+                    hub_modules::hub::keys::JWS_TOKEN_EXPIRY_PREFIX,
+                    &0u64.to_be_bytes(),
+                    b"bad",
+                ]
+                .concat();
+                stores[partition].put(&index, Vec::new());
+            }
+            let parent = ModuleSnapshot {
+                modules: ModuleState::from_stores(stores),
+                trees: None,
+            };
+            let before = parent.modules.serialize_stores();
+            let published = executor.snapshot().unwrap().modules.serialize_stores();
+            for verification in [false, true] {
+                let mut context = BlockContext::new(
+                    alloy_consensus::Header {
+                        number: 1,
+                        timestamp: 100,
+                        gas_limit: 30_000_000,
+                        base_fee_per_gas: Some(0),
+                        ..Default::default()
+                    },
+                    B256::ZERO,
+                    B256::ZERO,
+                );
+                context.is_verification = verification;
+                let error = executor
+                    .execute_with_modules(&MockStateDb, &context, &[], parent.clone())
+                    .unwrap_err();
+                assert!(error.to_string().contains(expected), "{error}");
+                assert_eq!(parent.modules.serialize_stores(), before);
+                assert_eq!(
+                    executor.snapshot().unwrap().modules.serialize_stores(),
+                    published
+                );
+            }
+        }
+    }
+
+    #[test]
     fn hub_executor_validate_header() {
         let executor = test_executor();
-        let mut header = alloy_consensus::Header::default();
-        header.gas_limit = 30_000_000;
+        let header = alloy_consensus::Header {
+            gas_limit: 30_000_000,
+            ..Default::default()
+        };
         assert!(
             <HubExecutor as BlockExecutor<MockStateDb>>::validate_header(&executor, &header)
                 .is_ok()
@@ -669,6 +901,7 @@ mod tests {
             &mut bulletin,
             &mut hub,
             &mut nonces,
+            &mut test_journal(),
         );
         assert!(matches!(result, Err(ExecutionError::TxDecode(_))));
     }
@@ -699,6 +932,7 @@ mod tests {
             &mut bulletin,
             &mut hub,
             &mut nonces,
+            &mut test_journal(),
         );
         match result {
             Err(ExecutionError::ChainIdMismatch { expected, got }) => {
@@ -735,6 +969,7 @@ mod tests {
             &mut bulletin,
             &mut hub,
             &mut nonces,
+            &mut test_journal(),
         );
         assert!(matches!(result, Err(ExecutionError::BlsVerification(_))));
     }
@@ -787,11 +1022,16 @@ mod tests {
             &mut bulletin,
             &mut hub,
             &mut nonces,
+            &mut test_journal(),
         );
         assert!(matches!(
             result,
             Err(ExecutionError::UnknownNativeTarget(_))
         ));
+        assert!(
+            nonces.store().is_empty(),
+            "invalid target must not consume a nonce"
+        );
     }
 
     #[test]
@@ -892,6 +1132,7 @@ mod tests {
                 &mut bulletin,
                 &mut hub,
                 &mut nonces,
+                &mut test_journal(),
             )
             .unwrap();
         assert!(receipt.success(), "getParams query should succeed");
@@ -929,6 +1170,84 @@ mod tests {
     }
 
     #[test]
+    fn native_decisions_bind_authenticated_sequence_and_revision() {
+        use alloy_sol_types::SolCall;
+        use hub_modules::acp::{
+            abi::IAcp,
+            decision::DecisionRequest,
+            types::{AccessRequest, Actor, Object, Operation, PolicyCmd, PolicyMarshalingType},
+        };
+        let (sk, pk_bytes) = test_bls_keypair();
+        let pubkey = bls::deserialize_pubkey(&pk_bytes).unwrap();
+        let creator = bls::did_from_bls_pubkey(&pubkey).unwrap();
+        let actor = creator.parse().unwrap();
+        let mut acp = AcpModule::new();
+        let policy = acp.create_policy(&actor, "name: decisions\nresources:\n  - name: file\n    permissions:\n      - name: read\n", PolicyMarshalingType::ShortYaml).unwrap().policy.id;
+        let object = Object {
+            resource: "file".into(),
+            id: "report".into(),
+        };
+        acp.direct_policy_cmd(&actor, &policy, PolicyCmd::RegisterObject(object.clone()))
+            .unwrap();
+        let request = AccessRequest {
+            actor: Actor(actor),
+            operations: vec![Operation {
+                object,
+                permission: "read".into(),
+            }],
+        };
+        let call = IAcp::checkAccessCall {
+            policyId: FixedBytes::from_slice(&hex::decode(&policy).unwrap()),
+            resources: vec!["file".into()],
+            objectIds: vec!["report".into()],
+            permissions: vec!["read".into()],
+            actor: creator.clone(),
+        };
+        let executor = test_executor();
+        let block = test_block_ctx();
+        let mut bulletin = BulletinModule::new();
+        let mut hub = HubModule::new();
+        let mut nonces = NativeNonceStore::default();
+        for sequence in 0..2 {
+            let mut tx = NativeTx {
+                chain_id: 9001,
+                nonce: sequence,
+                bls_pubkey: FixedBytes::from_slice(&pk_bytes),
+                target: ACP_ADDRESS,
+                calldata: call.abi_encode().into(),
+                signature: FixedBytes::ZERO,
+            };
+            tx.signature = FixedBytes::from_slice(&bls::sign(&sk, &tx.signing_data()).unwrap());
+            let result = executor
+                .execute_native_tx(
+                    &tx.encode_wire(),
+                    &block,
+                    &mut acp,
+                    &mut bulletin,
+                    &mut hub,
+                    &mut nonces,
+                    &mut test_journal(),
+                )
+                .unwrap();
+            assert!(result.success());
+            let expected = DecisionRequest {
+                deployment_id: block.deployment_id,
+                policy_id: policy.clone(),
+                creator: creator.clone(),
+                creator_sequence: sequence,
+                request: request.clone(),
+            };
+            let decision = acp
+                .query_access_decision(&expected.id().unwrap())
+                .unwrap()
+                .unwrap();
+            assert_eq!(decision.creator_acc_sequence, sequence);
+            assert_eq!(decision.creation_time, block.timestamp);
+            assert_eq!(decision.issued_height, block.timestamp.block_height);
+        }
+    }
+
+    #[test]
     fn native_tx_nonce_mismatch_rejected() {
         let (sk, pk_bytes) = test_bls_keypair();
         let wire = signed_native_tx(&sk, &pk_bytes, 5); // expected 0
@@ -947,6 +1266,7 @@ mod tests {
             &mut bulletin,
             &mut hub,
             &mut nonces,
+            &mut test_journal(),
         );
         match result {
             Err(ExecutionError::NonceMismatch { expected, got, .. }) => {
@@ -977,6 +1297,7 @@ mod tests {
             &mut bulletin,
             &mut hub,
             &mut nonces,
+            &mut test_journal(),
         );
         assert!(result_0.is_ok(), "nonce 0 should pass: {result_0:?}");
 
@@ -989,6 +1310,7 @@ mod tests {
             &mut bulletin,
             &mut hub,
             &mut nonces,
+            &mut test_journal(),
         );
         assert!(result_1.is_ok(), "nonce 1 should pass: {result_1:?}");
 
@@ -1001,6 +1323,7 @@ mod tests {
             &mut bulletin,
             &mut hub,
             &mut nonces,
+            &mut test_journal(),
         );
         assert!(matches!(
             result_replay,
@@ -1028,6 +1351,7 @@ mod tests {
             &mut bulletin,
             &mut hub,
             &mut nonces,
+            &mut test_journal(),
         );
         assert!(result.is_ok());
 
@@ -1040,6 +1364,7 @@ mod tests {
             &mut bulletin,
             &mut hub,
             &mut nonces,
+            &mut test_journal(),
         );
         match result {
             Err(ExecutionError::NonceMismatch { expected, got, .. }) => {

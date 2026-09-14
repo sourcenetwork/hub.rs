@@ -55,6 +55,10 @@ impl Default for BaseFeeParams {
 /// Execution configuration.
 #[derive(Clone, Debug)]
 pub struct ExecutionConfig {
+    /// Epoch length for execution-derived membership selection on native nodes.
+    pub membership_epoch_length: Option<std::num::NonZeroU64>,
+    /// Genesis record identifier used to bind administrative approvals.
+    pub genesis_id: [u8; 32],
     /// Chain ID for transaction validation.
     pub chain_id: u64,
     /// Hardfork specification.
@@ -70,10 +74,20 @@ impl ExecutionConfig {
     pub const fn new(chain_id: u64) -> Self {
         Self {
             chain_id,
+            membership_epoch_length: None,
+            genesis_id: [0; 32],
             spec_id: SpecId::CANCUN,
             gas_limit_bounds: GasLimitBounds::DEFAULT,
             base_fee_params: BaseFeeParams::DEFAULT,
         }
+    }
+
+    /// Maximum active committee allowed by the deployment epoch length.
+    pub fn max_active_members(&self) -> u32 {
+        self.membership_epoch_length.map_or(
+            hub_domain::MAX_DKG_PARTICIPANTS.get(),
+            hub_domain::max_epoch_participants,
+        )
     }
 
     /// Set the hardfork specification.
