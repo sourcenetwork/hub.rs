@@ -6,18 +6,15 @@ use commonware_codec::{
     Decode as _, DecodeExt as _, Encode as _, EncodeSize, Error as CodecError, RangeCfg, Read,
     Write,
 };
-use commonware_consensus::{
-    simplex::{
-        scheme::bls12381_threshold::vrf,
-        types::{Finalization, Proposal},
-    },
-    types::{Epoch, Round, View},
+use commonware_consensus::simplex::{
+    scheme::bls12381_threshold::vrf,
+    types::{Finalization, Proposal},
 };
 use commonware_cryptography::{
     Hasher as _, Sha256,
     bls12381::primitives::{
         sharing::{ModeVersion, Sharing},
-        variant::MinSig,
+        variant::{MinSig, Variant},
     },
 };
 use commonware_parallel::Sequential;
@@ -30,11 +27,20 @@ use crate::{Block, BlockCfg, ConsensusDigest, PublicKey, TxCfg};
 pub const LIGHT_BLOCK_NAMESPACE: &[u8] = b"_COMMONWARE_HUB_SIMPLEX";
 /// Maximum participant count accepted from an untrusted light-block response.
 pub const LIGHT_BLOCK_MAX_PARTICIPANTS: u32 = 64;
-const LIGHT_BLOCK_MAX_TXS: usize = 64;
-const LIGHT_BLOCK_MAX_TX_BYTES: usize = 65_536;
+pub(crate) const LIGHT_BLOCK_MAX_TXS: usize = crate::MAX_BLOCK_TXS;
+const LIGHT_BLOCK_MAX_TX_BYTES: usize = crate::MAX_TX_BYTES;
+/// Maximum descendants linking a requested revision to a direct certificate.
+pub const LIGHT_BLOCK_MAX_DESCENDANTS: usize = 64;
+/// Combined decoded byte budget for blocks, finalization and epoch material.
+pub const LIGHT_BLOCK_MAX_ARTIFACT_BYTES: usize = 2 * crate::MAX_BLOCK_BYTES + (1 << 20);
+/// HTTP response budget including hex encoding and JSON metadata.
+pub const LIGHT_BLOCK_RESPONSE_BYTES: usize = 2 * LIGHT_BLOCK_MAX_ARTIFACT_BYTES + (64 << 10);
 
 /// The threshold VRF scheme whose recovered certificate finalizes Hub blocks.
 pub type LightConsensusScheme = vrf::Scheme<PublicKey, MinSig>;
+
+/// Public consensus identity, retained across resharing epochs.
+pub type ConsensusPublicKey = <MinSig as Variant>::Public;
 
 /// Public verifier material for one consensus epoch.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -94,7 +100,7 @@ impl Read for EpochMaterial {
     }
 }
 
-/// A finalized Hub block with every public artifact needed for offline verification.
+/// A finalized block and a direct or descendant certificate, checked against a trusted key.
 ///
 /// Binary fields use `0x`-prefixed hex so the type remains directly usable over JSON-RPC.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,10 +125,49 @@ pub struct LightBlock {
     pub parent_view: u64,
     /// Canonical encoded [`Block`], which binds every displayed header field.
     pub block: String,
+    /// Canonical descendants in ascending height order, ending at the certified block.
+    /// Empty when the requested block has a direct certificate.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "read_descendants"
+    )]
+    pub descendants: Vec<String>,
     /// Canonical encoded `Finalization<LightConsensusScheme, ConsensusDigest>`.
     pub finalization: String,
     /// Canonical encoded [`EpochMaterial`].
     pub epoch_material: String,
+}
+
+fn read_descendants<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<String>, D::Error> {
+    struct Descendants;
+    impl<'de> serde::de::Visitor<'de> for Descendants {
+        type Value = Vec<String>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "at most {LIGHT_BLOCK_MAX_DESCENDANTS} descendants")
+        }
+
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(
+            self,
+            mut seq: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut values = Vec::new();
+            while values.len() < LIGHT_BLOCK_MAX_DESCENDANTS {
+                let Some(value) = seq.next_element()? else {
+                    return Ok(values);
+                };
+                values.push(value);
+            }
+            if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                return Err(serde::de::Error::custom("too many light block descendants"));
+            }
+            Ok(values)
+        }
+    }
+    deserializer.deserialize_seq(Descendants)
 }
 
 impl LightBlock {
@@ -140,6 +185,7 @@ impl LightBlock {
             view: block.context.round.view().get(),
             parent_view: block.context.parent.0.get(),
             block: encode_hex(&block.encode()),
+            descendants: Vec::new(),
             finalization: encode_hex(finalization),
             epoch_material: encode_hex(epoch_material),
         }
@@ -154,11 +200,35 @@ impl LightBlock {
         let decoded = decode_block(block)?;
         Ok(Self::from_parts(&decoded, finalization, epoch_material))
     }
+
+    /// Reject excessive artifact count or size before decoding untrusted hex.
+    pub fn check_artifact_limits(&self) -> Result<(), LightBlockError> {
+        if self.descendants.len() > LIGHT_BLOCK_MAX_DESCENDANTS {
+            return Err(LightBlockError::LimitExceeded);
+        }
+        let mut remaining = LIGHT_BLOCK_MAX_ARTIFACT_BYTES * 2;
+        for value in [&self.block, &self.finalization, &self.epoch_material]
+            .into_iter()
+            .chain(self.descendants.iter())
+        {
+            let digits = value.strip_prefix("0x").unwrap_or(value).len();
+            remaining = remaining
+                .checked_sub(digits)
+                .ok_or(LightBlockError::LimitExceeded)?;
+        }
+        Ok(())
+    }
 }
 
 /// Errors returned by [`verify_light_block`].
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum LightBlockError {
+    /// The proof exceeds the artifact byte or descendant count budget.
+    #[error("light block proof exceeds artifact limits")]
+    LimitExceeded,
+    /// A descendant does not extend the preceding block at the next height.
+    #[error("light block descendant ancestry is not contiguous")]
+    AncestryMismatch,
     /// A JSON hex field could not be decoded.
     #[error("invalid {field} hex: {message}")]
     Hex {
@@ -182,6 +252,9 @@ pub enum LightBlockError {
     /// Epoch material is structurally inconsistent.
     #[error("invalid epoch material: {0}")]
     EpochMaterial(String),
+    /// The response names a different consensus identity from the trusted deployment.
+    #[error("light block consensus key does not match the trusted key")]
+    UntrustedConsensusKey,
     /// The aggregate threshold finalization certificate is invalid.
     #[error("BLS threshold finalization certificate verification failed")]
     InvalidCertificate,
@@ -205,6 +278,12 @@ fn decode_hex(field: &'static str, value: &str) -> Result<Vec<u8>, LightBlockErr
 }
 
 fn decode_b256(field: &'static str, value: &str) -> Result<B256, LightBlockError> {
+    if value.strip_prefix("0x").unwrap_or(value).len() != 64 {
+        return Err(LightBlockError::Hex {
+            field,
+            message: "expected 32 bytes".into(),
+        });
+    }
     let bytes = decode_hex(field, value)?;
     B256::try_from(bytes.as_slice()).map_err(|_| LightBlockError::Hex {
         field,
@@ -224,10 +303,27 @@ fn decode_block(bytes: &[u8]) -> Result<Block, LightBlockError> {
     )?)
 }
 
-/// Verify the authenticated block, its aggregate finalization, and epoch key.
+/// Verify a block's finalization against an independently trusted consensus key.
 ///
+/// Obtain `trusted_key` from the deployment's authenticated bootstrap configuration,
+/// never from the response being verified. The identity remains constant across
+/// resharing epochs. Epoch material in the response cannot establish trust.
 /// Returns the authenticated `(state_root, module_state_root)` on success.
-pub fn verify_light_block(light: &LightBlock) -> Result<(B256, B256), LightBlockError> {
+pub fn verify_light_block(
+    light: &LightBlock,
+    trusted_key: &ConsensusPublicKey,
+) -> Result<(B256, B256), LightBlockError> {
+    let block = verify_finalized_block(light, trusted_key)?;
+    Ok((block.state_root.0, block.module_state_root))
+}
+
+/// Return the requested canonical revision after validating direct or descendant finality.
+/// The consensus key must come from independently provisioned trust.
+pub fn verify_finalized_block(
+    light: &LightBlock,
+    trusted_key: &ConsensusPublicKey,
+) -> Result<Block, LightBlockError> {
+    light.check_artifact_limits()?;
     let block_hash = decode_b256("block_hash", &light.block_hash)?;
     let block_bytes = decode_hex("block", &light.block)?;
     if keccak256(&block_bytes) != block_hash {
@@ -271,177 +367,63 @@ pub fn verify_light_block(light: &LightBlock) -> Result<(B256, B256), LightBlock
         ));
     }
 
+    if material.sharing.public() != trusted_key {
+        return Err(LightBlockError::UntrustedConsensusKey);
+    }
+
+    let mut certified_epoch_end = is_epoch_end(&block);
+    let mut certified_context = block.context.clone();
+    let mut certified_height = block.height;
+    let mut certified_hash = block_hash;
+    for encoded in &light.descendants {
+        let bytes = decode_hex("descendant", encoded)?;
+        let descendant = decode_block(&bytes)?;
+        if descendant.parent.0 != certified_hash
+            || certified_height.checked_add(1) != Some(descendant.height)
+        {
+            return Err(LightBlockError::AncestryMismatch);
+        }
+        certified_hash = keccak256(&bytes);
+        certified_height = descendant.height;
+        certified_epoch_end = is_epoch_end(&descendant);
+        certified_context = descendant.context;
+    }
     let expected = Proposal::new(
-        Round::new(Epoch::new(light.epoch), View::new(light.view)),
-        View::new(light.parent_view),
-        Sha256::hash(&[block_hash.as_slice()]),
+        certified_context.round,
+        certified_context.parent.0,
+        Sha256::hash(&[certified_hash.as_slice()]),
     );
     let finalization_bytes = decode_hex("finalization", &light.finalization)?;
     let finalization: Finalization<LightConsensusScheme, ConsensusDigest> =
         Finalization::decode(finalization_bytes.as_slice())?;
-    if finalization.proposal != expected {
+    // Commonware may re-propose the same epoch-ending block in a later view.
+    // Its signed payload remains the digest of the original canonical block.
+    let proposal = &finalization.proposal;
+    let reproposal = certified_epoch_end
+        && proposal.payload == expected.payload
+        && proposal.round.epoch() == expected.round.epoch()
+        && proposal.round.view() > expected.round.view()
+        && proposal.parent >= expected.round.view()
+        && proposal.parent < proposal.round.view();
+    if *proposal != expected && !reproposal {
         return Err(LightBlockError::ProposalMismatch);
     }
 
-    let verifier = LightConsensusScheme::verifier(
-        LIGHT_BLOCK_NAMESPACE,
-        material.participants,
-        material.sharing,
-    );
+    let verifier = LightConsensusScheme::certificate_verifier(LIGHT_BLOCK_NAMESPACE, *trusted_key);
     if !finalization.verify(&mut commonware_utils::test_rng(), &verifier, &Sequential) {
         return Err(LightBlockError::InvalidCertificate);
     }
 
-    Ok((block.state_root.0, block.module_state_root))
+    Ok(block)
+}
+
+fn is_epoch_end(block: &Block) -> bool {
+    matches!(
+        &block.payload,
+        Some(crate::DkgPayload::EpochInfo(info))
+            if block.context.round.epoch().get().checked_add(1) == Some(info.epoch.get())
+    )
 }
 
 #[cfg(test)]
-mod tests {
-    use alloy_primitives::Bytes;
-    use commonware_consensus::simplex::types::Finalize;
-    use commonware_cryptography::{
-        Digestible as _, Signer as _, bls12381::dkg::feldman_desmedt::deal, ed25519,
-    };
-    use commonware_utils::{N3f1, TestRng, non_empty};
-
-    use super::*;
-    use crate::{BlockId, ConsensusContext, DbTargets, StateRoot};
-
-    fn fixture(
-        seed: u64,
-    ) -> (
-        Vec<LightConsensusScheme>,
-        LightConsensusScheme,
-        EpochMaterial,
-    ) {
-        let keys = Set::from_iter_dedup(
-            (0..4).map(|index| ed25519::PrivateKey::from_seed(seed + index).public_key()),
-        );
-        let mut rng = TestRng::new(seed);
-        let (output, shares) = deal::<MinSig, _, N3f1>(
-            &mut rng,
-            commonware_cryptography::bls12381::primitives::sharing::Mode::NonZeroCounter,
-            keys,
-        )
-        .expect("trusted deal");
-        let signers = shares
-            .into_iter()
-            .map(|(_, share)| {
-                LightConsensusScheme::signer(
-                    LIGHT_BLOCK_NAMESPACE,
-                    output.players().clone(),
-                    output.public().clone(),
-                    share,
-                )
-                .expect("matching share")
-            })
-            .collect();
-        let verifier = LightConsensusScheme::verifier(
-            LIGHT_BLOCK_NAMESPACE,
-            output.players().clone(),
-            output.public().clone(),
-        );
-        let material = EpochMaterial::new(output.players().clone(), output.public().clone());
-        (signers, verifier, material)
-    }
-
-    fn light_fixture(seed: u64) -> LightBlock {
-        let (signers, verifier, material) = fixture(seed);
-        let leader = material
-            .participants
-            .iter()
-            .next()
-            .expect("participants are non-empty")
-            .clone();
-        let round = Round::new(Epoch::new(3), View::new(17));
-        let block = Block {
-            context: ConsensusContext {
-                round,
-                leader,
-                parent: (View::new(16), ConsensusDigest::from([0x44; 32])),
-            },
-            parent: BlockId(B256::repeat_byte(0x07)),
-            height: 100,
-            timestamp: 1_700_000_000,
-            prevrandao: B256::repeat_byte(0x55),
-            state_root: StateRoot(B256::repeat_byte(0x01)),
-            module_state_root: B256::repeat_byte(0x02),
-            txs: vec![crate::Tx::new(Bytes::from_static(b"light-block"))],
-            payload: None,
-            db_targets: DbTargets::default(),
-        };
-        let proposal = Proposal::new(round, View::new(16), block.digest());
-        let votes: Vec<_> = signers
-            .iter()
-            .take(3)
-            .map(|signer| Finalize::sign(signer, proposal.clone()).expect("sign vote"))
-            .collect();
-        let finalization =
-            Finalization::from_finalizes(&verifier, non_empty![@votes.iter()], &Sequential)
-                .expect("assemble quorum");
-        LightBlock::from_parts(&block, &finalization.encode(), &material.encode())
-    }
-
-    #[test]
-    fn valid_light_block_verifies() {
-        let light = light_fixture(42);
-        assert_eq!(
-            verify_light_block(&light).unwrap(),
-            (B256::repeat_byte(0x01), B256::repeat_byte(0x02))
-        );
-    }
-
-    #[test]
-    fn displayed_header_tampering_fails() {
-        let mut light = light_fixture(42);
-        light.module_state_root = encode_hex(B256::repeat_byte(0x99).as_slice());
-        assert_eq!(
-            verify_light_block(&light),
-            Err(LightBlockError::BlockFieldMismatch("module_state_root"))
-        );
-    }
-
-    #[test]
-    fn proposal_payload_tampering_fails() {
-        let mut light = light_fixture(42);
-        let encoded = decode_hex("finalization", &light.finalization).unwrap();
-        let mut finalization: Finalization<LightConsensusScheme, ConsensusDigest> =
-            Finalization::decode(encoded.as_slice()).unwrap();
-        finalization.proposal.payload = ConsensusDigest::from([0x99; 32]);
-        light.finalization = encode_hex(&finalization.encode());
-        assert_eq!(
-            verify_light_block(&light),
-            Err(LightBlockError::ProposalMismatch)
-        );
-    }
-
-    #[test]
-    fn malformed_finalization_fails() {
-        let mut light = light_fixture(42);
-        light.finalization = "0xdeadbeef".into();
-        assert!(matches!(
-            verify_light_block(&light),
-            Err(LightBlockError::Codec(_))
-        ));
-    }
-
-    #[test]
-    fn wrong_epoch_material_fails() {
-        let mut light = light_fixture(42);
-        let (_, _, other) = fixture(100);
-        light.epoch_material = encode_hex(&other.encode());
-        assert_eq!(
-            verify_light_block(&light),
-            Err(LightBlockError::InvalidCertificate)
-        );
-    }
-
-    #[test]
-    fn json_round_trip_preserves_verifiability() {
-        let light = light_fixture(42);
-        let json = serde_json::to_string(&light).unwrap();
-        let decoded: LightBlock = serde_json::from_str(&json).unwrap();
-        assert_eq!(decoded, light);
-        verify_light_block(&decoded).unwrap();
-    }
-}
+mod tests;
