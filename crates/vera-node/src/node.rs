@@ -778,10 +778,10 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         .with_tx_submit(tx_submit)
         .with_subscriptions(heads_tx, logs_tx)
         .with_headers_subscription(headers_tx)
-        .with_hub_index_and_modules(block_index, modules.clone())
-        .with_hub_native_modules(native_databases, modules)
-        .with_hub_archive(archive)
-        .with_hub_receipt_proof_lookup({
+        .with_vera_index_and_modules(block_index, modules.clone())
+        .with_vera_native_modules(native_databases, modules)
+        .with_vera_archive(archive)
+        .with_vera_receipt_proof_lookup({
             let history = history.clone();
             let epochs = light_block_index.clone();
             Arc::new(move |hash| {
@@ -790,7 +790,7 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
                     .map_err(|error| error.to_string())
             })
         })
-        .with_hub_light_block_lookup({
+        .with_vera_light_block_lookup({
             let epochs = light_block_index.clone();
             Arc::new(move |height| {
                 history
@@ -798,7 +798,7 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
                     .map_err(|error| error.to_string())
             })
         })
-        .with_hub_light_block_index(light_block_index)
+        .with_vera_light_block_index(light_block_index)
         .start();
     context.child("rpc").spawn(move |_| async move {
         rpc_handle.stopped().await;

@@ -56,15 +56,15 @@ fn native_record_rpc_keeps_the_captured_revision_across_finalization() {
                     let (server, address) =
                         JsonRpcServer::new("127.0.0.1:0".parse().unwrap(), DEPLOYMENT)
                             .with_node_state(Arc::new(NodeState::new(DEPLOYMENT, 0, 4)))
-                            .with_hub_index_and_modules(
+                            .with_vera_index_and_modules(
                                 index.clone(),
                                 set.executor.modules().clone(),
                             )
-                            .with_hub_native_modules(
+                            .with_vera_native_modules(
                                 (db.3.clone(), db.4.clone(), db.5.clone(), db.6.clone()),
                                 set.executor.modules().clone(),
                             )
-                            .with_hub_light_block_lookup(Arc::new(move |height| {
+                            .with_vera_light_block_lookup(Arc::new(move |height| {
                                 if let Some((entered, release)) = lookup_gate.lock().unwrap().take()
                                 {
                                     entered.send(()).unwrap();

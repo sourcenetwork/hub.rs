@@ -1,12 +1,9 @@
 //! HTTP and JSON-RPC server implementation.
 
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{net::SocketAddr, sync::Arc};
 
-use axum::{Router, extract::State, http::StatusCode, response::IntoResponse, routing::get};
 use jsonrpsee_server::{BatchRequestConfig, Server, ServerHandle};
 use tokio::sync::broadcast;
-use tower::limit::ConcurrencyLimitLayer;
-use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tracing::{error, info};
 
 use vera_executor::{ModuleTrees, SharedModuleState};
@@ -17,7 +14,6 @@ use vera_domain::GossipHeader;
 use crate::header_subscribe::{HeaderSubscriptionApiImpl, HeaderSubscriptionApiServer};
 
 use crate::{
-    config::{CorsConfig, RpcServerConfig},
     eth::{
         EthApiImpl, EthApiServer, NetApiImpl, NetApiServer, TxSubmitCallback, Web3ApiImpl,
         Web3ApiServer,
@@ -44,49 +40,6 @@ pub enum ServerError {
 }
 
 /// Build a CORS layer from configuration.
-fn build_cors_layer(config: &CorsConfig) -> CorsLayer {
-    if config.allowed_origins.is_empty() {
-        return CorsLayer::new();
-    }
-
-    let mut layer = CorsLayer::new();
-
-    if config.allowed_origins.len() == 1 && config.allowed_origins[0] == "*" {
-        layer = layer.allow_origin(Any);
-    } else {
-        let origins: Vec<_> = config
-            .allowed_origins
-            .iter()
-            .filter_map(|o| o.parse().ok())
-            .collect();
-        layer = layer.allow_origin(AllowOrigin::list(origins));
-    }
-
-    if config.allowed_methods.iter().any(|m| m == "*") {
-        layer = layer.allow_methods(Any);
-    } else {
-        let methods: Vec<_> = config
-            .allowed_methods
-            .iter()
-            .filter_map(|m| m.parse().ok())
-            .collect();
-        layer = layer.allow_methods(methods);
-    }
-
-    if config.allowed_headers.iter().any(|h| h == "*") {
-        layer = layer.allow_headers(Any);
-    } else {
-        let headers: Vec<_> = config
-            .allowed_headers
-            .iter()
-            .filter_map(|h| h.parse().ok())
-            .collect();
-        layer = layer.allow_headers(headers);
-    }
-
-    layer.max_age(Duration::from_secs(config.max_age))
-}
-
 /// RPC server for exposing node status via HTTP and Ethereum JSON-RPC.
 pub struct RpcServer<S: StateProvider = NoopStateProvider> {
     state: NodeState,
@@ -94,7 +47,6 @@ pub struct RpcServer<S: StateProvider = NoopStateProvider> {
     chain_id: u64,
     tx_submit: Option<TxSubmitCallback>,
     state_provider: S,
-    cors_config: CorsConfig,
     max_connections: u32,
     subscription_heads: Option<broadcast::Sender<RpcBlock>>,
     subscription_logs: Option<broadcast::Sender<Vec<RpcLog>>>,
@@ -131,7 +83,6 @@ impl RpcServer<NoopStateProvider> {
             chain_id: 1,
             tx_submit: None,
             state_provider: NoopStateProvider,
-            cors_config: CorsConfig::default(),
             max_connections: 100,
             subscription_heads: None,
             subscription_logs: None,
@@ -156,7 +107,6 @@ impl RpcServer<NoopStateProvider> {
             chain_id,
             tx_submit: None,
             state_provider: NoopStateProvider,
-            cors_config: CorsConfig::default(),
             max_connections: 100,
             subscription_heads: None,
             subscription_logs: None,
@@ -188,7 +138,6 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             chain_id,
             tx_submit: None,
             state_provider,
-            cors_config: CorsConfig::default(),
             max_connections: 100,
             subscription_heads: None,
             subscription_logs: None,
@@ -209,13 +158,6 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
     #[must_use]
     pub fn with_tx_submit(mut self, tx_submit: TxSubmitCallback) -> Self {
         self.tx_submit = Some(tx_submit);
-        self
-    }
-
-    /// Set CORS configuration.
-    #[must_use]
-    pub fn with_cors(mut self, cors_config: CorsConfig) -> Self {
-        self.cors_config = cors_config;
         self
     }
 
@@ -257,7 +199,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
 
     /// Set the block index and shared module state for vera API receipt/nonce queries.
     #[must_use]
-    pub fn with_hub_index_and_modules(
+    pub fn with_vera_index_and_modules(
         mut self,
         index: Arc<BlockIndex>,
         modules: SharedModuleState,
@@ -269,14 +211,14 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
 
     /// Set JMT-backed module state trees for proof generation.
     #[must_use]
-    pub fn with_hub_module_trees(mut self, trees: ModuleTrees) -> Self {
+    pub fn with_vera_module_trees(mut self, trees: ModuleTrees) -> Self {
         self.vera_module_trees = Some(trees);
         self
     }
 
     /// Serve native permission proofs from the ordered module databases and query snapshot.
     #[must_use]
-    pub fn with_hub_native_modules(
+    pub fn with_vera_native_modules(
         mut self,
         databases: vera_backend::native::NativeStateSet,
         modules: SharedModuleState,
@@ -287,53 +229,28 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
 
     /// Serve light blocks from durable history, including descendant certificates.
     #[must_use]
-    pub fn with_hub_light_block_lookup(mut self, lookup: LightBlockLookup) -> Self {
+    pub fn with_vera_light_block_lookup(mut self, lookup: LightBlockLookup) -> Self {
         self.vera_light_block_lookup = Some(lookup);
         self
     }
 
     /// Configure durable receipt evidence for cache misses.
-    pub fn with_hub_receipt_proof_lookup(mut self, lookup: ReceiptProofLookup) -> Self {
+    pub fn with_vera_receipt_proof_lookup(mut self, lookup: ReceiptProofLookup) -> Self {
         self.vera_receipt_proof_lookup = Some(lookup);
         self
     }
 
     /// Enable durable point reads for native receipts.
-    pub fn with_hub_archive(mut self, archive: crate::ArchiveReader) -> Self {
+    pub fn with_vera_archive(mut self, archive: crate::ArchiveReader) -> Self {
         self.vera_archive = Some(archive);
         self
     }
 
     /// Set the light block index for `vera_getLightBlock` queries.
     #[must_use]
-    pub fn with_hub_light_block_index(mut self, index: Arc<LightBlockIndex>) -> Self {
+    pub fn with_vera_light_block_index(mut self, index: Arc<LightBlockIndex>) -> Self {
         self.vera_light_block_index = Some(index);
         self
-    }
-
-    /// Create from configuration.
-    pub fn from_config(state: NodeState, config: RpcServerConfig, state_provider: S) -> Self {
-        Self {
-            state,
-            addr: config.http_addr,
-            chain_id: config.chain_id,
-            tx_submit: None,
-            state_provider,
-            cors_config: config.cors,
-            max_connections: config.max_connections,
-            subscription_heads: None,
-            subscription_logs: None,
-            subscription_headers: None,
-            extra_modules: Vec::new(),
-            vera_index: None,
-            vera_modules: None,
-            vera_module_trees: None,
-            vera_native_modules: None,
-            vera_light_block_index: None,
-            vera_light_block_lookup: None,
-            vera_receipt_proof_lookup: None,
-            vera_archive: None,
-        }
     }
 
     /// Start the RPC server.
@@ -345,7 +262,6 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
         let node_state_for_jsonrpc = Arc::clone(&node_state);
         let chain_id = self.chain_id;
         let tx_submit = self.tx_submit;
-        let cors_layer = build_cors_layer(&self.cors_config);
         let max_connections = self.max_connections;
         let state_provider = self.state_provider;
         let subscription_heads = self.subscription_heads;
@@ -363,7 +279,6 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
         // Signal from the JSON-RPC task to the HTTP task indicating whether it
         // successfully bound the port. The HTTP status server waits for this
         // before attempting to bind, so there is no race condition.
-        let (jsonrpc_ready_tx, jsonrpc_ready_rx) = tokio::sync::oneshot::channel::<bool>();
 
         // JSON-RPC server serves eth_*, vera_*, net_*, web3_* methods over both
         // HTTP and WebSocket. It binds first and signals readiness to the HTTP task.
@@ -389,7 +304,6 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
                 Ok(s) => s,
                 Err(e) => {
                     error!(error = %e, "Failed to build JSON-RPC server");
-                    let _ = jsonrpc_ready_tx.send(false);
                     return None;
                 }
             };
@@ -434,29 +348,24 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             let mut module = jsonrpsee::RpcModule::new(());
             if let Err(e) = module.merge(eth_api.into_rpc()) {
                 error!(error = %e, "Failed to merge eth API");
-                let _ = jsonrpc_ready_tx.send(false);
                 return None;
             }
             if let Err(e) = module.merge(net_api.into_rpc()) {
                 error!(error = %e, "Failed to merge net API");
-                let _ = jsonrpc_ready_tx.send(false);
                 return None;
             }
             if let Err(e) = module.merge(web3_api.into_rpc()) {
                 error!(error = %e, "Failed to merge web3 API");
-                let _ = jsonrpc_ready_tx.send(false);
                 return None;
             }
             if let Err(e) = module.merge(vera_api.into_rpc()) {
                 error!(error = %e, "Failed to merge vera API");
-                let _ = jsonrpc_ready_tx.send(false);
                 return None;
             }
             if let Some(headers) = subscription_headers.as_ref()
                 && let Err(e) = module.merge(HeaderSubscriptionApiImpl(headers.clone()).into_rpc())
             {
                 error!(error = %e, "Failed to merge header subscription API");
-                let _ = jsonrpc_ready_tx.send(false);
                 return None;
             }
             if let (Some(heads_tx), Some(logs_tx)) = (subscription_heads, subscription_logs) {
@@ -466,75 +375,29 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
                 }
                 if let Err(e) = module.merge(sub_api.into_rpc()) {
                     error!(error = %e, "Failed to merge subscription API");
-                    let _ = jsonrpc_ready_tx.send(false);
                     return None;
                 }
             }
             for extra in extra_modules {
                 if let Err(e) = module.merge(extra) {
                     error!(error = %e, "Failed to merge extra API module");
-                    let _ = jsonrpc_ready_tx.send(false);
                     return None;
                 }
             }
 
             info!(addr = %addr, "JSON-RPC server started");
-            let _ = jsonrpc_ready_tx.send(true);
 
             let handle = server.start(module);
             handle.stopped().await;
             Some(())
         });
 
-        // HTTP status server provides /status and /health endpoints.
-        // Waits for the JSON-RPC server to signal readiness before attempting
-        // to bind. If the JSON-RPC server already holds the port, the HTTP
-        // server will not start (this is expected).
-        let http_handle = tokio::spawn(async move {
-            let app = Router::new()
-                .route("/status", get(status_handler))
-                .route("/health", get(health_handler))
-                .layer(cors_layer)
-                .layer(ConcurrencyLimitLayer::new(max_connections as usize))
-                .with_state(node_state);
-
-            // Wait for JSON-RPC server to finish binding before we try.
-            let jsonrpc_bound = jsonrpc_ready_rx.await.unwrap_or(false);
-            if !jsonrpc_bound {
-                error!(addr = %addr, "JSON-RPC server failed to start; HTTP status server will attempt to bind independently");
-            }
-
-            let listener = match tokio::net::TcpListener::bind(addr).await {
-                Ok(l) => l,
-                Err(e) => {
-                    if jsonrpc_bound {
-                        // Expected: JSON-RPC already holds the port.
-                        info!(addr = %addr, "HTTP status server not started (JSON-RPC has the port)");
-                    } else {
-                        // Unexpected: both servers failed to bind.
-                        error!(error = %e, addr = %addr, "HTTP status server failed to bind");
-                    }
-                    return;
-                }
-            };
-
-            info!(addr = %addr, "HTTP status server started");
-
-            if let Err(e) = axum::serve(listener, app).await {
-                error!(error = %e, "HTTP server error");
-            }
-        });
-
-        RpcServerHandle {
-            http_handle,
-            jsonrpc_handle,
-        }
+        RpcServerHandle { jsonrpc_handle }
     }
 }
 
 /// Handle for managing the RPC server lifecycle.
 pub struct RpcServerHandle {
-    http_handle: tokio::task::JoinHandle<()>,
     jsonrpc_handle: tokio::task::JoinHandle<Option<()>>,
 }
 
@@ -545,25 +408,15 @@ impl std::fmt::Debug for RpcServerHandle {
 }
 
 impl RpcServerHandle {
-    /// Wait for both servers to complete.
+    /// Wait for the server to complete.
     pub async fn stopped(self) {
-        let _ = tokio::join!(self.http_handle, self.jsonrpc_handle);
+        let _ = self.jsonrpc_handle.await;
     }
 
-    /// Abort both servers.
+    /// Abort the server.
     pub fn abort(self) {
-        self.http_handle.abort();
         self.jsonrpc_handle.abort();
     }
-}
-
-async fn status_handler(State(state): State<Arc<NodeState>>) -> impl IntoResponse {
-    let status = state.status();
-    (StatusCode::OK, axum::Json(status))
-}
-
-async fn health_handler() -> impl IntoResponse {
-    (StatusCode::OK, "ok")
 }
 
 /// Standalone JSON-RPC server without HTTP status endpoints.
@@ -701,7 +554,7 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
 
     /// Set the block index and shared module state for vera API receipt/nonce queries.
     #[must_use]
-    pub fn with_hub_index_and_modules(
+    pub fn with_vera_index_and_modules(
         mut self,
         index: Arc<BlockIndex>,
         modules: SharedModuleState,
@@ -713,14 +566,14 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
 
     /// Set JMT-backed module state trees for proof generation.
     #[must_use]
-    pub fn with_hub_module_trees(mut self, trees: ModuleTrees) -> Self {
+    pub fn with_vera_module_trees(mut self, trees: ModuleTrees) -> Self {
         self.vera_module_trees = Some(trees);
         self
     }
 
     /// Serve native permission proofs from the ordered module databases and query snapshot.
     #[must_use]
-    pub fn with_hub_native_modules(
+    pub fn with_vera_native_modules(
         mut self,
         databases: vera_backend::native::NativeStateSet,
         modules: SharedModuleState,
@@ -731,26 +584,26 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
 
     /// Serve light blocks from durable history, including descendant certificates.
     #[must_use]
-    pub fn with_hub_light_block_lookup(mut self, lookup: LightBlockLookup) -> Self {
+    pub fn with_vera_light_block_lookup(mut self, lookup: LightBlockLookup) -> Self {
         self.vera_light_block_lookup = Some(lookup);
         self
     }
 
     /// Configure durable receipt evidence for cache misses.
-    pub fn with_hub_receipt_proof_lookup(mut self, lookup: ReceiptProofLookup) -> Self {
+    pub fn with_vera_receipt_proof_lookup(mut self, lookup: ReceiptProofLookup) -> Self {
         self.vera_receipt_proof_lookup = Some(lookup);
         self
     }
 
     /// Enable durable point reads for native receipts.
-    pub fn with_hub_archive(mut self, archive: crate::ArchiveReader) -> Self {
+    pub fn with_vera_archive(mut self, archive: crate::ArchiveReader) -> Self {
         self.vera_archive = Some(archive);
         self
     }
 
     /// Set the light block index for `vera_getLightBlock` queries.
     #[must_use]
-    pub fn with_hub_light_block_index(mut self, index: Arc<LightBlockIndex>) -> Self {
+    pub fn with_vera_light_block_index(mut self, index: Arc<LightBlockIndex>) -> Self {
         self.vera_light_block_index = Some(index);
         self
     }
@@ -846,33 +699,5 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
         info!(addr = %local_addr, "Starting JSON-RPC server");
 
         Ok((server.start(module), local_addr))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cors_layer_empty_origins() {
-        let config = CorsConfig::none();
-        let _layer = build_cors_layer(&config);
-    }
-
-    #[test]
-    fn cors_layer_specific_origins() {
-        let config = CorsConfig {
-            allowed_origins: vec!["http://localhost:3000".to_string()],
-            allowed_methods: vec!["GET".to_string(), "POST".to_string()],
-            allowed_headers: vec!["Content-Type".to_string()],
-            max_age: 3600,
-        };
-        let _layer = build_cors_layer(&config);
-    }
-
-    #[test]
-    fn cors_layer_wildcard() {
-        let config = CorsConfig::permissive();
-        let _layer = build_cors_layer(&config);
     }
 }

@@ -7,9 +7,6 @@
 mod archive;
 pub use archive::{ArchiveReader, IndexLookup};
 
-mod config;
-pub use config::{CorsConfig, RateLimitConfig, RpcServerConfig};
-
 mod error;
 pub use error::{RpcError, codes as error_codes};
 
