@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 description = "Hub validator node assembly on commonware glue"
 
+[features]
+fault-injection = ["hub-app/fault-injection"]
+regolith-history = ["dep:regolith"]
+
 [lints]
 workspace = true
 
@@ -21,7 +25,6 @@ hub-indexer.workspace = true
 hub-jsonrpc.workspace = true
 hub-modules.workspace = true
 hub-qmdb.workspace = true
-hub-state.workspace = true
 hub-traits.workspace = true
 
 commonware-broadcast.workspace = true
@@ -33,22 +36,25 @@ commonware-macros.workspace = true
 commonware-p2p.workspace = true
 commonware-parallel.workspace = true
 commonware-runtime.workspace = true
+commonware-resolver.workspace = true
 commonware-storage.workspace = true
 commonware-utils.workspace = true
 
 alloy-consensus.workspace = true
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
+alloy-rlp.workspace = true
 anyhow.workspace = true
+borsh.workspace = true
 bytes.workspace = true
 futures.workspace = true
 hex.workspace = true
 parking_lot.workspace = true
+rocksdb = "0.22"
+regolith = { git = "https://github.com/sourcenetwork/regolith", rev = "c9582821be559014535dc0ca092c19d40341e6b0", optional = true }
 serde.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-
-[dev-dependencies]
-tempfile.workspace = true

@@ -9,12 +9,11 @@ use std::{
 
 use commonware_codec::Encode as _;
 use commonware_cryptography::Digestible as _;
-use commonware_glue::dkg::types::Payload;
 use hub_app::FinalizedSink;
 use hub_consensus::components::InMemoryMempool;
-use hub_domain::{Block, EpochMaterial, GossipHeader};
+use hub_domain::{Block, GossipHeader};
 use hub_executor::{ExecutionReceipt, HubExecutor};
-use hub_indexer::{BlockIndex, LightBlockIndex, StoredEpochMaterial, StoredFinalization};
+use hub_indexer::{BlockIndex, LightBlockIndex, StoredFinalization};
 use hub_jsonrpc::{NodeState, RpcBlock, RpcLog};
 use tokio::sync::broadcast;
 use tracing::trace;
@@ -22,8 +21,9 @@ use tracing::trace;
 use hub_backend::HubStateSet;
 
 use crate::{
-    CommittedState,
+    CommittedState, FinalizedHistory,
     finalize::{index_finalized_block, subscription_data},
+    history::restore_epoch,
     tx_gossip::{SharedValidator, recheck},
 };
 
@@ -48,6 +48,7 @@ pub type FinalizationLookup = Arc<
 /// Everything the node does with a finalized block once its state is readable.
 #[derive(Clone)]
 pub struct NodeSink {
+    history: Arc<FinalizedHistory>,
     index: Arc<BlockIndex>,
     light_index: Arc<LightBlockIndex>,
     heads: broadcast::Sender<RpcBlock>,
@@ -72,6 +73,8 @@ impl std::fmt::Debug for NodeSink {
 
 /// Inputs to [`NodeSink::new`].
 pub struct SinkParts {
+    /// Durable execution history used to restore the query indexes.
+    pub history: Arc<FinalizedHistory>,
     /// Block, transaction, and receipt index served over RPC.
     pub index: Arc<BlockIndex>,
     /// Public consensus artifacts served to light clients.
@@ -110,6 +113,7 @@ impl NodeSink {
     /// Build the sink from its parts.
     pub fn new(parts: SinkParts) -> Self {
         Self {
+            history: parts.history,
             index: parts.index,
             light_index: parts.light_index,
             heads: parts.heads,
@@ -134,17 +138,34 @@ impl NodeSink {
 }
 
 impl FinalizedSink for NodeSink {
+    fn finalized_height(&self) -> u64 {
+        self.index.head_block_number()
+    }
+
     fn proposed(&self, _block: &Block) {
         self.node_state.inc_proposed();
     }
 
     async fn finalized(&self, block: &Block, receipts: Vec<ExecutionReceipt>) {
+        // Marshal serves lookups independently of the stateful callback.
+        let artifacts = (self.finalization_lookup)(block.height).await;
+        let history = self.history.clone();
+        let persisted = block.clone();
+        let gas_limit = self.gas_limit;
+        let (receipts, artifacts) = ::tokio::task::spawn_blocking(move || {
+            history.append_finalized(&persisted, &receipts, gas_limit, artifacts.as_ref())?;
+            Ok::<_, anyhow::Error>((receipts, artifacts))
+        })
+        .await
+        .expect("finalized history writer stopped")
+        .expect("persist finalized execution before publication");
         self.node_state.inc_finalized();
         self.node_state.set_view(block.context.round.view().get());
         self.node_state.set_backfilling(false);
 
         let gas_used = receipts.iter().map(|r| r.gas_used).sum();
         index_finalized_block(&self.index, block, self.gas_limit, &receipts, gas_used);
+        self.node_state.notify_proof_progress();
         let (rpc_block, rpc_logs) = subscription_data(block, self.gas_limit, &receipts, gas_used);
         if self.heads.send(rpc_block).is_err() {
             trace!(height = block.height, "no newHeads subscribers");
@@ -152,44 +173,26 @@ impl FinalizedSink for NodeSink {
         if !rpc_logs.is_empty() && self.logs.send(rpc_logs).is_err() {
             trace!(height = block.height, "no logs subscribers");
         }
-        if let Some(Payload::EpochInfo(info)) = &block.payload {
-            let material =
-                EpochMaterial::new(info.output.players().clone(), info.output.public().clone());
-            self.light_index.insert_epoch_material(
-                info.epoch.get(),
-                StoredEpochMaterial {
-                    bytes: material.encode().into(),
+        restore_epoch(&self.light_index, block);
+        let height = block.height;
+        if let Some(artifacts) = artifacts {
+            let mut header = GossipHeader::from_block(block, self.chain_id, self.publisher_index);
+            header.set_signature(&artifacts.certificate);
+            self.light_index.insert_finalization(
+                block.digest().0,
+                StoredFinalization {
+                    epoch: artifacts.epoch,
+                    bytes: artifacts.finalization,
+                    block: block.encode().to_vec(),
                 },
             );
-        }
-        // Marshal invokes reporters while processing this finalization, so it
-        // cannot answer its own mailbox until the callback returns. Finish the
-        // lookup, indexing, and header publication in a detached task.
-        let mut header = GossipHeader::from_block(block, self.chain_id, self.publisher_index);
-        let height = block.height;
-        let digest = block.digest().0;
-        let block_bytes = block.encode().to_vec();
-        let lookup = self.finalization_lookup.clone();
-        let light_index = self.light_index.clone();
-        let headers = self.headers.clone();
-        ::tokio::spawn(async move {
-            if let Some(artifacts) = lookup(height).await {
-                header.set_signature(&artifacts.certificate);
-                light_index.insert_finalization(
-                    digest,
-                    StoredFinalization {
-                        epoch: artifacts.epoch,
-                        bytes: artifacts.finalization,
-                        block: block_bytes,
-                    },
-                );
-                if headers.send(header).is_err() {
-                    trace!(height, "no headers subscribers");
-                }
-            } else {
-                tracing::warn!(height, "finalization unavailable from marshal");
+            if self.headers.send(header).is_err() {
+                trace!(height, "no headers subscribers");
             }
-        });
+        } else {
+            trace!(height, "no direct finalization certificate in marshal");
+        }
+        self.node_state.notify_proof_progress();
 
         let Some(set) = self.state.get() else {
             return;

@@ -1,14 +1,18 @@
-//! Propose a block on top of genesis and verify it from a fresh fork.
+//! Verify competing proposals and capture the winning branch's receipts.
 
 #![recursion_limit = "256"]
 
 use std::sync::Arc;
 
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, U256, keccak256};
 use commonware_consensus::marshal::ancestry;
-use commonware_glue::stateful::{Application, Input, db::DatabaseSet as _};
+use commonware_glue::stateful::{
+    Application, Input,
+    db::{DatabaseSet as _, ManagedDb as _, Merkleized as _, Shared},
+};
 use commonware_runtime::{Runner as _, Supervisor as _, buffer::paged::CacheRef, tokio};
 use commonware_utils::{NZU16, NZUsize};
+use hub_app::{ModuleDb, VeraStateSet};
 use hub_app::{NoopSink, ReshareInput, StatefulHubApp, apply_genesis, genesis_block};
 use hub_backend::{HubStateSet, state_set_config};
 use hub_consensus::{Mempool as _, components::InMemoryMempool};
@@ -27,7 +31,7 @@ fn signer() -> (SigningKey, Address) {
 }
 
 #[test]
-fn propose_then_verify_roundtrip() {
+fn competing_proposals_preserve_receipts() {
     let dir = tempfile::tempdir().expect("tempdir");
     let config = tokio::Config::default().with_storage_directory(dir.path().to_path_buf());
     tokio::Runner::new(config).start(|context| async move {
@@ -48,8 +52,13 @@ fn propose_then_verify_roundtrip() {
         let tx = Evm::sign_eip1559_transfer(&key, CHAIN_ID, to, U256::from(1000u64), 0, 21_000);
         assert!(mempool.insert(tx));
 
-        let mut app = StatefulHubApp::new(
-            HubExecutor::new(CHAIN_ID),
+        let executor = HubExecutor::new(CHAIN_ID);
+        let native = ModuleDb::init(context.child("native"), executor.clone())
+            .await
+            .unwrap();
+        let set: VeraStateSet = (set.0, set.1, set.2, Shared::new("native", native));
+        let mut app = StatefulHubApp::<NoopSink>::new(
+            executor,
             genesis.clone(),
             mempool.clone(),
             NoopSink,
@@ -87,11 +96,68 @@ fn propose_then_verify_roundtrip() {
             )
             .await
             .expect("verification");
-        assert_eq!(hub_backend::combined_root(&verified), block.state_root.0);
+        assert_eq!(
+            hub_qmdb::StateRoot::compute(
+                alloy_primitives::B256::from_slice(verified.0.root().as_ref()),
+                alloy_primitives::B256::from_slice(verified.1.root().as_ref()),
+                alloy_primitives::B256::from_slice(verified.2.root().as_ref())
+            ),
+            block.state_root.0
+        );
+
+        mempool.prune(&[block.txs[0].id()]);
+        let competing_tx = Evm::sign_eip1559_transfer(
+            &key,
+            CHAIN_ID,
+            Address::repeat_byte(0x43),
+            U256::from(2000u64),
+            0,
+            21_000,
+        );
+        assert!(mempool.insert(competing_tx));
+        let mut verifier = app.clone();
+        let competing = verifier
+            .propose(
+                (context.child("competing"), Block::genesis_context()),
+                ancestry::from_iter([Arc::new(genesis)]),
+                set.new_batches().await,
+                Input {
+                    upstream: ReshareInput {
+                        upstream: (),
+                        payload: None,
+                    },
+                    provider: mempool,
+                },
+            )
+            .await
+            .expect("competing proposal");
+        assert_eq!(competing.block.height, block.height);
+        assert_ne!(competing.block.id(), block.id());
+
+        for (candidate, batches) in [
+            (&block, &verified),
+            (&competing.block, &competing.merkleized),
+        ] {
+            let receipts = app
+                .capture(
+                    (context.child("capture"), candidate.context.clone()),
+                    candidate,
+                    batches,
+                    set.readers(),
+                )
+                .await;
+            assert_eq!(receipts.len(), 1);
+            assert_eq!(receipts[0].tx_hash, keccak256(&candidate.txs[0].bytes));
+            assert!(receipts[0].success());
+            assert_eq!(receipts[0].gas_used, 21_000);
+        }
 
         set.apply(verified).await;
         assert!(set.finalize().await.durable().await);
         let committed = set.committed_targets().await;
-        assert_eq!(hub_app::db_targets_from_sync(&committed), block.db_targets);
+        assert_eq!(
+            hub_app::db_targets_from_sync(&(committed.0, committed.1, committed.2)),
+            block.db_targets
+        );
     });
 }

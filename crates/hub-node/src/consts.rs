@@ -29,14 +29,9 @@ pub const PAGE_CACHE_SIZE: NonZeroUsize = NZUsize!(4096);
 pub const IO_BUFFER_SIZE: NonZeroUsize = NZUsize!(1024 * 1024);
 /// Mailbox capacity for every actor.
 pub const MAILBOX_SIZE: NonZeroUsize = NZUsize!(1024);
-/// Per-peer message quota for every P2P channel.
-pub const MESSAGE_RATE: Quota = Quota::per_second(NZU32!(1000));
-/// Maximum P2P message size in bytes.
-pub const MAX_MESSAGE_SIZE: u32 = 4 * 1024 * 1024;
-/// Maximum transactions per block.
-pub const MAX_BLOCK_TXS: usize = 64;
-/// Maximum encoded transaction size.
-pub const MAX_TX_BYTES: usize = 65_536;
+/// Per-peer channel rate. Burst size also bounds Commonware's preallocated mailboxes.
+pub const MESSAGE_RATE: Quota = Quota::per_second(NZU32!(1000)).allow_burst(NZU32!(64));
+pub use hub_domain::{MAX_BLOCK_TXS, MAX_MESSAGE_BYTES as MAX_MESSAGE_SIZE, MAX_TX_BYTES};
 
 /// P2P channel carrying simplex votes.
 pub const VOTE_CHANNEL: u64 = 0;
@@ -48,8 +43,10 @@ pub const RESOLVER_CHANNEL: u64 = 2;
 pub const BACKFILL_CHANNEL: u64 = 3;
 /// P2P channel for proposed block broadcast.
 pub const BROADCAST_CHANNEL: u64 = 4;
-/// P2P channel for QMDB state sync.
-pub const QMDB_CHANNEL: u64 = 5;
+/// State-transfer channels in accounts, storage, code, ACP, bulletin, hub and sequence order.
+pub const QMDB_CHANNELS: [u64; 7] = [9, 10, 11, 12, 13, 14, 15];
+/// P2P channel for retained execution-history chunks.
+pub const HISTORY_CHANNEL: u64 = 16;
 /// P2P channel for private reshare dealings and acks.
 pub const DKG_CHANNEL: u64 = 6;
 /// P2P channel for the DKG probe.
