@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -31,25 +32,27 @@ jobs:
       - uses: actions/checkout@v4
         with:
           clean: false
+          persist-credentials: false
 
-      - name: Clear stale git credential config
-        run: |
-          git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
-          rm -rf ~/.cargo/git/db/defradb.rs-* ~/.cargo/git/checkouts/defradb.rs-* 2>/dev/null || true
+      - name: Clear stale checkout credentials
+        run: git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
 
-      - name: Configure private repo access
-        run: git config --global url."https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/".insteadOf "https://github.com/sourcenetwork/"
+      - name: Fetch locked dependencies
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: url.https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/.insteadOf
+          GIT_CONFIG_VALUE_0: https://github.com/sourcenetwork/
+        run: cargo fetch --locked
+
+      - name: CI cleanup checks
+        run: PYTHONDONTWRITEBYTECODE=1 python3 .github/scripts/test_stop_test_nodes.py
 
       - name: Format
-        run: cargo fmt --all -- --check
+        run: cargo fmt -- --check
 
       - name: Clippy
-        run: cargo clippy --all -- -D warnings
-
-      - name: Cleanup
-        if: always()
-        run: |
-          git config --global --remove-section "url.https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/" 2>/dev/null || true
+        run: cargo clippy --frozen --all -- -D warnings
 
   build:
     name: Build & Test
@@ -58,20 +61,24 @@ jobs:
       - uses: actions/checkout@v4
         with:
           clean: false
+          persist-credentials: false
 
-      - name: Clear stale git credential config
-        run: |
-          git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
-          rm -rf ~/.cargo/git/db/defradb.rs-* ~/.cargo/git/checkouts/defradb.rs-* 2>/dev/null || true
+      - name: Clear stale checkout credentials
+        run: git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
 
-      - name: Configure private repo access
-        run: git config --global url."https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/".insteadOf "https://github.com/sourcenetwork/"
+      - name: Fetch locked dependencies
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: url.https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/.insteadOf
+          GIT_CONFIG_VALUE_0: https://github.com/sourcenetwork/
+        run: cargo fetch --locked
 
       - name: Unit tests
-        run: cargo test --workspace --exclude hub-e2e
+        run: cargo test --frozen --workspace --exclude hub-e2e
 
       - name: Build hubd
-        run: cargo build -p hubd
+        run: cargo build --frozen -p hubd
 
       - name: Cache hubd binary for backbone CI
         run: |
@@ -84,88 +91,136 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
-          git config --global --remove-section "url.https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/" 2>/dev/null || true
           git checkout -- .
           git clean -fd
 
-  e2e:
-    name: "E2E (${{ matrix.suite }})"
+  e2e-canonical:
+    name: "E2E (canonical)"
     runs-on: [self-hosted, macOS, ARM64, studio]
     needs: [build]
     timeout-minutes: 20
     env:
+      HUB_E2E_DEADLINE_SCALE: "4"
       HUBD_BINARY: ${{ github.workspace }}/target/debug/hubd
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - suite: canonical
-            tests: --test hub_e2e_canonical
-          - suite: extended
-            tests: >-
-              --test core_chain
-              --test contract_deploy
-              --test light_client
-              --test gossip_headers
-              --test validator_bootstrap
-              --test validator_epoch_transition
-              --test cross_object_acp
+      TMPDIR: $RUNNER_TEMP/hub-e2e-${{ github.run_id }}-${{ github.run_attempt }}-canonical
     steps:
       - uses: actions/checkout@v4
         with:
           clean: false
+          persist-credentials: false
 
-      - name: Clear stale git credential config
+      - name: Clear stale checkout credentials
+        run: git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
+
+      - name: Fetch locked dependencies
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: url.https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/.insteadOf
+          GIT_CONFIG_VALUE_0: https://github.com/sourcenetwork/
+        run: cargo fetch --locked
+
+      - name: Prepare test workspace
         run: |
-          git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
-          rm -rf ~/.cargo/git/db/defradb.rs-* ~/.cargo/git/checkouts/defradb.rs-* 2>/dev/null || true
-
-      - name: Configure private repo access
-        run: git config --global url."https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/".insteadOf "https://github.com/sourcenetwork/"
-
-      - name: Kill leftover hubd processes
-        # The e2e harness spawns nodes from $HUBD_BINARY (target/debug/hubd),
-        # so match that path. The previous pattern only matched test-harness
-        # binaries under deps/ and left port-holding hubd nodes alive, stalling
-        # the next run's cluster at height 0.
-        run: pkill -f 'target/debug/hubd' 2>/dev/null || true
+          mkdir -p "$TMPDIR"
+          python3 .github/scripts/stop-test-nodes.py "$HUBD_BINARY"
 
       - name: Build hubd
-        run: cargo build -p hubd
+        run: cargo build --frozen -p hubd
 
       - name: Run e2e tests
-        run: cargo test -p hub-e2e ${{ matrix.tests }} -- --nocapture
+        run: cargo test --frozen -p hub-e2e --test hub_e2e_canonical -- --nocapture
         timeout-minutes: 15
 
       - name: Cleanup
         if: always()
         run: |
-          git config --global --remove-section "url.https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/" 2>/dev/null || true
           git checkout -- .
           git clean -fd
-          pkill -f 'target/debug/hubd' 2>/dev/null || true
-          rm -rf /tmp/hub-e2e-* /tmp/.tmp* 2>/dev/null || true
+          python3 .github/scripts/stop-test-nodes.py "$HUBD_BINARY"
+          rm -rf "$TMPDIR"
+
+  e2e-extended:
+    name: "E2E (extended)"
+    runs-on: [self-hosted, macOS, ARM64, studio]
+    # Serialized with the canonical suite: both start multi-node clusters on
+    # a shared self-hosted studio runner.
+    needs: [e2e-canonical]
+    timeout-minutes: 20
+    env:
+      HUB_E2E_DEADLINE_SCALE: "4"
+      HUBD_BINARY: ${{ github.workspace }}/target/debug/hubd
+      TMPDIR: $RUNNER_TEMP/hub-e2e-${{ github.run_id }}-${{ github.run_attempt }}-extended
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: false
+          persist-credentials: false
+
+      - name: Clear stale checkout credentials
+        run: git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
+
+      - name: Fetch locked dependencies
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: url.https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/.insteadOf
+          GIT_CONFIG_VALUE_0: https://github.com/sourcenetwork/
+        run: cargo fetch --locked
+
+      - name: Prepare test workspace
+        run: |
+          mkdir -p "$TMPDIR"
+          python3 .github/scripts/stop-test-nodes.py "$HUBD_BINARY"
+
+      - name: Build hubd
+        run: cargo build --frozen -p hubd
+
+      - name: Run e2e tests
+        run: >-
+          cargo test --frozen -p hub-e2e
+          --test core_chain
+          --test contract_deploy
+          --test light_client
+          --test gossip_headers
+          --test validator_bootstrap
+          --test validator_epoch_transition
+          --test cross_object_acp
+          -- --nocapture
+        timeout-minutes: 15
+
+      - name: Cleanup
+        if: always()
+        run: |
+          git checkout -- .
+          git clean -fd
+          python3 .github/scripts/stop-test-nodes.py "$HUBD_BINARY"
+          rm -rf "$TMPDIR"
 
   artifacts:
     name: Release Artifacts
     runs-on: [self-hosted, macOS, ARM64, studio]
-    needs: [build]
+    needs: [lint, build, e2e-canonical, e2e-extended, linux-native]
     if: github.event_name == 'push'
     steps:
       - uses: actions/checkout@v4
         with:
           clean: false
+          persist-credentials: false
 
-      - name: Clear stale git credential config
-        run: |
-          git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
-          rm -rf ~/.cargo/git/db/defradb.rs-* ~/.cargo/git/checkouts/defradb.rs-* 2>/dev/null || true
+      - name: Clear stale checkout credentials
+        run: git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
 
-      - name: Configure private repo access
-        run: git config --global url."https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/".insteadOf "https://github.com/sourcenetwork/"
+      - name: Fetch locked dependencies
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: url.https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/.insteadOf
+          GIT_CONFIG_VALUE_0: https://github.com/sourcenetwork/
+        run: cargo fetch --locked
 
       - name: Build release hubd
-        run: cargo build --release -p hubd
+        run: cargo build --frozen --release -p hubd
 
       - name: Upload hubd
         uses: actions/upload-artifact@v4
@@ -177,6 +232,145 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
-          git config --global --remove-section "url.https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/" 2>/dev/null || true
           git checkout -- .
           git clean -fd
+
+  linux-native:
+    name: Linux native service
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      CARGO_BUILD_JOBS: 2
+      HUBD_BINARY: ${{ github.workspace }}/target/debug/hubd
+      HUB_E2E_DEADLINE_SCALE: "8"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-dev cmake pkg-config libssl-dev protobuf-compiler
+
+      - name: Install pinned toolchain
+        run: |
+          rustc --version
+          cargo --version
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-native-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+
+      - name: Fetch locked dependencies
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: url.https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/.insteadOf
+          GIT_CONFIG_VALUE_0: https://github.com/sourcenetwork/
+        run: cargo fetch --locked
+
+      - name: Native module and storage checks
+        run: |
+          cargo test --frozen -p hub-modules --lib
+          cargo test --frozen -p hub-backend --lib
+          cargo test --frozen -p hub-backend --test native_state --test native_hydration
+          cargo test --frozen -p hub-e2e --example operation_baseline rejected_updates_preserve_results_and_stop_dependent_submissions
+
+      - name: Build native node
+        run: cargo build --frozen -p hubd
+
+      - name: Native lifecycle and recovery
+        run: >-
+          cargo test --frozen -p hub-e2e
+          --test native_permission
+          --test native_signed_operation
+          --test native_bulletin
+          --test native_registration
+          --test native_membership
+          --test quorum_recovery
+          --test cold_replay
+          -- --test-threads=1 --nocapture
+
+      - name: Pruned snapshot catch-up
+        env:
+          HUB_E2E_DEADLINE_SCALE: "16"
+          HUB_E2E_DIR: ${{ runner.temp }}/e2e-logs
+          HUB_E2E_KEEP: "1"
+        run: >-
+          cargo test --frozen -p hub-e2e
+          --test snapshot_catchup
+          -- --test-threads=1 --nocapture
+
+      - name: Regolith history invariants
+        run: cargo test --frozen -p hub-node --lib --features regolith-history "history::"
+
+      - name: Build Regolith node
+        run: cargo build --frozen -p hubd --features regolith-history
+
+      - name: Regolith recovery from pruned peers
+        env:
+          RUST_LOG: warn,hub_storage=info
+          HUB_E2E_DEADLINE_SCALE: "16"
+          HUB_E2E_DIR: ${{ runner.temp }}/e2e-logs
+          HUB_E2E_KEEP: "1"
+        run: >-
+          cargo test --frozen -p hub-e2e --test snapshot_catchup
+          snapshot_replica_recovers_from_pruned_peers
+          -- --exact --nocapture
+
+      - name: Build Regolith crash-injection node
+        run: cargo build --frozen -p hubd --features regolith-history,fault-injection
+
+      - name: Interrupted Regolith recovery from pruned peers
+        env:
+          RUST_LOG: warn,hub_storage=info
+          HUB_E2E_DEADLINE_SCALE: "16"
+          HUB_E2E_DIR: ${{ runner.temp }}/e2e-logs
+          HUB_E2E_KEEP: "1"
+        run: >-
+          cargo test --frozen -p hub-e2e --features fault-injection
+          --test snapshot_interrupt interrupted_snapshot_resumes_from_pruned_peers
+          -- --exact --nocapture
+
+      - name: Build crash-injection node
+        run: cargo build --frozen -p hubd --features fault-injection
+
+      - name: Interrupted commit recovery
+        run: >-
+          cargo test --frozen -p hub-e2e --features fault-injection
+          --test module_commit_crash
+          -- --test-threads=1 --nocapture
+
+      - name: Interrupted snapshot recovery
+        env:
+          HUB_E2E_DEADLINE_SCALE: "16"
+          HUB_E2E_DIR: ${{ runner.temp }}/e2e-logs
+          HUB_E2E_KEEP: "1"
+        run: >-
+          cargo test --frozen -p hub-e2e --features fault-injection
+          --test snapshot_interrupt
+          -- --test-threads=1 --nocapture
+
+      - name: Recover membership after share persistence crash
+        run: >-
+          cargo test --frozen -p hub-e2e --features fault-injection
+          --test native_membership native_member_recovers_after_share_persistence_crash
+          -- --exact --nocapture
+
+      - name: Upload failed cluster logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-e2e-cluster-logs
+          path: ${{ runner.temp }}/e2e-logs
+          if-no-files-found: ignore
+
+      - name: Build release node without fault injection
+        run: cargo build --frozen --release -p hubd
