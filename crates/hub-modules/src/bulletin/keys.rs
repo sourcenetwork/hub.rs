@@ -1,11 +1,15 @@
 //! Bulletin module key prefixes and builders.
 //!
-//! Matches Go `x/bulletin/types/keys.go`. Composite keys use `/`-sanitization
-//! to prevent path collisions when namespace IDs or DIDs contain `/`.
+//! Composite components escape percent signs and literal pipes before mapping
+//! slashes to pipes. Ordinary namespace keys retain their original encoding.
 
 use sha2::{Digest, Sha256};
 
-use crate::key_encoding::{sanitize_key_part, unsanitize_key_part};
+fn sanitize_key_part(part: &str) -> String {
+    part.replace('%', "%25")
+        .replace('|', "%7C")
+        .replace('/', "|")
+}
 
 /// Singleton key for the module's ACP policy ID.
 pub const POLICY_ID_KEY: &[u8] = b"policy_id";
@@ -17,6 +21,15 @@ pub const NAMESPACE_PREFIX: &[u8] = b"namespace/";
 pub const COLLABORATOR_PREFIX: &[u8] = b"collaborator/";
 /// Module parameters key.
 pub const PARAMS_KEY: &[u8] = b"p_bulletin";
+
+/// Accept a short namespace name or its stored identifier.
+pub fn namespace_id(namespace: &str) -> String {
+    if namespace.starts_with("bulletin/") {
+        namespace.to_owned()
+    } else {
+        format!("bulletin/{namespace}")
+    }
+}
 
 /// Post key: `prefix + sanitize(namespace_id) + "/" + sanitize(post_id)`.
 pub fn post_key(namespace_id: &str, post_id: &str) -> Vec<u8> {
@@ -41,48 +54,6 @@ pub fn namespace_key(namespace_id: &str) -> Vec<u8> {
     let mut key = Vec::from(NAMESPACE_PREFIX);
     key.extend_from_slice(namespace_id.as_bytes());
     key
-}
-
-/// Parse a post key back into `(namespace_id, post_id)`.
-///
-/// Expects the key to start with `POST_PREFIX`. Reverses sanitization.
-///
-/// # Panics
-///
-/// Panics if the key does not start with `POST_PREFIX` or contains
-/// no separator after the prefix.
-pub fn parse_post_key(key: &[u8]) -> (String, String) {
-    let suffix = &key[POST_PREFIX.len()..];
-    let suffix_str = std::str::from_utf8(suffix).expect("post key is valid UTF-8");
-    let (ns, id) = suffix_str
-        .split_once('/')
-        .expect("post key contains separator");
-    assert!(
-        !id.contains('/'),
-        "malformed post key: expected exactly 2 parts"
-    );
-    (unsanitize_key_part(ns), unsanitize_key_part(id))
-}
-
-/// Parse a collaborator key back into `(namespace_id, collaborator_did)`.
-///
-/// Expects the key to start with `COLLABORATOR_PREFIX`. Reverses sanitization.
-///
-/// # Panics
-///
-/// Panics if the key does not start with `COLLABORATOR_PREFIX` or contains
-/// no separator after the prefix.
-pub fn parse_collaborator_key(key: &[u8]) -> (String, String) {
-    let suffix = &key[COLLABORATOR_PREFIX.len()..];
-    let suffix_str = std::str::from_utf8(suffix).expect("collaborator key is valid UTF-8");
-    let (ns, did) = suffix_str
-        .split_once('/')
-        .expect("collaborator key contains separator");
-    assert!(
-        !did.contains('/'),
-        "malformed collaborator key: expected exactly 2 parts"
-    );
-    (unsanitize_key_part(ns), unsanitize_key_part(did))
 }
 
 /// Collaborator iteration prefix: `prefix + sanitize(namespace_id) + "/"`.
@@ -113,24 +84,17 @@ pub fn generate_post_id(namespace_id: &str, payload: &[u8]) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn post_key_roundtrip() {
-        let ns = "bulletin/my-ns";
-        let pid = "abc123";
-        let key = post_key(ns, pid);
-        let (parsed_ns, parsed_pid) = parse_post_key(&key);
-        assert_eq!(parsed_ns, ns);
-        assert_eq!(parsed_pid, pid);
+    fn unsanitize_key_part(part: &str) -> String {
+        part.replace('|', "/")
+            .replace("%7C", "|")
+            .replace("%25", "%")
     }
 
     #[test]
-    fn collaborator_key_roundtrip() {
-        let ns = "bulletin/my-ns";
-        let did = "did:key:z6Mk123";
-        let key = collaborator_key(ns, did);
-        let (parsed_ns, parsed_did) = parse_collaborator_key(&key);
-        assert_eq!(parsed_ns, ns);
-        assert_eq!(parsed_did, did);
+    fn sanitized_parts_roundtrip() {
+        for part in ["bulletin/my-ns", "abc123", "a%7Cb", "日本|語"] {
+            assert_eq!(unsanitize_key_part(&sanitize_key_part(part)), part);
+        }
     }
 
     #[test]
@@ -138,6 +102,32 @@ mod tests {
         let key_a = post_key("ns/a", "post1");
         let key_b = post_key("ns", "a/post1");
         assert_ne!(key_a, key_b);
+    }
+
+    #[test]
+    fn reserved_components_are_distinct_and_roundtrip() {
+        let components = [
+            "a/b",
+            "a|b",
+            "a%7Cb",
+            "a%257Cb",
+            "a%25b",
+            "a%b",
+            "日本/語|%",
+        ];
+        let mut posts = std::collections::HashSet::new();
+        let mut collaborators = std::collections::HashSet::new();
+        for namespace in components {
+            for id in components {
+                let post = post_key(namespace, id);
+                assert!(post.starts_with(&post_prefix(namespace)));
+                assert!(posts.insert(post));
+                let collaborator = collaborator_key(namespace, id);
+                assert!(collaborator.starts_with(&collaborator_prefix(namespace)));
+                assert!(collaborators.insert(collaborator));
+            }
+        }
+        assert_eq!(post_key("bulletin/team", "id"), b"post/bulletin|team/id");
     }
 
     #[test]

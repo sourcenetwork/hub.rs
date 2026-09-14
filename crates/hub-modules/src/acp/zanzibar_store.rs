@@ -8,9 +8,46 @@ use zanzibar::error::Result;
 use zanzibar::{ObjectRef, Policy, Relationship, Subject, ZanzibarStore};
 
 use super::keys;
-use super::types::{PolicyMarshalingType, PolicyRecord, RecordMetadata, RelationshipRecord};
-use crate::kv_store::{InMemoryKvStore, ModuleKvStore};
+use super::record_store::RecordStore;
+use super::types::{
+    AccessRequest, PolicyMarshalingType, PolicyRecord, RecordMetadata, RelationshipRecord,
+};
+use crate::kv_store::InMemoryKvStore;
 use crate::types::Timestamp;
+
+/// Evaluate an access request from fallible policy and relationship records.
+/// Missing data and incomplete proof coverage remain errors, including on the
+/// subtracting side of an exclusion. Callers must authenticate proof-backed records.
+pub fn evaluate_access_request<S: RecordStore>(
+    store: S,
+    policy_id: &str,
+    request: &AccessRequest,
+) -> Result<bool> {
+    let Some(bytes) = store.read_record(&keys::policy_key(policy_id))? else {
+        return Ok(false);
+    };
+    let record: PolicyRecord = serde_json::from_slice(&bytes)?;
+    if record.policy.id != policy_id {
+        return Err(zanzibar::error::Error::InvalidPolicy(
+            "policy record ID does not match its key".into(),
+        ));
+    }
+    let mut engine =
+        zanzibar::PermissionEngine::new(std::sync::Arc::new(QmdbZanzibarStore::new(store)));
+    engine.add_policy(&record.policy);
+    for operation in &request.operations {
+        if !engine.check_blocking(
+            policy_id,
+            &operation.object.resource,
+            &operation.object.id,
+            &operation.permission,
+            &request.actor.0,
+        )? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
 
 /// A [`ZanzibarStore`] adapter over hub's module KV store.
 ///
@@ -23,11 +60,11 @@ use crate::types::Timestamp;
 /// Relationship reads honor the `archived` flag: an archived record is treated
 /// as absent, matching hub's access-check semantics.
 #[derive(Debug, Default)]
-pub struct QmdbZanzibarStore<S: ModuleKvStore = InMemoryKvStore> {
+pub struct QmdbZanzibarStore<S: RecordStore = InMemoryKvStore> {
     store: RwLock<S>,
 }
 
-impl<S: ModuleKvStore> QmdbZanzibarStore<S> {
+impl<S: RecordStore> QmdbZanzibarStore<S> {
     /// Wrap a module KV store.
     pub const fn new(store: S) -> Self {
         Self {
@@ -35,27 +72,60 @@ impl<S: ModuleKvStore> QmdbZanzibarStore<S> {
         }
     }
 
-    /// Live (non-archived) relationship records under a `storage_key` prefix.
-    fn live_records(&self, policy_id: &str, storage_prefix: &str) -> Vec<RelationshipRecord> {
-        let scan = keys::relationship_storage_prefix(policy_id, storage_prefix);
-        self.store
-            .read()
-            .unwrap()
-            .prefix_scan(&scan)
-            .into_iter()
-            .filter_map(|(_, v)| serde_json::from_slice::<RelationshipRecord>(&v).ok())
-            .filter(|rec| !rec.archived)
-            .collect()
+    fn live_records(
+        &self,
+        policy_id: &str,
+        resource: &str,
+        object_id: &str,
+        relation: &str,
+    ) -> Result<Vec<RelationshipRecord>> {
+        let scan = keys::relationship_storage_prefix(
+            policy_id,
+            &keys::relation_prefix(resource, object_id, relation),
+        );
+        let mut records = Vec::new();
+        for (key, bytes) in self.store.read().unwrap().scan_records(&scan)? {
+            let record: RelationshipRecord = serde_json::from_slice(&bytes)?;
+            if record.policy_id != policy_id
+                || keys::relationship_key(
+                    policy_id,
+                    &keys::relationship_storage_key(&record.relationship),
+                ) != key
+            {
+                return Err(zanzibar::error::Error::Serialization(
+                    "relationship record does not match its key".into(),
+                ));
+            }
+            if !record.archived
+                && record.relationship.resource == resource
+                && record.relationship.object_id == object_id
+                && record.relationship.relation == relation
+            {
+                records.push(record);
+            }
+        }
+        Ok(records)
     }
 
-    /// Whether a specific relationship exists and is live.
-    fn is_live(&self, policy_id: &str, rel: &Relationship) -> bool {
-        self.store
+    fn is_live(&self, policy_id: &str, rel: &Relationship) -> Result<bool> {
+        let Some(bytes) = self
+            .store
             .read()
             .unwrap()
-            .get(&keys::relationship_key(policy_id, &rel.storage_key()))
-            .and_then(|bytes| serde_json::from_slice::<RelationshipRecord>(&bytes).ok())
-            .is_some_and(|rec| !rec.archived)
+            .read_record(&keys::relationship_key(
+                policy_id,
+                &keys::relationship_storage_key(rel),
+            ))?
+        else {
+            return Ok(false);
+        };
+        let record: RelationshipRecord = serde_json::from_slice(&bytes)?;
+        if record.policy_id != policy_id || record.relationship != *rel {
+            return Err(zanzibar::error::Error::Serialization(
+                "relationship record does not match the requested identity".into(),
+            ));
+        }
+        Ok(!record.archived)
     }
 }
 
@@ -69,7 +139,7 @@ fn default_metadata() -> RecordMetadata {
 }
 
 #[async_trait]
-impl<S: ModuleKvStore> ZanzibarStore for QmdbZanzibarStore<S> {
+impl<S: RecordStore> ZanzibarStore for QmdbZanzibarStore<S> {
     async fn store_policy(&self, policy: &Policy) -> Result<()> {
         let record = PolicyRecord {
             policy: policy.clone(),
@@ -81,7 +151,7 @@ impl<S: ModuleKvStore> ZanzibarStore for QmdbZanzibarStore<S> {
         self.store
             .write()
             .unwrap()
-            .put(&keys::policy_key(&policy.id), bytes);
+            .write_record(&keys::policy_key(&policy.id), bytes)?;
         Ok(())
     }
 
@@ -90,37 +160,60 @@ impl<S: ModuleKvStore> ZanzibarStore for QmdbZanzibarStore<S> {
             .store
             .read()
             .unwrap()
-            .get(&keys::policy_key(policy_id))
-            .and_then(|bytes| serde_json::from_slice::<PolicyRecord>(&bytes).ok())
+            .read_record(&keys::policy_key(policy_id))?
+            .map(|bytes| serde_json::from_slice::<PolicyRecord>(&bytes))
+            .transpose()?
             .map(|record| record.policy))
     }
 
     async fn list_policies(&self) -> Result<Vec<Policy>> {
-        Ok(self
-            .store
+        self.store
             .read()
             .unwrap()
-            .prefix_scan(keys::POLICY_PREFIX)
+            .scan_records(keys::POLICY_PREFIX)?
             .into_iter()
-            .filter_map(|(_, v)| serde_json::from_slice::<PolicyRecord>(&v).ok())
-            .map(|record| record.policy)
-            .collect())
+            .map(|(_, bytes)| {
+                let record: PolicyRecord = serde_json::from_slice(&bytes)?;
+                Ok(record.policy)
+            })
+            .collect()
+    }
+
+    async fn next_policy_counter(&self) -> Result<u64> {
+        let mut guard = self.store.write().unwrap();
+        let counter = guard
+            .read_record(keys::POLICY_COUNTER_KEY)?
+            .map(|bytes| -> Result<u64> {
+                let bytes: [u8; 8] = bytes.as_slice().try_into().map_err(|_| {
+                    zanzibar::error::Error::Serialization(
+                        "policy counter must contain 8 bytes".into(),
+                    )
+                })?;
+                Ok(u64::from_be_bytes(bytes))
+            })
+            .transpose()?
+            .unwrap_or(0);
+        let next = counter.checked_add(1).ok_or_else(|| {
+            zanzibar::error::Error::Serialization("policy counter exhausted".into())
+        })?;
+        guard.write_record(keys::POLICY_COUNTER_KEY, next.to_be_bytes().to_vec())?;
+        Ok(next)
     }
 
     async fn delete_policy(&self, policy_id: &str) -> Result<bool> {
         let mut guard = self.store.write().unwrap();
         let policy_key = keys::policy_key(policy_id);
-        if !guard.has(&policy_key) {
+        if guard.read_record(&policy_key)?.is_none() {
             return Ok(false);
         }
-        guard.delete(&policy_key);
         let rel_keys: Vec<_> = guard
-            .prefix_scan(&keys::relationship_policy_prefix(policy_id))
+            .scan_records(&keys::relationship_policy_prefix(policy_id))?
             .into_iter()
             .map(|(k, _)| k)
             .collect();
+        guard.remove_record(&policy_key)?;
         for key in rel_keys {
-            guard.delete(&key);
+            guard.remove_record(&key)?;
         }
         Ok(true)
     }
@@ -133,18 +226,31 @@ impl<S: ModuleKvStore> ZanzibarStore for QmdbZanzibarStore<S> {
             metadata: default_metadata(),
         };
         let bytes = serde_json::to_vec(&record).expect("serialize RelationshipRecord");
-        self.store.write().unwrap().put(
-            &keys::relationship_key(policy_id, &rel.storage_key()),
-            bytes,
-        );
+        let key = keys::relationship_key(policy_id, &keys::relationship_storage_key(rel));
+        let mut guard = self.store.write().unwrap();
+        if let Some(existing) = guard.read_record(&key)? {
+            let existing: RelationshipRecord = serde_json::from_slice(&existing)?;
+            if existing.policy_id != policy_id || existing.relationship != *rel {
+                return Err(zanzibar::error::Error::Serialization(
+                    "relationship key collision".into(),
+                ));
+            }
+        }
+        guard.write_record(&key, bytes)?;
         Ok(())
     }
 
     async fn delete_relationship(&self, policy_id: &str, rel: &Relationship) -> Result<bool> {
-        let key = keys::relationship_key(policy_id, &rel.storage_key());
+        let key = keys::relationship_key(policy_id, &keys::relationship_storage_key(rel));
         let mut guard = self.store.write().unwrap();
-        if guard.has(&key) {
-            guard.delete(&key);
+        if let Some(bytes) = guard.read_record(&key)? {
+            let record: RelationshipRecord = serde_json::from_slice(&bytes)?;
+            if record.policy_id != policy_id || record.relationship != *rel {
+                return Err(zanzibar::error::Error::Serialization(
+                    "relationship key collision".into(),
+                ));
+            }
+            guard.remove_record(&key)?;
             Ok(true)
         } else {
             Ok(false)
@@ -160,7 +266,7 @@ impl<S: ModuleKvStore> ZanzibarStore for QmdbZanzibarStore<S> {
         subject: &Subject,
     ) -> Result<bool> {
         let rel = Relationship::new(resource, object_id, relation, subject.clone());
-        Ok(self.is_live(policy_id, &rel))
+        self.is_live(policy_id, &rel)
     }
 
     async fn check_permission_direct(
@@ -172,17 +278,16 @@ impl<S: ModuleKvStore> ZanzibarStore for QmdbZanzibarStore<S> {
         subject: &Did,
     ) -> Result<bool> {
         let direct = Relationship::with_entity(resource, object_id, relation, subject.clone());
-        if self.is_live(policy_id, &direct) {
+        if self.is_live(policy_id, &direct)? {
             return Ok(true);
         }
         let wildcard = Relationship::new(resource, object_id, relation, Subject::Wildcard);
-        if self.is_live(policy_id, &wildcard) {
+        if self.is_live(policy_id, &wildcard)? {
             return Ok(true);
         }
         // Any typed wildcard on this object#relation grants every subject.
-        let prefix = Relationship::relation_prefix(resource, object_id, relation);
         Ok(self
-            .live_records(policy_id, &prefix)
+            .live_records(policy_id, resource, object_id, relation)?
             .iter()
             .any(|rec| rec.relationship.subject.is_typed_wildcard()))
     }
@@ -194,9 +299,8 @@ impl<S: ModuleKvStore> ZanzibarStore for QmdbZanzibarStore<S> {
         object_id: &str,
         relation: &str,
     ) -> Result<Vec<Subject>> {
-        let prefix = Relationship::relation_prefix(resource, object_id, relation);
         Ok(self
-            .live_records(policy_id, &prefix)
+            .live_records(policy_id, resource, object_id, relation)?
             .into_iter()
             .map(|rec| rec.relationship.subject)
             .collect())
@@ -209,9 +313,8 @@ impl<S: ModuleKvStore> ZanzibarStore for QmdbZanzibarStore<S> {
         object_id: &str,
         relation: &str,
     ) -> Result<Vec<ObjectRef>> {
-        let prefix = Relationship::relation_prefix(resource, object_id, relation);
         Ok(self
-            .live_records(policy_id, &prefix)
+            .live_records(policy_id, resource, object_id, relation)?
             .into_iter()
             .filter_map(|rec| match rec.relationship.subject {
                 Subject::EntitySet {
@@ -230,18 +333,30 @@ impl<S: ModuleKvStore> ZanzibarStore for QmdbZanzibarStore<S> {
         resource: &str,
         object_id: &str,
     ) -> Result<()> {
-        let prefix = keys::relationship_storage_prefix(
-            policy_id,
-            &Relationship::object_prefix(resource, object_id),
-        );
+        let prefix =
+            keys::relationship_storage_prefix(policy_id, &keys::object_prefix(resource, object_id));
         let mut guard = self.store.write().unwrap();
-        let keys_to_delete: Vec<_> = guard
-            .prefix_scan(&prefix)
-            .into_iter()
-            .map(|(k, _)| k)
-            .collect();
+        let mut keys_to_delete = Vec::new();
+        for (key, bytes) in guard.scan_records(&prefix)? {
+            let record: RelationshipRecord = serde_json::from_slice(&bytes)?;
+            if record.policy_id != policy_id
+                || keys::relationship_key(
+                    policy_id,
+                    &keys::relationship_storage_key(&record.relationship),
+                ) != key
+            {
+                return Err(zanzibar::error::Error::Serialization(
+                    "relationship record does not match its key".into(),
+                ));
+            }
+            if record.relationship.resource == resource
+                && record.relationship.object_id == object_id
+            {
+                keys_to_delete.push(key);
+            }
+        }
         for key in keys_to_delete {
-            guard.delete(&key);
+            guard.remove_record(&key)?;
         }
         Ok(())
     }
@@ -255,6 +370,7 @@ mod tests {
     use zanzibar::{PermissionEngine, Relation, RelationExpression, Resource};
 
     use super::*;
+    use crate::kv_store::ModuleKvStore;
 
     const POLICY: &str = "policy-1";
 
@@ -271,7 +387,128 @@ mod tests {
             metadata: default_metadata(),
         };
         let bytes = serde_json::to_vec(&record).unwrap();
-        store.put(&keys::relationship_key(POLICY, &rel.storage_key()), bytes);
+        store.put(
+            &keys::relationship_key(POLICY, &keys::relationship_storage_key(rel)),
+            bytes,
+        );
+    }
+
+    #[test]
+    fn relationship_keys_isolate_adapter_path_fields() {
+        let store = QmdbZanzibarStore::<InMemoryKvStore>::default();
+        let original = Relationship::with_entity("document", "parent/path", "reader", did(ALICE));
+        let collision = Relationship::with_entity("document", "parent", "path/reader", did(ALICE));
+        assert_eq!(original.storage_key(), collision.storage_key());
+        block_on(store.store_relationship(POLICY, &original)).unwrap();
+        let before = store.store.read().unwrap().serialize();
+        block_on(store.store_relationship(POLICY, &collision)).unwrap();
+        assert!(block_on(store.delete_relationship(POLICY, &collision)).unwrap());
+        assert_eq!(store.store.read().unwrap().serialize(), before);
+        assert!(
+            block_on(store.has_relationship(
+                POLICY,
+                "document",
+                "parent/path",
+                "reader",
+                &original.subject
+            ))
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn permission_identity_excludes_path_descendants() {
+        let store = QmdbZanzibarStore::<InMemoryKvStore>::default();
+        for subject in [
+            Subject::typed_wildcard("document"),
+            Subject::entity_set("folder", "shared", "reader"),
+            Subject::entity(did(ALICE)),
+        ] {
+            block_on(store.store_relationship(
+                POLICY,
+                &Relationship::new("document", "doc/reader/child", "reader", subject),
+            ))
+            .unwrap();
+        }
+        assert!(
+            !block_on(store.check_permission_direct(
+                POLICY,
+                "document",
+                "doc",
+                "reader",
+                &did(ALICE),
+            ))
+            .unwrap()
+        );
+        assert!(
+            block_on(store.get_relation_subjects(POLICY, "document", "doc", "reader"))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            block_on(store.get_relation_targets(POLICY, "document", "doc", "reader"))
+                .unwrap()
+                .is_empty()
+        );
+        let own = Relationship::with_entity("document", "doc", "reader", did(ALICE));
+        block_on(store.store_relationship(POLICY, &own)).unwrap();
+        assert!(
+            block_on(store.check_permission_direct(
+                POLICY,
+                "document",
+                "doc",
+                "reader",
+                &did(ALICE)
+            ))
+            .unwrap()
+        );
+        assert_eq!(
+            block_on(store.get_relation_subjects(POLICY, "document", "doc", "reader")).unwrap(),
+            vec![own.subject]
+        );
+    }
+
+    #[test]
+    fn permission_identity_rejects_mismatched_record_keys() {
+        let mut kv = InMemoryKvStore::default();
+        let stored = Relationship::with_entity("document", "other", "reader", did(ALICE));
+        let requested = Relationship::with_entity("document", "doc", "reader", did(ALICE));
+        seed(&mut kv, &stored, false);
+        let bytes = kv
+            .get(&keys::relationship_key(
+                POLICY,
+                &keys::relationship_storage_key(&stored),
+            ))
+            .unwrap();
+        kv.put(
+            &keys::relationship_key(POLICY, &keys::relationship_storage_key(&requested)),
+            bytes,
+        );
+        let store = QmdbZanzibarStore::new(kv);
+        assert!(
+            block_on(store.has_relationship(
+                POLICY,
+                "document",
+                "doc",
+                "reader",
+                &requested.subject
+            ))
+            .is_err()
+        );
+        assert!(
+            block_on(store.check_permission_direct(
+                POLICY,
+                "document",
+                "doc",
+                "reader",
+                &did(ALICE)
+            ))
+            .is_err()
+        );
+        assert!(
+            block_on(store.get_relation_subjects(POLICY, "document", "doc", "reader")).is_err()
+        );
+        assert!(block_on(store.get_relation_targets(POLICY, "document", "doc", "reader")).is_err());
     }
 
     #[test]
@@ -580,7 +817,7 @@ mod tests {
             &Relationship::with_entity("document", "doc1", "owner", did(ALICE)),
         ))
         .unwrap();
-        let keep = Relationship::with_entity("document", "doc2", "reader", did(ALICE));
+        let keep = Relationship::with_entity("document", "doc1/child", "reader", did(ALICE));
         block_on(store.store_relationship(POLICY, &keep)).unwrap();
 
         block_on(store.delete_object_relationships(POLICY, "document", "doc1")).unwrap();
@@ -596,8 +833,14 @@ mod tests {
                 .is_empty()
         );
         assert!(
-            block_on(store.has_relationship(POLICY, "document", "doc2", "reader", &keep.subject))
-                .unwrap(),
+            block_on(store.has_relationship(
+                POLICY,
+                "document",
+                "doc1/child",
+                "reader",
+                &keep.subject
+            ))
+            .unwrap(),
             "other objects are untouched"
         );
     }
@@ -673,5 +916,90 @@ mod tests {
             block_on(engine.check(pid, "document", "doc1", "write", &did(ALICE)));
         assert!(unknown_relation.is_err(), "unknown relation must error");
         assert!(!unknown_relation.unwrap_or(false), "error maps to deny");
+    }
+
+    #[test]
+    fn corrupt_exclusion_records_cannot_grant_access() {
+        for subject in [
+            Subject::Entity(did(ALICE)),
+            Subject::Wildcard,
+            Subject::typed_wildcard("document"),
+            Subject::entity_set("collection", "col1", "blocked"),
+        ] {
+            let mut kv = InMemoryKvStore::default();
+            let reader = Relationship::with_entity("document", "doc1", "reader", did(ALICE));
+            let blocked = Relationship::new("document", "doc1", "blocked", subject.clone());
+            seed(&mut kv, &reader, false);
+            seed(&mut kv, &blocked, false);
+            seed(
+                &mut kv,
+                &Relationship::with_entity("collection", "col1", "blocked", did(ALICE)),
+                false,
+            );
+            let excluded = if matches!(subject, Subject::EntitySet { .. }) {
+                RelationExpression::tuple_to_userset("blocked", "blocked")
+            } else {
+                RelationExpression::computed_userset("blocked")
+            };
+            let policy = Policy::new(POLICY, "exclusion")
+                .with_resource(
+                    Resource::new("collection").with_relation(Relation::direct("blocked")),
+                )
+                .with_resource(
+                    Resource::new("document")
+                        .with_relation(Relation::direct("reader"))
+                        .with_relation(Relation::direct("blocked"))
+                        .with_relation(Relation::computed(
+                            "read",
+                            RelationExpression::difference(
+                                RelationExpression::computed_userset("reader"),
+                                excluded,
+                            ),
+                        )),
+                );
+            let mut engine = PermissionEngine::new(Arc::new(QmdbZanzibarStore::new(kv.clone())));
+            engine.add_policy(&policy);
+            assert!(
+                !engine
+                    .check_blocking(POLICY, "document", "doc1", "read", &did(ALICE))
+                    .unwrap()
+            );
+
+            kv.put(
+                &keys::relationship_key(POLICY, &keys::relationship_storage_key(&blocked)),
+                b"{".to_vec(),
+            );
+            let mut engine = PermissionEngine::new(Arc::new(QmdbZanzibarStore::new(kv)));
+            engine.add_policy(&policy);
+            let result = engine.check_blocking(POLICY, "document", "doc1", "read", &did(ALICE));
+            assert!(
+                result.is_err(),
+                "corrupt {subject:?} exclusion must fail: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn corrupt_records_are_errors_in_point_and_list_reads() {
+        let mut kv = InMemoryKvStore::default();
+        let rel = Relationship::with_entity("document", "doc1", "reader", did(ALICE));
+        kv.put(
+            &keys::relationship_key(POLICY, &keys::relationship_storage_key(&rel)),
+            b"{".to_vec(),
+        );
+        kv.put(&keys::policy_key(POLICY), b"{".to_vec());
+        let store = QmdbZanzibarStore::new(kv);
+        assert!(block_on(store.get_policy(POLICY)).is_err());
+        assert!(block_on(store.list_policies()).is_err());
+        assert!(
+            block_on(store.has_relationship(POLICY, "document", "doc1", "reader", &rel.subject))
+                .is_err()
+        );
+        assert!(
+            block_on(store.get_relation_subjects(POLICY, "document", "doc1", "reader")).is_err()
+        );
+        assert!(
+            block_on(store.get_relation_targets(POLICY, "document", "doc1", "reader")).is_err()
+        );
     }
 }

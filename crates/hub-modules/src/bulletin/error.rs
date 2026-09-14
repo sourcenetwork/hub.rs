@@ -6,6 +6,12 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 #[allow(missing_docs)]
 pub enum BulletinError {
+    #[error("namespace must be nonempty")]
+    InvalidNamespace,
+
+    #[error("post payload must be between 1 and {0} bytes")]
+    PostPayloadTooLarge(usize),
+
     #[error("namespace not found: {namespace}")]
     NamespaceNotFound { namespace: String },
 
@@ -30,9 +36,6 @@ pub enum BulletinError {
     #[error("invalid post payload: payload must be non-empty")]
     InvalidPostPayload,
 
-    #[error("invalid post proof: proof must be non-empty")]
-    InvalidPostProof,
-
     #[error("policy not initialized")]
     PolicyNotInitialized,
 
@@ -44,6 +47,9 @@ pub enum BulletinError {
 
     #[error("invalid glob pattern: {pattern}")]
     InvalidGlob { pattern: String },
+
+    #[error("bulletin query budget exceeded; use certified native pages")]
+    QueryLimit,
 
     #[error("state error: {0}")]
     State(String),

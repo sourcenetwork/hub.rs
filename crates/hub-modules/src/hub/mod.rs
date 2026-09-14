@@ -2,10 +2,26 @@
 
 /// Solidity ABI interface for the Hub precompile.
 pub mod abi;
+/// Operator approvals and administrative state transitions.
+pub mod administration;
+mod delegation;
 /// Hub error types.
 pub mod error;
 /// Key prefixes and builders for Hub KV storage.
 pub mod keys;
+/// Finalized rosters selected for future consensus epochs.
+pub mod membership;
+/// Threshold-service node registration and controller authority.
+pub mod nodes;
+/// Encrypted documents and signing derivations.
+pub mod objects;
+/// Operator-authorized relay grants.
+pub mod relay;
+mod restoration;
+/// Ring lifecycle and participant attestations.
+pub mod rings;
+mod token_expiry;
+mod token_queries;
 /// Hub domain types.
 pub mod types;
 
@@ -84,7 +100,7 @@ impl HubModule {
     ///    (`tx_ctx.signer == record.authorized_account`).
     ///    Return `Unauthorized` if neither holds.
     /// 4. Call `update_jws_token_status(token_hash, Invalid, tx_ctx.signer)`.
-    /// 5. Return `Ok(true)`.
+    /// 5. Return the updated token record.
     ///
     /// # Reads
     /// - `0x01 || token_hash` (primary lookup)
@@ -111,7 +127,7 @@ impl HubModule {
         tx_ctx: &TxExecCtx,
         creator: &Did,
         token_hash: &str,
-    ) -> Result<bool> {
+    ) -> Result<JWSTokenRecord> {
         let record = self
             .get_jws_token(token_hash)?
             .ok_or_else(|| HubError::TokenNotFound {
@@ -122,7 +138,7 @@ impl HubModule {
                 token_hash: token_hash.to_string(),
             });
         }
-        let is_issuer = creator.to_string() == record.issuer_did;
+        let is_issuer = hub_crypto::jwt::matches_issuer(&record.issuer_did, creator.as_ref());
         let is_authorized_account =
             !record.authorized_account.is_empty() && tx_ctx.signer == record.authorized_account;
         if !is_issuer && !is_authorized_account {
@@ -135,27 +151,14 @@ impl HubModule {
             token_hash,
             JWSTokenStatus::Invalid,
             &tx_ctx.signer,
-        )?;
-        Ok(true)
+        )
     }
 
-    /// Update governance-controlled module parameters.
-    ///
-    /// # Flow
-    ///
-    /// 1. Verify `authority` matches the governance module address.
-    ///    Return `Unauthorized` if not.
-    /// 2. Write `params` to `"p_hub"` key.
-    /// 3. Return `Ok(())`.
-    ///
-    /// # Writes
-    /// - `"p_hub"`
-    ///
-    /// # Errors
-    /// - `Unauthorized` — caller is not the governance authority
-    /// - `State` — store write failure
-    pub fn update_params(&mut self, _authority: &Did, params: HubParams) -> Result<()> {
-        self.set_params(&params)
+    /// Reject legacy parameter writes without operator approvals.
+    pub fn update_params(&mut self, _authority: &Did, _params: HubParams) -> Result<()> {
+        Err(HubError::Unauthorized {
+            reason: "operator approvals are required".into(),
+        })
     }
 
     // ── Query handlers ──────────────────────────────────────────────────
@@ -171,7 +174,7 @@ impl HubModule {
     /// # Reads
     /// - `"p_hub"`
     pub fn query_params(&self) -> Result<HubParams> {
-        Ok(self.get_params())
+        self.get_params()
     }
 
     // ── Internal keeper methods ─────────────────────────────────────────
@@ -296,68 +299,19 @@ impl HubModule {
                 .ok_or_else(|| HubError::TokenNotFound {
                     token_hash: token_hash.to_string(),
                 })?;
+        if record.status != JWSTokenStatus::Valid
+            || (record.expires_at.seconds != 0
+                && record.expires_at.seconds < block_ctx.timestamp.seconds)
+        {
+            return Err(HubError::InvalidJws {
+                reason: "token is invalid or expired".into(),
+            });
+        }
         if record.first_used_at.is_none() {
             record.first_used_at = Some(block_ctx.timestamp.clone());
         }
         record.last_used_at = Some(block_ctx.timestamp.clone());
         self.set_jws_token(&record)
-    }
-
-    /// Sweep expired tokens (called at end of each block).
-    ///
-    /// # Flow
-    ///
-    /// 1. Iterate all records in primary store (0x01 prefix).
-    /// 2. Skip records where `status == Invalid`.
-    /// 3. If `record.expires_at < block_ctx.timestamp`:
-    ///    call `update_jws_token_status(token_hash, Invalid, "")`.
-    ///    Empty `invalidated_by` signals automatic expiry.
-    /// 4. Per-token `update_jws_token_status` errors are logged but
-    ///    do not abort iteration. However, iterator-level errors
-    ///    (e.g. deserialization failure on a record) DO abort and
-    ///    propagate upward.
-    ///
-    /// # Reads
-    /// - Full scan of `0x01` prefix
-    ///
-    /// # Writes
-    /// - `0x01 || token_hash` for each expired token
-    ///
-    /// # Ctx
-    /// `block_ctx.timestamp` for expiry comparison. Go correctly
-    /// uses `sdkCtx.BlockTime()` here (unlike `RecordJWSTokenUsage`
-    /// and `UpdateJWSTokenStatus` which use `time.Now()`).
-    ///
-    /// # Go bug: zero-expiry tokens
-    /// Go has no `!expires_at.is_zero()` guard in this sweep.
-    /// The zero `time.Time` value (`0001-01-01`) is always before
-    /// `block_time`, so tokens created with zero expiry (meaning
-    /// "no expiry") are immediately swept as expired in the next
-    /// block. The creation path (`store_or_update_jws_token`) has
-    /// a `!expiresAt.IsZero()` guard for validation, but this
-    /// sweep does not. hub.rs should add an `expires_at.is_zero()`
-    /// guard here to skip tokens with no expiry.
-    ///
-    /// # Implementation notes
-    /// Called by the end-block hook. Only block context is available
-    /// (no tx context during end-block). The caller (`EndBlocker`)
-    /// logs errors but always returns nil — sweep failures are
-    /// non-fatal.
-    pub fn check_and_update_expired_tokens(&mut self, block_ctx: &BlockExecCtx) -> Result<()> {
-        let zero = Timestamp::default();
-        let expired_hashes: Vec<String> = self
-            .store
-            .prefix_scan(keys::JWS_TOKEN_PREFIX)
-            .iter()
-            .filter_map(|(_, v)| borsh::from_slice::<JWSTokenRecord>(v).ok())
-            .filter(|r| r.status != JWSTokenStatus::Invalid)
-            .filter(|r| r.expires_at != zero && r.expires_at.seconds < block_ctx.timestamp.seconds)
-            .map(|r| r.token_hash)
-            .collect();
-        for hash in &expired_hashes {
-            let _ = self.update_jws_token_status(block_ctx, hash, JWSTokenStatus::Invalid, "");
-        }
-        Ok(())
     }
 
     /// Look up a JWS token record by hash.
@@ -373,8 +327,12 @@ impl HubModule {
         self.store
             .get(&keys::jws_token_key(token_hash))
             .map(|bytes| {
-                borsh::from_slice(&bytes)
-                    .map_err(|e: std::io::Error| HubError::State(e.to_string()))
+                let record: JWSTokenRecord = borsh::from_slice(&bytes)
+                    .map_err(|e: std::io::Error| HubError::State(e.to_string()))?;
+                if record.token_hash != token_hash {
+                    return Err(HubError::State("token record key mismatch".into()));
+                }
+                Ok(record)
             })
             .transpose()
     }
@@ -392,18 +350,10 @@ impl HubModule {
     /// - `0x02 || len_prefix(did) || ...` (index scan)
     /// - `0x01 || token_hash` per match (primary lookup)
     pub fn get_jws_tokens_by_did(&self, did: &Did) -> Result<Vec<JWSTokenRecord>> {
-        let did_str = did.to_string();
-        let prefix = keys::jws_token_did_prefix(&did_str);
-        let hashes: Vec<String> = self
-            .store
-            .prefix_scan(&prefix)
-            .iter()
-            .filter_map(|(k, _)| extract_hash_from_index_suffix(&k[prefix.len()..]))
-            .collect();
-        hashes
-            .iter()
-            .filter_map(|hash| self.get_jws_token(hash).transpose())
-            .collect()
+        Self::validate_token_selector(did.as_str())?;
+        self.collect_tokens(&keys::jws_token_did_prefix(did.as_str()), true, |record| {
+            keys::jws_token_by_did_key(&record.issuer_did, &record.token_hash)
+        })
     }
 
     /// Look up all JWS tokens authorized for an account.
@@ -419,17 +369,10 @@ impl HubModule {
     /// - `0x03 || len_prefix(account) || ...` (index scan)
     /// - `0x01 || token_hash` per match (primary lookup)
     pub fn get_jws_tokens_by_account(&self, account: &str) -> Result<Vec<JWSTokenRecord>> {
-        let prefix = keys::jws_token_account_prefix(account);
-        let hashes: Vec<String> = self
-            .store
-            .prefix_scan(&prefix)
-            .iter()
-            .filter_map(|(k, _)| extract_hash_from_index_suffix(&k[prefix.len()..]))
-            .collect();
-        hashes
-            .iter()
-            .filter_map(|hash| self.get_jws_token(hash).transpose())
-            .collect()
+        Self::validate_token_selector(account)?;
+        self.collect_tokens(&keys::jws_token_account_prefix(account), true, |record| {
+            keys::jws_token_by_account_key(&record.authorized_account, &record.token_hash)
+        })
     }
 
     /// Update a token's status (valid/invalid) and record who invalidated it.
@@ -461,7 +404,7 @@ impl HubModule {
         token_hash: &str,
         status: JWSTokenStatus,
         invalidated_by: &str,
-    ) -> Result<()> {
+    ) -> Result<JWSTokenRecord> {
         let mut record =
             self.get_jws_token(token_hash)?
                 .ok_or_else(|| HubError::TokenNotFound {
@@ -474,7 +417,8 @@ impl HubModule {
                 record.invalidated_by = invalidated_by.to_string();
             }
         }
-        self.set_jws_token(&record)
+        self.set_jws_token(&record)?;
+        Ok(record)
     }
 
     /// Set chain configuration (write-once at genesis).
@@ -551,6 +495,9 @@ impl HubModule {
             .ok_or_else(|| HubError::TokenNotFound {
                 token_hash: token_hash.to_string(),
             })?;
+        if let Some(key) = Self::token_expiry_key(&record) {
+            self.store.delete(&key);
+        }
         self.store.delete(&keys::jws_token_key(token_hash));
         self.store
             .delete(&keys::jws_token_by_did_key(&record.issuer_did, token_hash));
@@ -574,13 +521,9 @@ impl HubModule {
     /// # Reads
     /// - All keys under `0x01` prefix
     pub fn get_all_jws_tokens(&self) -> Result<Vec<JWSTokenRecord>> {
-        self.store
-            .prefix_scan(keys::JWS_TOKEN_PREFIX)
-            .iter()
-            .map(|(_, v)| {
-                borsh::from_slice(v).map_err(|e: std::io::Error| HubError::State(e.to_string()))
-            })
-            .collect()
+        self.collect_tokens(keys::JWS_TOKEN_PREFIX, false, |record| {
+            keys::jws_token_key(&record.token_hash)
+        })
     }
 
     // ── Storage access methods ──────────────────────────────────────────
@@ -642,15 +585,10 @@ impl HubModule {
     ///   - Invalid `authorized_account` format
     ///   - Serialization failure
     fn set_jws_token(&mut self, record: &JWSTokenRecord) -> Result<()> {
-        if record.token_hash.is_empty() {
-            return Err(HubError::InvalidJws {
-                reason: "token_hash is empty".to_string(),
-            });
-        }
-        if record.issuer_did.is_empty() {
-            return Err(HubError::InvalidJws {
-                reason: "issuer_did is empty".to_string(),
-            });
+        Self::validate_token_selector(&record.token_hash)?;
+        Self::validate_token_selector(&record.issuer_did)?;
+        if !record.authorized_account.is_empty() {
+            Self::validate_token_selector(&record.authorized_account)?;
         }
         let config = self.get_chain_config()?;
         if !config.ignore_bearer_auth && record.authorized_account.is_empty() {
@@ -659,6 +597,14 @@ impl HubModule {
             });
         }
         let bytes = borsh::to_vec(record).map_err(|e| HubError::State(e.to_string()))?;
+        if let Some(previous) = self.get_jws_token(&record.token_hash)?
+            && let Some(key) = Self::token_expiry_key(&previous)
+        {
+            self.store.delete(&key);
+        }
+        if let Some(key) = Self::token_expiry_key(record) {
+            self.store.put(&key, Vec::new());
+        }
         self.store
             .put(&keys::jws_token_key(&record.token_hash), bytes);
         let did_key = keys::jws_token_by_did_key(&record.issuer_did, &record.token_hash);
@@ -685,13 +631,14 @@ impl HubModule {
     /// Value: serialized `HubParams`
     /// Direction: read-only
     ///
-    /// Panics on corrupt stored data (Go: `MustUnmarshal`).
-    fn get_params(&self) -> HubParams {
-        self.store
-            .get(keys::PARAMS_KEY)
-            .map_or_else(HubParams::default, |bytes| {
-                borsh::from_slice(&bytes).expect("corrupt HubParams in store")
-            })
+    fn get_params(&self) -> Result<HubParams> {
+        self.store.get_ref(keys::PARAMS_KEY).map_or_else(
+            || Ok(HubParams::default()),
+            |bytes| {
+                borsh::from_slice(bytes)
+                    .map_err(|e| HubError::State(format!("invalid hub parameters: {e}")))
+            },
+        )
     }
 
     /// Write module parameters to the KV store.
@@ -738,7 +685,7 @@ fn extract_hash_from_index_suffix(suffix: &[u8]) -> Option<String> {
         return None;
     }
     let hash_len = suffix[0] as usize;
-    if suffix.len() < 1 + hash_len {
+    if hash_len == 0 || suffix.len() != 1 + hash_len {
         return None;
     }
     std::str::from_utf8(&suffix[1..1 + hash_len])
@@ -753,6 +700,8 @@ mod tests {
 
     fn block_ctx(seconds: u64) -> BlockExecCtx {
         BlockExecCtx {
+            genesis_id: [0; 32],
+            deployment_id: 9001,
             timestamp: Timestamp {
                 seconds,
                 block_height: seconds,
@@ -813,12 +762,19 @@ mod tests {
     }
 
     #[test]
+    fn malformed_parameters_return_errors() {
+        let mut hub = HubModule::default();
+        hub.store.put(keys::PARAMS_KEY, vec![0]);
+        assert!(hub.query_params().is_err());
+    }
+
+    #[test]
     fn set_and_get_params() {
         let mut hub = HubModule::new();
-        assert_eq!(hub.get_params(), HubParams::default());
+        assert_eq!(hub.get_params().unwrap(), HubParams::default());
         let params = HubParams {};
         hub.set_params(&params).unwrap();
-        assert_eq!(hub.get_params(), params);
+        assert_eq!(hub.get_params().unwrap(), params);
     }
 
     #[test]
@@ -1076,6 +1032,7 @@ mod tests {
 
     fn tx_ctx(signer: &str) -> TxExecCtx {
         TxExecCtx {
+            sequence: 0,
             tx_hash: vec![0xAA],
             signer: signer.to_string(),
         }
@@ -1113,7 +1070,7 @@ mod tests {
         let tctx = tx_ctx("some-other-account");
         let creator = make_did("did:key:z6MkTest");
         let result = hub.invalidate_jws(&bctx, &tctx, &creator, &hash).unwrap();
-        assert!(result);
+        assert_eq!(result.status, JWSTokenStatus::Invalid);
         let record = hub.get_jws_token(&hash).unwrap().unwrap();
         assert_eq!(record.status, JWSTokenStatus::Invalid);
         assert_eq!(record.invalidated_by, "some-other-account");
@@ -1126,7 +1083,7 @@ mod tests {
         let tctx = tx_ctx("0xAccount1");
         let creator = make_did("did:key:z6MkOther");
         let result = hub.invalidate_jws(&bctx, &tctx, &creator, &hash).unwrap();
-        assert!(result);
+        assert_eq!(result.status, JWSTokenStatus::Invalid);
     }
 
     #[test]
@@ -1167,11 +1124,11 @@ mod tests {
     }
 
     #[test]
-    fn update_params_writes() {
+    fn unauthenticated_parameter_update_is_rejected() {
         let mut hub = HubModule::new();
         let authority = make_did("did:key:z6MkGov");
-        hub.update_params(&authority, HubParams {}).unwrap();
-        assert_eq!(hub.get_params(), HubParams {});
+        assert!(hub.update_params(&authority, HubParams {}).is_err());
+        assert_eq!(hub.get_params().unwrap(), HubParams {});
     }
 
     #[test]
