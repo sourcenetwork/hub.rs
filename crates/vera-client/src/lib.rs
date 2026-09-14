@@ -1,6 +1,6 @@
-//! Rust client library for hub (EVM + BLS transaction paths).
+//! Rust client library for vera (EVM + BLS transaction paths).
 //!
-//! Provides [`VeraClient`] for interacting with a hub node via JSON-RPC.
+//! Provides [`VeraClient`] for interacting with a vera node via JSON-RPC.
 //! Includes typed query methods for each precompile module (ACP, Bulletin, Vera)
 //! and standard Ethereum RPC wrappers.
 

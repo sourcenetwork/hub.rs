@@ -21,7 +21,7 @@ pub struct RecordProof {
     pub key: Bytes,
     /// Present values use membership evidence; absent values use exclusion evidence.
     pub value: Option<Bytes>,
-    /// ACP, bulletin, hub and native sequence roots in commitment order.
+    /// ACP, bulletin, vera and native sequence roots in commitment order.
     pub roots: [B256; 4],
     /// Canonical Commonware membership or exclusion proof bytes.
     pub proof: Bytes,

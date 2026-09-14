@@ -73,7 +73,7 @@ pub struct Block {
     pub payload: Option<DkgPayload>,
     /// Per-partition QMDB targets after this block.
     pub db_targets: DbTargets,
-    /// Ordered module log targets in ACP, bulletin, hub and sequence order.
+    /// Ordered module log targets in ACP, bulletin, vera and sequence order.
     /// Presence selects the native commitment encoding; legacy blocks omit them.
     pub native_targets: Option<[DbTarget; 4]>,
     /// Commitment to ordered execution receipts and the execution gas limit.

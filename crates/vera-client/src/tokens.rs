@@ -3,7 +3,7 @@
 use crate::{ClientError, VeraClient};
 use alloy_primitives::B256;
 use vera_domain::ConsensusPublicKey;
-use vera_modules::hub::{keys, types::JWSTokenRecord};
+use vera_modules::vera::{keys, types::JWSTokenRecord};
 use vera_permission::{ModuleId, RECORD_PROOF_BYTES};
 
 /// A token record or certified absence at a finalized revision.
@@ -64,7 +64,7 @@ fn decode(bytes: &[u8], hash: &str) -> Result<JWSTokenRecord, ClientError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vera_modules::{hub::types::JWSTokenStatus, types::Timestamp};
+    use vera_modules::{types::Timestamp, vera::types::JWSTokenStatus};
 
     #[test]
     fn token_records_bind_content_and_require_complete_encoding() {

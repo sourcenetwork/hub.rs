@@ -69,7 +69,7 @@ pub struct ResolvedBinary {
 /// The resolver is cheap to clone conceptually and holds no open resources.
 #[derive(Debug)]
 pub struct BinaryResolver {
-    /// Env var prefix (e.g., "DEFRA", "HUBD", "ORBIS").
+    /// Env var prefix (e.g., "DEFRA", "VERAD", "ORBIS").
     prefix: String,
     /// Binary name on PATH (e.g., "defra", "verad", "orbis-node").
     binary_name: String,

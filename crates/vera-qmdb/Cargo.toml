@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Pure QMDB store logic for hub"
+description = "Pure QMDB store logic for vera"
 
 [dependencies]
 alloy-primitives.workspace = true

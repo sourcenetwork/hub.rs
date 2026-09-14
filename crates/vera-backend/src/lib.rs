@@ -1,4 +1,4 @@
-//! Concrete storage backend for hub QMDB.
+//! Concrete storage backend for vera QMDB.
 
 #![doc(issue_tracker_base_url = "https://github.com/sourcenetwork/vera.rs/issues/")]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]

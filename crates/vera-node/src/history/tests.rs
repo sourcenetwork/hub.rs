@@ -660,7 +660,7 @@ async fn pruned_roster_selection_survives_history_and_module_reopen() {
     use commonware_glue::dkg::ParticipantsProvider as _;
     use commonware_utils::ordered::Set;
     use std::{num::NonZeroU64, sync::RwLock};
-    use vera_modules::{ModuleState, hub::VeraModule, kv_store::InMemoryKvStore};
+    use vera_modules::{ModuleState, kv_store::InMemoryKvStore, vera::VeraModule};
 
     let genesis_key = ed25519::PrivateKey::from_seed(7).public_key();
     let selected = ed25519::PrivateKey::from_seed(8).public_key();
@@ -686,19 +686,19 @@ async fn pruned_roster_selection_survives_history_and_module_reopen() {
         let mut modules = ModuleState::default();
         let selected_bytes: [u8; 32] = selected.encode().as_ref().try_into().unwrap();
         modules
-            .hub
+            .vera
             .record_consensus_roster(3, &[selected_bytes])
             .unwrap();
         let newer_bytes: [u8; 32] = newer.encode().as_ref().try_into().unwrap();
         for epoch in 4..=100 {
             modules = modules.clone();
             modules
-                .hub
+                .vera
                 .record_consensus_roster(epoch, &[newer_bytes])
                 .unwrap();
         }
-        assert!(modules.hub.consensus_roster(3).is_none());
-        encoded_store = modules.hub.store().serialize();
+        assert!(modules.vera.consensus_roster(3).is_none());
+        encoded_store = modules.vera.store().serialize();
         let mut provider = crate::RegistryParticipants::new(
             Arc::new(RwLock::new(modules)),
             genesis_players.clone(),
@@ -723,7 +723,7 @@ async fn pruned_roster_selection_survives_history_and_module_reopen() {
         .await
         .unwrap();
     let modules = ModuleState {
-        hub: VeraModule::from_store(InMemoryKvStore::deserialize(&encoded_store).unwrap()),
+        vera: VeraModule::from_store(InMemoryKvStore::deserialize(&encoded_store).unwrap()),
         ..Default::default()
     };
     let mut restarted = crate::RegistryParticipants::new(

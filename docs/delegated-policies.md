@@ -137,7 +137,7 @@ continues to require a signing identity. Provider identity parsing validates its
 representation and never supplies a public key or establishes authentication.
 Clients reading these records must support provider actor identifiers.
 
-`relay/v1/<canonical-issuer-did>` in the Hub namespace stores the Borsh-encoded
+`relay/v1/<canonical-issuer-did>` in the Vera namespace stores the Borsh-encoded
 `RelayState`. Read it through the native current-record proof endpoint and
 verify independent consensus trust and freshness before relying on the grant.
 A relay assertion is operation-bound but is not a caller idempotency key;
@@ -158,7 +158,7 @@ authorize an assertion. Consumers still check its scope, generation and lifetime
 Operators can inspect the same certified grant from the CLI:
 
 ```sh
-verad client --url "$VERA_URL" hub relay-grant "$RELAY_ISSUER" \
+verad client --url "$VERA_URL" vera relay-grant "$RELAY_ISSUER" \
   --trusted-key "$VERA_TRUSTED_KEY" --minimum-revision "$MINIMUM_REVISION"
 ```
 

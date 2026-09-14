@@ -1,4 +1,4 @@
-//! Validator assembly: start every commonware actor around the hub application
+//! Validator assembly: start every commonware actor around the vera application
 //! and run until one of them stops.
 
 use std::{
@@ -42,7 +42,7 @@ use commonware_storage::{archive::prunable, translator::TwoCap};
 use commonware_utils::{NZDuration, NZU64, NZUsize, sequence::Unit};
 use tracing::{error, info};
 use vera_app::{
-    ConsensusScheme, StatefulHubApp,
+    ConsensusScheme, StatefulVeraApp,
     ordered_state::{OrderedState, ordered_config},
 };
 use vera_backend::{
@@ -513,7 +513,7 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         .cloned()
         .zip(genesis.to_genesis_state()?.participant_addresses)
         .collect();
-    let application = StatefulHubApp::<_, OrderedState>::new(
+    let application = StatefulVeraApp::<_, OrderedState>::new(
         executor.clone(),
         genesis_block.clone(),
         mempool.clone(),
@@ -804,7 +804,7 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         rpc_handle.stopped().await;
         error!("RPC server stopped unexpectedly");
     });
-    info!(validator_index, %rpc_addr, "hub validator started");
+    info!(validator_index, %rpc_addr, "vera validator started");
 
     state_resolver_handles.extend([
         p2p_handle,

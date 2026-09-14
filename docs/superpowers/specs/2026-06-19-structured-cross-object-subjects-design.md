@@ -29,7 +29,7 @@ relation's declared subject restriction before it is stored.
   `*`, usersets, objects, and entities). Reserve `subjectKind = 4` for it;
   decoding rejects it for now. Adding it later is additive and back-compatible.
 
-## Wire contract (defradb's hub_rs provider emits exactly these fields)
+## Wire contract (defradb's vera_rs provider emits exactly these fields)
 
 Two **additive** precompile methods. The existing `setRelationship` /
 `deleteRelationship` (entity-only `actor: string`) are unchanged for
@@ -102,14 +102,14 @@ grants.
 `AcpModule::cmd_set_relationship` currently **hard-rejects** a relationship whose
 relation is not declared in the policy (`mod.rs:935`). defradb (#1060, Go-compat)
 **accepts** undeclared relation names and enforces the floor only on declared
-ones. Keeping hub's hard reject would make hub reject grants defradb accepts and
+ones. Keeping vera's hard reject would make vera reject grants defradb accepts and
 diverge single-node vs cross-node. So:
 
 Replace the hard reject with a **gated floor** on set:
 
 ```rust
 // Go-compat (defradb #1060): accept relationships on undeclared relation
-// names; enforce the floor (#1059) only on declared relations, so hub and
+// names; enforce the floor (#1059) only on declared relations, so vera and
 // defradb make the same accept/reject decision.
 if policy.get_relation(&rel.resource, &rel.relation).is_some() {
     rel.validate(&policy)
@@ -131,7 +131,7 @@ The floor is **not** applied on **delete**: revocation must always succeed so a
 grant can be removed even after the policy's restrictions change. The delete
 path decodes the subject only to compute the relationship's storage key.
 
-**Behavior change:** hub now accepts relationships on undeclared relations (it
+**Behavior change:** vera now accepts relationships on undeclared relations (it
 previously rejected them). Existing tests asserting the old rejection are updated
 to the Go-compat behavior.
 
@@ -188,7 +188,7 @@ defradb provider / wallet
 - **Entity DID in `subjectObjectId`** — approved.
 - **Floor on store, not delete** — approved.
 - **Floor gated to declared relations (Go-compat, #1060)** — required change;
-  hub now accepts undeclared relations like defradb.
+  vera now accepts undeclared relations like defradb.
 - **New event types** (`RelationshipSubject{Set,Deleted}`), existing events
   untouched — position-decoded events break on appended fields; provider keeps
   the entity-only method+event for actor grants.

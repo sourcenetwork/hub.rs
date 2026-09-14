@@ -4,11 +4,11 @@ use crate::{ClientError, ModuleId, RECORD_PROOF_BYTES, VeraClient};
 use alloy_primitives::Bytes;
 use alloy_sol_types::SolCall as _;
 use vera_domain::ConsensusPublicKey;
-pub use vera_modules::hub::objects::{
+pub use vera_modules::vera::objects::{
     EncryptedDocument, KeyDerivation, ObjectKind, ObjectRecord, StoredObject, ThresholdObject,
 };
-use vera_modules::hub::{
-    abi::IHub,
+use vera_modules::vera::{
+    abi::IVera,
     objects::{MAX_OBJECT_RECORD_BYTES, object_key},
 };
 
@@ -20,7 +20,7 @@ pub fn encode_threshold_object(
     object
         .validate()
         .map_err(|e| ClientError::Signing(e.to_string()))?;
-    Ok(IHub::storeThresholdObjectCall {
+    Ok(IVera::storeThresholdObjectCall {
         request: serde_json::to_vec(object)?.into(),
         bearerToken: token.into(),
     }

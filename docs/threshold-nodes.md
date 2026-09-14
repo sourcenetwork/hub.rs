@@ -1,7 +1,7 @@
 # Threshold-service node registration
 
-The native Hub service stores Orbis node identities under `orbis/node/v1/` in
-the certified Hub partition. Registration proves possession of the compressed
+The native Vera service stores Orbis node identities under `orbis/node/v1/` in
+the certified Vera partition. Registration proves possession of the compressed
 secp256k1 node key and selects its controller. Subsequent peer, controller and
 allowed-policy/ring changes require the current controller's signature. These
 records advertise threshold-service participants; they do not admit consensus

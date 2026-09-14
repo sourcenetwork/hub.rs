@@ -12,11 +12,11 @@ use revm::context_interface::{ContextTr, JournalTr};
 use revm::precompile::PrecompileError;
 use vera_modules::acp::AcpModule;
 use vera_modules::acp::types::{AccessRequest, Actor, Object, Operation};
-use vera_modules::hub::VeraModule;
 use vera_modules::types::TxExecCtx;
 use vera_modules::validator_registry::abi::IValidatorRegistry;
 use vera_modules::validator_registry::error::ValidatorRegistryError;
 use vera_modules::validator_registry::types::ValidatorInfo;
+use vera_modules::vera::VeraModule;
 
 use super::{
     DispatchReturn, VALIDATOR_REGISTRY_ADDRESS, decode_error, did_from_signer, err_dispatch,
@@ -152,9 +152,9 @@ fn check_manage_access(
 
 fn load_policy_id<CTX: ContextTr>(
     context: &mut CTX,
-    hub: &VeraModule,
+    vera: &VeraModule,
 ) -> Result<String, PrecompileError> {
-    let state = hub
+    let state = vera
         .administration()
         .map_err(|error| PrecompileError::Other(error.to_string().into()))?;
     if let Some(policy) = state.and_then(|state| state.membership_policy) {
@@ -381,7 +381,7 @@ fn clear_validator<CTX: ContextTr>(
 pub(crate) fn dispatch_with_journal<CTX: ContextTr>(
     context: &mut CTX,
     acp: &AcpModule,
-    hub: &VeraModule,
+    vera: &VeraModule,
     max_active_members: u32,
     tx_ctx: &TxExecCtx,
     input: &[u8],
@@ -403,7 +403,7 @@ pub(crate) fn dispatch_with_journal<CTX: ContextTr>(
             let call =
                 IValidatorRegistry::addValidatorCall::abi_decode(input).map_err(decode_error)?;
 
-            let policy_id = load_policy_id(context, hub)?;
+            let policy_id = load_policy_id(context, vera)?;
             let caller_did = match did_from_signer(&tx_ctx.signer) {
                 Ok(d) => d,
                 Err(_) => {
@@ -484,7 +484,7 @@ pub(crate) fn dispatch_with_journal<CTX: ContextTr>(
             let call =
                 IValidatorRegistry::removeValidatorCall::abi_decode(input).map_err(decode_error)?;
 
-            let policy_id = load_policy_id(context, hub)?;
+            let policy_id = load_policy_id(context, vera)?;
             let caller_did = match did_from_signer(&tx_ctx.signer) {
                 Ok(d) => d,
                 Err(_) => {
@@ -563,7 +563,7 @@ pub(crate) fn dispatch_with_journal<CTX: ContextTr>(
             let call = IValidatorRegistry::setValidatorStatusCall::abi_decode(input)
                 .map_err(decode_error)?;
 
-            let policy_id = load_policy_id(context, hub)?;
+            let policy_id = load_policy_id(context, vera)?;
             let caller_did = match did_from_signer(&tx_ctx.signer) {
                 Ok(d) => d,
                 Err(_) => {
@@ -621,7 +621,7 @@ pub(crate) fn dispatch_with_journal<CTX: ContextTr>(
             let call = IValidatorRegistry::setValidatorStatusByIndexCall::abi_decode(input)
                 .map_err(decode_error)?;
 
-            let policy_id = load_policy_id(context, hub)?;
+            let policy_id = load_policy_id(context, vera)?;
             let caller_did = match did_from_signer(&tx_ctx.signer) {
                 Ok(d) => d,
                 Err(_) => {

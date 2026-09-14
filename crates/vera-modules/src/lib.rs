@@ -18,11 +18,11 @@ pub mod types;
 pub mod acp;
 /// Bulletin module (precompile `0x0811`).
 pub mod bulletin;
-/// Vera module (precompile `0x0812`).
-pub mod hub;
 /// Native account state (DID-keyed nonce tracking).
 pub mod native_account;
 /// ValidatorRegistry module (precompile `0x0813`).
 pub mod validator_registry;
+/// Vera module (precompile `0x0812`).
+pub mod vera;
 
 pub use module_state::{ModuleState, SharedModuleState};

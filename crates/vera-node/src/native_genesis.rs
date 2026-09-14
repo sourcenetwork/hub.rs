@@ -92,7 +92,7 @@ pub(super) async fn load_or_create(
     let (root, targets) = vera_app::apply_genesis(&execution, &genesis.to_genesis_state()?).await?;
     let mut modules = ModuleState::default();
     if let Some(policy) = &genesis.operators {
-        modules.hub.initialize_administration(policy.clone())?;
+        modules.vera.initialize_administration(policy.clone())?;
     }
     let sealed = native::prepare(
         native.new_batches().await,

@@ -18,7 +18,7 @@ use vera_modules::{
         operation::{OperationRecord, operation_key},
         types::PolicyMarshalingType,
     },
-    hub::{abi::IHub, relay::RelayGrant},
+    vera::{abi::IVera, relay::RelayGrant},
 };
 
 #[path = "support/administration.rs"]
@@ -202,7 +202,7 @@ async fn apply(
     let wire = operator
         .sign_native_tx(
             VERA_ADDRESS,
-            IHub::applyAdministrationCall {
+            IVera::applyAdministrationCall {
                 request: serde_json::to_vec(approved).unwrap().into(),
             }
             .abi_encode()

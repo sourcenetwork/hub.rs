@@ -13,7 +13,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 use crate::error::ClientError;
 
-/// BLS12-381 signer for native hub transactions.
+/// BLS12-381 signer for native vera transactions.
 ///
 /// Wraps a BLS keypair and deployment ID. Serializes signing for this identity
 /// so successful concurrent calls receive distinct local sequences.

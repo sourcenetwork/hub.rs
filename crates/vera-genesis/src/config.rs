@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 /// Vera-extended genesis configuration.
 ///
-/// Extends the base EVM genesis with hub-specific fields:
+/// Extends the base EVM genesis with vera-specific fields:
 /// - `native_mint`: NativeMint precompile configuration
 /// - `chain_name`: Human-readable chain identifier
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -18,8 +18,8 @@ pub struct VeraGenesis {
     pub chain_id: u64,
     /// Initial operator approval policy. Omission disables administrative writes.
     #[serde(default)]
-    pub operators: Option<vera_modules::hub::administration::OperatorPolicy>,
-    /// Chain name (e.g., "hub-devnet").
+    pub operators: Option<vera_modules::vera::administration::OperatorPolicy>,
+    /// Chain name (e.g., "vera-devnet").
     #[serde(default = "default_chain_name")]
     pub chain_name: String,
     /// Genesis timestamp.
@@ -270,7 +270,7 @@ impl VeraGenesis {
         Self {
             operators: None,
             chain_id: 9001,
-            chain_name: "hub-devnet".to_string(),
+            chain_name: "vera-devnet".to_string(),
             timestamp: 0,
             allocations: vec![
                 GenesisAllocation {

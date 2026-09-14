@@ -99,8 +99,9 @@ fn read_anchor(sidecar: &std::path::Path) -> FaultyTargets {
         targets.push(FaultyTarget::decode(&blob[offset..offset + len]).unwrap());
         offset += len;
     }
-    let [acp, bulletin, hub, native]: [FaultyTarget; 4] = targets.try_into().expect("four targets");
-    (acp, bulletin, hub, native)
+    let [acp, bulletin, vera, native]: [FaultyTarget; 4] =
+        targets.try_into().expect("four targets");
+    (acp, bulletin, vera, native)
 }
 
 #[test]

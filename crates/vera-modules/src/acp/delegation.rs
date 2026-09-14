@@ -9,14 +9,14 @@ use crate::acp::types::{
     AccessDecision, AccessRequest, PolicyCmd, PolicyCmdResult, PolicyMarshalingType, PolicyRecord,
     RecordMetadata,
 };
-use crate::hub::VeraModule;
 use crate::types::{BlockExecCtx, Timestamp, TxExecCtx};
+use crate::vera::VeraModule;
 
 impl AcpModule {
     /// Create a policy owned by the actor authorizing the submitting worker.
     pub fn bearer_create_policy(
         &mut self,
-        hub: &mut VeraModule,
+        vera: &mut VeraModule,
         context: &BlockExecCtx,
         submission: &TxExecCtx,
         token: &str,
@@ -29,7 +29,7 @@ impl AcpModule {
             ));
         }
         self.with_delegation(
-            hub,
+            vera,
             context,
             submission,
             token,
@@ -56,7 +56,7 @@ impl AcpModule {
     #[allow(clippy::too_many_arguments)]
     pub fn bearer_edit_policy(
         &mut self,
-        hub: &mut VeraModule,
+        vera: &mut VeraModule,
         context: &BlockExecCtx,
         submission: &TxExecCtx,
         token: &str,
@@ -65,7 +65,7 @@ impl AcpModule {
         marshal_type: PolicyMarshalingType,
     ) -> Result<(u64, PolicyRecord)> {
         self.with_delegation(
-            hub,
+            vera,
             context,
             submission,
             token,
@@ -80,7 +80,7 @@ impl AcpModule {
     /// Execute a caller-bound delegation and record usage only on success.
     pub fn bearer_policy_cmd(
         &mut self,
-        hub: &mut VeraModule,
+        vera: &mut VeraModule,
         context: &BlockExecCtx,
         submission: &TxExecCtx,
         token: &str,
@@ -88,7 +88,7 @@ impl AcpModule {
         cmd: PolicyCmd,
     ) -> Result<PolicyCmdResult> {
         self.with_delegation(
-            hub,
+            vera,
             context,
             submission,
             token,
@@ -105,7 +105,7 @@ impl AcpModule {
     /// Record a decision with caller-bound recovery and the original submitting worker identity.
     pub fn bearer_check_access(
         &mut self,
-        hub: &mut VeraModule,
+        vera: &mut VeraModule,
         context: &BlockExecCtx,
         submission: &TxExecCtx,
         token: &str,
@@ -117,7 +117,7 @@ impl AcpModule {
                 reason: error.to_string(),
             })?;
         self.with_delegation(
-            hub,
+            vera,
             context,
             submission,
             token,
@@ -133,21 +133,21 @@ impl AcpModule {
 
     pub(crate) fn with_delegation<T: Serialize + DeserializeOwned>(
         &mut self,
-        hub: &mut VeraModule,
+        vera: &mut VeraModule,
         context: &BlockExecCtx,
         submission: &TxExecCtx,
         token: &str,
         delegated: (DelegationScope, [u8; 32]),
         operation: impl FnOnce(&mut Self, &mut VeraModule, &Did) -> Result<T>,
     ) -> Result<T> {
-        let invalid = |error: crate::hub::error::VeraError| AcpError::InvalidBearerToken {
+        let invalid = |error: crate::vera::error::VeraError| AcpError::InvalidBearerToken {
             reason: error.to_string(),
         };
         let caller =
             Did::new(&submission.signer).map_err(|error| AcpError::InvalidBearerToken {
                 reason: error.to_string(),
             })?;
-        let claims = hub
+        let claims = vera
             .authorize_delegation(context, &caller, token, delegated.0, delegated.1)
             .map_err(invalid)?;
         let actor = Did::new(claims.actor()).map_err(|error| AcpError::InvalidBearerToken {
@@ -172,8 +172,8 @@ impl AcpModule {
                     .map_err(|error| AcpError::State(error.to_string()));
             }
         }
-        let before = (self.clone(), hub.clone());
-        let result = operation(self, hub, &actor).and_then(|result| {
+        let before = (self.clone(), vera.clone());
+        let result = operation(self, vera, &actor).and_then(|result| {
             if let Some(request) = &claims.request {
                 self.complete_operation(
                     actor.as_ref(),
@@ -191,7 +191,7 @@ impl AcpModule {
                     },
                 )?;
             }
-            hub.store_or_update_jws_token(
+            vera.store_or_update_jws_token(
                 context,
                 token,
                 &issuer,
@@ -209,7 +209,7 @@ impl AcpModule {
             Ok(result)
         });
         if result.is_err() {
-            (*self, *hub) = before;
+            (*self, *vera) = before;
         }
         result
     }

@@ -139,7 +139,7 @@ pub async fn get_storage_at(
         .as_str()
         .ok_or_else(|| eyre::eyre!("eth_getStorageAt: missing result"))?;
     let hex = hex.strip_prefix("0x").unwrap_or(hex);
-    // Left-pad to even length (hub may return "0x0" for zero slots).
+    // Left-pad to even length (vera may return "0x0" for zero slots).
     let padded = if hex.len() % 2 != 0 {
         format!("0{hex}")
     } else {

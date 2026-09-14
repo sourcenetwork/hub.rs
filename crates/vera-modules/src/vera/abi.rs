@@ -4,7 +4,7 @@ use alloy_sol_types::sol;
 
 sol! {
     /// Solidity interface for the Vera precompile at `0x0812`.
-    interface IHub {
+    interface IVera {
         // ── Events ──────────────────────────────────────────────────────
 
         event JWSTokenCreated(string indexed tokenHash, string issuerDid);

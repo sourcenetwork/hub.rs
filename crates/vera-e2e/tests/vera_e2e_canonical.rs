@@ -26,7 +26,7 @@ use vera_e2e::observe::ClusterAssertions;
 use vera_e2e::{RECEIPT_POLL_ATTEMPTS, RECEIPT_POLL_INTERVAL};
 use vera_modules::acp::abi::IAcp;
 use vera_modules::bulletin::abi::IBulletin;
-use vera_modules::hub::abi::IHub;
+use vera_modules::vera::abi::IVera;
 
 /// Hardhat account 0 private key (pre-funded by `GenesisBuilder::funded_accounts`).
 const HARDHAT_KEY_0: &str = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
@@ -1010,16 +1010,16 @@ async fn canonical_module_test() {
     );
 
     // G2. Read Vera params (eth_call to 0x0812)
-    let hub_params = client
+    let vera_params = client
         .get_hub_params()
         .await
         .expect("get_hub_params should work");
-    assert!(!hub_params.is_empty(), "hub params should be non-empty");
+    assert!(!vera_params.is_empty(), "vera params should be non-empty");
     let params_json: serde_json::Value =
-        serde_json::from_slice(&hub_params).expect("hub params should be valid JSON");
+        serde_json::from_slice(&vera_params).expect("vera params should be valid JSON");
     assert!(
         params_json.is_object(),
-        "hub params should be a JSON object"
+        "vera params should be a JSON object"
     );
 
     // G3. Query non-existent token — should return found=false
@@ -1072,7 +1072,7 @@ async fn canonical_module_test() {
     // G7. Invalidate non-existent token via BLS — should revert.
     // Uses broadcast_native_tx (all-node submission) so the tx reaches
     // the cluster even if one node is briefly unavailable.
-    let g7_calldata = IHub::invalidateJWSCall {
+    let g7_calldata = IVera::invalidateJWSCall {
         tokenHash: "nonexistent_token_hash".into(),
     }
     .abi_encode();

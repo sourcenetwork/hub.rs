@@ -2,9 +2,9 @@
 
 use super::{cluster_state::ClusterState, events::LogEvent};
 
-/// Known hub errors that are expected and should not fail tests.
+/// Known vera errors that are expected and should not fail tests.
 ///
-/// hub binds both jsonrpsee and a status HTTP server to the same port —
+/// vera binds both jsonrpsee and a status HTTP server to the same port —
 /// the second binding always fails with "Address already in use".
 const KNOWN_ERRORS: &[&str] = &["HTTP status server not started"];
 

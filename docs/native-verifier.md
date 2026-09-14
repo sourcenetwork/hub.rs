@@ -30,7 +30,7 @@ Current-record request:
 ```
 
 `proof` is the `vera_getCurrentRecordProof` result. Modules are `acp`, `bulletin`,
-`hub` and `native_nonce`. Success returns
+`vera` and `native_nonce`. Success returns
 `{"result":{"height":0,"timestamp":0,"value":"0x..."}}`; certified absence
 returns a null value. The requested module, key and minimum height are verified.
 Applications must also bind record contents to their operation and apply any

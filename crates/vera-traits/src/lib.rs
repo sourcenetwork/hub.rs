@@ -1,4 +1,4 @@
-//! Core trait abstractions for hub storage and consensus.
+//! Core trait abstractions for vera storage and consensus.
 
 #![doc(issue_tracker_base_url = "https://github.com/sourcenetwork/vera.rs/issues/")]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]

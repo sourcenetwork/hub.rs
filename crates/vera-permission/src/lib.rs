@@ -96,7 +96,7 @@ pub enum PermissionRead {
 /// Read evidence; the consumer computes its own permission result.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PermissionProof {
-    /// Current-state namespace roots in ACP, bulletin, hub and sequence order.
+    /// Current-state namespace roots in ACP, bulletin, vera and sequence order.
     /// Omitted for the original proof format.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roots: Option<[B256; 4]>,

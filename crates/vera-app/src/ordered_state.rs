@@ -317,7 +317,7 @@ impl OrderedState {
         context: &BlockContext,
         txs: &[Tx],
     ) -> Result<(OrderedSealed, ExecutionOutcome), AppError> {
-        let (accounts, storage, code, acp, bulletin, hub, nonces, _) = parent.databases;
+        let (accounts, storage, code, acp, bulletin, vera, nonces, _) = parent.databases;
         // Ordered storage supplies the module commitment after execution.
         let execution_context = context.clone().with_receipt_only();
         let mut executed = execute_block(
@@ -329,7 +329,7 @@ impl OrderedState {
         )
         .await?;
         let native = native::prepare(
-            (acp, bulletin, hub, nonces),
+            (acp, bulletin, vera, nonces),
             executed.modules.changes_from(&parent.modules),
         )
         .await?;

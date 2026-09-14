@@ -55,7 +55,7 @@ impl ParticipantsProvider for RegistryParticipants {
             return self.genesis_players.clone();
         }
         let modules = self.modules.read().expect("module state lock poisoned");
-        let Some(bytes) = modules.hub.consensus_roster(epoch.get()) else {
+        let Some(bytes) = modules.vera.consensus_roster(epoch.get()) else {
             drop(modules);
             return self
                 .history
@@ -93,7 +93,7 @@ impl ParticipantsProvider for RegistryParticipants {
 mod tests {
     use super::*;
     use std::sync::RwLock;
-    use vera_modules::{hub::VeraModule, kv_store::InMemoryKvStore};
+    use vera_modules::{kv_store::InMemoryKvStore, vera::VeraModule};
 
     fn history() -> (tempfile::TempDir, Arc<crate::FinalizedHistory>) {
         let directory = tempfile::tempdir().unwrap();
@@ -133,7 +133,7 @@ mod tests {
         modules
             .write()
             .unwrap()
-            .hub
+            .vera
             .record_consensus_roster(3, &[raw(&first)])
             .unwrap();
         let selected = provider.participants(Epoch::new(3)).await;
@@ -141,20 +141,20 @@ mod tests {
             modules
                 .write()
                 .unwrap()
-                .hub
+                .vera
                 .record_consensus_roster(3, &[raw(&second)])
                 .is_err()
         );
         modules
             .write()
             .unwrap()
-            .hub
+            .vera
             .record_consensus_roster(4, &[raw(&second)])
             .unwrap();
         assert_eq!(provider.participants(Epoch::new(3)).await, selected);
-        let stored = modules.read().unwrap().hub.store().serialize();
+        let stored = modules.read().unwrap().vera.store().serialize();
         let recovered = vera_modules::ModuleState {
-            hub: VeraModule::from_store(InMemoryKvStore::deserialize(&stored).unwrap()),
+            vera: VeraModule::from_store(InMemoryKvStore::deserialize(&stored).unwrap()),
             ..Default::default()
         };
         let mut restarted = RegistryParticipants::new(
@@ -172,7 +172,7 @@ mod tests {
             modules
                 .write()
                 .unwrap()
-                .hub
+                .vera
                 .record_consensus_roster(3, &[raw(&first)])
                 .is_ok()
         );
@@ -180,7 +180,7 @@ mod tests {
             modules
                 .write()
                 .unwrap()
-                .hub
+                .vera
                 .record_consensus_roster(3, &[])
                 .is_err()
         );

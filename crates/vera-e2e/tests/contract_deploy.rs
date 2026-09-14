@@ -1,6 +1,6 @@
 //! EVM contract deployment and interaction tests.
 //!
-//! Deploys a minimal storage contract to a running hub cluster,
+//! Deploys a minimal storage contract to a running vera cluster,
 //! then exercises read (`eth_getStorageAt`) and write (`eth_sendRawTransaction`) paths.
 //!
 //! Requires `cargo build -p verad` before running.

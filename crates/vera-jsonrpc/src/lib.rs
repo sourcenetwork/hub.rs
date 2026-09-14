@@ -1,4 +1,4 @@
-//! JSON-RPC server for hub nodes.
+//! JSON-RPC server for vera nodes.
 
 #![doc(issue_tracker_base_url = "https://github.com/sourcenetwork/vera.rs/issues/")]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]

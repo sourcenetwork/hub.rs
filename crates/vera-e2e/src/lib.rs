@@ -1,4 +1,4 @@
-//! End-to-end test harness for hub.
+//! End-to-end test harness for vera.
 //!
 //! Re-exports `vera-harness` (from backbone) and provides workspace-relative
 //! binary resolution so tests can find the locally-built `verad`.

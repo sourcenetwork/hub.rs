@@ -10,8 +10,8 @@ use vera_modules::acp::types::{
     AccessRequest, AcpParams, Actor, Object, Operation, PolicyCmd, PolicyMarshalingType,
     RelationshipSelector,
 };
-use vera_modules::hub::VeraModule;
 use vera_modules::types::{BlockExecCtx, TxExecCtx};
+use vera_modules::vera::VeraModule;
 
 use super::{
     ACP_ADDRESS, DispatchResult, DispatchReturn, decode_error, did_from_signer, err_dispatch,
@@ -168,7 +168,7 @@ fn batch_error(index: usize, err: PrecompileError) -> PrecompileError {
 #[allow(clippy::too_many_lines)]
 pub(super) fn dispatch(
     module: &mut AcpModule,
-    hub: &mut VeraModule,
+    vera: &mut VeraModule,
     block_ctx: &BlockExecCtx,
     tx_ctx: &TxExecCtx,
     input: &[u8],
@@ -185,7 +185,7 @@ pub(super) fn dispatch(
         // ── Write methods ────────────────────────────────────────────
         IAcp::batchCallsCall::SELECTOR => {
             let call = IAcp::batchCallsCall::abi_decode(input).map_err(decode_error)?;
-            let snapshot = (module.clone(), hub.clone());
+            let snapshot = (module.clone(), vera.clone());
             let mut results = Vec::with_capacity(call.calls.len());
             let mut logs = Vec::new();
             let mut gas_used = 0u64;
@@ -194,7 +194,7 @@ pub(super) fn dispatch(
                 let remaining_gas = gas_limit.saturating_sub(gas_used);
                 let inner = match dispatch(
                     module,
-                    hub,
+                    vera,
                     block_ctx,
                     tx_ctx,
                     inner_call.as_ref(),
@@ -202,7 +202,7 @@ pub(super) fn dispatch(
                 ) {
                     Ok(inner) => inner,
                     Err(err) => {
-                        (*module, *hub) = snapshot;
+                        (*module, *vera) = snapshot;
                         return Err(batch_error(index, err));
                     }
                 };
@@ -210,13 +210,13 @@ pub(super) fn dispatch(
                 let inner_gas = match gas_used.checked_add(inner.precompile.gas_used) {
                     Some(total) => total,
                     None => {
-                        (*module, *hub) = snapshot;
+                        (*module, *vera) = snapshot;
                         return Err(PrecompileError::OutOfGas);
                     }
                 };
 
                 if inner.precompile.reverted {
-                    (*module, *hub) = snapshot;
+                    (*module, *vera) = snapshot;
                     return Ok(batch_revert(index, inner_gas, &inner.precompile.bytes));
                 }
 
@@ -237,7 +237,7 @@ pub(super) fn dispatch(
             let policy = std::str::from_utf8(&call.policy)
                 .map_err(|_| PrecompileError::Other("invalid UTF-8 in policy".into()))?;
             let record = match module.bearer_create_policy(
-                hub,
+                vera,
                 block_ctx,
                 tx_ctx,
                 &call.bearerToken,
@@ -269,7 +269,7 @@ pub(super) fn dispatch(
                 .map_err(|_| PrecompileError::Other("invalid UTF-8 in policy".into()))?;
             let policy_id = policy_id_to_string(&call.policyId);
             let (removed, record) = match module.bearer_edit_policy(
-                hub,
+                vera,
                 block_ctx,
                 tx_ctx,
                 &call.bearerToken,
@@ -788,7 +788,7 @@ pub(super) fn dispatch(
                     PrecompileError::Other(format!("access request JSON decode: {error}").into())
                 })?;
             let decision = match module.bearer_check_access(
-                hub,
+                vera,
                 block_ctx,
                 tx_ctx,
                 &call.bearerToken,
@@ -862,7 +862,7 @@ pub(super) fn dispatch(
                 .map_err(|e| PrecompileError::Other(format!("cmd JSON decode: {e}").into()))?;
 
             let result = match module.bearer_policy_cmd(
-                hub,
+                vera,
                 block_ctx,
                 tx_ctx,
                 &call.bearerToken,

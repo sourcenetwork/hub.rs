@@ -39,7 +39,7 @@ creation, administration or creator cancellation. Delegations use the existing e
 revocation, relay authorization and optional exact-operation binding checks.
 `DelegatedOperation::RingCommand` supplies the digest for a relay assertion or
 operation-bound delegation. Failed admission, including outcome-storage budget
-exhaustion, rolls back both Hub and ACP changes.
+exhaustion, rolls back both Vera and ACP changes.
 
 Participants use `sign_ring_participant_request` and
 `encode_ring_participant_request`. These signatures bind the deployment root and

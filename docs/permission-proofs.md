@@ -24,7 +24,7 @@ Activation changes consensus execution and the next module commitment. Existing 
 
 `vera_getCurrentRecordProof(module, key, minimum_height)` returns
 `{ "revision": LightBlock, "record": RecordProof }`. Modules are `acp`,
-`bulletin`, `hub` and `native_nonce`; `key` is a hex byte string. The record
+`bulletin`, `vera` and `native_nonce`; `key` is a hex byte string. The record
 contains the exact module and key, an optional value, all four namespace roots
 and canonical Commonware membership or exclusion evidence. A missing value is
 accepted only with a valid exclusion proof.
@@ -130,7 +130,7 @@ The same permission endpoint supports ordered Commonware module storage when the
 server is constructed with `with_hub_native_modules`, as in the native node.
 The older `vera_getStateProof` and `vera_getRelationProof` endpoints remain JMT-based.
 
-This format adds `roots`, the four namespace roots in ACP, bulletin, hub and
+This format adds `roots`, the four namespace roots in ACP, bulletin, vera and
 sequence order. Their combined commitment must match the caller's verified
 revision. Reads use `kind: "current_point"` or `kind: "current_prefix"`, with
 canonical Commonware evidence encoded as hex bytes. A point carries its key and

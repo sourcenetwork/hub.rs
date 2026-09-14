@@ -98,7 +98,7 @@ mod tests {
 
     #[test]
     fn recovery_rejects_missing_orphaned_and_malformed_token_indexes() {
-        let mut hub = VeraModule::new();
+        let mut vera = VeraModule::new();
         let ctx = BlockExecCtx {
             genesis_id: [0; 32],
             deployment_id: 9001,
@@ -107,7 +107,7 @@ mod tests {
                 block_height: 1,
             },
         };
-        hub.store_or_update_jws_token(
+        vera.store_or_update_jws_token(
             &ctx,
             "bearer",
             &Did::new("did:key:issuer").unwrap(),
@@ -120,9 +120,9 @@ mod tests {
         )
         .unwrap();
         let hash = keys::hash_jws_token("bearer");
-        hub.validate_restored_tokens().unwrap();
-        let original = hub.store.clone();
-        let record = hub.get_jws_token(&hash).unwrap().unwrap();
+        vera.validate_restored_tokens().unwrap();
+        let original = vera.store.clone();
+        let record = vera.get_jws_token(&hash).unwrap().unwrap();
         let indexes = [
             keys::jws_token_by_did_key(&record.issuer_did, &hash),
             keys::jws_token_by_account_key("account", &hash),
@@ -165,8 +165,8 @@ mod tests {
             assert!(module.validate_restored_tokens().is_err());
             assert_eq!(module.store.serialize(), before);
         }
-        hub.delete_jws_token(&hash).unwrap();
-        hub.validate_restored_tokens().unwrap();
+        vera.delete_jws_token(&hash).unwrap();
+        vera.validate_restored_tokens().unwrap();
         VeraModule::new().validate_restored_tokens().unwrap();
     }
 }

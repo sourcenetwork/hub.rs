@@ -3,7 +3,7 @@ name = "vera-executor"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Block execution abstractions, REVM implementation, and hub precompiles"
+description = "Block execution abstractions, REVM implementation, and vera precompiles"
 
 [features]
 fault-injection = []

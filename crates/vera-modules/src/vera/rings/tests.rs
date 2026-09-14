@@ -1,8 +1,8 @@
 use super::*;
 use crate::{
     acp::types::PolicyMarshalingType,
-    hub::nodes::{NodeCommand, NodeInfo, NodeRequest, SignedNodeRequest},
     types::Timestamp,
+    vera::nodes::{NodeCommand, NodeInfo, NodeRequest, SignedNodeRequest},
 };
 use acp::Relationship;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -95,7 +95,7 @@ fn fixture(policy: &str) -> (VeraModule, AcpModule, RingConfig) {
     fixture_nodes(policy, &[2, 3])
 }
 fn fixture_nodes(policy: &str, nodes: &[u8]) -> (VeraModule, AcpModule, RingConfig) {
-    let mut hub = VeraModule::new();
+    let mut vera = VeraModule::new();
     let mut acp = AcpModule::new();
     let policy_id = acp
         .create_policy(&actor(), policy, PolicyMarshalingType::ShortYaml)
@@ -140,7 +140,7 @@ fn fixture_nodes(policy: &str, nodes: &[u8]) -> (VeraModule, AcpModule, RingConf
         let signature: Signature = key
             .sign_prehash(&request.signing_digest().unwrap())
             .unwrap();
-        hub.apply_node_request(
+        vera.apply_node_request(
             &context(),
             &SignedNodeRequest {
                 request,
@@ -153,7 +153,7 @@ fn fixture_nodes(policy: &str, nodes: &[u8]) -> (VeraModule, AcpModule, RingConf
     }
     peers.sort();
     (
-        hub,
+        vera,
         acp,
         RingConfig {
             policy_id,
@@ -196,12 +196,12 @@ fn confirm(ring: &str, n: u8, key: &str) -> SignedRingParticipantRequest {
     )
 }
 fn apply(
-    hub: &mut VeraModule,
+    vera: &mut VeraModule,
     acp: &mut AcpModule,
     command: &RingCommand,
     entropy: u8,
 ) -> Result<RingRecord> {
-    hub.apply_ring_command(
+    vera.apply_ring_command(
         acp,
         &context(),
         &submission(),
@@ -212,9 +212,9 @@ fn apply(
 
 #[test]
 fn ring_creation_is_atomic_and_confirmations_require_unanimity() {
-    let (mut hub, mut acp, config) = fixture(POLICY);
+    let (mut vera, mut acp, config) = fixture(POLICY);
     let create = RingCommand::Create(config.clone());
-    let record = apply(&mut hub, &mut acp, &create, 1).unwrap();
+    let record = apply(&mut vera, &mut acp, &create, 1).unwrap();
     assert!(
         acp.query_object_owner(
             &config.policy_id,
@@ -226,20 +226,20 @@ fn ring_creation_is_atomic_and_confirmations_require_unanimity() {
         .unwrap()
         .0
     );
-    assert_eq!(apply(&mut hub, &mut acp, &create, 1).unwrap(), record);
-    assert!(apply(&mut hub, &mut acp, &create, 2).is_err());
+    assert_eq!(apply(&mut vera, &mut acp, &create, 1).unwrap(), record);
+    assert!(apply(&mut vera, &mut acp, &create, 2).is_err());
     let first = confirm(&record.id, 2, "aabb");
-    let pending = hub
+    let pending = vera
         .apply_ring_participant_request(&context(), &first)
         .unwrap();
     assert!(matches!(pending.state, RingState::Pending { .. }));
-    let before = hub.store().serialize();
+    let before = vera.store().serialize();
     assert!(
-        hub.apply_ring_participant_request(&context(), &confirm(&record.id, 2, "ccdd"))
+        vera.apply_ring_participant_request(&context(), &confirm(&record.id, 2, "ccdd"))
             .is_err()
     );
-    assert_eq!(hub.store().serialize(), before);
-    let mut restored = VeraModule::from_store(hub.store().clone());
+    assert_eq!(vera.store().serialize(), before);
+    let mut restored = VeraModule::from_store(vera.store().clone());
     let active = restored
         .apply_ring_participant_request(&context(), &confirm(&record.id, 3, "aabb"))
         .unwrap();
@@ -267,74 +267,74 @@ fn ring_creation_is_atomic_and_confirmations_require_unanimity() {
         .is_err()
     );
 
-    let (mut hub, mut acp, config) = fixture(&POLICY.replace("  - name: ring\n", ""));
-    let before = (hub.store().serialize(), acp.store().serialize());
-    assert!(apply(&mut hub, &mut acp, &RingCommand::Create(config), 1).is_err());
-    assert_eq!((hub.store().serialize(), acp.store().serialize()), before);
-    let (mut hub, acp, config) = fixture(POLICY);
+    let (mut vera, mut acp, config) = fixture(&POLICY.replace("  - name: ring\n", ""));
+    let before = (vera.store().serialize(), acp.store().serialize());
+    assert!(apply(&mut vera, &mut acp, &RingCommand::Create(config), 1).is_err());
+    assert_eq!((vera.store().serialize(), acp.store().serialize()), before);
+    let (mut vera, acp, config) = fixture(POLICY);
     let mut store = acp.store().clone();
     store.put(b"operation-bytes/v1", (64u64 << 20).to_be_bytes().to_vec());
     let mut acp = AcpModule::from_store(store);
-    let before = (hub.store().serialize(), acp.store().serialize());
-    let error = apply(&mut hub, &mut acp, &RingCommand::Create(config), 1).unwrap_err();
+    let before = (vera.store().serialize(), acp.store().serialize());
+    let error = apply(&mut vera, &mut acp, &RingCommand::Create(config), 1).unwrap_err();
     assert!(error.to_string().contains("storage budget reached"));
-    assert_eq!((hub.store().serialize(), acp.store().serialize()), before);
+    assert_eq!((vera.store().serialize(), acp.store().serialize()), before);
 }
 
 #[test]
 fn cancellation_conflict_revocation_and_bad_signatures_cannot_reuse_a_ring() {
-    let (mut hub, mut acp, mut config) = fixture(POLICY);
+    let (mut vera, mut acp, mut config) = fixture(POLICY);
     let create = RingCommand::Create(config.clone());
-    let record = apply(&mut hub, &mut acp, &create, 1).unwrap();
-    let before = hub.store().serialize();
+    let record = apply(&mut vera, &mut acp, &create, 1).unwrap();
+    let before = vera.store().serialize();
     let mut altered = confirm(&record.id, 2, "aabb");
     altered.request.deployment_id += 1;
     assert!(
-        hub.apply_ring_participant_request(&context(), &altered)
+        vera.apply_ring_participant_request(&context(), &altered)
             .is_err()
     );
     let mut altered = confirm(&record.id, 2, "aabb");
     altered.request.command = RingParticipantCommand::Confirm("ccdd".into());
     assert!(
-        hub.apply_ring_participant_request(&context(), &altered)
+        vera.apply_ring_participant_request(&context(), &altered)
             .is_err()
     );
     assert!(
-        hub.apply_ring_participant_request(&context(), &confirm(&record.id, 4, "aabb"))
+        vera.apply_ring_participant_request(&context(), &confirm(&record.id, 4, "aabb"))
             .is_err()
     );
-    assert_eq!(hub.store().serialize(), before);
-    hub.apply_ring_participant_request(&context(), &confirm(&record.id, 2, "aabb"))
+    assert_eq!(vera.store().serialize(), before);
+    vera.apply_ring_participant_request(&context(), &confirm(&record.id, 2, "aabb"))
         .unwrap();
-    let conflict = hub
+    let conflict = vera
         .apply_ring_participant_request(&context(), &confirm(&record.id, 3, "ccdd"))
         .unwrap();
     assert!(matches!(conflict.state, RingState::Conflict { .. }));
-    assert!(apply(&mut hub, &mut acp, &create, 2).is_err());
+    assert!(apply(&mut vera, &mut acp, &create, 2).is_err());
     assert!(
-        hub.apply_ring_participant_request(&context(), &confirm(&record.id, 3, "aabb"))
+        vera.apply_ring_participant_request(&context(), &confirm(&record.id, 3, "aabb"))
             .is_err()
     );
 
     config.nonce = [10; 32];
     let create = RingCommand::Create(config);
-    let record = apply(&mut hub, &mut acp, &create, 3).unwrap();
+    let record = apply(&mut vera, &mut acp, &create, 3).unwrap();
     let cancel = RingCommand::Cancel { ring_id: record.id };
-    hub.revoke_delegation(&context(), &actor(), &token(&cancel, 4))
+    vera.revoke_delegation(&context(), &actor(), &token(&cancel, 4))
         .unwrap();
-    let before = (hub.store().serialize(), acp.store().serialize());
-    assert!(apply(&mut hub, &mut acp, &cancel, 4).is_err());
-    assert_eq!((hub.store().serialize(), acp.store().serialize()), before);
+    let before = (vera.store().serialize(), acp.store().serialize());
+    assert!(apply(&mut vera, &mut acp, &cancel, 4).is_err());
+    assert_eq!((vera.store().serialize(), acp.store().serialize()), before);
     assert!(matches!(
-        apply(&mut hub, &mut acp, &cancel, 5).unwrap().state,
+        apply(&mut vera, &mut acp, &cancel, 5).unwrap().state,
         RingState::Cancelled { .. }
     ));
-    assert!(apply(&mut hub, &mut acp, &create, 6).is_err());
+    assert!(apply(&mut vera, &mut acp, &create, 6).is_err());
 }
 
 #[test]
 fn ring_configuration_and_stored_records_are_bounded_and_validated() {
-    let (mut hub, mut acp, config) = fixture(POLICY);
+    let (mut vera, mut acp, config) = fixture(POLICY);
     for bad in [
         RingConfig {
             peer_node_keys: vec![public(&secret(2)); 2],
@@ -367,22 +367,22 @@ fn ring_configuration_and_stored_records_are_bounded_and_validated() {
         "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH".into(),
     ]);
     with_relay.validate().unwrap();
-    let record = apply(&mut hub, &mut acp, &RingCommand::Create(config), 1).unwrap();
-    hub.store.put(
+    let record = apply(&mut vera, &mut acp, &RingCommand::Create(config), 1).unwrap();
+    vera.store.put(
         &ring_key(&record.id).unwrap(),
         vec![0; MAX_RING_RECORD_BYTES + 1],
     );
-    assert!(hub.threshold_ring(&record.id).is_err());
+    assert!(vera.threshold_ring(&record.id).is_err());
 }
 
 #[test]
 fn ring_updates_require_acp_authority_and_reject_stale_commands_within_one_revision() {
     let policy = POLICY.replace("  - name: ring\n", "  - name: ring\n    relations:\n      - name: operator\n    permissions:\n      - name: update_ring\n        expr: operator\n");
-    let (mut hub, mut acp, config) = fixture(&policy);
-    let initial = apply(&mut hub, &mut acp, &RingCommand::Create(config), 1).unwrap();
-    hub.apply_ring_participant_request(&context(), &confirm(&initial.id, 2, "aabb"))
+    let (mut vera, mut acp, config) = fixture(&policy);
+    let initial = apply(&mut vera, &mut acp, &RingCommand::Create(config), 1).unwrap();
+    vera.apply_ring_participant_request(&context(), &confirm(&initial.id, 2, "aabb"))
         .unwrap();
-    let active = hub
+    let active = vera
         .apply_ring_participant_request(&context(), &confirm(&initial.id, 3, "aabb"))
         .unwrap();
     let update = |sequence, update| RingCommand::Update {
@@ -392,12 +392,12 @@ fn ring_updates_require_acp_authority_and_reject_stale_commands_within_one_revis
     };
     let refresh = update(active.sequence, RingUpdate::SetPssInterval(90000));
     let outsider = token_from(&refresh, 2, &context(), &secret(4));
-    let before = (hub.store().serialize(), acp.store().serialize());
+    let before = (vera.store().serialize(), acp.store().serialize());
     assert!(
-        hub.apply_ring_command(&mut acp, &context(), &submission(), &outsider, &refresh)
+        vera.apply_ring_command(&mut acp, &context(), &submission(), &outsider, &refresh)
             .is_err()
     );
-    assert_eq!((hub.store().serialize(), acp.store().serialize()), before);
+    assert_eq!((vera.store().serialize(), acp.store().serialize()), before);
     acp.direct_policy_cmd(
         &actor(),
         &initial.config.policy_id,
@@ -409,13 +409,13 @@ fn ring_updates_require_acp_authority_and_reject_stale_commands_within_one_revis
         )),
     )
     .unwrap();
-    let changed = apply(&mut hub, &mut acp, &refresh, 3).unwrap();
+    let changed = apply(&mut vera, &mut acp, &refresh, 3).unwrap();
     assert_eq!(changed.revision, active.revision);
     assert_eq!(changed.sequence, active.sequence + 1);
     assert_eq!(changed.id, initial.id);
     assert_eq!(changed.config, initial.config);
     assert_eq!(changed.current_settings().pss_interval, 90000);
-    assert!(apply(&mut hub, &mut acp, &refresh, 4).is_err());
+    assert!(apply(&mut vera, &mut acp, &refresh, 4).is_err());
     let schedule = update(
         changed.sequence,
         RingUpdate::ScheduleUpgrade(ScheduledUpgrade {
@@ -423,16 +423,16 @@ fn ring_updates_require_acp_authority_and_reject_stale_commands_within_one_revis
             activates_at: 700,
         }),
     );
-    let scheduled = apply(&mut hub, &mut acp, &schedule, 5).unwrap();
+    let scheduled = apply(&mut vera, &mut acp, &schedule, 5).unwrap();
     assert_eq!(scheduled.current_settings().effective_version(699), 0);
     assert_eq!(scheduled.current_settings().effective_version(700), 1);
     let mut later = context();
     later.timestamp.seconds = 700;
     later.timestamp.block_height = 3;
     let cancel = update(scheduled.sequence, RingUpdate::CancelUpgrade);
-    let before = (hub.store().serialize(), acp.store().serialize());
+    let before = (vera.store().serialize(), acp.store().serialize());
     assert!(
-        hub.apply_ring_command(
+        vera.apply_ring_command(
             &mut acp,
             &later,
             &submission(),
@@ -441,9 +441,9 @@ fn ring_updates_require_acp_authority_and_reject_stale_commands_within_one_revis
         )
         .is_err()
     );
-    assert_eq!((hub.store().serialize(), acp.store().serialize()), before);
+    assert_eq!((vera.store().serialize(), acp.store().serialize()), before);
     let refresh = update(scheduled.sequence, RingUpdate::SetPssInterval(90001));
-    let normalized = hub
+    let normalized = vera
         .apply_ring_command(
             &mut acp,
             &later,
@@ -470,9 +470,9 @@ fn ring_updates_require_acp_authority_and_reject_stale_commands_within_one_revis
 #[test]
 fn ring_reporting_relays_and_reshare_targets_preserve_controller_constraints() {
     let policy = POLICY.replace("  - name: ring\n", "  - name: ring\n    relations:\n      - name: operator\n    permissions:\n      - name: update_ring\n        expr: operator\n");
-    let (mut hub, mut acp, mut config) = fixture(&policy);
+    let (mut vera, mut acp, mut config) = fixture(&policy);
     config.trusted_auth_relay_dids = Some(Vec::new());
-    let initial = apply(&mut hub, &mut acp, &RingCommand::Create(config), 1).unwrap();
+    let initial = apply(&mut vera, &mut acp, &RingCommand::Create(config), 1).unwrap();
     acp.direct_policy_cmd(
         &actor(),
         &initial.config.policy_id,
@@ -491,7 +491,7 @@ fn ring_reporting_relays_and_reshare_targets_preserve_controller_constraints() {
     };
     let relay = "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH".to_string();
     let pending = apply(
-        &mut hub,
+        &mut vera,
         &mut acp,
         &update(initial.sequence, RingUpdate::AddRelay(relay.clone())),
         2,
@@ -503,19 +503,19 @@ fn ring_reporting_relays_and_reshare_targets_preserve_controller_constraints() {
     );
     assert!(
         apply(
-            &mut hub,
+            &mut vera,
             &mut acp,
             &update(pending.sequence, RingUpdate::SetPssInterval(90000)),
             3
         )
         .is_err()
     );
-    hub.apply_ring_participant_request(&context(), &confirm(&initial.id, 2, "aabb"))
+    vera.apply_ring_participant_request(&context(), &confirm(&initial.id, 2, "aabb"))
         .unwrap();
-    let active = hub
+    let active = vera
         .apply_ring_participant_request(&context(), &confirm(&initial.id, 3, "aabb"))
         .unwrap();
-    let before = (hub.store().serialize(), acp.store().serialize());
+    let before = (vera.store().serialize(), acp.store().serialize());
     let bad = [
         RingUpdate::AddRelay(relay.clone()),
         RingUpdate::ScheduleUpgrade(ScheduledUpgrade {
@@ -534,14 +534,14 @@ fn ring_reporting_relays_and_reshare_targets_preserve_controller_constraints() {
     for (index, change) in bad.into_iter().enumerate() {
         assert!(
             apply(
-                &mut hub,
+                &mut vera,
                 &mut acp,
                 &update(active.sequence, change),
                 10 + index as u8
             )
             .is_err()
         );
-        assert_eq!((hub.store().serialize(), acp.store().serialize()), before);
+        assert_eq!((vera.store().serialize(), acp.store().serialize()), before);
     }
     let request = NodeRequest {
         deployment_root: context().genesis_id,
@@ -549,14 +549,14 @@ fn ring_reporting_relays_and_reshare_targets_preserve_controller_constraints() {
         node_key: public(&secret(3)),
         sequence: 1,
         expires_at: 200,
-        command: NodeCommand::Disallow(crate::hub::nodes::NodeTarget::Policy(
+        command: NodeCommand::Disallow(crate::vera::nodes::NodeTarget::Policy(
             initial.config.policy_id.clone(),
         )),
     };
     let signature: Signature = secret(3)
         .sign_prehash(&request.signing_digest().unwrap())
         .unwrap();
-    hub.apply_node_request(
+    vera.apply_node_request(
         &context(),
         &SignedNodeRequest {
             request,
@@ -567,7 +567,7 @@ fn ring_reporting_relays_and_reshare_targets_preserve_controller_constraints() {
     .unwrap();
     assert!(
         apply(
-            &mut hub,
+            &mut vera,
             &mut acp,
             &update(
                 active.sequence,
@@ -582,7 +582,7 @@ fn ring_reporting_relays_and_reshare_targets_preserve_controller_constraints() {
     );
     assert!(
         apply(
-            &mut hub,
+            &mut vera,
             &mut acp,
             &update(
                 active.sequence,
@@ -596,7 +596,7 @@ fn ring_reporting_relays_and_reshare_targets_preserve_controller_constraints() {
         .is_err()
     );
     let announced = apply(
-        &mut hub,
+        &mut vera,
         &mut acp,
         &update(
             active.sequence,
@@ -614,7 +614,7 @@ fn ring_reporting_relays_and_reshare_targets_preserve_controller_constraints() {
     assert_eq!(settings.pending_reshare.unwrap().threshold, 1);
     assert!(
         apply(
-            &mut hub,
+            &mut vera,
             &mut acp,
             &update(
                 announced.sequence,
@@ -628,7 +628,7 @@ fn ring_reporting_relays_and_reshare_targets_preserve_controller_constraints() {
         .is_err()
     );
     let removed = apply(
-        &mut hub,
+        &mut vera,
         &mut acp,
         &update(announced.sequence, RingUpdate::RemoveRelay(relay)),
         24,
@@ -638,7 +638,7 @@ fn ring_reporting_relays_and_reshare_targets_preserve_controller_constraints() {
         removed.current_settings().trusted_auth_relay_dids,
         Some(Vec::new())
     );
-    let restored = VeraModule::from_store(hub.store().clone());
+    let restored = VeraModule::from_store(vera.store().clone());
     assert_eq!(
         restored.threshold_ring(&initial.id).unwrap().unwrap(),
         removed
@@ -648,22 +648,22 @@ fn ring_reporting_relays_and_reshare_targets_preserve_controller_constraints() {
 #[test]
 fn reshare_finalization_preserves_key_and_rejects_replay_and_changed_authority() {
     let policy = POLICY.replace("  - name: ring\n", "  - name: ring\n    relations:\n      - name: operator\n    permissions:\n      - name: update_ring\n        expr: operator\n");
-    let (mut hub, mut acp, config) = fixture(&policy);
+    let (mut vera, mut acp, config) = fixture(&policy);
     let key = blst::min_pk::SecretKey::key_gen(&[42; 32], &[]).unwrap();
     let public_key = hex::encode(key.sk_to_pk().to_bytes());
-    let ring = apply(&mut hub, &mut acp, &RingCommand::Create(config), 1).unwrap();
+    let ring = apply(&mut vera, &mut acp, &RingCommand::Create(config), 1).unwrap();
     for node in [2, 3] {
-        hub.apply_ring_participant_request(&context(), &confirm(&ring.id, node, &public_key))
+        vera.apply_ring_participant_request(&context(), &confirm(&ring.id, node, &public_key))
             .unwrap();
     }
-    let active = hub.threshold_ring(&ring.id).unwrap().unwrap();
+    let active = vera.threshold_ring(&ring.id).unwrap().unwrap();
     let update = |sequence, update| RingCommand::Update {
         ring_id: ring.id.clone(),
         expected_sequence: sequence,
         update,
     };
     let pending = apply(
-        &mut hub,
+        &mut vera,
         &mut acp,
         &update(
             active.sequence,
@@ -702,12 +702,12 @@ fn reshare_finalization_preserves_key_and_rejects_replay_and_changed_authority()
             3 => bad.signature = "00".repeat(96),
             _ => bad.scheme = ThresholdScheme::Decaf377Frost,
         }
-        let before = hub.store().serialize();
-        assert!(hub.finalize_ring_reshare(&context(), &bad).is_err());
-        assert_eq!(hub.store().serialize(), before);
+        let before = vera.store().serialize();
+        assert!(vera.finalize_ring_reshare(&context(), &bad).is_err());
+        assert_eq!(vera.store().serialize(), before);
     }
     let changed = apply(
-        &mut hub,
+        &mut vera,
         &mut acp,
         &update(pending.sequence, RingUpdate::SetPssInterval(90000)),
         3,
@@ -715,9 +715,9 @@ fn reshare_finalization_preserves_key_and_rejects_replay_and_changed_authority()
     .unwrap();
     let mut stale = signed;
     stale.expected_sequence = changed.sequence;
-    assert!(hub.finalize_ring_reshare(&context(), &stale).is_err());
+    assert!(vera.finalize_ring_reshare(&context(), &stale).is_err());
     let signed = sign(&changed);
-    let change_permission = |hub: &mut VeraModule, sequence, command| {
+    let change_permission = |vera: &mut VeraModule, sequence, command| {
         let request = NodeRequest {
             deployment_root: context().genesis_id,
             deployment_id: context().deployment_id,
@@ -729,7 +729,7 @@ fn reshare_finalization_preserves_key_and_rejects_replay_and_changed_authority()
         let signature: Signature = secret(3)
             .sign_prehash(&request.signing_digest().unwrap())
             .unwrap();
-        hub.apply_node_request(
+        vera.apply_node_request(
             &context(),
             &SignedNodeRequest {
                 request,
@@ -739,13 +739,13 @@ fn reshare_finalization_preserves_key_and_rejects_replay_and_changed_authority()
         )
         .unwrap();
     };
-    let target = crate::hub::nodes::NodeTarget::Policy(ring.config.policy_id.clone());
-    change_permission(&mut hub, 1, NodeCommand::Disallow(target.clone()));
-    let before = hub.store().serialize();
-    assert!(hub.finalize_ring_reshare(&context(), &signed).is_err());
-    assert_eq!(hub.store().serialize(), before);
-    change_permission(&mut hub, 2, NodeCommand::Allow(target));
-    let finalized = hub.finalize_ring_reshare(&context(), &signed).unwrap();
+    let target = crate::vera::nodes::NodeTarget::Policy(ring.config.policy_id.clone());
+    change_permission(&mut vera, 1, NodeCommand::Disallow(target.clone()));
+    let before = vera.store().serialize();
+    assert!(vera.finalize_ring_reshare(&context(), &signed).is_err());
+    assert_eq!(vera.store().serialize(), before);
+    change_permission(&mut vera, 2, NodeCommand::Allow(target));
+    let finalized = vera.finalize_ring_reshare(&context(), &signed).unwrap();
     assert_eq!(finalized.state, active.state);
     assert_eq!(finalized.id, ring.id);
     assert_eq!(finalized.config, ring.config);
@@ -755,9 +755,9 @@ fn reshare_finalization_preserves_key_and_rejects_replay_and_changed_authority()
     assert_eq!(settings.threshold, 1);
     assert_eq!(settings.pss_interval, 90000);
     assert!(settings.pending_reshare.is_none());
-    assert!(hub.finalize_ring_reshare(&context(), &signed).is_err());
+    assert!(vera.finalize_ring_reshare(&context(), &signed).is_err());
     let next = apply(
-        &mut hub,
+        &mut vera,
         &mut acp,
         &update(
             finalized.sequence,
@@ -771,8 +771,10 @@ fn reshare_finalization_preserves_key_and_rejects_replay_and_changed_authority()
     .unwrap();
     let mut replay = signed;
     replay.expected_sequence = next.sequence;
-    assert!(hub.finalize_ring_reshare(&context(), &replay).is_err());
-    let restored = hub.finalize_ring_reshare(&context(), &sign(&next)).unwrap();
+    assert!(vera.finalize_ring_reshare(&context(), &replay).is_err());
+    let restored = vera
+        .finalize_ring_reshare(&context(), &sign(&next))
+        .unwrap();
     assert_eq!(restored.current_settings().threshold, 2);
     assert_eq!(restored.state, active.state);
 }
@@ -781,7 +783,7 @@ fn reshare_finalization_preserves_key_and_rejects_replay_and_changed_authority()
 fn reports_deduplicate_expire_and_schedule_replacement_atomically() {
     use orbis_reporting::{CommitteeScope, NodeOffline};
     use reports::*;
-    let (mut hub, mut acp, mut config) = fixture_nodes(POLICY, &[2, 3, 4, 5]);
+    let (mut vera, mut acp, mut config) = fixture_nodes(POLICY, &[2, 3, 4, 5]);
     config
         .peer_node_keys
         .retain(|key| key != &public(&secret(5)));
@@ -789,12 +791,12 @@ fn reports_deduplicate_expire_and_schedule_replacement_atomically() {
     config.reporting.backup_node_keys.sort();
     let key = blst::min_pk::SecretKey::key_gen(&[42; 32], &[]).unwrap();
     let ring_pk = hex::encode(key.sk_to_pk().to_bytes());
-    let created = apply(&mut hub, &mut acp, &RingCommand::Create(config), 1).unwrap();
+    let created = apply(&mut vera, &mut acp, &RingCommand::Create(config), 1).unwrap();
     for node in [2, 3, 4] {
-        hub.apply_ring_participant_request(&context(), &confirm(&created.id, node, &ring_pk))
+        vera.apply_ring_participant_request(&context(), &confirm(&created.id, node, &ring_pk))
             .unwrap();
     }
-    let initial = hub.threshold_ring(&created.id).unwrap().unwrap();
+    let initial = vera.threshold_ring(&created.id).unwrap().unwrap();
     let report = |record: &RingRecord, session: &str, now, accused: u8, scope| ReportEnvelope {
         domain: orbis_reporting::REPORT_DOMAIN.into(),
         report_type: orbis_reporting::NODE_OFFLINE_REPORT_TYPE.into(),
@@ -836,15 +838,15 @@ fn reports_deduplicate_expire_and_schedule_replacement_atomically() {
         3,
         CommitteeScope::Current,
     ));
-    let outcome = hub.submit_ring_report(&context(), &first).unwrap();
+    let outcome = vera.submit_ring_report(&context(), &first).unwrap();
     assert_eq!(outcome.demerits.points, 1);
     assert!(outcome.replacement.is_none());
-    let before = hub.store().serialize();
-    assert!(hub.submit_ring_report(&context(), &first).is_err());
+    let before = vera.store().serialize();
+    assert!(vera.submit_ring_report(&context(), &first).is_err());
     let mut another_reporter = first.report.clone();
     another_reporter.reporter_node_key = public(&secret(4));
     assert!(
-        hub.submit_ring_report(&context(), &sign(another_reporter))
+        vera.submit_ring_report(&context(), &sign(another_reporter))
             .is_err()
     );
     let mut invalid = sign(report(
@@ -855,12 +857,12 @@ fn reports_deduplicate_expire_and_schedule_replacement_atomically() {
         CommitteeScope::Current,
     ));
     invalid.signature = "00".repeat(96);
-    assert!(hub.submit_ring_report(&context(), &invalid).is_err());
-    assert_eq!(hub.store().serialize(), before);
+    assert!(vera.submit_ring_report(&context(), &invalid).is_err());
+    assert_eq!(vera.store().serialize(), before);
     let mut later = context();
     later.timestamp.seconds = 221;
     later.timestamp.block_height = 3;
-    assert!(hub.submit_ring_report(&later, &first).is_err());
+    assert!(vera.submit_ring_report(&later, &first).is_err());
     let second = sign(report(
         &initial,
         "session-1",
@@ -869,7 +871,7 @@ fn reports_deduplicate_expire_and_schedule_replacement_atomically() {
         CommitteeScope::Current,
     ));
     assert_eq!(
-        hub.submit_ring_report(&later, &second)
+        vera.submit_ring_report(&later, &second)
             .unwrap()
             .demerits
             .points,
@@ -882,9 +884,9 @@ fn reports_deduplicate_expire_and_schedule_replacement_atomically() {
         3,
         CommitteeScope::Current,
     ));
-    let replaced = hub.submit_ring_report(&later, &third).unwrap();
+    let replaced = vera.submit_ring_report(&later, &third).unwrap();
     assert_eq!(replaced.replacement, Some(public(&secret(5))));
-    let pending = hub.threshold_ring(&created.id).unwrap().unwrap();
+    let pending = vera.threshold_ring(&created.id).unwrap().unwrap();
     assert_eq!(pending.sequence, initial.sequence + 1);
     assert_eq!(pending.state, initial.state);
     let settings = pending.current_settings();
@@ -893,9 +895,9 @@ fn reports_deduplicate_expire_and_schedule_replacement_atomically() {
     assert!(!target.peer_node_keys.contains(&public(&secret(3))));
     assert!(target.peer_node_keys.contains(&public(&secret(5))));
     assert_eq!(target.threshold, 2);
-    let before = hub.store().serialize();
+    let before = vera.store().serialize();
     assert!(
-        hub.submit_ring_report(
+        vera.submit_ring_report(
             &later,
             &sign(report(
                 &initial,
@@ -908,7 +910,7 @@ fn reports_deduplicate_expire_and_schedule_replacement_atomically() {
         .is_err()
     );
     assert!(
-        hub.submit_ring_report(
+        vera.submit_ring_report(
             &later,
             &sign(report(
                 &pending,
@@ -920,8 +922,8 @@ fn reports_deduplicate_expire_and_schedule_replacement_atomically() {
         )
         .is_err()
     );
-    assert_eq!(hub.store().serialize(), before);
-    let new_member = hub
+    assert_eq!(vera.store().serialize(), before);
+    let new_member = vera
         .submit_ring_report(
             &later,
             &sign(report(
@@ -937,7 +939,7 @@ fn reports_deduplicate_expire_and_schedule_replacement_atomically() {
     assert!(new_member.replacement.is_none());
     later.timestamp.seconds = 86500;
     later.timestamp.block_height = 4;
-    let reset = hub
+    let reset = vera
         .submit_ring_report(
             &later,
             &sign(report(&pending, "reset", 86500, 3, CommitteeScope::Current)),
@@ -946,16 +948,17 @@ fn reports_deduplicate_expire_and_schedule_replacement_atomically() {
     assert_eq!(reset.demerits.points, 1);
     assert_eq!(reset.demerits.window_started_at, 86500);
     assert_eq!(
-        hub.node_demerits(&created.id, &public(&secret(3))).unwrap(),
+        vera.node_demerits(&created.id, &public(&secret(3)))
+            .unwrap(),
         Some(reset.demerits)
     );
-    hub.store.put(
+    vera.store.put(
         format!("orbis/reports/v1/{}/count", created.id).as_bytes(),
         MAX_RETAINED_REPORTS.to_be_bytes().to_vec(),
     );
-    let before = hub.store().serialize();
+    let before = vera.store().serialize();
     assert!(
-        hub.submit_ring_report(
+        vera.submit_ring_report(
             &later,
             &sign(report(
                 &pending,
@@ -967,16 +970,16 @@ fn reports_deduplicate_expire_and_schedule_replacement_atomically() {
         )
         .is_err()
     );
-    assert_eq!(hub.store().serialize(), before);
+    assert_eq!(vera.store().serialize(), before);
 }
 
 #[test]
 fn threshold_objects_require_active_ring_and_scoped_actor_and_rollback_on_failed_outcome() {
-    use crate::hub::objects::{
+    use crate::vera::objects::{
         EncryptedDocument, KeyDerivation, ObjectKind, ThresholdObject, object_key,
     };
-    let (mut hub, mut acp, config) = fixture(POLICY);
-    let ring = apply(&mut hub, &mut acp, &RingCommand::Create(config.clone()), 1).unwrap();
+    let (mut vera, mut acp, config) = fixture(POLICY);
+    let ring = apply(&mut vera, &mut acp, &RingCommand::Create(config.clone()), 1).unwrap();
     let object = ThresholdObject::Document(EncryptedDocument {
         ring_id: ring.id.clone(),
         document: r#"{"enc_cmt":[1],"encrypted_data":[2],"nonce":[3]}"#.into(),
@@ -996,33 +999,33 @@ fn threshold_objects_require_active_ring_and_scoped_actor_and_rollback_on_failed
         )
     };
     let assertion = token(&object, 5);
-    let before = (hub.store().serialize(), acp.store().serialize());
+    let before = (vera.store().serialize(), acp.store().serialize());
     assert!(
-        hub.store_threshold_object(&mut acp, &context(), &submission(), &assertion, &object)
+        vera.store_threshold_object(&mut acp, &context(), &submission(), &assertion, &object)
             .is_err()
     );
-    assert_eq!((hub.store().serialize(), acp.store().serialize()), before);
+    assert_eq!((vera.store().serialize(), acp.store().serialize()), before);
     for n in [2, 3] {
-        hub.apply_ring_participant_request(&context(), &confirm(&ring.id, n, "aabb"))
+        vera.apply_ring_participant_request(&context(), &confirm(&ring.id, n, "aabb"))
             .unwrap();
     }
-    let stored = hub
+    let stored = vera
         .store_threshold_object(&mut acp, &context(), &submission(), &assertion, &object)
         .unwrap();
     assert_eq!(stored.id, object.id().unwrap());
-    let record = hub
+    let record = vera
         .threshold_object(ObjectKind::Document, &stored.id)
         .unwrap()
         .unwrap();
     assert_eq!(record.creator, actor().to_string());
     assert_eq!(record.object, object);
     assert_eq!(
-        hub.store_threshold_object(&mut acp, &context(), &submission(), &assertion, &object)
+        vera.store_threshold_object(&mut acp, &context(), &submission(), &assertion, &object)
             .unwrap(),
         stored
     );
     assert!(
-        hub.store_threshold_object(
+        vera.store_threshold_object(
             &mut acp,
             &context(),
             &submission(),
@@ -1035,16 +1038,16 @@ fn threshold_objects_require_active_ring_and_scoped_actor_and_rollback_on_failed
     if let ThresholdObject::Document(d) = &mut changed {
         d.timestamp = None;
     }
-    let before = (hub.store().serialize(), acp.store().serialize());
+    let before = (vera.store().serialize(), acp.store().serialize());
     assert!(
-        hub.store_threshold_object(&mut acp, &context(), &submission(), &assertion, &changed)
+        vera.store_threshold_object(&mut acp, &context(), &submission(), &assertion, &changed)
             .is_err()
     );
-    assert_eq!((hub.store().serialize(), acp.store().serialize()), before);
+    assert_eq!((vera.store().serialize(), acp.store().serialize()), before);
     let mut other_worker = submission();
     other_worker.signer = actor().to_string();
     assert!(
-        hub.store_threshold_object(&mut acp, &context(), &other_worker, &assertion, &object)
+        vera.store_threshold_object(&mut acp, &context(), &other_worker, &assertion, &object)
             .is_err()
     );
     let wrong_scope = delegated_token(
@@ -1056,17 +1059,17 @@ fn threshold_objects_require_active_ring_and_scoped_actor_and_rollback_on_failed
         &secret(1),
     );
     assert!(
-        hub.store_threshold_object(&mut acp, &context(), &submission(), &wrong_scope, &object)
+        vera.store_threshold_object(&mut acp, &context(), &submission(), &wrong_scope, &object)
             .is_err()
     );
-    hub.revoke_delegation(&context(), &actor(), &assertion)
+    vera.revoke_delegation(&context(), &actor(), &assertion)
         .unwrap();
     assert!(
-        hub.store_threshold_object(&mut acp, &context(), &submission(), &assertion, &object)
+        vera.store_threshold_object(&mut acp, &context(), &submission(), &assertion, &object)
             .is_err()
     );
     let mut restored = VeraModule::from_store(
-        crate::kv_store::InMemoryKvStore::deserialize(&hub.store().serialize()).unwrap(),
+        crate::kv_store::InMemoryKvStore::deserialize(&vera.store().serialize()).unwrap(),
     );
     assert_eq!(
         restored

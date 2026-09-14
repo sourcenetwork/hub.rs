@@ -13,9 +13,9 @@ use vera_modules::{
         delegated_operation::DelegatedOperation,
         types::{Object, PolicyCmd, PolicyMarshalingType},
     },
-    hub::{VeraModule, administration::*, relay::RelayGrant},
     kv_store::InMemoryKvStore,
     types::{BlockExecCtx, Timestamp, TxExecCtx},
+    vera::{VeraModule, administration::*, relay::RelayGrant},
 };
 
 const GENESIS: [u8; 32] = [7; 32];
@@ -90,18 +90,18 @@ fn sign_json(typ: &str, payload: &str) -> String {
     format!("{message}.{}", URL_SAFE_NO_PAD.encode(signature.to_bytes()))
 }
 fn admin(
-    hub: &mut VeraModule,
+    vera: &mut VeraModule,
     acp: &mut AcpModule,
     command: AdministrativeCommand,
-) -> Result<(), vera_modules::hub::error::VeraError> {
+) -> Result<(), vera_modules::vera::error::VeraError> {
     let request = AdministrativeRequest {
         genesis_id: GENESIS,
-        sequence: hub.administration()?.unwrap().sequence,
+        sequence: vera.administration()?.unwrap().sequence,
         expires_at: 500,
         command,
     };
     let signature: Signature = key().sign_prehash(&request.signing_digest()?).unwrap();
-    hub.apply_administrative_request(
+    vera.apply_administrative_request(
         acp,
         GENESIS,
         100,
@@ -115,34 +115,39 @@ fn admin(
     )
 }
 fn modules() -> (VeraModule, AcpModule) {
-    let mut hub = VeraModule::new();
-    hub.initialize_administration(OperatorPolicy {
+    let mut vera = VeraModule::new();
+    vera.initialize_administration(OperatorPolicy {
         threshold: 1,
         keys: vec![hex::encode(key().verifying_key().to_sec1_bytes())],
     })
     .unwrap();
     let mut acp = AcpModule::new();
-    admin(&mut hub, &mut acp, AdministrativeCommand::SetRelay(grant())).unwrap();
-    (hub, acp)
+    admin(
+        &mut vera,
+        &mut acp,
+        AdministrativeCommand::SetRelay(grant()),
+    )
+    .unwrap();
+    (vera, acp)
 }
 fn create(
-    hub: &mut VeraModule,
+    vera: &mut VeraModule,
     acp: &mut AcpModule,
     token: &str,
 ) -> Result<vera_modules::acp::types::PolicyRecord, vera_modules::acp::error::AcpError> {
-    acp.bearer_create_policy(hub, &context(), &submission(), token, POLICY, FORMAT)
+    acp.bearer_create_policy(vera, &context(), &submission(), token, POLICY, FORMAT)
 }
 
 #[test]
 fn relay_preserves_actor_in_create_edit_and_registration() {
-    let (mut hub, mut acp) = modules();
+    let (mut vera, mut acp) = modules();
     let token = sign(&claims(&DelegatedOperation::CreatePolicy(POLICY, &FORMAT)));
-    let created = create(&mut hub, &mut acp, &token).unwrap();
+    let created = create(&mut vera, &mut acp, &token).unwrap();
     assert_eq!(created.metadata.owner_did, actor());
     assert_eq!(created.metadata.tx_signer, submission().signer);
     assert_eq!(created.metadata.tx_hash, submission().tx_hash);
-    let record = hub
-        .get_jws_token(&vera_modules::hub::keys::hash_jws_token(&token))
+    let record = vera
+        .get_jws_token(&vera_modules::vera::keys::hash_jws_token(&token))
         .unwrap()
         .unwrap();
     assert_eq!(record.issuer_did, issuer());
@@ -151,10 +156,10 @@ fn relay_preserves_actor_in_create_edit_and_registration() {
     let mut edit = claims(&DelegatedOperation::EditPolicy(&policy, POLICY, &FORMAT));
     let worker = Did::new(&submission().signer).unwrap();
     edit.relay.as_mut().unwrap().actor = format!("did:opk:{}", "cd".repeat(32));
-    let before = (hub.store().serialize(), acp.store().serialize());
+    let before = (vera.store().serialize(), acp.store().serialize());
     assert!(
         acp.bearer_edit_policy(
-            &mut hub,
+            &mut vera,
             &context(),
             &transaction(&worker),
             &sign(&edit),
@@ -164,10 +169,10 @@ fn relay_preserves_actor_in_create_edit_and_registration() {
         )
         .is_err()
     );
-    assert_eq!(before, (hub.store().serialize(), acp.store().serialize()));
+    assert_eq!(before, (vera.store().serialize(), acp.store().serialize()));
     edit.relay.as_mut().unwrap().actor = actor();
     acp.bearer_edit_policy(
-        &mut hub,
+        &mut vera,
         &context(),
         &transaction(&worker),
         &sign(&edit),
@@ -183,7 +188,7 @@ fn relay_preserves_actor_in_create_edit_and_registration() {
     let cmd = PolicyCmd::RegisterObject(object.clone());
     let token = sign(&claims(&DelegatedOperation::PolicyCommand(&policy, &cmd)));
     acp.bearer_policy_cmd(
-        &mut hub,
+        &mut vera,
         &context(),
         &transaction(&worker),
         &token,
@@ -200,10 +205,10 @@ fn relay_preserves_actor_in_create_edit_and_registration() {
             .owner_did,
         actor()
     );
-    let before = (hub.store().serialize(), acp.store().serialize());
+    let before = (vera.store().serialize(), acp.store().serialize());
     assert!(
         acp.bearer_policy_cmd(
-            &mut hub,
+            &mut vera,
             &context(),
             &transaction(&worker),
             &token,
@@ -212,13 +217,13 @@ fn relay_preserves_actor_in_create_edit_and_registration() {
         )
         .is_err()
     );
-    assert_eq!(before, (hub.store().serialize(), acp.store().serialize()));
+    assert_eq!(before, (vera.store().serialize(), acp.store().serialize()));
 }
 
 #[test]
 fn relay_assertions_fail_closed_without_mutations() {
     let base = claims(&DelegatedOperation::CreatePolicy(POLICY, &FORMAT));
-    let (hub, acp) = modules();
+    let (vera, acp) = modules();
     let mut cases = Vec::new();
     for field in ["sub", "aud", "iss"] {
         let mut value = serde_json::to_value(&base).unwrap();
@@ -248,12 +253,12 @@ fn relay_assertions_fail_closed_without_mutations() {
         cases.push(claims);
     }
     for value in cases {
-        let mut hub = hub.clone();
+        let mut vera = vera.clone();
         let mut acp = acp.clone();
-        let before = (hub.store().serialize(), acp.store().serialize());
+        let before = (vera.store().serialize(), acp.store().serialize());
         let token = sign_json("vera-relay-v1+jwt", &value.to_string());
-        assert!(create(&mut hub, &mut acp, &token).is_err(), "{value}");
-        assert_eq!(before, (hub.store().serialize(), acp.store().serialize()));
+        assert!(create(&mut vera, &mut acp, &token).is_err(), "{value}");
+        assert_eq!(before, (vera.store().serialize(), acp.store().serialize()));
     }
     for typ in ["vera-delegation-v1+jwt", "JWT"] {
         assert!(
@@ -276,57 +281,62 @@ fn relay_assertions_fail_closed_without_mutations() {
     );
     let token = sign(&base);
     assert!(create(&mut VeraModule::new(), &mut AcpModule::new(), &token).is_err());
-    let (mut hub, mut acp) = modules();
+    let (mut vera, mut acp) = modules();
     let mut restricted = grant();
     restricted.scopes = vec![DelegationScope::PolicyCommands];
     admin(
-        &mut hub,
+        &mut vera,
         &mut acp,
         AdministrativeCommand::SetRelay(restricted),
     )
     .unwrap();
     let mut claims = base;
     claims.relay.as_mut().unwrap().grant_sequence = 1;
-    assert!(create(&mut hub, &mut acp, &sign(&claims)).is_err());
+    assert!(create(&mut vera, &mut acp, &sign(&claims)).is_err());
 }
 
 #[test]
 fn relay_and_assertion_revocations_survive_reopen_and_regrant() {
-    let (mut hub, mut acp) = modules();
+    let (mut vera, mut acp) = modules();
     let mut claims = claims(&DelegatedOperation::CreatePolicy(POLICY, &FORMAT));
     let token = sign(&claims);
     let worker = Did::new(&claims.sub).unwrap();
     assert!(
-        hub.revoke_delegation(&context(), &Did::new("did:key:stranger").unwrap(), &token)
+        vera.revoke_delegation(&context(), &Did::new("did:key:stranger").unwrap(), &token)
             .is_err()
     );
     let mut foreign = context();
     foreign.genesis_id = [8; 32];
-    assert!(hub.revoke_delegation(&foreign, &worker, &token).is_err());
-    hub.revoke_delegation(&context(), &worker, &token).unwrap();
-    assert!(create(&mut hub, &mut acp, &token).is_err());
+    assert!(vera.revoke_delegation(&foreign, &worker, &token).is_err());
+    vera.revoke_delegation(&context(), &worker, &token).unwrap();
+    assert!(create(&mut vera, &mut acp, &token).is_err());
     claims.exp += 1;
     let unused = sign(&claims);
-    create(&mut hub, &mut acp, &unused).unwrap();
+    create(&mut vera, &mut acp, &unused).unwrap();
     admin(
-        &mut hub,
+        &mut vera,
         &mut acp,
         AdministrativeCommand::RevokeRelay(issuer()),
     )
     .unwrap();
-    let bytes = hub.store().serialize();
-    hub = VeraModule::from_store(InMemoryKvStore::deserialize(&bytes).unwrap());
-    assert!(create(&mut hub, &mut acp, &unused).is_err());
-    admin(&mut hub, &mut acp, AdministrativeCommand::SetRelay(grant())).unwrap();
-    assert!(create(&mut hub, &mut acp, &unused).is_err());
+    let bytes = vera.store().serialize();
+    vera = VeraModule::from_store(InMemoryKvStore::deserialize(&bytes).unwrap());
+    assert!(create(&mut vera, &mut acp, &unused).is_err());
+    admin(
+        &mut vera,
+        &mut acp,
+        AdministrativeCommand::SetRelay(grant()),
+    )
+    .unwrap();
+    assert!(create(&mut vera, &mut acp, &unused).is_err());
     claims.relay.as_mut().unwrap().grant_sequence = 2;
-    create(&mut hub, &mut acp, &sign(&claims)).unwrap();
-    assert!(create(&mut hub, &mut acp, &token).is_err());
+    create(&mut vera, &mut acp, &sign(&claims)).unwrap();
+    assert!(create(&mut vera, &mut acp, &token).is_err());
 }
 
 #[test]
 fn invalid_grants_do_not_consume_operator_sequence() {
-    let (hub, acp) = modules();
+    let (vera, acp) = modules();
     let mut cases = Vec::new();
     let mut invalid = grant();
     invalid.scopes.clear();
@@ -344,11 +354,18 @@ fn invalid_grants_do_not_consume_operator_sequence() {
     invalid.issuer = "did:key:invalid".into();
     cases.push(invalid);
     for invalid in cases {
-        let mut hub = hub.clone();
+        let mut vera = vera.clone();
         let mut acp = acp.clone();
-        let before = hub.store().serialize();
-        assert!(admin(&mut hub, &mut acp, AdministrativeCommand::SetRelay(invalid)).is_err());
-        assert_eq!(hub.store().serialize(), before);
+        let before = vera.store().serialize();
+        assert!(
+            admin(
+                &mut vera,
+                &mut acp,
+                AdministrativeCommand::SetRelay(invalid)
+            )
+            .is_err()
+        );
+        assert_eq!(vera.store().serialize(), before);
     }
 }
 
@@ -385,7 +402,7 @@ fn transaction(caller: &Did) -> vera_modules::types::TxExecCtx {
 fn recording_decisions_requires_its_own_relay_grant_even_for_retries() {
     use vera_crypto::operation::{OperationClaim, OperationId};
     use vera_modules::acp::types::{AccessRequest, Actor, Operation};
-    let (mut hub, mut acp) = modules();
+    let (mut vera, mut acp) = modules();
     let owner = Did::new(actor()).unwrap();
     let policy = acp
         .create_policy(
@@ -420,7 +437,7 @@ fn recording_decisions_requires_its_own_relay_grant_even_for_retries() {
     });
     assert!(
         acp.bearer_check_access(
-            &mut hub,
+            &mut vera,
             &context(),
             &submission(),
             &sign(&claims),
@@ -432,7 +449,7 @@ fn recording_decisions_requires_its_own_relay_grant_even_for_retries() {
     let mut authority = grant();
     authority.scopes.push(DelegationScope::RecordAccessDecision);
     admin(
-        &mut hub,
+        &mut vera,
         &mut acp,
         AdministrativeCommand::SetRelay(authority),
     )
@@ -440,7 +457,7 @@ fn recording_decisions_requires_its_own_relay_grant_even_for_retries() {
     claims.relay.as_mut().unwrap().grant_sequence = 1;
     let original = acp
         .bearer_check_access(
-            &mut hub,
+            &mut vera,
             &context(),
             &submission(),
             &sign(&claims),
@@ -452,14 +469,14 @@ fn recording_decisions_requires_its_own_relay_grant_even_for_retries() {
     assert_eq!(original.actor, actor());
     assert!(acp.operation(&actor(), OperationId(id)).unwrap().is_some());
     admin(
-        &mut hub,
+        &mut vera,
         &mut acp,
         AdministrativeCommand::RevokeRelay(issuer()),
     )
     .unwrap();
     assert!(
         acp.bearer_check_access(
-            &mut hub,
+            &mut vera,
             &context(),
             &submission(),
             &sign(&claims),

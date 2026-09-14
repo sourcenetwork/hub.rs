@@ -48,7 +48,7 @@ stops:
   `FixedEpocher` over genesis `blocks_per_epoch` and a VRF elector that feeds
   each round's threshold seed to the application.
 - **Execution:** the glue `Stateful` actor wrapping `vera-app`'s
-  `StatefulHubApp` (below).
+  `StatefulVeraApp` (below).
 - **DKG/resharing:** the glue `probe` actor discovers the latest epoch when a
   node needs state sync, while the `reshare` actor deals BLS shares for the next
   epoch to the active set returned by `RegistryParticipants` from finalized
@@ -78,7 +78,7 @@ it does not impose a cap on rounds accumulated while finality is stalled.
 
 ### Execution (`vera-app` + `vera-executor`)
 
-`StatefulHubApp` implements `commonware_glue::stateful::Application`: it builds
+`StatefulVeraApp` implements `commonware_glue::stateful::Application`: it builds
 blocks from the mempool, executes them against forked QMDB batch state, verifies
 proposals by re-execution, and hands finalized receipts to a `FinalizedSink`
 (`NodeSink`), which indexes blocks, logs, and light blocks and feeds the RPC
@@ -107,7 +107,7 @@ subscription channels. Block execution goes through `VeraExecutor`:
 |---------|--------|---------|
 | `0x0810` | ACP | Access control policies (Zanzibar relation tuples) |
 | `0x0811` | Bulletin | Coordination / DKG messages / posts |
-| `0x0812` | Hub | Identity / JWT token lifecycle |
+| `0x0812` | Vera | Identity / JWT token lifecycle |
 | `0x0813` | ValidatorRegistry | Validator identity management (feeds resharing) |
 
 ### Shared module pattern
@@ -149,7 +149,7 @@ separately by proof consumers.
 
 The node uses `vera-app::OrderedState`: three execution partitions (accounts,
 storage, code) and four ordered Commonware current-QMDB partitions (ACP, bulletin,
-hub, native sequences). `StatefulHubApp` seals all seven targets into each proposal
+vera, native sequences). `StatefulVeraApp` seals all seven targets into each proposal
 and verifies them by re-execution. An in-memory commitment participates in the same
 Commonware coordinator generation, binding the native current-state root to the
 selected operation-log targets. It is reconstructed from the durable recovery
@@ -342,7 +342,7 @@ vera.rs/
         vera-harness/           # Node manager, cluster builder, observability (test-only)
         vera-indexer/           # Block/tx/light-block indexes backing RPC queries
         vera-jsonrpc/           # eth_* + hub_* JSON-RPC server and subscriptions
-        vera-modules/           # ACP, Bulletin, Hub, ValidatorRegistry module logic
+        vera-modules/           # ACP, Bulletin, Vera, ValidatorRegistry module logic
         vera-node/              # Validator assembly: p2p, marshal, DKG, stateful glue, RPC
         vera-overlay/           # Overlay state for unpersisted QMDB changes
         vera-permission/        # Permission/record/prefix evidence types and verification

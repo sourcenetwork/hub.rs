@@ -19,7 +19,7 @@ bytes, mismatched token hashes or inconsistent deadlines fail execution. Ordinar
 record reads also validate the stored token hash against the requested key.
 Proposal-local failures cannot publish partially updated module state.
 
-Indexes persist with Hub state and recover with its snapshots. Existing stores
+Indexes persist with Vera state and recover with its snapshots. Existing stores
 require an explicit migration that builds indexes for active, expiring tokens;
 startup does not automatically migrate them. This change removes scans of token
 history from each revision. When more than 128 tokens are due, later revisions

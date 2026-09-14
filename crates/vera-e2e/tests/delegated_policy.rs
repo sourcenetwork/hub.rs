@@ -14,7 +14,7 @@ use vera_domain::{ConsensusPublicKey, NativeTx};
 use vera_e2e::cluster::{ConsensusPreset, KeySet, TestCluster};
 use vera_modules::{
     acp::{abi::IAcp, keys::policy_key, types::PolicyRecord},
-    hub::abi::IHub,
+    vera::abi::IVera,
 };
 
 const POLICY: &str = "name: shared\nresources:\n  - name: document\n";
@@ -269,7 +269,7 @@ async fn native_workers_preserve_policy_ownership_results_and_revocation() {
         &trusted,
         &second,
         VERA_ADDRESS,
-        IHub::revokeDelegationCall {
+        IVera::revokeDelegationCall {
             token: second_edit_token.clone(),
         },
     )
@@ -280,7 +280,7 @@ async fn native_workers_preserve_policy_ownership_results_and_revocation() {
         &trusted,
         &second,
         VERA_ADDRESS,
-        IHub::revokeDelegationCall {
+        IVera::revokeDelegationCall {
             token: second_token.clone(),
         },
     )
@@ -347,7 +347,7 @@ async fn native_relay_grants_bind_workers_and_survive_revocation_restart() {
     use vera_e2e::cluster::GenesisBuilder;
     use vera_modules::{
         acp::{delegated_operation::DelegatedOperation, types::PolicyMarshalingType},
-        hub::relay::RelayGrant,
+        vera::relay::RelayGrant,
     };
 
     let deployment = 9061;
@@ -444,7 +444,7 @@ async fn native_relay_grants_bind_workers_and_survive_revocation_restart() {
         &trusted,
         &operator_submitter,
         VERA_ADDRESS,
-        IHub::applyAdministrationCall {
+        IVera::applyAdministrationCall {
             request: serde_json::to_vec(&approved).unwrap().into(),
         },
     )
@@ -495,7 +495,7 @@ async fn native_relay_grants_bind_workers_and_survive_revocation_restart() {
             &trusted,
             &first,
             VERA_ADDRESS,
-            IHub::revokeDelegationCall {
+            IVera::revokeDelegationCall {
                 token: first_token.clone()
             }
         )
@@ -531,7 +531,7 @@ async fn native_relay_grants_bind_workers_and_survive_revocation_restart() {
             &trusted,
             &operator_submitter,
             VERA_ADDRESS,
-            IHub::applyAdministrationCall {
+            IVera::applyAdministrationCall {
                 request: serde_json::to_vec(&replacement).unwrap().into()
             }
         )
@@ -608,7 +608,7 @@ async fn native_relay_grants_bind_workers_and_survive_revocation_restart() {
         &trusted,
         &operator_submitter,
         VERA_ADDRESS,
-        IHub::applyAdministrationCall {
+        IVera::applyAdministrationCall {
             request: serde_json::to_vec(&revoked).unwrap().into(),
         },
     )

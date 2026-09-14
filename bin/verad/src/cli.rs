@@ -44,7 +44,7 @@ pub(crate) enum Commands {
     Testnet(testnet::TestnetArgs),
     /// Run the distributed epoch-0 DKG ceremony.
     Genesis(GenesisArgs),
-    /// Interact with a running hub node.
+    /// Interact with a running vera node.
     Client(crate::client::ClientArgs),
 }
 
@@ -113,7 +113,7 @@ impl Cli {
             Some(Commands::Testnet(args)) => {
                 let chain_id = self.chain_id.unwrap_or(9001);
                 let data_dir = self.data_dir.clone().unwrap_or_else(|| {
-                    std::env::temp_dir().join(format!("hub-testnet-{}", std::process::id()))
+                    std::env::temp_dir().join(format!("vera-testnet-{}", std::process::id()))
                 });
                 testnet::run(chain_id, data_dir, args)
             }
@@ -162,7 +162,7 @@ impl Cli {
         tracing::info!(
             chain_id = settings.config.chain_id,
             validator_index,
-            "Starting hub validator"
+            "Starting vera validator"
         );
         run(settings)
     }
@@ -235,7 +235,7 @@ impl Cli {
         )?;
         tracing::info!(
             chain_id = settings.config.chain_id,
-            "Starting hub devnet (single-node)"
+            "Starting vera devnet (single-node)"
         );
         run(settings)
     }

@@ -8,8 +8,8 @@
 
 mod acp;
 mod bulletin;
-mod hub;
 pub(crate) mod validator_registry;
+mod vera;
 
 use std::sync::{Arc, Mutex};
 
@@ -31,8 +31,8 @@ use revm::{
 };
 use vera_modules::acp::AcpModule;
 use vera_modules::bulletin::BulletinModule;
-use vera_modules::hub::VeraModule;
 use vera_modules::types::{BlockExecCtx, Timestamp, TxExecCtx};
+use vera_modules::vera::VeraModule;
 
 /// ACP precompile address.
 pub const ACP_ADDRESS: Address = address_from_last_two_bytes(0x08, 0x10);
@@ -83,7 +83,7 @@ pub(super) fn ok_output(gas: u64, ret: Vec<u8>) -> PrecompileOutput {
     }
 }
 
-/// Result of dispatching to a hub module, including any emitted event logs.
+/// Result of dispatching to a vera module, including any emitted event logs.
 #[derive(Debug)]
 pub struct DispatchResult {
     /// The precompile output (gas, return data, revert status).
@@ -146,7 +146,7 @@ pub struct VeraPrecompiles {
 pub fn dispatch_to_module(
     acp: &mut AcpModule,
     bulletin: &mut BulletinModule,
-    hub: &mut VeraModule,
+    vera: &mut VeraModule,
     target: Address,
     calldata: &[u8],
     block_ctx: &BlockExecCtx,
@@ -155,15 +155,15 @@ pub fn dispatch_to_module(
 ) -> Option<DispatchReturn> {
     if target == ACP_ADDRESS {
         Some(acp::dispatch(
-            acp, hub, block_ctx, tx_ctx, calldata, gas_limit,
+            acp, vera, block_ctx, tx_ctx, calldata, gas_limit,
         ))
     } else if target == BULLETIN_ADDRESS {
         Some(bulletin::dispatch(
             bulletin, acp, block_ctx, tx_ctx, calldata, gas_limit,
         ))
     } else if target == VERA_ADDRESS {
-        Some(hub::dispatch(
-            hub, acp, block_ctx, tx_ctx, calldata, gas_limit,
+        Some(vera::dispatch(
+            vera, acp, block_ctx, tx_ctx, calldata, gas_limit,
         ))
     } else {
         None
@@ -190,7 +190,7 @@ fn new_custom_precompiles() -> Precompiles {
 }
 
 impl VeraPrecompiles {
-    /// Create a new hub precompile provider for the given spec.
+    /// Create a new vera precompile provider for the given spec.
     pub fn new(spec: SpecId) -> Self {
         Self {
             eth: EthPrecompiles::new(spec),
@@ -203,12 +203,12 @@ impl VeraPrecompiles {
         }
     }
 
-    /// Create a hub precompile provider with pre-built module instances.
+    /// Create a vera precompile provider with pre-built module instances.
     pub fn with_modules(
         spec: SpecId,
         acp_module: AcpModule,
         bulletin_module: BulletinModule,
-        hub_module: VeraModule,
+        vera_module: VeraModule,
     ) -> Self {
         Self {
             eth: EthPrecompiles::new(spec),
@@ -216,7 +216,7 @@ impl VeraPrecompiles {
             journal: Arc::new(Mutex::new(ModuleJournal::new((
                 acp_module,
                 bulletin_module,
-                hub_module,
+                vera_module,
             )))),
             current_tx_hash: B256::ZERO,
             current_signer_did: String::new(),
@@ -418,12 +418,12 @@ impl VeraPrecompiles {
     ) -> Result<(Option<InterpreterResult>, Vec<Log>), String> {
         let mut journal = self.journal.lock().unwrap();
         journal.checkpoint()?;
-        let (acp, bulletin, hub) = &mut journal.modules;
+        let (acp, bulletin, vera) = &mut journal.modules;
         let dispatch_result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             dispatch_to_module(
                 acp,
                 bulletin,
-                hub,
+                vera,
                 inputs.bytecode_address,
                 calldata,
                 block_ctx,
@@ -509,7 +509,7 @@ mod tests {
     }
 
     #[test]
-    fn hub_precompiles_contains_custom() {
+    fn vera_precompiles_contains_custom() {
         let precompiles = test_precompiles();
         assert!(<VeraPrecompiles as PrecompileProvider<TestCtx>>::contains(
             &precompiles,
@@ -530,7 +530,7 @@ mod tests {
     }
 
     #[test]
-    fn hub_precompiles_contains_standard() {
+    fn vera_precompiles_contains_standard() {
         let ecrecover = "0x0000000000000000000000000000000000000001"
             .parse::<Address>()
             .unwrap();
@@ -542,7 +542,7 @@ mod tests {
     }
 
     #[test]
-    fn hub_precompiles_warm_addresses_include_custom() {
+    fn vera_precompiles_warm_addresses_include_custom() {
         let precompiles = test_precompiles();
         let warm: Vec<Address> =
             <VeraPrecompiles as PrecompileProvider<TestCtx>>::warm_addresses(&precompiles)

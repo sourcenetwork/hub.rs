@@ -1,6 +1,6 @@
 //! Vera validator node: p2p, marshal, DKG orchestration, stateful execution, and RPC.
 //!
-//! [`run_node`] assembles the commonware actors around the hub application in
+//! [`run_node`] assembles the commonware actors around the vera application in
 //! `vera-app` and runs them until one stops.
 
 #![recursion_limit = "256"]

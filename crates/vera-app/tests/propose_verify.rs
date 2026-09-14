@@ -14,7 +14,7 @@ use commonware_runtime::{Runner as _, Supervisor as _, buffer::paged::CacheRef, 
 use commonware_utils::{NZU16, NZUsize};
 use k256::ecdsa::SigningKey;
 use vera_app::{ModuleDb, VeraStateSet};
-use vera_app::{NoopSink, ReshareInput, StatefulHubApp, apply_genesis, genesis_block};
+use vera_app::{NoopSink, ReshareInput, StatefulVeraApp, apply_genesis, genesis_block};
 use vera_backend::{VeraStateSet as BackendStateSet, state_set_config};
 use vera_consensus::{Mempool as _, components::InMemoryMempool};
 use vera_domain::{Block, evm::Evm};
@@ -57,7 +57,7 @@ fn competing_proposals_preserve_receipts() {
             .await
             .unwrap();
         let set: VeraStateSet = (set.0, set.1, set.2, Shared::new("native", native));
-        let mut app = StatefulHubApp::<NoopSink>::new(
+        let mut app = StatefulVeraApp::<NoopSink>::new(
             executor,
             genesis.clone(),
             mempool.clone(),

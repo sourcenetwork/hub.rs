@@ -35,7 +35,7 @@ impl<A, S, C> Stores<A, S, C> {
 /// Layer 1: Owns QMDB stores, handles state transitions.
 ///
 /// NO synchronization - that's the caller's responsibility.
-/// Use `hub-handlers::QmdbHandle` for thread-safe access.
+/// Use `vera-handlers::QmdbHandle` for thread-safe access.
 #[derive(Debug)]
 pub struct QmdbStore<A, S, C> {
     stores: Option<Stores<A, S, C>>,

@@ -6,7 +6,7 @@ use revm::{
     Inspector,
     interpreter::{CallInputs, CallOutcome, CreateInputs, CreateOutcome},
 };
-use vera_modules::{acp::AcpModule, bulletin::BulletinModule, hub::VeraModule};
+use vera_modules::{acp::AcpModule, bulletin::BulletinModule, vera::VeraModule};
 
 type Modules = (AcpModule, BulletinModule, VeraModule);
 

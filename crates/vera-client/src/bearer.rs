@@ -116,7 +116,7 @@ pub fn create_relay_token(
         || claims.relay.is_none()
         || claims.nbf != claims.iat
         || claims.iat >= claims.exp
-        || claims.exp - claims.iat > vera_modules::hub::relay::MAX_RELAY_TOKEN_TTL
+        || claims.exp - claims.iat > vera_modules::vera::relay::MAX_RELAY_TOKEN_TTL
     {
         return Err(ClientError::Signing(
             "invalid relay issuer, assertion or lifetime".into(),

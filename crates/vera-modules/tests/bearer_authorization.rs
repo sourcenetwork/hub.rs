@@ -66,7 +66,7 @@ fn bearer_expiration_uses_execution_time_before_mutating_state() {
         let mut module = base.clone();
         let before = module.store().serialize();
         let result = module.bearer_policy_cmd(
-            &mut vera_modules::hub::VeraModule::new(),
+            &mut vera_modules::vera::VeraModule::new(),
             &context,
             &transaction(&actor),
             &token,
@@ -122,7 +122,7 @@ fn delegated_scopes_authorize_only_their_operations() {
                 "scope": scope, "iat": 0, "nbf": 0, "exp": 100}),
         )
     };
-    let mut hub = vera_modules::hub::VeraModule::new();
+    let mut vera = vera_modules::vera::VeraModule::new();
     let before = module.store().serialize();
     let object = Object {
         resource: "file".into(),
@@ -133,7 +133,7 @@ fn delegated_scopes_authorize_only_their_operations() {
             "acp:policy:create",
             module
                 .bearer_policy_cmd(
-                    &mut hub,
+                    &mut vera,
                     &context,
                     &transaction(&actor),
                     &claims("acp:policy:create"),
@@ -146,7 +146,7 @@ fn delegated_scopes_authorize_only_their_operations() {
             "acp:policy:edit",
             module
                 .bearer_policy_cmd(
-                    &mut hub,
+                    &mut vera,
                     &context,
                     &transaction(&actor),
                     &claims("acp:policy:edit"),
@@ -159,7 +159,7 @@ fn delegated_scopes_authorize_only_their_operations() {
             "acp:policy",
             module
                 .bearer_create_policy(
-                    &mut hub,
+                    &mut vera,
                     &context,
                     &transaction(&actor),
                     &claims("acp:policy"),
@@ -172,7 +172,7 @@ fn delegated_scopes_authorize_only_their_operations() {
             "acp:policy",
             module
                 .bearer_edit_policy(
-                    &mut hub,
+                    &mut vera,
                     &context,
                     &transaction(&actor),
                     &claims("acp:policy"),
@@ -186,7 +186,7 @@ fn delegated_scopes_authorize_only_their_operations() {
             "acp:policy",
             module
                 .bearer_check_access(
-                    &mut hub,
+                    &mut vera,
                     &context,
                     &transaction(&actor),
                     &claims("acp:policy"),
@@ -213,7 +213,7 @@ fn delegated_scopes_authorize_only_their_operations() {
     assert!(
         module
             .bearer_policy_cmd(
-                &mut hub,
+                &mut vera,
                 &context,
                 &transaction(&actor),
                 &claims("acp:policy"),
@@ -226,8 +226,8 @@ fn delegated_scopes_authorize_only_their_operations() {
 
 #[test]
 fn delegation_binds_caller_deployment_and_revocation() {
-    use vera_modules::hub::{VeraModule, types::JWSTokenStatus};
     use vera_modules::kv_store::InMemoryKvStore;
+    use vera_modules::vera::{VeraModule, types::JWSTokenStatus};
 
     let key = SigningKey::from_slice(&[42; 32]).unwrap();
     let issuer = vera_crypto::secp256k1::did_from_secp256k1_pubkey(
@@ -267,11 +267,11 @@ fn delegation_binds_caller_deployment_and_revocation() {
         id: "report".into(),
     };
     let command = || PolicyCmd::RegisterObject(object.clone());
-    let mut hub = VeraModule::new();
+    let mut vera = VeraModule::new();
     let before = base.store().serialize();
     assert!(
         base.bearer_policy_cmd(
-            &mut hub,
+            &mut vera,
             &context,
             &transaction(&stranger),
             &token,
@@ -283,7 +283,7 @@ fn delegation_binds_caller_deployment_and_revocation() {
     context.deployment_id = 9002;
     assert!(
         base.bearer_policy_cmd(
-            &mut hub,
+            &mut vera,
             &context,
             &transaction(&caller),
             &token,
@@ -296,7 +296,7 @@ fn delegation_binds_caller_deployment_and_revocation() {
     context.timestamp.seconds = 4;
     assert!(
         base.bearer_policy_cmd(
-            &mut hub,
+            &mut vera,
             &context,
             &transaction(&caller),
             &token,
@@ -306,12 +306,12 @@ fn delegation_binds_caller_deployment_and_revocation() {
         .is_err()
     );
     assert_eq!(base.store().serialize(), before);
-    assert!(hub.store().is_empty());
+    assert!(vera.store().is_empty());
     context.timestamp.seconds = 20;
 
     // Both the issuer and bound submitter can revoke before any use.
     for revoker in [&owner, &caller] {
-        let mut revoked = hub.clone();
+        let mut revoked = vera.clone();
         let denied = revoked.store().serialize();
         assert!(
             revoked
@@ -352,7 +352,7 @@ fn delegation_binds_caller_deployment_and_revocation() {
     });
     assert!(
         base.bearer_policy_cmd(
-            &mut hub,
+            &mut vera,
             &context,
             &transaction(&caller),
             &token,
@@ -361,9 +361,9 @@ fn delegation_binds_caller_deployment_and_revocation() {
         )
         .is_err()
     );
-    assert!(hub.store().is_empty());
+    assert!(vera.store().is_empty());
     base.bearer_policy_cmd(
-        &mut hub,
+        &mut vera,
         &context,
         &transaction(&caller),
         &token,
@@ -373,15 +373,15 @@ fn delegation_binds_caller_deployment_and_revocation() {
     .unwrap();
     let (_, record) = base.query_object_owner(&policy, &object).unwrap();
     assert_eq!(record.unwrap().metadata.owner_did, issuer);
-    let hash = vera_modules::hub::keys::hash_jws_token(&token);
-    let used = hub.get_jws_token(&hash).unwrap().unwrap();
+    let hash = vera_modules::vera::keys::hash_jws_token(&token);
+    let used = vera.get_jws_token(&hash).unwrap().unwrap();
     assert_eq!(used.authorized_account, caller.to_string());
     assert_eq!(used.first_used_at, Some(context.timestamp.clone()));
-    hub.revoke_delegation(&context, &owner, &token).unwrap();
+    vera.revoke_delegation(&context, &owner, &token).unwrap();
     let before = base.store().serialize();
     assert!(
         base.bearer_policy_cmd(
-            &mut hub,
+            &mut vera,
             &context,
             &transaction(&caller),
             &token,
@@ -392,14 +392,14 @@ fn delegation_binds_caller_deployment_and_revocation() {
     );
     assert_eq!(base.store().serialize(), before);
     assert_eq!(
-        hub.get_jws_token(&hash).unwrap().unwrap().status,
+        vera.get_jws_token(&hash).unwrap().unwrap().status,
         JWSTokenStatus::Invalid
     );
 }
 
 #[test]
 fn delegated_policy_lifecycle_preserves_ownership_and_revocation() {
-    use vera_modules::hub::VeraModule;
+    use vera_modules::vera::VeraModule;
 
     let key = SigningKey::from_slice(&[42; 32]).unwrap();
     let issuer = vera_crypto::secp256k1::did_from_secp256k1_pubkey(
@@ -432,7 +432,7 @@ fn delegated_policy_lifecycle_preserves_ownership_and_revocation() {
     let edit_token = signed_token(&key, edit_claims);
     let policy = "name: files\nresources:\n  - name: file\n";
     let mut module = AcpModule::new();
-    let mut hub = VeraModule::new();
+    let mut vera = VeraModule::new();
     for (field, value) in [
         ("sub", serde_json::json!(other_worker.to_string())),
         ("aud", serde_json::json!("vera:9002")),
@@ -448,7 +448,7 @@ fn delegated_policy_lifecycle_preserves_ownership_and_revocation() {
         assert!(
             module
                 .bearer_create_policy(
-                    &mut hub,
+                    &mut vera,
                     &context,
                     &submission,
                     &invalid_token,
@@ -458,11 +458,11 @@ fn delegated_policy_lifecycle_preserves_ownership_and_revocation() {
                 .is_err()
         );
         assert_eq!(module.store().serialize(), before);
-        assert!(hub.store().is_empty());
+        assert!(vera.store().is_empty());
     }
     let created = module
         .bearer_create_policy(
-            &mut hub,
+            &mut vera,
             &context,
             &submission,
             &token,
@@ -475,12 +475,12 @@ fn delegated_policy_lifecycle_preserves_ownership_and_revocation() {
     assert_eq!(created.metadata.tx_signer, submission.signer);
     assert_eq!(created.metadata.creation_ts, context.timestamp);
     let before = module.store().serialize();
-    let hub_before = hub.store().serialize();
+    let vera_before = vera.store().serialize();
     for lifecycle_token in [&token, &edit_token] {
         assert!(
             module
                 .bearer_policy_cmd(
-                    &mut hub,
+                    &mut vera,
                     &context,
                     &transaction(&worker),
                     lifecycle_token,
@@ -494,7 +494,7 @@ fn delegated_policy_lifecycle_preserves_ownership_and_revocation() {
         );
     }
     assert_eq!(module.store().serialize(), before);
-    assert_eq!(hub.store().serialize(), hub_before);
+    assert_eq!(vera.store().serialize(), vera_before);
     let edited = "name: updated\nresources:\n  - name: file\n";
     let before = module.store().serialize();
     let intruder_key = SigningKey::from_slice(&[43; 32]).unwrap();
@@ -509,10 +509,10 @@ fn delegated_policy_lifecycle_preserves_ownership_and_revocation() {
     intruder_claims["iss"] = serde_json::json!(intruder);
     intruder_claims["scope"] = serde_json::json!("acp:policy:edit");
     let intruder_token = signed_token(&intruder_key, intruder_claims);
-    let hub_before = hub.store().serialize();
+    let vera_before = vera.store().serialize();
     assert!(matches!(
         module.bearer_edit_policy(
-            &mut hub,
+            &mut vera,
             &context,
             &transaction(&worker),
             &intruder_token,
@@ -523,7 +523,7 @@ fn delegated_policy_lifecycle_preserves_ownership_and_revocation() {
         Err(AcpError::Unauthorized { .. })
     ));
     assert_eq!(module.store().serialize(), before);
-    assert_eq!(hub.store().serialize(), hub_before);
+    assert_eq!(vera.store().serialize(), vera_before);
     assert!(
         module
             .edit_policy(
@@ -541,7 +541,7 @@ fn delegated_policy_lifecycle_preserves_ownership_and_revocation() {
     let other_token = signed_token(&key, other_claims);
     let (_, updated) = module
         .bearer_edit_policy(
-            &mut hub,
+            &mut vera,
             &context,
             &transaction(&other_worker),
             &other_token,
@@ -553,11 +553,11 @@ fn delegated_policy_lifecycle_preserves_ownership_and_revocation() {
     assert_eq!(updated.metadata.owner_did, issuer);
     assert_eq!(updated.raw_policy, edited);
     let before = module.store().serialize();
-    let hub_before = hub.store().serialize();
+    let vera_before = vera.store().serialize();
     assert!(
         module
             .bearer_edit_policy(
-                &mut hub,
+                &mut vera,
                 &context,
                 &transaction(&worker),
                 &edit_token,
@@ -568,15 +568,15 @@ fn delegated_policy_lifecycle_preserves_ownership_and_revocation() {
             .is_err()
     );
     assert_eq!(module.store().serialize(), before);
-    assert_eq!(hub.store().serialize(), hub_before);
-    hub.revoke_delegation(&context, &owner, &token).unwrap();
-    hub.revoke_delegation(&context, &owner, &edit_token)
+    assert_eq!(vera.store().serialize(), vera_before);
+    vera.revoke_delegation(&context, &owner, &token).unwrap();
+    vera.revoke_delegation(&context, &owner, &edit_token)
         .unwrap();
-    let hub_before = hub.store().serialize();
+    let vera_before = vera.store().serialize();
     assert!(
         module
             .bearer_create_policy(
-                &mut hub,
+                &mut vera,
                 &context,
                 &submission,
                 &token,
@@ -588,7 +588,7 @@ fn delegated_policy_lifecycle_preserves_ownership_and_revocation() {
     assert!(
         module
             .bearer_edit_policy(
-                &mut hub,
+                &mut vera,
                 &context,
                 &transaction(&worker),
                 &edit_token,
@@ -599,14 +599,14 @@ fn delegated_policy_lifecycle_preserves_ownership_and_revocation() {
             .is_err()
     );
     assert_eq!(module.store().serialize(), before);
-    assert_eq!(hub.store().serialize(), hub_before);
+    assert_eq!(vera.store().serialize(), vera_before);
 }
 
 #[test]
 fn delegated_policy_creation_rolls_back_when_usage_cannot_be_recorded() {
     use vera_modules::{
-        hub::VeraModule,
         kv_store::{InMemoryKvStore, ModuleKvStore},
+        vera::VeraModule,
     };
 
     let key = SigningKey::from_slice(&[42; 32]).unwrap();
@@ -649,15 +649,15 @@ fn delegated_policy_creation_rolls_back_when_usage_cannot_be_recorded() {
         },
     };
     let mut store = InMemoryKvStore::default();
-    store.put(vera_modules::hub::keys::CHAIN_CONFIG_KEY, vec![0xff]);
-    let mut hub = VeraModule::from_store(store);
+    store.put(vera_modules::vera::keys::CHAIN_CONFIG_KEY, vec![0xff]);
+    let mut vera = VeraModule::from_store(store);
     let mut module = AcpModule::new();
     let before = module.store().serialize();
-    let hub_before = hub.store().serialize();
+    let vera_before = vera.store().serialize();
     assert!(
         module
             .bearer_create_policy(
-                &mut hub,
+                &mut vera,
                 &context,
                 &submission,
                 &token,
@@ -667,7 +667,7 @@ fn delegated_policy_creation_rolls_back_when_usage_cannot_be_recorded() {
             .is_err()
     );
     assert_eq!(module.store().serialize(), before);
-    assert_eq!(hub.store().serialize(), hub_before);
+    assert_eq!(vera.store().serialize(), vera_before);
     assert!(module.query_policy_ids().unwrap().is_empty());
 }
 

@@ -13,7 +13,7 @@ use commonware_glue::stateful::{
 use commonware_runtime::{Runner as _, Supervisor as _, buffer::paged::CacheRef, tokio};
 use commonware_utils::{NZU16, NZUsize};
 use vera_app::{ModuleDb, VeraStateSet, VeraUnmerkleized};
-use vera_app::{NoopSink, ReshareInput, StatefulHubApp, apply_genesis, genesis_block};
+use vera_app::{NoopSink, ReshareInput, StatefulVeraApp, apply_genesis, genesis_block};
 use vera_backend::{Ctx, VeraStateSet as BackendStateSet, state_set_config};
 use vera_client::{ACP_ADDRESS, BlsSigner};
 use vera_consensus::{Mempool as _, components::InMemoryMempool};
@@ -46,12 +46,12 @@ fn create_policy(signer: &BlsSigner, name: &str) -> Tx {
 }
 
 async fn propose(
-    app: &mut StatefulHubApp<NoopSink>,
+    app: &mut StatefulVeraApp<NoopSink>,
     context: Ctx,
     parent: &Block,
     batches: VeraUnmerkleized,
     tx: Option<Tx>,
-) -> Proposed<StatefulHubApp<NoopSink>, Ctx> {
+) -> Proposed<StatefulVeraApp<NoopSink>, Ctx> {
     let provider = InMemoryMempool::new();
     if let Some(tx) = tx {
         assert!(provider.insert(tx));
@@ -109,7 +109,7 @@ fn check_pending_branches(persistent: bool) {
             .await
             .unwrap();
         let set: VeraStateSet = (set.0, set.1, set.2, Shared::new("native", native));
-        let mut app = StatefulHubApp::new(
+        let mut app = StatefulVeraApp::new(
             executor.clone(),
             genesis.clone(),
             InMemoryMempool::new(),
@@ -140,7 +140,7 @@ fn check_pending_branches(persistent: bool) {
         assert_eq!(a.block.txs.len(), 1);
         assert_eq!(b.block.txs.len(), 1);
 
-        let target = StatefulHubApp::<NoopSink>::sync_targets(&a.block);
+        let target = StatefulVeraApp::<NoopSink>::sync_targets(&a.block);
         assert!(VeraStateSet::matches_sync_targets(&a.merkleized, &target));
         let mut wrong_height = target.clone();
         wrong_height.3.height += 1;
@@ -208,7 +208,7 @@ fn check_pending_branches(persistent: bool) {
             assert!(visible.acp.query_policy_ids().unwrap().is_empty());
         }
 
-        let first_target = StatefulHubApp::<NoopSink>::sync_targets(&a.block);
+        let first_target = StatefulVeraApp::<NoopSink>::sync_targets(&a.block);
         for winner in [a, child_a] {
             let captured = app
                 .capture(
@@ -271,7 +271,7 @@ fn check_pending_branches(persistent: bool) {
                     .unwrap(),
                 1
             );
-            set.rewind_to_targets(StatefulHubApp::<NoopSink>::sync_targets(&genesis))
+            set.rewind_to_targets(StatefulVeraApp::<NoopSink>::sync_targets(&genesis))
                 .await;
             assert_eq!(executor.module_height().unwrap(), 0);
             assert!(

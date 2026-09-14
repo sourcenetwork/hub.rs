@@ -2,7 +2,7 @@
 
 use alloy_primitives::{Address, Bytes};
 use alloy_sol_types::SolCall;
-use vera_modules::hub::abi::IHub;
+use vera_modules::vera::abi::IVera;
 
 use crate::client::{VERA_ADDRESS, VeraClient};
 use crate::error::ClientError;
@@ -10,30 +10,30 @@ use crate::error::ClientError;
 impl VeraClient {
     /// Look up a JWS token record by hash.
     pub async fn get_jws_token(&self, token_hash: &str) -> Result<(bool, Bytes), ClientError> {
-        let calldata = IHub::getJWSTokenCall {
+        let calldata = IVera::getJWSTokenCall {
             tokenHash: token_hash.into(),
         }
         .abi_encode();
         let result = self.eth_call(VERA_ADDRESS, calldata.into()).await?;
-        let decoded = IHub::getJWSTokenCall::abi_decode_returns(&result)
+        let decoded = IVera::getJWSTokenCall::abi_decode_returns(&result)
             .map_err(|e| ClientError::AbiDecode(e.to_string()))?;
         Ok((decoded.found, decoded.record))
     }
 
     /// Look up all JWS tokens issued by a DID.
     pub async fn get_jws_tokens_by_did(&self, did: &str) -> Result<Bytes, ClientError> {
-        let calldata = IHub::getJWSTokensByDidCall { did: did.into() }.abi_encode();
+        let calldata = IVera::getJWSTokensByDidCall { did: did.into() }.abi_encode();
         let result = self.eth_call(VERA_ADDRESS, calldata.into()).await?;
-        let decoded = IHub::getJWSTokensByDidCall::abi_decode_returns(&result)
+        let decoded = IVera::getJWSTokensByDidCall::abi_decode_returns(&result)
             .map_err(|e| ClientError::AbiDecode(e.to_string()))?;
         Ok(decoded)
     }
 
     /// Look up all JWS tokens authorized for an account.
     pub async fn get_jws_tokens_by_account(&self, account: Address) -> Result<Bytes, ClientError> {
-        let calldata = IHub::getJWSTokensByAccountCall { account }.abi_encode();
+        let calldata = IVera::getJWSTokensByAccountCall { account }.abi_encode();
         let result = self.eth_call(VERA_ADDRESS, calldata.into()).await?;
-        let decoded = IHub::getJWSTokensByAccountCall::abi_decode_returns(&result)
+        let decoded = IVera::getJWSTokensByAccountCall::abi_decode_returns(&result)
             .map_err(|e| ClientError::AbiDecode(e.to_string()))?;
         Ok(decoded)
     }
@@ -43,29 +43,29 @@ impl VeraClient {
         &self,
         submitter: &str,
     ) -> Result<Bytes, ClientError> {
-        let calldata = IHub::getDelegationsBySubmitterCall {
+        let calldata = IVera::getDelegationsBySubmitterCall {
             submitter: submitter.into(),
         }
         .abi_encode();
         let result = self.eth_call(VERA_ADDRESS, calldata.into()).await?;
-        IHub::getDelegationsBySubmitterCall::abi_decode_returns(&result)
+        IVera::getDelegationsBySubmitterCall::abi_decode_returns(&result)
             .map_err(|e| ClientError::AbiDecode(e.to_string()))
     }
 
     /// Fetch the chain configuration.
     pub async fn get_chain_config(&self) -> Result<Bytes, ClientError> {
-        let calldata = IHub::getChainConfigCall {}.abi_encode();
+        let calldata = IVera::getChainConfigCall {}.abi_encode();
         let result = self.eth_call(VERA_ADDRESS, calldata.into()).await?;
-        let decoded = IHub::getChainConfigCall::abi_decode_returns(&result)
+        let decoded = IVera::getChainConfigCall::abi_decode_returns(&result)
             .map_err(|e| ClientError::AbiDecode(e.to_string()))?;
         Ok(decoded)
     }
 
     /// Fetch current Vera module parameters.
     pub async fn get_hub_params(&self) -> Result<Bytes, ClientError> {
-        let calldata = IHub::getParamsCall {}.abi_encode();
+        let calldata = IVera::getParamsCall {}.abi_encode();
         let result = self.eth_call(VERA_ADDRESS, calldata.into()).await?;
-        let decoded = IHub::getParamsCall::abi_decode_returns(&result)
+        let decoded = IVera::getParamsCall::abi_decode_returns(&result)
             .map_err(|e| ClientError::AbiDecode(e.to_string()))?;
         Ok(decoded)
     }
@@ -77,56 +77,56 @@ mod tests {
 
     #[test]
     fn get_jws_token_calldata_roundtrip() {
-        let call = IHub::getJWSTokenCall {
+        let call = IVera::getJWSTokenCall {
             tokenHash: "abc123def456".into(),
         };
         let encoded = call.abi_encode();
-        assert_eq!(&encoded[..4], <IHub::getJWSTokenCall as SolCall>::SELECTOR);
-        let decoded = IHub::getJWSTokenCall::abi_decode(&encoded).unwrap();
+        assert_eq!(&encoded[..4], <IVera::getJWSTokenCall as SolCall>::SELECTOR);
+        let decoded = IVera::getJWSTokenCall::abi_decode(&encoded).unwrap();
         assert_eq!(decoded.tokenHash, "abc123def456");
     }
 
     #[test]
     fn get_jws_tokens_by_did_calldata_roundtrip() {
-        let call = IHub::getJWSTokensByDidCall {
+        let call = IVera::getJWSTokensByDidCall {
             did: "did:key:z6Mk...".into(),
         };
         let encoded = call.abi_encode();
         assert_eq!(
             &encoded[..4],
-            <IHub::getJWSTokensByDidCall as SolCall>::SELECTOR
+            <IVera::getJWSTokensByDidCall as SolCall>::SELECTOR
         );
-        let decoded = IHub::getJWSTokensByDidCall::abi_decode(&encoded).unwrap();
+        let decoded = IVera::getJWSTokensByDidCall::abi_decode(&encoded).unwrap();
         assert_eq!(decoded.did, "did:key:z6Mk...");
     }
 
     #[test]
     fn get_jws_tokens_by_account_calldata_roundtrip() {
         let account = Address::repeat_byte(0x42);
-        let call = IHub::getJWSTokensByAccountCall { account };
+        let call = IVera::getJWSTokensByAccountCall { account };
         let encoded = call.abi_encode();
         assert_eq!(
             &encoded[..4],
-            <IHub::getJWSTokensByAccountCall as SolCall>::SELECTOR
+            <IVera::getJWSTokensByAccountCall as SolCall>::SELECTOR
         );
-        let decoded = IHub::getJWSTokensByAccountCall::abi_decode(&encoded).unwrap();
+        let decoded = IVera::getJWSTokensByAccountCall::abi_decode(&encoded).unwrap();
         assert_eq!(decoded.account, account);
     }
 
     #[test]
     fn get_chain_config_calldata_selector() {
-        let calldata = IHub::getChainConfigCall {}.abi_encode();
+        let calldata = IVera::getChainConfigCall {}.abi_encode();
         assert_eq!(calldata.len(), 4);
         assert_eq!(
             &calldata[..4],
-            <IHub::getChainConfigCall as SolCall>::SELECTOR
+            <IVera::getChainConfigCall as SolCall>::SELECTOR
         );
     }
 
     #[test]
     fn get_params_calldata_selector() {
-        let calldata = IHub::getParamsCall {}.abi_encode();
+        let calldata = IVera::getParamsCall {}.abi_encode();
         assert_eq!(calldata.len(), 4);
-        assert_eq!(&calldata[..4], <IHub::getParamsCall as SolCall>::SELECTOR);
+        assert_eq!(&calldata[..4], <IVera::getParamsCall as SolCall>::SELECTOR);
     }
 }

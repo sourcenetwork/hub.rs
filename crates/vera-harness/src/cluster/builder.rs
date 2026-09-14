@@ -276,7 +276,7 @@ impl TestClusterBuilder {
 
 /// Resolve the verad binary.
 ///
-/// Uses `BinaryResolver` with the `HUBD` prefix. Set `VERAD_BINARY` to an
+/// Uses `BinaryResolver` with the `VERAD` prefix. Set `VERAD_BINARY` to an
 /// explicit path, `VERAD_WORKSPACE` to a vera.rs checkout, or ensure `verad`
 /// is on PATH.
 pub fn resolve_binary() -> eyre::Result<PathBuf> {

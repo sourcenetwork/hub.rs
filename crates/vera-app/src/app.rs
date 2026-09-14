@@ -34,7 +34,7 @@ struct PendingExecution {
 
 /// Vera block production and verification on top of glue-managed state.
 #[derive(Clone)]
-pub struct StatefulHubApp<S: FinalizedSink, D: ApplicationState = VeraStateSet> {
+pub struct StatefulVeraApp<S: FinalizedSink, D: ApplicationState = VeraStateSet> {
     storage: PhantomData<D>,
     executor: VeraExecutor,
     genesis: Block,
@@ -47,16 +47,16 @@ pub struct StatefulHubApp<S: FinalizedSink, D: ApplicationState = VeraStateSet> 
     pending: Arc<Mutex<HashMap<BlockId, PendingExecution>>>,
 }
 
-impl<S: FinalizedSink, D: ApplicationState> std::fmt::Debug for StatefulHubApp<S, D> {
+impl<S: FinalizedSink, D: ApplicationState> std::fmt::Debug for StatefulVeraApp<S, D> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("StatefulHubApp")
+        f.debug_struct("StatefulVeraApp")
             .field("max_txs", &self.max_txs)
             .field("gas_limit", &self.gas_limit)
             .finish_non_exhaustive()
     }
 }
 
-impl<S: FinalizedSink, D: ApplicationState> StatefulHubApp<S, D> {
+impl<S: FinalizedSink, D: ApplicationState> StatefulVeraApp<S, D> {
     /// Create the application around an executor and the genesis block.
     pub fn new(
         executor: VeraExecutor,
@@ -193,7 +193,7 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
-impl<S: FinalizedSink, D: ApplicationState> Application<Ctx> for StatefulHubApp<S, D> {
+impl<S: FinalizedSink, D: ApplicationState> Application<Ctx> for StatefulVeraApp<S, D> {
     type SigningScheme = ConsensusScheme;
     type Context = ConsensusContext;
     type Block = Block;

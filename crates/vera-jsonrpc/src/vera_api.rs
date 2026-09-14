@@ -40,7 +40,7 @@ pub type ReceiptProofLookup =
 
 /// Vera-specific JSON-RPC API trait.
 ///
-/// Provides methods specific to hub node operations.
+/// Provides methods specific to vera node operations.
 #[rpc(server, namespace = "vera")]
 pub trait VeraApi {
     /// Returns the current node status including consensus information.
@@ -147,7 +147,7 @@ pub trait VeraApi {
     async fn get_light_block(&self, height: U64) -> RpcResult<LightBlock>;
 }
 
-/// Implementation of the hub RPC API.
+/// Implementation of the vera RPC API.
 pub struct VeraApiImpl {
     state: Arc<NodeState>,
     tx_submit: Option<TxSubmitCallback>,
@@ -177,7 +177,7 @@ impl std::fmt::Debug for VeraApiImpl {
 }
 
 impl VeraApiImpl {
-    /// Create a new hub API implementation.
+    /// Create a new vera API implementation.
     #[must_use]
     pub fn new(state: Arc<NodeState>, tx_submit: Option<TxSubmitCallback>) -> Self {
         Self {

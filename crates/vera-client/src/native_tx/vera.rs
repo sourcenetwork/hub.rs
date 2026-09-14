@@ -1,7 +1,7 @@
 //! Vera native BLS transactions via `vera_sendNativeTx` to precompile `0x0812`.
 
 use alloy_sol_types::SolCall;
-use vera_modules::hub::abi::IHub;
+use vera_modules::vera::abi::IVera;
 
 use crate::bls_signer::BlsSigner;
 use crate::client::{VERA_ADDRESS, VeraClient};
@@ -15,7 +15,7 @@ impl VeraClient {
         signer: &BlsSigner,
         token: &str,
     ) -> Result<TransactionReceipt, ClientError> {
-        let calldata = IHub::revokeDelegationCall {
+        let calldata = IVera::revokeDelegationCall {
             token: token.into(),
         }
         .abi_encode();
@@ -29,7 +29,7 @@ impl VeraClient {
         signer: &BlsSigner,
         token_hash: &str,
     ) -> Result<TransactionReceipt, ClientError> {
-        let calldata = IHub::invalidateJWSCall {
+        let calldata = IVera::invalidateJWSCall {
             tokenHash: token_hash.into(),
         }
         .abi_encode();
@@ -41,19 +41,19 @@ impl VeraClient {
 #[cfg(test)]
 mod tests {
     use alloy_sol_types::SolCall;
-    use vera_modules::hub::abi::IHub;
+    use vera_modules::vera::abi::IVera;
 
     #[test]
     fn native_invalidate_jws_calldata_roundtrip() {
-        let call = IHub::invalidateJWSCall {
+        let call = IVera::invalidateJWSCall {
             tokenHash: "abc123".into(),
         };
         let encoded = call.abi_encode();
         assert_eq!(
             &encoded[..4],
-            <IHub::invalidateJWSCall as SolCall>::SELECTOR
+            <IVera::invalidateJWSCall as SolCall>::SELECTOR
         );
-        let decoded = IHub::invalidateJWSCall::abi_decode(&encoded).unwrap();
+        let decoded = IVera::invalidateJWSCall::abi_decode(&encoded).unwrap();
         assert_eq!(decoded.tokenHash, "abc123");
     }
 }

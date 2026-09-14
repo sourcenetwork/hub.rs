@@ -2,7 +2,7 @@
 
 use crate::{ClientError, VeraClient};
 use vera_domain::ConsensusPublicKey;
-use vera_modules::hub::relay::{RelayState, relay_key};
+use vera_modules::vera::relay::{RelayState, relay_key};
 use vera_permission::{ModuleId, RECORD_PROOF_BYTES};
 
 /// Operator grant or certified absence at a finalized revision.
@@ -64,7 +64,7 @@ fn decode(bytes: &[u8], issuer: &str) -> Result<RelayState, ClientError> {
 mod tests {
     use super::*;
     use vera_crypto::jwt::DelegationScope;
-    use vera_modules::hub::relay::RelayGrant;
+    use vera_modules::vera::relay::RelayGrant;
 
     #[test]
     fn relay_records_bind_issuer_and_preserve_expired_grants() {

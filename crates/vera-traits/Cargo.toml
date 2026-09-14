@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Core trait abstractions for hub storage and consensus"
+description = "Core trait abstractions for vera storage and consensus"
 
 [dependencies]
 alloy-primitives.workspace = true

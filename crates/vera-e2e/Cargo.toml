@@ -3,7 +3,7 @@ name = "vera-e2e"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "End-to-end test harness for hub"
+description = "End-to-end test harness for vera"
 
 [features]
 fault-injection = []

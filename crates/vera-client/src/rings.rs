@@ -4,11 +4,11 @@ use alloy_primitives::Bytes;
 use alloy_sol_types::SolCall as _;
 use k256::ecdsa::{Signature, SigningKey, signature::hazmat::PrehashSigner as _};
 use vera_domain::ConsensusPublicKey;
-use vera_modules::hub::abi::IHub;
-pub use vera_modules::hub::rings::reports::{
+use vera_modules::vera::abi::IVera;
+pub use vera_modules::vera::rings::reports::{
     CommitteeScope, NodeDemerits, NodeOffline, ReportEnvelope, ReportOutcome, SignedReport,
 };
-pub use vera_modules::hub::rings::{
+pub use vera_modules::vera::rings::{
     ReportingConfig, ReshareTarget, RingCommand, RingConfig, RingParticipantCommand,
     RingParticipantRequest, RingRecord, RingReshareRequest, RingSettings, RingState, RingUpdate,
     ScheduledUpgrade, SignedRingParticipantRequest, ThresholdScheme, ring_deployment_label,
@@ -18,7 +18,7 @@ use crate::{ClientError, ModuleId, RECORD_PROOF_BYTES, VeraClient};
 
 /// Encode a delegated command for `NativeWorker::prepare(VERA_ADDRESS, calldata)`.
 pub fn encode_ring_command(command: &RingCommand, token: &str) -> Result<Bytes, ClientError> {
-    Ok(IHub::applyRingCommandCall {
+    Ok(IVera::applyRingCommandCall {
         request: request_bytes(command)?,
         bearerToken: token.into(),
     }
@@ -50,7 +50,7 @@ pub fn sign_ring_participant_request(
 pub fn encode_ring_participant_request(
     signed: &SignedRingParticipantRequest,
 ) -> Result<Bytes, ClientError> {
-    Ok(IHub::applyRingParticipantRequestCall {
+    Ok(IVera::applyRingParticipantRequestCall {
         request: request_bytes(signed)?,
     }
     .abi_encode()
@@ -59,7 +59,7 @@ pub fn encode_ring_participant_request(
 
 /// Encode a threshold-signed reshare for durable worker preparation.
 pub fn encode_ring_reshare(request: &RingReshareRequest) -> Result<Bytes, ClientError> {
-    Ok(IHub::finalizeRingReshareCall {
+    Ok(IVera::finalizeRingReshareCall {
         request: request_bytes(request)?,
     }
     .abi_encode()
@@ -68,15 +68,15 @@ pub fn encode_ring_reshare(request: &RingReshareRequest) -> Result<Bytes, Client
 
 /// Recover reshare parameters from a journaled command without consulting newer ring state.
 pub fn decode_ring_reshare(calldata: &[u8]) -> Result<Option<RingReshareRequest>, ClientError> {
-    if !calldata.starts_with(&IHub::finalizeRingReshareCall::SELECTOR) {
+    if !calldata.starts_with(&IVera::finalizeRingReshareCall::SELECTOR) {
         return Ok(None);
     }
-    if calldata.len() > vera_modules::hub::rings::MAX_RING_REQUEST_BYTES + 100 {
+    if calldata.len() > vera_modules::vera::rings::MAX_RING_REQUEST_BYTES + 100 {
         return Err(ClientError::InvalidResponse(
             "reshare call exceeds byte limit",
         ));
     }
-    let call = IHub::finalizeRingReshareCall::abi_decode(calldata)
+    let call = IVera::finalizeRingReshareCall::abi_decode(calldata)
         .map_err(|_| ClientError::InvalidResponse("invalid reshare call"))?;
     let request = serde_json::from_slice(&call.request)?;
     if encode_ring_reshare(&request)?.as_ref() != calldata {
@@ -88,10 +88,10 @@ pub fn decode_ring_reshare(calldata: &[u8]) -> Result<Option<RingReshareRequest>
 /// Encode an aggregate-signed fault report for durable worker preparation.
 pub fn encode_ring_report(report: &SignedReport) -> Result<Bytes, ClientError> {
     let bytes = serde_json::to_vec(report)?;
-    if bytes.len() > vera_modules::hub::rings::reports::MAX_REPORT_REQUEST_BYTES {
+    if bytes.len() > vera_modules::vera::rings::reports::MAX_REPORT_REQUEST_BYTES {
         return Err(ClientError::Signing("report exceeds byte limit".into()));
     }
-    Ok(IHub::submitRingReportCall {
+    Ok(IVera::submitRingReportCall {
         request: bytes.into(),
     }
     .abi_encode()
@@ -100,7 +100,7 @@ pub fn encode_ring_report(report: &SignedReport) -> Result<Bytes, ClientError> {
 
 fn request_bytes(request: &impl serde::Serialize) -> Result<Bytes, ClientError> {
     let bytes = serde_json::to_vec(request)?;
-    if bytes.len() > vera_modules::hub::rings::MAX_RING_REQUEST_BYTES {
+    if bytes.len() > vera_modules::vera::rings::MAX_RING_REQUEST_BYTES {
         return Err(ClientError::Signing(
             "ring request exceeds byte limit".into(),
         ));
@@ -139,7 +139,7 @@ impl VeraClient {
         minimum: u64,
         trusted: &ConsensusPublicKey,
     ) -> Result<NodeDemeritsRead, ClientError> {
-        let key = vera_modules::hub::rings::reports::demerits_key(ring_id, node_key)
+        let key = vera_modules::vera::rings::reports::demerits_key(ring_id, node_key)
             .map_err(|e| ClientError::Signing(e.to_string()))?;
         let response = self
             .read_current_record(ModuleId::Vera, &key, minimum, trusted, RECORD_PROOF_BYTES)
@@ -178,7 +178,7 @@ impl VeraClient {
         minimum: u64,
         trusted: &ConsensusPublicKey,
     ) -> Result<RingRead, ClientError> {
-        let key = vera_modules::hub::rings::ring_key(id)
+        let key = vera_modules::vera::rings::ring_key(id)
             .map_err(|e| ClientError::Signing(e.to_string()))?;
         let response = self
             .read_current_record(ModuleId::Vera, &key, minimum, trusted, RECORD_PROOF_BYTES)
@@ -187,7 +187,7 @@ impl VeraClient {
             .record
             .value
             .map(|bytes| {
-                if bytes.len() > vera_modules::hub::rings::MAX_RING_RECORD_BYTES {
+                if bytes.len() > vera_modules::vera::rings::MAX_RING_RECORD_BYTES {
                     return Err(ClientError::InvalidResponse(
                         "ring record exceeds byte limit",
                     ));

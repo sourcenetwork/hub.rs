@@ -157,7 +157,7 @@ fn hydration_rejects_orphaned_token_indexes() {
             native::state_config("token-index", cache),
         )
         .await;
-        let key = vera_modules::hub::keys::jws_token_by_did_key("did:key:issuer", "missing");
+        let key = vera_modules::vera::keys::jws_token_by_did_key("did:key:issuer", "missing");
         let mut changes: ModuleChanges = std::array::from_fn(|_| Vec::new());
         changes[2].push((key, Some(vec![1])));
         let batch = native::prepare(set.new_batches().await, changes).await.unwrap();

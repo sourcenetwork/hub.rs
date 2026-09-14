@@ -29,10 +29,10 @@ const fn address_from_last_two_bytes(hi: u8, lo: u8) -> Address {
     Address::new(bytes)
 }
 
-/// Client for interacting with a hub node via JSON-RPC.
+/// Client for interacting with a vera node via JSON-RPC.
 ///
-/// Provides Ethereum-compatible RPC methods (`eth_*`), hub-specific
-/// methods (`hub_*`), and typed query helpers for each precompile module.
+/// Provides Ethereum-compatible RPC methods (`eth_*`), vera-specific
+/// methods (`vera_*`), and typed query helpers for each precompile module.
 #[derive(Debug)]
 pub struct VeraClient {
     rpc_url: String,

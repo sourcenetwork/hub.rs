@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Configuration types for hub node"
+description = "Configuration types for vera node"
 
 [lints]
 workspace = true

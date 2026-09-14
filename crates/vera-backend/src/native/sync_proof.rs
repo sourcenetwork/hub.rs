@@ -39,7 +39,7 @@ impl SyncProof {
         Ok(Self([a, b, h, n]))
     }
 
-    /// Verify every terminal commit and derive targets in ACP, bulletin, hub, sequence order.
+    /// Verify every terminal commit and derive targets in ACP, bulletin, vera, sequence order.
     /// The caller must authenticate `expected` independently, for example through finality.
     pub fn verify(&self, expected: B256) -> Result<NativeTargets, BackendError> {
         let roots = self

@@ -89,7 +89,7 @@ async fn cluster_observability_canonical() {
         assert!(
             log_height >= 2,
             "node{} log tracker should have seen at least 2 blocks (got {}). \
-             Log parser regex may not match hub's output format.",
+             Log parser regex may not match vera's output format.",
             i,
             log_height,
         );

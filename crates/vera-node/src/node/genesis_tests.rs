@@ -1,7 +1,7 @@
 use super::*;
 use commonware_runtime::Runner as _;
 use commonware_utils::{NZU16, NZUsize};
-use vera_modules::hub::administration::OperatorPolicy;
+use vera_modules::vera::administration::OperatorPolicy;
 
 fn configured_genesis() -> VeraGenesis {
     let mut genesis = VeraGenesis::devnet();
@@ -76,7 +76,7 @@ fn native_genesis_recovers_partial_initialization_and_binds_configuration() {
             .await;
             let state = native::load_modules(&modules).await.unwrap();
             assert_eq!(
-                Some(state.hub.administration().unwrap().unwrap().policy),
+                Some(state.vera.administration().unwrap().unwrap().policy),
                 genesis.operators
             );
             assert!(state.acp.store().is_empty());

@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Domain types for hub"
+description = "Domain types for vera"
 
 [lints]
 workspace = true

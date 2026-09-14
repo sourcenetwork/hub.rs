@@ -52,9 +52,9 @@ impl VeraModule {
             submission,
             token,
             (operation.scope(), operation.digest().map_err(invalid)?),
-            |_, hub, actor| {
+            |_, vera, actor| {
                 let store = || -> Result<(Vec<u8>, Vec<u8>, StoredObject)> {
-                    let ring = hub
+                    let ring = vera
                         .threshold_ring(object.ring_id())?
                         .ok_or_else(|| invalid("ring not found"))?;
                     if ring.deployment_root != context.genesis_id
@@ -65,7 +65,7 @@ impl VeraModule {
                     let id = object.id()?;
                     let kind = object.kind();
                     let key = object_key(kind, &id)?;
-                    if hub.store.get_ref(&key).is_some() {
+                    if vera.store.get_ref(&key).is_some() {
                         return Err(invalid("object identity already registered"));
                     }
                     let record = ObjectRecord {
@@ -92,7 +92,7 @@ impl VeraModule {
                 };
                 let (key, bytes, result) =
                     store().map_err(|e| crate::acp::error::AcpError::State(e.to_string()))?;
-                hub.store.put(&key, bytes);
+                vera.store.put(&key, bytes);
                 Ok(result)
             },
         )

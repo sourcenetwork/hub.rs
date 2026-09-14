@@ -1,5 +1,5 @@
 use super::*;
-use crate::{NoopSink, ReshareInput, StatefulHubApp};
+use crate::{NoopSink, ReshareInput, StatefulVeraApp};
 use commonware_consensus::{
     marshal::ancestry,
     types::{Epoch, Round, View},
@@ -23,7 +23,7 @@ fn native_proposals_bind_every_target_and_isolate_competing_execution() {
                 assert!(std::mem::size_of_val(&initialization) <= 64 * 1024);
                 let set = initialization.await;
                 let genesis = checkpoint::block(&set, 0).await;
-                type App = StatefulHubApp<NoopSink, OrderedState>;
+                type App = StatefulVeraApp<NoopSink, OrderedState>;
                 let genesis_targets = App::sync_targets(&genesis);
                 let recovery = set.rewind_to_targets(genesis_targets.clone());
                 assert!(std::mem::size_of_val(&recovery) <= 64 * 1024);

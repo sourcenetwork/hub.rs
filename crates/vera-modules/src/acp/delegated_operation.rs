@@ -13,9 +13,9 @@ use super::{
 #[derive(Debug, Serialize)]
 pub enum DelegatedOperation<'a> {
     /// Complete encrypted document or signing derivation binding.
-    StoreThresholdObject(&'a crate::hub::objects::ThresholdObject),
+    StoreThresholdObject(&'a crate::vera::objects::ThresholdObject),
     /// Complete ring command, including all creation parameters.
-    RingCommand(&'a crate::hub::rings::RingCommand),
+    RingCommand(&'a crate::vera::rings::RingCommand),
     /// Policy definition and serialization format.
     CreatePolicy(&'a str, &'a PolicyMarshalingType),
     /// Policy identifier, replacement definition and serialization format.

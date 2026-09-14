@@ -69,23 +69,23 @@ mod tests {
     #[test]
     fn roster_window_bounds_live_state_and_preserves_parent_snapshots() {
         let keys: Vec<_> = (1..=64).map(|byte| [byte; 32]).collect();
-        let mut hub = VeraModule::default();
-        hub.record_consensus_roster(3, &keys).unwrap();
-        let parent = hub.clone();
+        let mut vera = VeraModule::default();
+        vera.record_consensus_roster(3, &keys).unwrap();
+        let parent = vera.clone();
         for epoch in 4..=1003 {
-            hub = hub.clone();
-            hub.record_consensus_roster(epoch, &keys).unwrap();
-            assert!(hub.store.serialize().len() < 6400);
+            vera = vera.clone();
+            vera.record_consensus_roster(epoch, &keys).unwrap();
+            assert!(vera.store.serialize().len() < 6400);
         }
-        assert_eq!(hub.store.prefix_iter(ROSTER_PREFIX).count(), 3);
-        assert!(hub.consensus_roster(1000).is_none());
+        assert_eq!(vera.store.prefix_iter(ROSTER_PREFIX).count(), 3);
+        assert!(vera.consensus_roster(1000).is_none());
         for epoch in 1001..=1003 {
-            assert!(hub.consensus_roster(epoch).is_some());
+            assert!(vera.consensus_roster(epoch).is_some());
         }
         assert!(parent.consensus_roster(3).is_some());
-        assert!(hub.record_consensus_roster(3, &keys).is_err());
-        hub.record_consensus_roster(2000, &keys).unwrap();
-        assert_eq!(hub.store.prefix_iter(ROSTER_PREFIX).count(), 1);
-        assert!(hub.consensus_roster(1003).is_none());
+        assert!(vera.record_consensus_roster(3, &keys).is_err());
+        vera.record_consensus_roster(2000, &keys).unwrap();
+        assert_eq!(vera.store.prefix_iter(ROSTER_PREFIX).count(), 1);
+        assert!(vera.consensus_roster(1003).is_none());
     }
 }

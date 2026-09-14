@@ -1,4 +1,4 @@
-//! A [`ZanzibarStore`] backed by hub's module KV store.
+//! A [`ZanzibarStore`] backed by vera's module KV store.
 
 use std::sync::RwLock;
 
@@ -49,16 +49,16 @@ pub fn evaluate_access_request<S: RecordStore>(
     Ok(true)
 }
 
-/// A [`ZanzibarStore`] adapter over hub's module KV store.
+/// A [`ZanzibarStore`] adapter over vera's module KV store.
 ///
-/// Maps the zanzibar engine's storage interface onto hub's existing
+/// Maps the zanzibar engine's storage interface onto vera's existing
 /// `relationship/{policy_id}/{storage_key}` and `policy/objs/{id}` keyspace, so
 /// [`zanzibar::PermissionEngine`] can evaluate permissions (including
 /// `TupleToUserset`) directly over committed module state instead of a
 /// divergent bespoke evaluator.
 ///
 /// Relationship reads honor the `archived` flag: an archived record is treated
-/// as absent, matching hub's access-check semantics.
+/// as absent, matching vera's access-check semantics.
 #[derive(Debug, Default)]
 pub struct QmdbZanzibarStore<S: RecordStore = InMemoryKvStore> {
     store: RwLock<S>,
@@ -378,7 +378,7 @@ mod tests {
         Did::new(s).expect("valid did")
     }
 
-    /// Seed a relationship record directly into the kv store under hub's keyspace.
+    /// Seed a relationship record directly into the kv store under vera's keyspace.
     fn seed(store: &mut InMemoryKvStore, rel: &Relationship, archived: bool) {
         let record = RelationshipRecord {
             policy_id: POLICY.to_string(),

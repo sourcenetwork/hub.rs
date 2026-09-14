@@ -220,12 +220,12 @@ fn unconfigured_membership_policy_cannot_be_claimed() {
 fn administrative_state_follows_outer_call_result(#[case] revert: bool) {
     use vera_modules::{
         acp::types::AcpParams,
-        hub::{abi::IHub, administration::*},
+        vera::{abi::IVera, administration::*},
     };
     let key: PrivateKeySigner = "01".repeat(32).parse().unwrap();
     let mut modules = ModuleState::default();
     modules
-        .hub
+        .vera
         .initialize_administration(OperatorPolicy {
             threshold: 1,
             keys: vec![hex::encode(
@@ -234,7 +234,7 @@ fn administrative_state_follows_outer_call_result(#[case] revert: bool) {
         })
         .unwrap();
     let before = (
-        modules.hub.store().serialize(),
+        modules.vera.store().serialize(),
         modules.acp.store().serialize(),
     );
     let request = AdministrativeRequest {
@@ -256,7 +256,7 @@ fn administrative_state_follows_outer_call_result(#[case] revert: bool) {
             signature: hex::encode(&signature.as_bytes()[..64]),
         }],
     };
-    let input = IHub::applyAdministrationCall {
+    let input = IVera::applyAdministrationCall {
         request: serde_json::to_vec(&signed).unwrap().into(),
     }
     .abi_encode();
@@ -276,13 +276,13 @@ fn administrative_state_follows_outer_call_result(#[case] revert: bool) {
     if revert {
         assert_eq!(
             (
-                modules.hub.store().serialize(),
+                modules.vera.store().serialize(),
                 modules.acp.store().serialize()
             ),
             before
         );
     } else {
-        assert_eq!(modules.hub.administration().unwrap().unwrap().sequence, 1);
+        assert_eq!(modules.vera.administration().unwrap().unwrap().sequence, 1);
         assert_eq!(
             modules
                 .acp

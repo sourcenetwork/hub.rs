@@ -15,7 +15,7 @@ cargo build -p verad
 
 ## Binary selection
 
-The harness's `resolve_binary()` (via `test_infra::BinaryResolver`, `HUBD`
+The harness's `resolve_binary()` (via `test_infra::BinaryResolver`, `VERAD`
 prefix) looks for the binary in this order:
 
 1. `VERAD_BINARY` — explicit path, no version check

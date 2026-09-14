@@ -4,8 +4,8 @@ use alloy_primitives::B256;
 use alloy_sol_types::SolCall as _;
 use k256::ecdsa::{Signature, SigningKey, signature::hazmat::PrehashSigner as _};
 use vera_domain::ConsensusPublicKey;
-use vera_modules::hub::abi::IHub;
-pub use vera_modules::hub::nodes::{
+use vera_modules::vera::abi::IVera;
+pub use vera_modules::vera::nodes::{
     NodeCommand, NodeInfo, NodeRecord, NodeRequest, NodeTarget, SignedNodeRequest,
 };
 
@@ -45,12 +45,12 @@ pub fn encode_node_request(
     signed: &SignedNodeRequest,
 ) -> Result<alloy_primitives::Bytes, ClientError> {
     let request = serde_json::to_vec(signed)?;
-    if request.len() > vera_modules::hub::nodes::MAX_NODE_BYTES {
+    if request.len() > vera_modules::vera::nodes::MAX_NODE_BYTES {
         return Err(ClientError::Signing(
             "node request exceeds byte limit".into(),
         ));
     }
-    Ok(IHub::applyNodeRequestCall {
+    Ok(IVera::applyNodeRequestCall {
         request: request.into(),
     }
     .abi_encode()
@@ -85,7 +85,7 @@ impl VeraClient {
         minimum: u64,
         trusted: &ConsensusPublicKey,
     ) -> Result<NodeRead, ClientError> {
-        let key = vera_modules::hub::nodes::node_key(node_key)
+        let key = vera_modules::vera::nodes::node_key(node_key)
             .map_err(|e| ClientError::Signing(e.to_string()))?;
         let response = self
             .read_current_record(ModuleId::Vera, &key, minimum, trusted, RECORD_PROOF_BYTES)
@@ -94,7 +94,7 @@ impl VeraClient {
             .record
             .value
             .map(|bytes| {
-                if bytes.len() > vera_modules::hub::nodes::MAX_NODE_BYTES {
+                if bytes.len() > vera_modules::vera::nodes::MAX_NODE_BYTES {
                     return Err(ClientError::InvalidResponse(
                         "node record exceeds byte limit",
                     ));

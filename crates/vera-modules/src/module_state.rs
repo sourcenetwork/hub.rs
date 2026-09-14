@@ -5,8 +5,8 @@ use std::sync::{Arc, RwLock};
 use alloy_primitives::{B256, keccak256};
 
 use crate::{
-    acp::AcpModule, bulletin::BulletinModule, hub::VeraModule, kv_store::InMemoryKvStore,
-    native_account::NativeNonceStore,
+    acp::AcpModule, bulletin::BulletinModule, kv_store::InMemoryKvStore,
+    native_account::NativeNonceStore, vera::VeraModule,
 };
 
 const MODULE_ROOT_NAMESPACE: &[u8] = b"_HUB_MODULE_ROOT";
@@ -23,7 +23,7 @@ pub struct ModuleState {
     /// Bulletin module.
     pub bulletin: BulletinModule,
     /// Vera module.
-    pub hub: VeraModule,
+    pub vera: VeraModule,
     /// Native account nonce store.
     pub nonces: NativeNonceStore,
 }
@@ -34,13 +34,13 @@ impl ModuleState {
         let stores = [
             self.acp.store(),
             self.bulletin.store(),
-            self.hub.store(),
+            self.vera.store(),
             self.nonces.store(),
         ];
         let parents = [
             parent.acp.store(),
             parent.bulletin.store(),
-            parent.hub.store(),
+            parent.vera.store(),
             parent.nonces.store(),
         ];
         std::array::from_fn(|i| stores[i].diff_from(parents[i]))
@@ -53,14 +53,14 @@ impl ModuleState {
     pub fn state_root(&self) -> B256 {
         let acp_bytes = self.acp.store().serialize();
         let bulletin_bytes = self.bulletin.store().serialize();
-        let hub_bytes = self.hub.store().serialize();
+        let vera_bytes = self.vera.store().serialize();
         let nonce_bytes = self.nonces.store().serialize();
 
         let mut buf = Vec::with_capacity(MODULE_ROOT_NAMESPACE.len() + 128);
         buf.extend_from_slice(MODULE_ROOT_NAMESPACE);
         buf.extend_from_slice(keccak256(&acp_bytes).as_slice());
         buf.extend_from_slice(keccak256(&bulletin_bytes).as_slice());
-        buf.extend_from_slice(keccak256(&hub_bytes).as_slice());
+        buf.extend_from_slice(keccak256(&vera_bytes).as_slice());
         buf.extend_from_slice(keccak256(&nonce_bytes).as_slice());
         keccak256(buf)
     }
@@ -70,18 +70,18 @@ impl ModuleState {
         [
             self.acp.store().serialize(),
             self.bulletin.store().serialize(),
-            self.hub.store().serialize(),
+            self.vera.store().serialize(),
             self.nonces.store().serialize(),
         ]
     }
 
     /// Reconstruct from deserialized stores.
     pub fn from_stores(stores: [InMemoryKvStore; 4]) -> Self {
-        let [acp_store, bulletin_store, hub_store, nonce_store] = stores;
+        let [acp_store, bulletin_store, vera_store, nonce_store] = stores;
         Self {
             acp: AcpModule::from_store(acp_store),
             bulletin: BulletinModule::from_store(bulletin_store),
-            hub: VeraModule::from_store(hub_store),
+            vera: VeraModule::from_store(vera_store),
             nonces: NativeNonceStore::from_store(nonce_store),
         }
     }
@@ -91,7 +91,7 @@ impl ModuleState {
 ///
 /// `keccak256(namespace || roots[0] || roots[1] || roots[2] || roots[3])`
 ///
-/// Root order: `[acp, bulletin, hub, nonces]`.
+/// Root order: `[acp, bulletin, vera, nonces]`.
 pub fn combine_module_roots(roots: &[[u8; 32]; 4]) -> B256 {
     let mut buf = Vec::with_capacity(MODULE_ROOT_NAMESPACE.len() + 128);
     buf.extend_from_slice(MODULE_ROOT_NAMESPACE);

@@ -3,7 +3,7 @@ name = "vera-node"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Hub validator node assembly on commonware glue"
+description = "Vera validator node assembly on commonware glue"
 
 [features]
 fault-injection = ["vera-app/fault-injection"]

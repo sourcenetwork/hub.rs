@@ -3,7 +3,7 @@ name = "vera-modules"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Hub module implementations (ACP, Bulletin, Hub)"
+description = "Vera module implementations (ACP, Bulletin, Vera)"
 
 [dependencies]
 acp.workspace = true

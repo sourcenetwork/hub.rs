@@ -1,6 +1,6 @@
-//! Glue stateful application around the hub block executor.
+//! Glue stateful application around the vera block executor.
 //!
-//! [`StatefulHubApp`] implements `commonware_glue::stateful::Application`: it
+//! [`StatefulVeraApp`] implements `commonware_glue::stateful::Application`: it
 //! builds blocks from the mempool, executes them against forked QMDB batches,
 //! verifies proposals by re-execution, and hands finalized receipts to a
 //! [`FinalizedSink`]. State bookkeeping (pending forks, apply on finalization,
@@ -12,7 +12,7 @@ mod app_state;
 pub use app_state::{ApplicationState, StateExecution};
 
 mod app;
-pub use app::StatefulHubApp;
+pub use app::StatefulVeraApp;
 
 mod vrf_cache;
 pub use vrf_cache::VrfSeedCache;

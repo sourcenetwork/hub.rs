@@ -1,12 +1,12 @@
-//! `verad client` — CLI for interacting with a running hub node.
+//! `verad client` — CLI for interacting with a running vera node.
 
 mod acp;
 mod bulletin;
 mod context;
-mod hub_mod;
 mod keys;
 mod status;
 mod tx;
+mod vera_mod;
 
 use clap::{Args, Subcommand};
 
@@ -71,7 +71,7 @@ enum ClientCommand {
 
     /// Vera module operations (chain config, JWS tokens).
     #[command(subcommand)]
-    Vera(hub_mod::VeraCommand),
+    Vera(vera_mod::VeraCommand),
 
     /// Key management utilities.
     #[command(subcommand)]

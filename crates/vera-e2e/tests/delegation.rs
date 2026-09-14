@@ -11,8 +11,8 @@ use vera_client::{
 use vera_e2e::cluster::{ConsensusPreset, TestCluster};
 use vera_modules::{
     acp::abi::IAcp,
-    hub::{
-        abi::IHub,
+    vera::{
+        abi::IVera,
         keys::hash_jws_token,
         types::{JWSTokenRecord, JWSTokenStatus},
     },
@@ -197,7 +197,7 @@ async fn delegation_revocation_and_failed_batch_survive_restart() {
             &client,
             &owner,
             VERA_ADDRESS,
-            IHub::revokeDelegationCall {
+            IVera::revokeDelegationCall {
                 token: bearer.clone(),
             }
             .abi_encode(),

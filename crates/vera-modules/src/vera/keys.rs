@@ -1,6 +1,6 @@
 //! Vera module key prefixes and builders.
 //!
-//! Matches Go `x/hub/types/keys.go` byte-prefix convention.
+//! Matches Go `x/vera/types/keys.go` byte-prefix convention.
 
 use sha2::{Digest, Sha256};
 
@@ -135,8 +135,8 @@ mod tests {
     fn borsh_roundtrip_jws_token_record() {
         use borsh::BorshDeserialize;
 
-        use crate::hub::types::{JWSTokenRecord, JWSTokenStatus};
         use crate::types::Timestamp;
+        use crate::vera::types::{JWSTokenRecord, JWSTokenStatus};
 
         let record = JWSTokenRecord {
             token_hash: "abc123".into(),
@@ -170,7 +170,7 @@ mod tests {
     fn borsh_roundtrip_chain_config() {
         use borsh::BorshDeserialize;
 
-        use crate::hub::types::ChainConfig;
+        use crate::vera::types::ChainConfig;
 
         let config = ChainConfig {
             allow_zero_fee_txs: true,

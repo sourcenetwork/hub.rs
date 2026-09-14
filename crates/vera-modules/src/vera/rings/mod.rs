@@ -69,8 +69,8 @@ impl VeraModule {
             submission,
             token,
             (operation.scope(), operation.digest().map_err(invalid)?),
-            |acp, hub, actor| {
-                hub.ring_command(acp, context, actor, command)
+            |acp, vera, actor| {
+                vera.ring_command(acp, context, actor, command)
                     .map_err(|error| crate::acp::error::AcpError::State(error.to_string()))
             },
         )

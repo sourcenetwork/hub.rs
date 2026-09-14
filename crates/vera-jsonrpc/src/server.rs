@@ -100,14 +100,14 @@ pub struct RpcServer<S: StateProvider = NoopStateProvider> {
     subscription_logs: Option<broadcast::Sender<Vec<RpcLog>>>,
     subscription_headers: Option<broadcast::Sender<GossipHeader>>,
     extra_modules: Vec<jsonrpsee::RpcModule<()>>,
-    hub_index: Option<Arc<BlockIndex>>,
+    vera_index: Option<Arc<BlockIndex>>,
     vera_modules: Option<SharedModuleState>,
-    hub_module_trees: Option<ModuleTrees>,
-    hub_native_modules: Option<(vera_backend::native::NativeStateSet, SharedModuleState)>,
-    hub_light_block_index: Option<Arc<LightBlockIndex>>,
-    hub_light_block_lookup: Option<LightBlockLookup>,
-    hub_receipt_proof_lookup: Option<ReceiptProofLookup>,
-    hub_archive: Option<crate::ArchiveReader>,
+    vera_module_trees: Option<ModuleTrees>,
+    vera_native_modules: Option<(vera_backend::native::NativeStateSet, SharedModuleState)>,
+    vera_light_block_index: Option<Arc<LightBlockIndex>>,
+    vera_light_block_lookup: Option<LightBlockLookup>,
+    vera_receipt_proof_lookup: Option<ReceiptProofLookup>,
+    vera_archive: Option<crate::ArchiveReader>,
 }
 
 impl<S: StateProvider> std::fmt::Debug for RpcServer<S> {
@@ -137,14 +137,14 @@ impl RpcServer<NoopStateProvider> {
             subscription_logs: None,
             subscription_headers: None,
             extra_modules: Vec::new(),
-            hub_index: None,
+            vera_index: None,
             vera_modules: None,
-            hub_module_trees: None,
-            hub_native_modules: None,
-            hub_light_block_index: None,
-            hub_light_block_lookup: None,
-            hub_receipt_proof_lookup: None,
-            hub_archive: None,
+            vera_module_trees: None,
+            vera_native_modules: None,
+            vera_light_block_index: None,
+            vera_light_block_lookup: None,
+            vera_receipt_proof_lookup: None,
+            vera_archive: None,
         }
     }
 
@@ -162,14 +162,14 @@ impl RpcServer<NoopStateProvider> {
             subscription_logs: None,
             subscription_headers: None,
             extra_modules: Vec::new(),
-            hub_index: None,
+            vera_index: None,
             vera_modules: None,
-            hub_module_trees: None,
-            hub_native_modules: None,
-            hub_light_block_index: None,
-            hub_light_block_lookup: None,
-            hub_receipt_proof_lookup: None,
-            hub_archive: None,
+            vera_module_trees: None,
+            vera_native_modules: None,
+            vera_light_block_index: None,
+            vera_light_block_lookup: None,
+            vera_receipt_proof_lookup: None,
+            vera_archive: None,
         }
     }
 }
@@ -194,14 +194,14 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             subscription_logs: None,
             subscription_headers: None,
             extra_modules: Vec::new(),
-            hub_index: None,
+            vera_index: None,
             vera_modules: None,
-            hub_module_trees: None,
-            hub_native_modules: None,
-            hub_light_block_index: None,
-            hub_light_block_lookup: None,
-            hub_receipt_proof_lookup: None,
-            hub_archive: None,
+            vera_module_trees: None,
+            vera_native_modules: None,
+            vera_light_block_index: None,
+            vera_light_block_lookup: None,
+            vera_receipt_proof_lookup: None,
+            vera_archive: None,
         }
     }
 
@@ -255,14 +255,14 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
         self
     }
 
-    /// Set the block index and shared module state for hub API receipt/nonce queries.
+    /// Set the block index and shared module state for vera API receipt/nonce queries.
     #[must_use]
     pub fn with_hub_index_and_modules(
         mut self,
         index: Arc<BlockIndex>,
         modules: SharedModuleState,
     ) -> Self {
-        self.hub_index = Some(index);
+        self.vera_index = Some(index);
         self.vera_modules = Some(modules);
         self
     }
@@ -270,7 +270,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
     /// Set JMT-backed module state trees for proof generation.
     #[must_use]
     pub fn with_hub_module_trees(mut self, trees: ModuleTrees) -> Self {
-        self.hub_module_trees = Some(trees);
+        self.vera_module_trees = Some(trees);
         self
     }
 
@@ -281,33 +281,33 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
         databases: vera_backend::native::NativeStateSet,
         modules: SharedModuleState,
     ) -> Self {
-        self.hub_native_modules = Some((databases, modules));
+        self.vera_native_modules = Some((databases, modules));
         self
     }
 
     /// Serve light blocks from durable history, including descendant certificates.
     #[must_use]
     pub fn with_hub_light_block_lookup(mut self, lookup: LightBlockLookup) -> Self {
-        self.hub_light_block_lookup = Some(lookup);
+        self.vera_light_block_lookup = Some(lookup);
         self
     }
 
     /// Configure durable receipt evidence for cache misses.
     pub fn with_hub_receipt_proof_lookup(mut self, lookup: ReceiptProofLookup) -> Self {
-        self.hub_receipt_proof_lookup = Some(lookup);
+        self.vera_receipt_proof_lookup = Some(lookup);
         self
     }
 
     /// Enable durable point reads for native receipts.
     pub fn with_hub_archive(mut self, archive: crate::ArchiveReader) -> Self {
-        self.hub_archive = Some(archive);
+        self.vera_archive = Some(archive);
         self
     }
 
     /// Set the light block index for `vera_getLightBlock` queries.
     #[must_use]
     pub fn with_hub_light_block_index(mut self, index: Arc<LightBlockIndex>) -> Self {
-        self.hub_light_block_index = Some(index);
+        self.vera_light_block_index = Some(index);
         self
     }
 
@@ -325,14 +325,14 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             subscription_logs: None,
             subscription_headers: None,
             extra_modules: Vec::new(),
-            hub_index: None,
+            vera_index: None,
             vera_modules: None,
-            hub_module_trees: None,
-            hub_native_modules: None,
-            hub_light_block_index: None,
-            hub_light_block_lookup: None,
-            hub_receipt_proof_lookup: None,
-            hub_archive: None,
+            vera_module_trees: None,
+            vera_native_modules: None,
+            vera_light_block_index: None,
+            vera_light_block_lookup: None,
+            vera_receipt_proof_lookup: None,
+            vera_archive: None,
         }
     }
 
@@ -351,21 +351,21 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
         let subscription_heads = self.subscription_heads;
         let subscription_logs = self.subscription_logs;
         let subscription_headers = self.subscription_headers;
-        let hub_index = self.hub_index;
+        let vera_index = self.vera_index;
         let vera_modules = self.vera_modules;
-        let hub_module_trees = self.hub_module_trees;
-        let hub_native_modules = self.hub_native_modules;
-        let hub_light_block_index = self.hub_light_block_index;
-        let hub_light_block_lookup = self.hub_light_block_lookup;
-        let hub_receipt_proof_lookup = self.hub_receipt_proof_lookup;
-        let hub_archive = self.hub_archive;
+        let vera_module_trees = self.vera_module_trees;
+        let vera_native_modules = self.vera_native_modules;
+        let vera_light_block_index = self.vera_light_block_index;
+        let vera_light_block_lookup = self.vera_light_block_lookup;
+        let vera_receipt_proof_lookup = self.vera_receipt_proof_lookup;
+        let vera_archive = self.vera_archive;
 
         // Signal from the JSON-RPC task to the HTTP task indicating whether it
         // successfully bound the port. The HTTP status server waits for this
         // before attempting to bind, so there is no race condition.
         let (jsonrpc_ready_tx, jsonrpc_ready_rx) = tokio::sync::oneshot::channel::<bool>();
 
-        // JSON-RPC server serves eth_*, hub_*, net_*, web3_* methods over both
+        // JSON-RPC server serves eth_*, vera_*, net_*, web3_* methods over both
         // HTTP and WebSocket. It binds first and signals readiness to the HTTP task.
         let extra_modules = self.extra_modules;
 
@@ -407,25 +407,25 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
             let web3_api = Web3ApiImpl::new();
             let vera_api = {
                 let mut api = VeraApiImpl::new(node_state_for_jsonrpc, tx_submit);
-                if let (Some(idx), Some(mods)) = (hub_index, vera_modules) {
+                if let (Some(idx), Some(mods)) = (vera_index, vera_modules) {
                     api = api.with_index_and_modules(idx, mods);
                 }
-                if let Some(trees) = hub_module_trees {
+                if let Some(trees) = vera_module_trees {
                     api = api.with_module_trees(trees);
                 }
-                if let Some((databases, modules)) = hub_native_modules {
+                if let Some((databases, modules)) = vera_native_modules {
                     api = api.with_native_modules(databases, modules);
                 }
-                if let Some(archive) = hub_archive {
+                if let Some(archive) = vera_archive {
                     api = api.with_archive(archive);
                 }
-                if let Some(lookup) = hub_receipt_proof_lookup {
+                if let Some(lookup) = vera_receipt_proof_lookup {
                     api = api.with_receipt_proof_lookup(lookup);
                 }
-                if let Some(lookup) = hub_light_block_lookup {
+                if let Some(lookup) = vera_light_block_lookup {
                     api = api.with_light_block_lookup(lookup);
                 }
-                if let Some(lbi) = hub_light_block_index {
+                if let Some(lbi) = vera_light_block_index {
                     api = api.with_light_block_index(lbi);
                 }
                 api
@@ -448,7 +448,7 @@ impl<S: StateProvider + Clone + 'static> RpcServer<S> {
                 return None;
             }
             if let Err(e) = module.merge(vera_api.into_rpc()) {
-                error!(error = %e, "Failed to merge hub API");
+                error!(error = %e, "Failed to merge vera API");
                 let _ = jsonrpc_ready_tx.send(false);
                 return None;
             }
@@ -578,14 +578,14 @@ pub struct JsonRpcServer<S: StateProvider = NoopStateProvider> {
     subscription_logs: Option<broadcast::Sender<Vec<RpcLog>>>,
     subscription_headers: Option<broadcast::Sender<GossipHeader>>,
     extra_modules: Vec<jsonrpsee::RpcModule<()>>,
-    hub_index: Option<Arc<BlockIndex>>,
+    vera_index: Option<Arc<BlockIndex>>,
     vera_modules: Option<SharedModuleState>,
-    hub_module_trees: Option<ModuleTrees>,
-    hub_native_modules: Option<(vera_backend::native::NativeStateSet, SharedModuleState)>,
-    hub_light_block_index: Option<Arc<LightBlockIndex>>,
-    hub_light_block_lookup: Option<LightBlockLookup>,
-    hub_receipt_proof_lookup: Option<ReceiptProofLookup>,
-    hub_archive: Option<crate::ArchiveReader>,
+    vera_module_trees: Option<ModuleTrees>,
+    vera_native_modules: Option<(vera_backend::native::NativeStateSet, SharedModuleState)>,
+    vera_light_block_index: Option<Arc<LightBlockIndex>>,
+    vera_light_block_lookup: Option<LightBlockLookup>,
+    vera_receipt_proof_lookup: Option<ReceiptProofLookup>,
+    vera_archive: Option<crate::ArchiveReader>,
 }
 
 impl<S: StateProvider> std::fmt::Debug for JsonRpcServer<S> {
@@ -612,14 +612,14 @@ impl JsonRpcServer<NoopStateProvider> {
             subscription_logs: None,
             subscription_headers: None,
             extra_modules: Vec::new(),
-            hub_index: None,
+            vera_index: None,
             vera_modules: None,
-            hub_module_trees: None,
-            hub_native_modules: None,
-            hub_light_block_index: None,
-            hub_light_block_lookup: None,
-            hub_receipt_proof_lookup: None,
-            hub_archive: None,
+            vera_module_trees: None,
+            vera_native_modules: None,
+            vera_light_block_index: None,
+            vera_light_block_lookup: None,
+            vera_receipt_proof_lookup: None,
+            vera_archive: None,
         }
     }
 }
@@ -638,18 +638,18 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
             subscription_logs: None,
             subscription_headers: None,
             extra_modules: Vec::new(),
-            hub_index: None,
+            vera_index: None,
             vera_modules: None,
-            hub_module_trees: None,
-            hub_native_modules: None,
-            hub_light_block_index: None,
-            hub_light_block_lookup: None,
-            hub_receipt_proof_lookup: None,
-            hub_archive: None,
+            vera_module_trees: None,
+            vera_native_modules: None,
+            vera_light_block_index: None,
+            vera_light_block_lookup: None,
+            vera_receipt_proof_lookup: None,
+            vera_archive: None,
         }
     }
 
-    /// Set the node state for hub API support.
+    /// Set the node state for vera API support.
     #[must_use]
     pub fn with_node_state(mut self, node_state: Arc<NodeState>) -> Self {
         self.node_state = Some(node_state);
@@ -699,14 +699,14 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
         self
     }
 
-    /// Set the block index and shared module state for hub API receipt/nonce queries.
+    /// Set the block index and shared module state for vera API receipt/nonce queries.
     #[must_use]
     pub fn with_hub_index_and_modules(
         mut self,
         index: Arc<BlockIndex>,
         modules: SharedModuleState,
     ) -> Self {
-        self.hub_index = Some(index);
+        self.vera_index = Some(index);
         self.vera_modules = Some(modules);
         self
     }
@@ -714,7 +714,7 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
     /// Set JMT-backed module state trees for proof generation.
     #[must_use]
     pub fn with_hub_module_trees(mut self, trees: ModuleTrees) -> Self {
-        self.hub_module_trees = Some(trees);
+        self.vera_module_trees = Some(trees);
         self
     }
 
@@ -725,33 +725,33 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
         databases: vera_backend::native::NativeStateSet,
         modules: SharedModuleState,
     ) -> Self {
-        self.hub_native_modules = Some((databases, modules));
+        self.vera_native_modules = Some((databases, modules));
         self
     }
 
     /// Serve light blocks from durable history, including descendant certificates.
     #[must_use]
     pub fn with_hub_light_block_lookup(mut self, lookup: LightBlockLookup) -> Self {
-        self.hub_light_block_lookup = Some(lookup);
+        self.vera_light_block_lookup = Some(lookup);
         self
     }
 
     /// Configure durable receipt evidence for cache misses.
     pub fn with_hub_receipt_proof_lookup(mut self, lookup: ReceiptProofLookup) -> Self {
-        self.hub_receipt_proof_lookup = Some(lookup);
+        self.vera_receipt_proof_lookup = Some(lookup);
         self
     }
 
     /// Enable durable point reads for native receipts.
     pub fn with_hub_archive(mut self, archive: crate::ArchiveReader) -> Self {
-        self.hub_archive = Some(archive);
+        self.vera_archive = Some(archive);
         self
     }
 
     /// Set the light block index for `vera_getLightBlock` queries.
     #[must_use]
     pub fn with_hub_light_block_index(mut self, index: Arc<LightBlockIndex>) -> Self {
-        self.hub_light_block_index = Some(index);
+        self.vera_light_block_index = Some(index);
         self
     }
 
@@ -804,25 +804,25 @@ impl<S: StateProvider + Clone + 'static> JsonRpcServer<S> {
         if let Some(node_state) = self.node_state {
             let vera_api = {
                 let mut api = VeraApiImpl::new(node_state, self.tx_submit);
-                if let (Some(idx), Some(mods)) = (self.hub_index, self.vera_modules) {
+                if let (Some(idx), Some(mods)) = (self.vera_index, self.vera_modules) {
                     api = api.with_index_and_modules(idx, mods);
                 }
-                if let Some(trees) = self.hub_module_trees {
+                if let Some(trees) = self.vera_module_trees {
                     api = api.with_module_trees(trees);
                 }
-                if let Some((databases, modules)) = self.hub_native_modules {
+                if let Some((databases, modules)) = self.vera_native_modules {
                     api = api.with_native_modules(databases, modules);
                 }
-                if let Some(archive) = self.hub_archive {
+                if let Some(archive) = self.vera_archive {
                     api = api.with_archive(archive);
                 }
-                if let Some(lookup) = self.hub_receipt_proof_lookup {
+                if let Some(lookup) = self.vera_receipt_proof_lookup {
                     api = api.with_receipt_proof_lookup(lookup);
                 }
-                if let Some(lookup) = self.hub_light_block_lookup {
+                if let Some(lookup) = self.vera_light_block_lookup {
                     api = api.with_light_block_lookup(lookup);
                 }
-                if let Some(lbi) = self.hub_light_block_index {
+                if let Some(lbi) = self.vera_light_block_index {
                     api = api.with_light_block_index(lbi);
                 }
                 api

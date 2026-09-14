@@ -43,7 +43,7 @@ fn fixture() -> (AcpModule, VeraModule, String, AccessRequest) {
 
 #[test]
 fn decision_retries_preserve_issuance_across_workers_revocation_and_expiry() {
-    let (mut acp, mut hub, policy, request) = fixture();
+    let (mut acp, mut vera, policy, request) = fixture();
     let first = submission(7);
     let mut second = submission(8);
     second.sequence = 12;
@@ -51,7 +51,7 @@ fn decision_retries_preserve_issuance_across_workers_revocation_and_expiry() {
     let operation = DelegatedOperation::CheckAccess(&policy, &request);
     let original = acp
         .bearer_check_access(
-            &mut hub,
+            &mut vera,
             &context(100),
             &first,
             &token(&first, operation_id, &operation),
@@ -81,7 +81,7 @@ fn decision_retries_preserve_issuance_across_workers_revocation_and_expiry() {
     let before = acp.store().serialize();
     let retry = acp
         .bearer_check_access(
-            &mut hub,
+            &mut vera,
             &context(201),
             &second,
             &token(&second, operation_id, &operation),
@@ -99,7 +99,7 @@ fn decision_retries_preserve_issuance_across_workers_revocation_and_expiry() {
     let fresh = id(92, 400);
     assert!(
         acp.bearer_check_access(
-            &mut hub,
+            &mut vera,
             &context(201),
             &second,
             &token(&second, fresh, &operation),
@@ -113,7 +113,7 @@ fn decision_retries_preserve_issuance_across_workers_revocation_and_expiry() {
     changed.operations[0].object.id = "different".into();
     assert!(
         acp.bearer_check_access(
-            &mut hub,
+            &mut vera,
             &context(201),
             &second,
             &token(
@@ -131,17 +131,17 @@ fn decision_retries_preserve_issuance_across_workers_revocation_and_expiry() {
 
 #[test]
 fn decision_scope_and_outcome_budget_fail_without_partial_records() {
-    let (mut acp, mut hub, policy, request) = fixture();
+    let (mut acp, mut vera, policy, request) = fixture();
     let worker = submission(7);
     let operation_id = id(93, 400);
     let operation = DelegatedOperation::CheckAccess(&policy, &request);
     let valid = token(&worker, operation_id, &operation);
     let mut claims = vera_crypto::jwt::verify_bearer_token(&valid).unwrap();
     claims.scope = vera_crypto::jwt::DelegationScope::PolicyCommands;
-    let before = (acp.store().serialize(), hub.store().serialize());
+    let before = (acp.store().serialize(), vera.store().serialize());
     assert!(
         acp.bearer_check_access(
-            &mut hub,
+            &mut vera,
             &context(100),
             &worker,
             &sign(&claims),
@@ -150,13 +150,13 @@ fn decision_scope_and_outcome_budget_fail_without_partial_records() {
         )
         .is_err()
     );
-    assert_eq!((acp.store().serialize(), hub.store().serialize()), before);
+    assert_eq!((acp.store().serialize(), vera.store().serialize()), before);
     acp.store.put(BUDGET_KEY, 1u64.to_be_bytes().to_vec());
-    let before = (acp.store().serialize(), hub.store().serialize());
+    let before = (acp.store().serialize(), vera.store().serialize());
     assert!(
-        acp.bearer_check_access(&mut hub, &context(100), &worker, &valid, &policy, &request)
+        acp.bearer_check_access(&mut vera, &context(100), &worker, &valid, &policy, &request)
             .is_err()
     );
-    assert_eq!((acp.store().serialize(), hub.store().serialize()), before);
+    assert_eq!((acp.store().serialize(), vera.store().serialize()), before);
     assert!(acp.operation(&issuer(), operation_id).unwrap().is_none());
 }

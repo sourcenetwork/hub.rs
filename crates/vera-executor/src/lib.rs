@@ -1,4 +1,4 @@
-//! Block execution abstractions, REVM implementation, and hub precompiles.
+//! Block execution abstractions, REVM implementation, and vera precompiles.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 

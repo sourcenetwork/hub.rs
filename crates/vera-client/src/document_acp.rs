@@ -10,7 +10,7 @@ use crate::error::ClientError;
 use crate::signer::EvmSigner;
 use crate::types::TransactionReceipt;
 
-/// DocumentACP backed by hub's on-chain ACP precompile.
+/// DocumentACP backed by vera's on-chain ACP precompile.
 ///
 /// Delegates write operations through [`EvmSigner`] and read operations
 /// through [`VeraClient`] to the ACP precompile at `0x0810`.
@@ -39,7 +39,7 @@ impl VeraDocumentACP {
 }
 
 fn client_err(e: ClientError) -> acp::Error {
-    acp::Error::Storage(format!("hub: {e}"))
+    acp::Error::Storage(format!("vera: {e}"))
 }
 
 #[async_trait]
@@ -200,7 +200,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hub_document_acp_construction() {
+    fn vera_document_acp_construction() {
         let client = VeraClient::new("http://localhost:8545");
         let signer = EvmSigner::from_hex(
             "0000000000000000000000000000000000000000000000000000000000000001",

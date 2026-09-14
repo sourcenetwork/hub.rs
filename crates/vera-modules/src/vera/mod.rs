@@ -636,7 +636,7 @@ impl VeraModule {
             || Ok(VeraParams::default()),
             |bytes| {
                 borsh::from_slice(bytes)
-                    .map_err(|e| VeraError::State(format!("invalid hub parameters: {e}")))
+                    .map_err(|e| VeraError::State(format!("invalid vera parameters: {e}")))
             },
         )
     }
@@ -713,9 +713,9 @@ mod tests {
         s.parse().expect("valid DID")
     }
 
-    fn sample_record(hub: &mut VeraModule, block_ctx: &BlockExecCtx) -> String {
+    fn sample_record(vera: &mut VeraModule, block_ctx: &BlockExecCtx) -> String {
         let did = make_did("did:key:z6MkTest");
-        hub.store_or_update_jws_token(
+        vera.store_or_update_jws_token(
             block_ctx,
             "bearer-token-abc",
             &did,
@@ -732,49 +732,49 @@ mod tests {
 
     #[test]
     fn set_and_get_chain_config() {
-        let mut hub = VeraModule::new();
+        let mut vera = VeraModule::new();
         let config = ChainConfig {
             allow_zero_fee_txs: true,
             ignore_bearer_auth: false,
         };
-        hub.set_chain_config(config.clone()).unwrap();
-        assert_eq!(hub.get_chain_config().unwrap(), config);
+        vera.set_chain_config(config.clone()).unwrap();
+        assert_eq!(vera.get_chain_config().unwrap(), config);
     }
 
     #[test]
     fn chain_config_write_once() {
-        let mut hub = VeraModule::new();
+        let mut vera = VeraModule::new();
         let config = ChainConfig {
             allow_zero_fee_txs: false,
             ignore_bearer_auth: true,
         };
-        hub.set_chain_config(config.clone()).unwrap();
-        let err = hub.set_chain_config(config).unwrap_err();
+        vera.set_chain_config(config.clone()).unwrap();
+        let err = vera.set_chain_config(config).unwrap_err();
         assert!(matches!(err, VeraError::ChainConfigAlreadySet));
     }
 
     #[test]
     fn chain_config_default_when_absent() {
-        let hub = VeraModule::new();
-        let config = hub.get_chain_config().unwrap();
+        let vera = VeraModule::new();
+        let config = vera.get_chain_config().unwrap();
         assert!(!config.allow_zero_fee_txs);
         assert!(!config.ignore_bearer_auth);
     }
 
     #[test]
     fn malformed_parameters_return_errors() {
-        let mut hub = VeraModule::default();
-        hub.store.put(keys::PARAMS_KEY, vec![0]);
-        assert!(hub.query_params().is_err());
+        let mut vera = VeraModule::default();
+        vera.store.put(keys::PARAMS_KEY, vec![0]);
+        assert!(vera.query_params().is_err());
     }
 
     #[test]
     fn set_and_get_params() {
-        let mut hub = VeraModule::new();
-        assert_eq!(hub.get_params().unwrap(), VeraParams::default());
+        let mut vera = VeraModule::new();
+        assert_eq!(vera.get_params().unwrap(), VeraParams::default());
         let params = VeraParams {};
-        hub.set_params(&params).unwrap();
-        assert_eq!(hub.get_params().unwrap(), params);
+        vera.set_params(&params).unwrap();
+        assert_eq!(vera.get_params().unwrap(), params);
     }
 
     #[test]
@@ -812,10 +812,10 @@ mod tests {
 
     #[test]
     fn store_token_requires_account_when_bearer_auth_enforced() {
-        let mut hub = VeraModule::new();
+        let mut vera = VeraModule::new();
         let ctx = block_ctx(100);
         let did = make_did("did:key:z6MkBob");
-        let err = hub
+        let err = vera
             .store_or_update_jws_token(
                 &ctx,
                 "bearer",
@@ -830,15 +830,15 @@ mod tests {
 
     #[test]
     fn store_token_rejects_pre_expired() {
-        let mut hub = VeraModule::new();
-        hub.set_chain_config(ChainConfig {
+        let mut vera = VeraModule::new();
+        vera.set_chain_config(ChainConfig {
             allow_zero_fee_txs: false,
             ignore_bearer_auth: true,
         })
         .unwrap();
         let ctx = block_ctx(200);
         let did = make_did("did:key:z6MkCarol");
-        let err = hub
+        let err = vera
             .store_or_update_jws_token(
                 &ctx,
                 "expired-bearer",
@@ -859,15 +859,15 @@ mod tests {
 
     #[test]
     fn record_usage_updates_timestamps() {
-        let mut hub = VeraModule::new();
-        hub.set_chain_config(ChainConfig {
+        let mut vera = VeraModule::new();
+        vera.set_chain_config(ChainConfig {
             allow_zero_fee_txs: false,
             ignore_bearer_auth: true,
         })
         .unwrap();
         let ctx1 = block_ctx(100);
         let did = make_did("did:key:z6MkDave");
-        hub.store_or_update_jws_token(
+        vera.store_or_update_jws_token(
             &ctx1,
             "token-dave",
             &did,
@@ -878,23 +878,23 @@ mod tests {
         .unwrap();
         let hash = keys::hash_jws_token("token-dave");
         let ctx2 = block_ctx(200);
-        hub.record_jws_token_usage(&ctx2, &hash).unwrap();
-        let record = hub.get_jws_token(&hash).unwrap().unwrap();
+        vera.record_jws_token_usage(&ctx2, &hash).unwrap();
+        let record = vera.get_jws_token(&hash).unwrap().unwrap();
         assert_eq!(record.first_used_at, Some(ctx1.timestamp));
         assert_eq!(record.last_used_at, Some(ctx2.timestamp));
     }
 
     #[test]
     fn idempotent_store_updates_usage() {
-        let mut hub = VeraModule::new();
-        hub.set_chain_config(ChainConfig {
+        let mut vera = VeraModule::new();
+        vera.set_chain_config(ChainConfig {
             allow_zero_fee_txs: false,
             ignore_bearer_auth: true,
         })
         .unwrap();
         let ctx1 = block_ctx(100);
         let did = make_did("did:key:z6MkEve");
-        hub.store_or_update_jws_token(
+        vera.store_or_update_jws_token(
             &ctx1,
             "token-eve",
             &did,
@@ -904,7 +904,7 @@ mod tests {
         )
         .unwrap();
         let ctx2 = block_ctx(200);
-        hub.store_or_update_jws_token(
+        vera.store_or_update_jws_token(
             &ctx2,
             "token-eve",
             &did,
@@ -914,32 +914,32 @@ mod tests {
         )
         .unwrap();
         let hash = keys::hash_jws_token("token-eve");
-        let record = hub.get_jws_token(&hash).unwrap().unwrap();
+        let record = vera.get_jws_token(&hash).unwrap().unwrap();
         assert_eq!(record.last_used_at, Some(ctx2.timestamp));
     }
 
     #[test]
     fn update_status_to_invalid() {
-        let mut hub = VeraModule::new();
-        hub.set_chain_config(ChainConfig {
+        let mut vera = VeraModule::new();
+        vera.set_chain_config(ChainConfig {
             allow_zero_fee_txs: false,
             ignore_bearer_auth: true,
         })
         .unwrap();
         let ctx = block_ctx(100);
-        let hash = sample_record_ignore_bearer(&mut hub, &ctx);
+        let hash = sample_record_ignore_bearer(&mut vera, &ctx);
         let ctx2 = block_ctx(200);
-        hub.update_jws_token_status(&ctx2, &hash, JWSTokenStatus::Invalid, "0xAdmin")
+        vera.update_jws_token_status(&ctx2, &hash, JWSTokenStatus::Invalid, "0xAdmin")
             .unwrap();
-        let record = hub.get_jws_token(&hash).unwrap().unwrap();
+        let record = vera.get_jws_token(&hash).unwrap().unwrap();
         assert_eq!(record.status, JWSTokenStatus::Invalid);
         assert_eq!(record.invalidated_at, Some(ctx2.timestamp));
         assert_eq!(record.invalidated_by, "0xAdmin");
     }
 
-    fn sample_record_ignore_bearer(hub: &mut VeraModule, ctx: &BlockExecCtx) -> String {
+    fn sample_record_ignore_bearer(vera: &mut VeraModule, ctx: &BlockExecCtx) -> String {
         let did = make_did("did:key:z6MkTest2");
-        hub.store_or_update_jws_token(
+        vera.store_or_update_jws_token(
             ctx,
             "bearer-ignore",
             &did,
@@ -953,15 +953,15 @@ mod tests {
 
     #[test]
     fn delete_token_removes_all_indexes() {
-        let mut hub = VeraModule::new();
+        let mut vera = VeraModule::new();
         let ctx = block_ctx(100);
-        let hash = sample_record(&mut hub, &ctx);
-        hub.delete_jws_token(&hash).unwrap();
-        assert!(hub.get_jws_token(&hash).unwrap().is_none());
+        let hash = sample_record(&mut vera, &ctx);
+        vera.delete_jws_token(&hash).unwrap();
+        assert!(vera.get_jws_token(&hash).unwrap().is_none());
         let did = make_did("did:key:z6MkTest");
-        assert!(hub.get_jws_tokens_by_did(&did).unwrap().is_empty());
+        assert!(vera.get_jws_tokens_by_did(&did).unwrap().is_empty());
         assert!(
-            hub.get_jws_tokens_by_account("0xAccount1")
+            vera.get_jws_tokens_by_account("0xAccount1")
                 .unwrap()
                 .is_empty()
         );
@@ -969,37 +969,37 @@ mod tests {
 
     #[test]
     fn delete_missing_token_errors() {
-        let mut hub = VeraModule::new();
-        let err = hub.delete_jws_token("nonexistent").unwrap_err();
+        let mut vera = VeraModule::new();
+        let err = vera.delete_jws_token("nonexistent").unwrap_err();
         assert!(matches!(err, VeraError::TokenNotFound { .. }));
     }
 
     #[test]
     fn get_all_jws_tokens() {
-        let mut hub = VeraModule::new();
+        let mut vera = VeraModule::new();
         let ctx = block_ctx(100);
-        let hash = sample_record(&mut hub, &ctx);
-        let all = hub.get_all_jws_tokens().unwrap();
+        let hash = sample_record(&mut vera, &ctx);
+        let all = vera.get_all_jws_tokens().unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].token_hash, hash);
     }
 
     #[test]
     fn get_tokens_by_did() {
-        let mut hub = VeraModule::new();
+        let mut vera = VeraModule::new();
         let ctx = block_ctx(100);
-        let _ = sample_record(&mut hub, &ctx);
+        let _ = sample_record(&mut vera, &ctx);
         let did = make_did("did:key:z6MkTest");
-        let tokens = hub.get_jws_tokens_by_did(&did).unwrap();
+        let tokens = vera.get_jws_tokens_by_did(&did).unwrap();
         assert_eq!(tokens.len(), 1);
     }
 
     #[test]
     fn get_tokens_by_account() {
-        let mut hub = VeraModule::new();
+        let mut vera = VeraModule::new();
         let ctx = block_ctx(100);
-        let _ = sample_record(&mut hub, &ctx);
-        let tokens = hub.get_jws_tokens_by_account("0xAccount1").unwrap();
+        let _ = sample_record(&mut vera, &ctx);
+        let tokens = vera.get_jws_tokens_by_account("0xAccount1").unwrap();
         assert_eq!(tokens.len(), 1);
     }
 
@@ -1038,16 +1038,16 @@ mod tests {
         }
     }
 
-    fn hub_with_token() -> (VeraModule, String) {
-        let mut hub = VeraModule::new();
-        hub.set_chain_config(ChainConfig {
+    fn vera_with_token() -> (VeraModule, String) {
+        let mut vera = VeraModule::new();
+        vera.set_chain_config(ChainConfig {
             allow_zero_fee_txs: false,
             ignore_bearer_auth: true,
         })
         .unwrap();
         let ctx = block_ctx(100);
         let did = make_did("did:key:z6MkTest");
-        hub.store_or_update_jws_token(
+        vera.store_or_update_jws_token(
             &ctx,
             "bearer-token-abc",
             &did,
@@ -1060,39 +1060,39 @@ mod tests {
         )
         .unwrap();
         let hash = keys::hash_jws_token("bearer-token-abc");
-        (hub, hash)
+        (vera, hash)
     }
 
     #[test]
     fn invalidate_jws_by_issuer_did() {
-        let (mut hub, hash) = hub_with_token();
+        let (mut vera, hash) = vera_with_token();
         let bctx = block_ctx(200);
         let tctx = tx_ctx("some-other-account");
         let creator = make_did("did:key:z6MkTest");
-        let result = hub.invalidate_jws(&bctx, &tctx, &creator, &hash).unwrap();
+        let result = vera.invalidate_jws(&bctx, &tctx, &creator, &hash).unwrap();
         assert_eq!(result.status, JWSTokenStatus::Invalid);
-        let record = hub.get_jws_token(&hash).unwrap().unwrap();
+        let record = vera.get_jws_token(&hash).unwrap().unwrap();
         assert_eq!(record.status, JWSTokenStatus::Invalid);
         assert_eq!(record.invalidated_by, "some-other-account");
     }
 
     #[test]
     fn invalidate_jws_by_authorized_account() {
-        let (mut hub, hash) = hub_with_token();
+        let (mut vera, hash) = vera_with_token();
         let bctx = block_ctx(200);
         let tctx = tx_ctx("0xAccount1");
         let creator = make_did("did:key:z6MkOther");
-        let result = hub.invalidate_jws(&bctx, &tctx, &creator, &hash).unwrap();
+        let result = vera.invalidate_jws(&bctx, &tctx, &creator, &hash).unwrap();
         assert_eq!(result.status, JWSTokenStatus::Invalid);
     }
 
     #[test]
     fn invalidate_jws_unauthorized() {
-        let (mut hub, hash) = hub_with_token();
+        let (mut vera, hash) = vera_with_token();
         let bctx = block_ctx(200);
         let tctx = tx_ctx("0xWrongAccount");
         let creator = make_did("did:key:z6MkWrong");
-        let err = hub
+        let err = vera
             .invalidate_jws(&bctx, &tctx, &creator, &hash)
             .unwrap_err();
         assert!(matches!(err, VeraError::Unauthorized { .. }));
@@ -1100,12 +1100,12 @@ mod tests {
 
     #[test]
     fn invalidate_jws_already_invalid() {
-        let (mut hub, hash) = hub_with_token();
+        let (mut vera, hash) = vera_with_token();
         let bctx = block_ctx(200);
         let tctx = tx_ctx("0xAccount1");
         let creator = make_did("did:key:z6MkTest");
-        hub.invalidate_jws(&bctx, &tctx, &creator, &hash).unwrap();
-        let err = hub
+        vera.invalidate_jws(&bctx, &tctx, &creator, &hash).unwrap();
+        let err = vera
             .invalidate_jws(&bctx, &tctx, &creator, &hash)
             .unwrap_err();
         assert!(matches!(err, VeraError::TokenAlreadyInvalidated { .. }));
@@ -1113,11 +1113,11 @@ mod tests {
 
     #[test]
     fn invalidate_jws_not_found() {
-        let mut hub = VeraModule::new();
+        let mut vera = VeraModule::new();
         let bctx = block_ctx(200);
         let tctx = tx_ctx("0xAccount1");
         let creator = make_did("did:key:z6MkTest");
-        let err = hub
+        let err = vera
             .invalidate_jws(&bctx, &tctx, &creator, "nonexistent")
             .unwrap_err();
         assert!(matches!(err, VeraError::TokenNotFound { .. }));
@@ -1125,23 +1125,23 @@ mod tests {
 
     #[test]
     fn unauthenticated_parameter_update_is_rejected() {
-        let mut hub = VeraModule::new();
+        let mut vera = VeraModule::new();
         let authority = make_did("did:key:z6MkGov");
-        assert!(hub.update_params(&authority, VeraParams {}).is_err());
-        assert_eq!(hub.get_params().unwrap(), VeraParams {});
+        assert!(vera.update_params(&authority, VeraParams {}).is_err());
+        assert_eq!(vera.get_params().unwrap(), VeraParams {});
     }
 
     #[test]
     fn check_and_update_expired_tokens_sweeps() {
-        let mut hub = VeraModule::new();
-        hub.set_chain_config(ChainConfig {
+        let mut vera = VeraModule::new();
+        vera.set_chain_config(ChainConfig {
             allow_zero_fee_txs: false,
             ignore_bearer_auth: true,
         })
         .unwrap();
         let ctx = block_ctx(100);
         let did = make_did("did:key:z6MkExpiry");
-        hub.store_or_update_jws_token(
+        vera.store_or_update_jws_token(
             &ctx,
             "expiring-token",
             &did,
@@ -1154,27 +1154,27 @@ mod tests {
         )
         .unwrap();
         let hash = keys::hash_jws_token("expiring-token");
-        let record = hub.get_jws_token(&hash).unwrap().unwrap();
+        let record = vera.get_jws_token(&hash).unwrap().unwrap();
         assert_eq!(record.status, JWSTokenStatus::Valid);
 
         let sweep_ctx = block_ctx(200);
-        hub.check_and_update_expired_tokens(&sweep_ctx).unwrap();
-        let record = hub.get_jws_token(&hash).unwrap().unwrap();
+        vera.check_and_update_expired_tokens(&sweep_ctx).unwrap();
+        let record = vera.get_jws_token(&hash).unwrap().unwrap();
         assert_eq!(record.status, JWSTokenStatus::Invalid);
         assert!(record.invalidated_by.is_empty());
     }
 
     #[test]
     fn check_and_update_skips_zero_expiry() {
-        let mut hub = VeraModule::new();
-        hub.set_chain_config(ChainConfig {
+        let mut vera = VeraModule::new();
+        vera.set_chain_config(ChainConfig {
             allow_zero_fee_txs: false,
             ignore_bearer_auth: true,
         })
         .unwrap();
         let ctx = block_ctx(100);
         let did = make_did("did:key:z6MkNoExpiry");
-        hub.store_or_update_jws_token(
+        vera.store_or_update_jws_token(
             &ctx,
             "no-expiry-token",
             &did,
@@ -1186,8 +1186,8 @@ mod tests {
         let hash = keys::hash_jws_token("no-expiry-token");
 
         let sweep_ctx = block_ctx(999_999);
-        hub.check_and_update_expired_tokens(&sweep_ctx).unwrap();
-        let record = hub.get_jws_token(&hash).unwrap().unwrap();
+        vera.check_and_update_expired_tokens(&sweep_ctx).unwrap();
+        let record = vera.get_jws_token(&hash).unwrap().unwrap();
         assert_eq!(record.status, JWSTokenStatus::Valid);
     }
 }

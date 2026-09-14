@@ -19,7 +19,7 @@ fn modules(version: u8) -> ModuleState {
 }
 
 pub(super) async fn revision(set: &OrderedState, version: u8) -> OrderedSealed {
-    let (accounts, storage, code, acp, bulletin, hub, nonces, _) =
+    let (accounts, storage, code, acp, bulletin, vera, nonces, _) =
         set.databases.new_batches().await;
     let accounts = accounts
         .write(
@@ -44,7 +44,7 @@ pub(super) async fn revision(set: &OrderedState, version: u8) -> OrderedSealed {
         .unwrap();
     let modules = modules(version);
     let native = native::prepare(
-        (acp, bulletin, hub, nonces),
+        (acp, bulletin, vera, nonces),
         modules.diff_from(&ModuleState::default()),
     )
     .await

@@ -11,9 +11,9 @@ use crate::{
         delegated_operation::DelegatedOperation,
         types::{Object, PolicyCmd, PolicyMarshalingType},
     },
-    hub::VeraModule,
     kv_store::InMemoryKvStore,
     types::{BlockExecCtx, TxExecCtx},
+    vera::VeraModule,
 };
 
 const POLICY: &str = "name: files\nresources:\n  - name: file\n";
@@ -87,7 +87,7 @@ fn sign(claims: &JwtClaims) -> String {
 #[test]
 fn workers_recover_the_original_outcome_after_edit_and_reopen() {
     let mut acp = AcpModule::new();
-    let mut hub = VeraModule::new();
+    let mut vera = VeraModule::new();
     let first = submission(7);
     let second = submission(8);
     let operation_id = id(1, 200);
@@ -95,7 +95,7 @@ fn workers_recover_the_original_outcome_after_edit_and_reopen() {
     let first_token = token(&first, operation_id, &create);
     let created = acp
         .bearer_create_policy(
-            &mut hub,
+            &mut vera,
             &context(100),
             &first,
             &first_token,
@@ -120,7 +120,7 @@ fn workers_recover_the_original_outcome_after_edit_and_reopen() {
     let retry_token = token(&second, operation_id, &create);
     let retry = reopened
         .bearer_create_policy(
-            &mut hub,
+            &mut vera,
             &context(101),
             &second,
             &retry_token,
@@ -144,7 +144,7 @@ fn workers_recover_the_original_outcome_after_edit_and_reopen() {
     );
     let alias_result = reopened
         .bearer_create_policy(
-            &mut hub,
+            &mut vera,
             &context(101),
             &second,
             &sign(&alternate),
@@ -164,11 +164,11 @@ fn workers_recover_the_original_outcome_after_edit_and_reopen() {
     );
     assert!(
         reopened
-            .bearer_create_policy(&mut hub, &context(101), &second, &conflict, edited, FORMAT)
+            .bearer_create_policy(&mut vera, &context(101), &second, &conflict, edited, FORMAT)
             .is_err()
     );
     assert_eq!(reopened.store().serialize(), before);
-    hub.revoke_delegation(
+    vera.revoke_delegation(
         &context(101),
         &identity::Did::new(&second.signer).unwrap(),
         &retry_token,
@@ -177,7 +177,7 @@ fn workers_recover_the_original_outcome_after_edit_and_reopen() {
     assert!(
         reopened
             .bearer_create_policy(
-                &mut hub,
+                &mut vera,
                 &context(101),
                 &second,
                 &retry_token,
@@ -199,7 +199,7 @@ fn workers_recover_the_original_outcome_after_edit_and_reopen() {
     let b = token(&second, command_id, &call);
     let result = reopened
         .bearer_policy_cmd(
-            &mut hub,
+            &mut vera,
             &context(102),
             &first,
             &a,
@@ -217,7 +217,7 @@ fn workers_recover_the_original_outcome_after_edit_and_reopen() {
     let before = reopened.store().serialize();
     let replayed = reopened
         .bearer_policy_cmd(
-            &mut hub,
+            &mut vera,
             &context(103),
             &second,
             &b,
@@ -235,7 +235,7 @@ fn workers_recover_the_original_outcome_after_edit_and_reopen() {
 #[test]
 fn request_binding_and_expiry_precede_effects_and_survive_pruning() {
     let mut acp = AcpModule::new();
-    let mut hub = VeraModule::new();
+    let mut vera = VeraModule::new();
     let worker = submission(7);
     let operation = DelegatedOperation::CreatePolicy(POLICY, &FORMAT);
     let identity = id(1, 200);
@@ -251,10 +251,10 @@ fn request_binding_and_expiry_precede_effects_and_survive_pruning() {
             4 => claims.request.as_mut().unwrap().id = id(1, 701),
             _ => unreachable!(),
         }
-        let before = (acp.store().serialize(), hub.store().serialize());
+        let before = (acp.store().serialize(), vera.store().serialize());
         assert!(
             acp.bearer_create_policy(
-                &mut hub,
+                &mut vera,
                 &context(100),
                 &worker,
                 &sign(&claims),
@@ -263,23 +263,23 @@ fn request_binding_and_expiry_precede_effects_and_survive_pruning() {
             )
             .is_err()
         );
-        assert_eq!(before, (acp.store().serialize(), hub.store().serialize()));
+        assert_eq!(before, (acp.store().serialize(), vera.store().serialize()));
         if mutation == 1 {
             assert!(
-                hub.revoke_delegation(
+                vera.revoke_delegation(
                     &context(100),
                     &identity::Did::new(issuer()).unwrap(),
                     &sign(&claims)
                 )
                 .is_err()
             );
-            assert_eq!(before, (acp.store().serialize(), hub.store().serialize()));
+            assert_eq!(before, (acp.store().serialize(), vera.store().serialize()));
         }
     }
-    acp.bearer_create_policy(&mut hub, &context(100), &worker, &signed, POLICY, FORMAT)
+    acp.bearer_create_policy(&mut vera, &context(100), &worker, &signed, POLICY, FORMAT)
         .unwrap();
     assert!(
-        acp.bearer_create_policy(&mut hub, &context(200), &worker, &signed, POLICY, FORMAT)
+        acp.bearer_create_policy(&mut vera, &context(200), &worker, &signed, POLICY, FORMAT)
             .is_err()
     );
     acp.end_blocker(&context(200)).unwrap();
@@ -287,7 +287,7 @@ fn request_binding_and_expiry_precede_effects_and_survive_pruning() {
     assert_eq!(acp.operation_bytes().unwrap(), 0);
     let before = acp.store().serialize();
     assert!(
-        acp.bearer_create_policy(&mut hub, &context(200), &worker, &signed, POLICY, FORMAT)
+        acp.bearer_create_policy(&mut vera, &context(200), &worker, &signed, POLICY, FORMAT)
             .is_err()
     );
     assert_eq!(acp.store().serialize(), before);
@@ -296,7 +296,7 @@ fn request_binding_and_expiry_precede_effects_and_survive_pruning() {
 #[test]
 fn an_operation_identity_cannot_be_reused_for_different_arguments() {
     let mut acp = AcpModule::new();
-    let mut hub = VeraModule::new();
+    let mut vera = VeraModule::new();
     let worker = submission(7);
     let operation_id = id(1, 200);
     let original = token(
@@ -305,7 +305,7 @@ fn an_operation_identity_cannot_be_reused_for_different_arguments() {
         &DelegatedOperation::CreatePolicy(POLICY, &FORMAT),
     );
     let created = acp
-        .bearer_create_policy(&mut hub, &context(100), &worker, &original, POLICY, FORMAT)
+        .bearer_create_policy(&mut vera, &context(100), &worker, &original, POLICY, FORMAT)
         .unwrap();
     let retained = acp.operation(&issuer(), operation_id).unwrap().unwrap();
     let conflicting = "name: other\nresources:\n  - name: file\n";
@@ -314,10 +314,10 @@ fn an_operation_identity_cannot_be_reused_for_different_arguments() {
         operation_id,
         &DelegatedOperation::CreatePolicy(conflicting, &FORMAT),
     );
-    let before = (acp.store().serialize(), hub.store().serialize());
+    let before = (acp.store().serialize(), vera.store().serialize());
     let error = acp
         .bearer_create_policy(
-            &mut hub,
+            &mut vera,
             &context(101),
             &worker,
             &reused,
@@ -329,7 +329,7 @@ fn an_operation_identity_cannot_be_reused_for_different_arguments() {
         matches!(&error, AcpError::InvalidBearerToken { reason } if reason.contains("different arguments")),
         "{error}"
     );
-    assert_eq!(before, (acp.store().serialize(), hub.store().serialize()));
+    assert_eq!(before, (acp.store().serialize(), vera.store().serialize()));
     assert_eq!(
         serde_json::to_value(acp.operation(&issuer(), operation_id).unwrap().unwrap()).unwrap(),
         serde_json::to_value(&retained).unwrap()
@@ -340,7 +340,7 @@ fn an_operation_identity_cannot_be_reused_for_different_arguments() {
 #[test]
 fn repeated_edit_returns_its_original_count_without_removing_new_relationships() {
     let mut acp = AcpModule::new();
-    let mut hub = VeraModule::new();
+    let mut vera = VeraModule::new();
     let owner = identity::Did::new(issuer()).unwrap();
     let original =
         "name: files\nresources:\n  - name: file\n    relations:\n      - name: reader\n";
@@ -371,7 +371,7 @@ fn repeated_edit_returns_its_original_count_without_removing_new_relationships()
     let b = token(&second, operation_id, &operation);
     let result = acp
         .bearer_edit_policy(
-            &mut hub,
+            &mut vera,
             &context(100),
             &first,
             &a,
@@ -387,7 +387,7 @@ fn repeated_edit_returns_its_original_count_without_removing_new_relationships()
     let before = acp.store().serialize();
     let replay = acp
         .bearer_edit_policy(
-            &mut hub,
+            &mut vera,
             &context(101),
             &second,
             &b,
@@ -407,7 +407,7 @@ fn repeated_edit_returns_its_original_count_without_removing_new_relationships()
 #[test]
 fn failed_or_over_budget_execution_does_not_reserve_an_operation() {
     let mut acp = AcpModule::new();
-    let mut hub = VeraModule::new();
+    let mut vera = VeraModule::new();
     let worker = submission(7);
     let operation_id = id(1, 200);
     for (policy, full) in [("invalid: [", false), (POLICY, true)] {
@@ -426,12 +426,12 @@ fn failed_or_over_budget_execution_does_not_reserve_an_operation() {
             operation_id,
             &DelegatedOperation::CreatePolicy(policy, &FORMAT),
         );
-        let before = (acp.store().serialize(), hub.store().serialize());
+        let before = (acp.store().serialize(), vera.store().serialize());
         assert!(
-            acp.bearer_create_policy(&mut hub, &context(100), &worker, &signed, policy, FORMAT)
+            acp.bearer_create_policy(&mut vera, &context(100), &worker, &signed, policy, FORMAT)
                 .is_err()
         );
-        assert_eq!(before, (acp.store().serialize(), hub.store().serialize()));
+        assert_eq!(before, (acp.store().serialize(), vera.store().serialize()));
         assert!(acp.operation(&issuer(), operation_id).unwrap().is_none());
     }
 }

@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Commonware-storage based backend for hub QMDB"
+description = "Commonware-storage based backend for vera QMDB"
 
 [lints]
 workspace = true

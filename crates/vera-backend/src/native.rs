@@ -169,11 +169,11 @@ where
             ));
         }
     }
-    let [acp, bulletin, hub, nonces] = changes;
+    let [acp, bulletin, vera, nonces] = changes;
     futures::try_join!(
         seal(batches.0, acp),
         seal(batches.1, bulletin),
-        seal(batches.2, hub),
+        seal(batches.2, vera),
         seal(batches.3, nonces)
     )
 }
@@ -210,9 +210,9 @@ pub fn state_root(batches: &NativeMerkleized) -> alloy_primitives::B256 {
 
 /// Rebuild module query state while the caller excludes concurrent apply/rewind operations.
 pub async fn load_modules(set: &NativeStateSet) -> Result<ModuleState, BackendError> {
-    let (acp, bulletin, hub, nonces) =
+    let (acp, bulletin, vera, nonces) =
         futures::try_join!(load(&set.0), load(&set.1), load(&set.2), load(&set.3))?;
-    let modules = ModuleState::from_stores([acp, bulletin, hub, nonces]);
+    let modules = ModuleState::from_stores([acp, bulletin, vera, nonces]);
     modules
         .acp
         .validate_restored_state()
@@ -222,7 +222,7 @@ pub async fn load_modules(set: &NativeStateSet) -> Result<ModuleState, BackendEr
         .validate_storage_keys()
         .map_err(|e| BackendError::Storage(e.to_string()))?;
     modules
-        .hub
+        .vera
         .validate_restored_tokens()
         .map_err(|e| BackendError::Storage(e.to_string()))?;
     Ok(modules)

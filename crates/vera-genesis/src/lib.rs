@@ -1,6 +1,6 @@
-//! Extended genesis configuration for hub.
+//! Extended genesis configuration for vera.
 //!
-//! Produces the EVM [`GenesisState`] with hub-specific fields
+//! Produces the EVM [`GenesisState`] with vera-specific fields
 //! (native mint configuration, validators, chain metadata).
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]

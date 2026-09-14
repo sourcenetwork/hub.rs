@@ -213,7 +213,7 @@ async fn actor_signed_command_rejects_substitution_and_deduplicates_across_worke
         serde_json::from_slice(&records.entries[0].value).unwrap();
     assert_eq!(record.metadata.creation_ts.block_height, registered);
     assert_eq!(record.metadata.tx_signer, worker.did());
-    let hash = vera_modules::hub::keys::hash_jws_token(&signed)
+    let hash = vera_modules::vera::keys::hash_jws_token(&signed)
         .parse()
         .unwrap();
     let active = client
@@ -224,7 +224,7 @@ async fn actor_signed_command_rejects_substitution_and_deduplicates_across_worke
         .unwrap();
     assert_eq!(
         active.status,
-        vera_modules::hub::types::JWSTokenStatus::Valid
+        vera_modules::vera::types::JWSTokenStatus::Valid
     );
     assert_eq!(active.authorized_account, worker.did());
     assert_eq!(active.issuer_did, actor);
@@ -249,7 +249,7 @@ async fn actor_signed_command_rejects_substitution_and_deduplicates_across_worke
         .unwrap();
     assert_eq!(
         revoked.status,
-        vera_modules::hub::types::JWSTokenStatus::Invalid
+        vera_modules::vera::types::JWSTokenStatus::Invalid
     );
     assert_eq!(revoked.invalidated_by, worker.did());
     assert_eq!(
@@ -269,7 +269,7 @@ async fn actor_signed_command_rejects_substitution_and_deduplicates_across_worke
         .digest()
         .unwrap();
     let unused = vera_client::create_operation_token(&key, &claims).unwrap();
-    let unused_hash = vera_modules::hub::keys::hash_jws_token(&unused)
+    let unused_hash = vera_modules::vera::keys::hash_jws_token(&unused)
         .parse()
         .unwrap();
     assert!(matches!(
@@ -305,7 +305,7 @@ async fn actor_signed_command_rejects_substitution_and_deduplicates_across_worke
         .unwrap();
     assert_eq!(
         record.status,
-        vera_modules::hub::types::JWSTokenStatus::Invalid
+        vera_modules::vera::types::JWSTokenStatus::Invalid
     );
     assert!(record.first_used_at.is_none());
     assert!(record.last_used_at.is_none());

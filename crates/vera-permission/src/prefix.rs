@@ -19,7 +19,7 @@ pub struct PrefixProof {
     pub module: ModuleId,
     /// Exact raw prefix.
     pub prefix: Bytes,
-    /// ACP, bulletin, hub and native sequence roots in commitment order.
+    /// ACP, bulletin, vera and native sequence roots in commitment order.
     pub roots: [B256; 4],
     /// Canonical Commonware complete-prefix evidence.
     pub proof: Bytes,

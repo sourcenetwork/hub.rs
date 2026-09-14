@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use serde::Serialize;
-use vera_modules::hub::administration::OperatorPolicy;
+use vera_modules::vera::administration::OperatorPolicy;
 
 /// Matches vera-genesis VeraGenesis JSON schema exactly.
 #[derive(Clone, Debug, Serialize)]
@@ -118,7 +118,7 @@ impl Default for GenesisBuilder {
         Self {
             chain_id: 9001,
             operators: None,
-            chain_name: "hub-test".to_string(),
+            chain_name: "vera-test".to_string(),
             allocations: Vec::new(),
             native_mint: NativeMintConfig::default(),
             validators: Vec::new(),
@@ -141,7 +141,7 @@ impl GenesisBuilder {
         Self {
             chain_id: 9001,
             operators: None,
-            chain_name: "hub-devnet".to_string(),
+            chain_name: "vera-devnet".to_string(),
             allocations: vec![
                 GenesisAllocation {
                     address: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266".to_string(),

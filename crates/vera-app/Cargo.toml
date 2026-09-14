@@ -3,7 +3,7 @@ name = "vera-app"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Glue stateful application around the hub block executor"
+description = "Glue stateful application around the vera block executor"
 
 [features]
 fault-injection = ["vera-executor/fault-injection"]

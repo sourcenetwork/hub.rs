@@ -3,9 +3,9 @@
 use k256::ecdsa::{Signature, SigningKey, signature::hazmat::PrehashSigner};
 use vera_modules::{
     acp::{AcpModule, types::AcpParams},
-    hub::{VeraModule, administration::*},
     kv_store::InMemoryKvStore,
     types::Duration,
+    vera::{VeraModule, administration::*},
 };
 
 const GENESIS: [u8; 32] = [7; 32];
@@ -57,16 +57,16 @@ fn approve(request: AdministrativeRequest, keys: &[SigningKey]) -> SignedAdminis
 #[test]
 fn quorum_changes_parameters_once_and_survives_serialization() {
     let (policy, keys) = operators();
-    let mut hub = VeraModule::new();
+    let mut vera = VeraModule::new();
     let mut acp = AcpModule::new();
     let signed = approve(request(0), &keys);
     assert!(
-        hub.apply_administrative_request(&mut acp, GENESIS, 100, &signed)
+        vera.apply_administrative_request(&mut acp, GENESIS, 100, &signed)
             .is_err()
     );
-    hub.initialize_administration(policy.clone()).unwrap();
-    assert!(hub.initialize_administration(policy).is_err());
-    hub.apply_administrative_request(&mut acp, GENESIS, 100, &signed)
+    vera.initialize_administration(policy.clone()).unwrap();
+    assert!(vera.initialize_administration(policy).is_err());
+    vera.apply_administrative_request(&mut acp, GENESIS, 100, &signed)
         .unwrap();
     assert_eq!(
         acp.query_params()
@@ -74,8 +74,8 @@ fn quorum_changes_parameters_once_and_survives_serialization() {
             .policy_command_max_expiration_delta,
         90
     );
-    assert_eq!(hub.administration().unwrap().unwrap().sequence, 1);
-    let bytes = hub.store().serialize();
+    assert_eq!(vera.administration().unwrap().unwrap().sequence, 1);
+    let bytes = vera.store().serialize();
     let mut reopened = VeraModule::from_store(InMemoryKvStore::deserialize(&bytes).unwrap());
     assert!(
         reopened
@@ -88,42 +88,42 @@ fn quorum_changes_parameters_once_and_survives_serialization() {
 #[test]
 fn outcome_budget_requires_operator_approval_and_survives_reopen() {
     let (policy, keys) = operators();
-    let mut hub = VeraModule::new();
+    let mut vera = VeraModule::new();
     let mut acp = AcpModule::new();
-    hub.initialize_administration(policy).unwrap();
+    vera.initialize_administration(policy).unwrap();
     let mut change = request(0);
     change.command = AdministrativeCommand::SetOperationBudget(128 << 20);
     let approved = approve(change, &keys);
     let mut unauthorized = approved.clone();
     unauthorized.approvals.pop();
-    let before = (hub.store().serialize(), acp.store().serialize());
+    let before = (vera.store().serialize(), acp.store().serialize());
     assert!(
-        hub.apply_administrative_request(&mut acp, GENESIS, 100, &unauthorized)
+        vera.apply_administrative_request(&mut acp, GENESIS, 100, &unauthorized)
             .is_err()
     );
-    assert_eq!(before, (hub.store().serialize(), acp.store().serialize()));
-    hub.apply_administrative_request(&mut acp, GENESIS, 100, &approved)
+    assert_eq!(before, (vera.store().serialize(), acp.store().serialize()));
+    vera.apply_administrative_request(&mut acp, GENESIS, 100, &approved)
         .unwrap();
     assert_eq!(acp.operation_budget().unwrap(), 128 << 20);
     let mut acp =
         AcpModule::from_store(InMemoryKvStore::deserialize(&acp.store().serialize()).unwrap());
     assert_eq!(acp.operation_budget().unwrap(), 128 << 20);
-    let before = (hub.store().serialize(), acp.store().serialize());
+    let before = (vera.store().serialize(), acp.store().serialize());
     let mut invalid = request(1);
     invalid.command = AdministrativeCommand::SetOperationBudget(0);
     assert!(
-        hub.apply_administrative_request(&mut acp, GENESIS, 100, &approve(invalid, &keys))
+        vera.apply_administrative_request(&mut acp, GENESIS, 100, &approve(invalid, &keys))
             .is_err()
     );
-    assert_eq!(before, (hub.store().serialize(), acp.store().serialize()));
+    assert_eq!(before, (vera.store().serialize(), acp.store().serialize()));
 }
 
 #[test]
 fn rejected_approvals_leave_both_stores_unchanged() {
     let (policy, keys) = operators();
-    let mut hub = VeraModule::new();
+    let mut vera = VeraModule::new();
     let mut acp = AcpModule::new();
-    hub.initialize_administration(policy).unwrap();
+    vera.initialize_administration(policy).unwrap();
     let signed = approve(request(0), &keys);
     let mut cases = Vec::new();
     let mut invalid = signed.clone();
@@ -154,22 +154,22 @@ fn rejected_approvals_leave_both_stores_unchanged() {
     let mut invalid = request(0);
     invalid.expires_at = 99;
     cases.push(approve(invalid, &keys));
-    let before = (hub.store().serialize(), acp.store().serialize());
+    let before = (vera.store().serialize(), acp.store().serialize());
     for invalid in cases {
         assert!(
-            hub.apply_administrative_request(&mut acp, GENESIS, 100, &invalid)
+            vera.apply_administrative_request(&mut acp, GENESIS, 100, &invalid)
                 .is_err()
         );
-        assert_eq!((hub.store().serialize(), acp.store().serialize()), before);
+        assert_eq!((vera.store().serialize(), acp.store().serialize()), before);
     }
 }
 
 #[test]
 fn rotation_requires_existing_quorum_and_revokes_old_keys() {
     let (policy, old_keys) = operators();
-    let mut hub = VeraModule::new();
+    let mut vera = VeraModule::new();
     let mut acp = AcpModule::new();
-    hub.initialize_administration(policy).unwrap();
+    vera.initialize_administration(policy).unwrap();
     let next = SigningKey::from_bytes(&[9; 32].into()).unwrap();
     let mut rotation = request(0);
     rotation.command = AdministrativeCommand::RotateOperators(OperatorPolicy {
@@ -178,37 +178,37 @@ fn rotation_requires_existing_quorum_and_revokes_old_keys() {
     });
     let unauthorized = approve(rotation.clone(), std::slice::from_ref(&next));
     assert!(
-        hub.apply_administrative_request(&mut acp, GENESIS, 100, &unauthorized)
+        vera.apply_administrative_request(&mut acp, GENESIS, 100, &unauthorized)
             .is_err()
     );
-    hub.apply_administrative_request(&mut acp, GENESIS, 100, &approve(rotation, &old_keys))
+    vera.apply_administrative_request(&mut acp, GENESIS, 100, &approve(rotation, &old_keys))
         .unwrap();
     let old_approval = approve(request(1), &old_keys[..1]);
     assert!(
-        hub.apply_administrative_request(&mut acp, GENESIS, 100, &old_approval)
+        vera.apply_administrative_request(&mut acp, GENESIS, 100, &old_approval)
             .is_err()
     );
-    hub.apply_administrative_request(&mut acp, GENESIS, 100, &approve(request(1), &[next]))
+    vera.apply_administrative_request(&mut acp, GENESIS, 100, &approve(request(1), &[next]))
         .unwrap();
-    assert_eq!(hub.administration().unwrap().unwrap().sequence, 2);
+    assert_eq!(vera.administration().unwrap().unwrap().sequence, 2);
 }
 
 #[test]
 fn invalid_rotation_does_not_consume_sequence() {
     let (mut policy, keys) = operators();
-    let mut hub = VeraModule::new();
+    let mut vera = VeraModule::new();
     let mut acp = AcpModule::new();
-    hub.initialize_administration(policy.clone()).unwrap();
+    vera.initialize_administration(policy.clone()).unwrap();
     policy.keys[1] = policy.keys[0].clone();
     let mut invalid = request(0);
     invalid.command = AdministrativeCommand::RotateOperators(policy);
-    let before = hub.store().serialize();
+    let before = vera.store().serialize();
     assert!(
-        hub.apply_administrative_request(&mut acp, GENESIS, 100, &approve(invalid, &keys))
+        vera.apply_administrative_request(&mut acp, GENESIS, 100, &approve(invalid, &keys))
             .is_err()
     );
-    assert_eq!(hub.store().serialize(), before);
-    hub.apply_administrative_request(&mut acp, GENESIS, 100, &approve(request(0), &keys))
+    assert_eq!(vera.store().serialize(), before);
+    vera.apply_administrative_request(&mut acp, GENESIS, 100, &approve(request(0), &keys))
         .unwrap();
 }
 
@@ -250,9 +250,9 @@ fn invalid_operator_policies_cannot_initialize_authority() {
     keys.sort();
     invalid.push(OperatorPolicy { threshold: 1, keys });
     for policy in invalid {
-        let mut hub = VeraModule::new();
-        assert!(hub.initialize_administration(policy).is_err());
-        assert!(hub.store().is_empty());
+        let mut vera = VeraModule::new();
+        assert!(vera.initialize_administration(policy).is_err());
+        assert!(vera.store().is_empty());
     }
 }
 
@@ -266,11 +266,11 @@ fn exhausted_sequence_cannot_change_parameters() {
     };
     let store =
         InMemoryKvStore::from_pairs(vec![(b"admin/v1".to_vec(), borsh::to_vec(&state).unwrap())]);
-    let mut hub = VeraModule::from_store(store);
+    let mut vera = VeraModule::from_store(store);
     let mut acp = AcpModule::new();
-    let before = (hub.store().serialize(), acp.store().serialize());
+    let before = (vera.store().serialize(), acp.store().serialize());
     assert!(
-        hub.apply_administrative_request(
+        vera.apply_administrative_request(
             &mut acp,
             GENESIS,
             100,
@@ -278,5 +278,5 @@ fn exhausted_sequence_cannot_change_parameters() {
         )
         .is_err()
     );
-    assert_eq!((hub.store().serialize(), acp.store().serialize()), before);
+    assert_eq!((vera.store().serialize(), acp.store().serialize()), before);
 }

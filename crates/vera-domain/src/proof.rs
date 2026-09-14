@@ -57,7 +57,7 @@ pub struct ModuleStateProof {
     pub jmt_proof: String,
     /// Root hash of this module's JMT.
     pub module_root: String,
-    /// Root hashes of all 4 module trees (hex-encoded, order: acp, bulletin, hub, nonces).
+    /// Root hashes of all 4 module trees (hex-encoded, order: acp, bulletin, vera, nonces).
     pub all_module_roots: [String; 4],
 }
 

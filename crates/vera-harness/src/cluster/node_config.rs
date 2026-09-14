@@ -50,7 +50,7 @@ impl ConsensusPreset {
 
 /// Builder for per-node configuration.
 ///
-/// Generates TOML config files compatible with hub's `NodeConfig` format.
+/// Generates TOML config files compatible with vera's `NodeConfig` format.
 #[derive(Debug)]
 pub struct NodeConfigBuilder {
     chain_id: u64,
@@ -113,7 +113,7 @@ impl NodeConfigBuilder {
 
     /// Build a TOML config string for a specific node directory and ports.
     ///
-    /// Generates the config as a TOML string matching hub's NodeConfig format,
+    /// Generates the config as a TOML string matching vera's NodeConfig format,
     /// avoiding a direct dependency on vera-config.
     pub fn build_config_toml(
         &self,

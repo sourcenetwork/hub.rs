@@ -94,12 +94,12 @@ mod tests {
 
     #[test]
     fn selectors_and_writes_reject_overflow_before_mutation() {
-        let mut hub = VeraModule::new();
+        let mut vera = VeraModule::new();
         for account in ["".to_string(), "a".repeat(256)] {
-            assert!(hub.get_jws_tokens_by_account(&account).is_err());
+            assert!(vera.get_jws_tokens_by_account(&account).is_err());
         }
         let did = Did::new(format!("did:key:{}", "a".repeat(256))).unwrap();
-        assert!(hub.get_jws_tokens_by_did(&did).is_err());
+        assert!(vera.get_jws_tokens_by_did(&did).is_err());
         for field in 0..3 {
             let mut token = record("hash");
             match field {
@@ -107,50 +107,50 @@ mod tests {
                 1 => token.issuer_did = did.to_string(),
                 _ => token.authorized_account = "a".repeat(256),
             }
-            let before = hub.store.serialize();
-            assert!(hub.set_jws_token(&token).is_err());
-            assert_eq!(hub.store.serialize(), before);
+            let before = vera.store.serialize();
+            assert!(vera.set_jws_token(&token).is_err());
+            assert_eq!(vera.store.serialize(), before);
         }
     }
 
     #[test]
     fn token_queries_are_bounded_and_reject_dangling_or_aliased_indexes() {
-        let mut hub = VeraModule::new();
+        let mut vera = VeraModule::new();
         for id in 0..MAX_RECORDS {
-            hub.set_jws_token(&record(&format!("hash{id}"))).unwrap();
+            vera.set_jws_token(&record(&format!("hash{id}"))).unwrap();
         }
         assert_eq!(
-            hub.get_jws_tokens_by_account("account").unwrap().len(),
+            vera.get_jws_tokens_by_account("account").unwrap().len(),
             MAX_RECORDS
         );
-        assert_eq!(hub.get_all_jws_tokens().unwrap().len(), MAX_RECORDS);
-        hub.set_jws_token(&record("extra")).unwrap();
-        assert!(hub.get_jws_tokens_by_account("account").is_err());
-        assert!(hub.get_all_jws_tokens().is_err());
-        let mut hub = VeraModule::new();
-        hub.set_jws_token(&record("hash")).unwrap();
+        assert_eq!(vera.get_all_jws_tokens().unwrap().len(), MAX_RECORDS);
+        vera.set_jws_token(&record("extra")).unwrap();
+        assert!(vera.get_jws_tokens_by_account("account").is_err());
+        assert!(vera.get_all_jws_tokens().is_err());
+        let mut vera = VeraModule::new();
+        vera.set_jws_token(&record("hash")).unwrap();
         let primary = keys::jws_token_key("hash");
-        hub.store.delete(&primary);
-        assert!(hub.get_jws_tokens_by_account("account").is_err());
-        hub.set_jws_token(&record("hash")).unwrap();
+        vera.store.delete(&primary);
+        assert!(vera.get_jws_tokens_by_account("account").is_err());
+        vera.set_jws_token(&record("hash")).unwrap();
         let mut alias = keys::jws_token_by_account_key("account", "hash");
         alias.push(0);
-        hub.store.put(&alias, vec![1]);
-        assert!(hub.get_jws_tokens_by_account("account").is_err());
+        vera.store.put(&alias, vec![1]);
+        assert!(vera.get_jws_tokens_by_account("account").is_err());
     }
 
     #[test]
     fn token_queries_bound_bytes_and_validate_record_index_binding() {
-        let mut hub = VeraModule::new();
+        let mut vera = VeraModule::new();
         let mut token = record("hash");
         token.bearer_token = "a".repeat(MAX_BYTES);
-        hub.set_jws_token(&token).unwrap();
-        assert!(hub.get_jws_tokens_by_account("account").is_err());
-        assert!(hub.get_all_jws_tokens().is_err());
+        vera.set_jws_token(&token).unwrap();
+        assert!(vera.get_jws_tokens_by_account("account").is_err());
+        assert!(vera.get_all_jws_tokens().is_err());
         token.bearer_token.clear();
         token.authorized_account = "other".into();
-        hub.store
+        vera.store
             .put(&keys::jws_token_key("hash"), borsh::to_vec(&token).unwrap());
-        assert!(hub.get_jws_tokens_by_account("account").is_err());
+        assert!(vera.get_jws_tokens_by_account("account").is_err());
     }
 }

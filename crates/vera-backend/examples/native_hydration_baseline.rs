@@ -59,17 +59,17 @@ fn main() {
         let modules = if mode == "journal" {
             native::load_modules(&set).await.unwrap()
         } else {
-            let (acp, bulletin, hub, nonces) = futures::join!(
+            let (acp, bulletin, vera, nonces) = futures::join!(
                 indexed_or_buffered(&set.0, &mode), indexed_or_buffered(&set.1, &mode),
                 indexed_or_buffered(&set.2, &mode), indexed_or_buffered(&set.3, &mode),
             );
-            ModuleState::from_stores([acp, bulletin, hub, nonces])
+            ModuleState::from_stores([acp, bulletin, vera, nonces])
         };
         let load_ms = start.elapsed().as_secs_f64() * 1000.0;
         let mut hash = Sha256::default();
         let mut total_records = 0;
         let mut total_value_bytes = 0;
-        for (module, store) in [modules.acp.store(), modules.bulletin.store(), modules.hub.store(), modules.nonces.store()].into_iter().enumerate() {
+        for (module, store) in [modules.acp.store(), modules.bulletin.store(), modules.vera.store(), modules.nonces.store()].into_iter().enumerate() {
             assert!(store.dirty_entries().is_empty());
             hash.update(&[u8::try_from(module).unwrap()]);
             for (key, value) in store.prefix_iter(b"") {

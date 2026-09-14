@@ -1,4 +1,4 @@
-//! Multi-node local testnet orchestrator for hub.
+//! Multi-node local testnet orchestrator for vera.
 //!
 //! Generates identity keys, produces threshold schemes via trusted-dealer mode,
 //! writes all config files, and spawns N validator child processes on
@@ -82,7 +82,7 @@ pub(crate) fn run(chain_id: u64, data_dir: PathBuf, args: &TestnetArgs) -> eyre:
         ));
     }
 
-    info!(nodes = n, chain_id, data_dir = %data_dir.display(), "Setting up hub testnet");
+    info!(nodes = n, chain_id, data_dir = %data_dir.display(), "Setting up vera testnet");
 
     // Create base directory.
     std::fs::create_dir_all(&data_dir)?;

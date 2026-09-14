@@ -16,10 +16,10 @@ use vera_modules::{
         types::{AccessRequest, Actor, Object, Operation, PolicyCmd, PolicyMarshalingType},
     },
     bulletin::keys as bulletin_keys,
-    hub::types::ChainConfig,
     kv_store::{InMemoryKvStore, ModuleKvStore},
     module_state::{ModuleChanges, combine_module_roots},
     types::{BlockExecCtx, TxExecCtx},
+    vera::types::ChainConfig,
 };
 use zanzibar::{Relationship, Subject};
 
@@ -117,7 +117,7 @@ fn authorization_survives_forks_restart_and_rewind() {
                 )
                 .unwrap();
             first_state
-                .hub
+                .vera
                 .set_chain_config(ChainConfig {
                     allow_zero_fee_txs: true,
                     ignore_bearer_auth: false,

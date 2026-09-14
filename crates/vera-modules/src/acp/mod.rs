@@ -23,7 +23,7 @@ pub mod read_capture;
 pub mod record_store;
 /// ACP domain types.
 pub mod types;
-/// `ZanzibarStore` adapter over hub's module KV store.
+/// `ZanzibarStore` adapter over vera's module KV store.
 pub mod zanzibar_store;
 
 use imbl::OrdMap;
@@ -886,7 +886,7 @@ impl AcpModule {
 
         // Go-compat (defradb #1060): accept relationships on undeclared relation
         // names; enforce the #1059 floor (EntitySet reference + subject
-        // restriction) only on declared relations, so hub and defradb make the
+        // restriction) only on declared relations, so vera and defradb make the
         // same accept/reject decision and don't diverge single- vs cross-node.
         // An undeclared-relation grant is inert: any access check on it fails
         // closed because the engine resolves no expression for it.
@@ -2316,7 +2316,7 @@ resources:
             .unwrap();
         let policy_id = record.policy.id;
 
-        // `bogus` is undeclared. defradb (Go-compat, #1060) accepts it; hub must
+        // `bogus` is undeclared. defradb (Go-compat, #1060) accepts it; vera must
         // too, or single-/cross-node decisions diverge.
         let rel = Relationship::with_entity("document", "docX", "bogus", grantee.clone());
         module

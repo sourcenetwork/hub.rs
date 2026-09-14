@@ -13,7 +13,7 @@ impl VeraApiImpl {
 
         let module_id = ModuleId::from_str_name(&module).ok_or_else(|| {
             RpcError::InvalidTransaction(format!(
-                "unknown module: {module} (expected acp, bulletin, hub, or native_nonce)"
+                "unknown module: {module} (expected acp, bulletin, vera, or native_nonce)"
             ))
         })?;
 

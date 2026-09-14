@@ -1,4 +1,4 @@
-//! Block and transaction indexer for hub RPC queries.
+//! Block and transaction indexer for vera RPC queries.
 
 #![doc(issue_tracker_base_url = "https://github.com/sourcenetwork/vera.rs/issues/")]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]

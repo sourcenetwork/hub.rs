@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "RPC server for hub nodes"
+description = "RPC server for vera nodes"
 
 [lints]
 workspace = true
@@ -46,7 +46,7 @@ parking_lot.workspace = true
 # Commonware
 commonware-cryptography.workspace = true
 
-# Hub crates
+# Vera crates
 vera-domain.workspace = true
 vera-backend.workspace = true
 vera-permission.workspace = true

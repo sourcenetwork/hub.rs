@@ -93,7 +93,7 @@ pub fn simulate_call<S: StateDbRead>(
                 SpecId::CANCUN,
                 m.acp.clone(),
                 m.bulletin.clone(),
-                m.hub.clone(),
+                m.vera.clone(),
             )
         },
     );

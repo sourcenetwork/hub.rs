@@ -666,7 +666,7 @@ fn epoch_rosters_capture_the_boundary_branch_and_survive_later_changes() {
             .modules()
             .read()
             .unwrap()
-            .hub
+            .vera
             .consensus_roster(3)
             .is_none()
     );

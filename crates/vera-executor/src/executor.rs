@@ -1,4 +1,4 @@
-//! VeraExecutor — EVM executor with hub precompiles (ACP, Bulletin, Vera)
+//! VeraExecutor — EVM executor with vera precompiles (ACP, Bulletin, Vera)
 //! and native BLS transaction support.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -22,10 +22,10 @@ use vera_crypto::bls;
 use vera_domain::NativeTx;
 use vera_modules::acp::AcpModule;
 use vera_modules::bulletin::BulletinModule;
-use vera_modules::hub::VeraModule;
 use vera_modules::module_state::{ModuleState, SharedModuleState, state_root_from_jmt};
 use vera_modules::native_account::NativeNonceStore;
 use vera_modules::types::{BlockExecCtx, Timestamp, TxExecCtx};
+use vera_modules::vera::VeraModule;
 use vera_state::ModuleStateTree;
 use vera_traits::StateDb;
 
@@ -39,10 +39,10 @@ const NATIVE_TX_GAS_LIMIT: u64 = 1_000_000;
 
 mod recovery;
 
-/// Per-module JMT-backed state trees: [acp, bulletin, hub, nonces].
+/// Per-module JMT-backed state trees: [acp, bulletin, vera, nonces].
 pub type ModuleTrees = [Arc<Mutex<ModuleStateTree>>; 4];
 
-/// Block executor with hub precompiles (ACP, Bulletin, Vera).
+/// Block executor with vera precompiles (ACP, Bulletin, Vera).
 ///
 /// Processes both EVM transactions (secp256k1) and native BLS transactions
 /// (BLS12-381) in block order. The first byte of each transaction determines
@@ -76,7 +76,7 @@ impl VeraExecutor {
             crate::faults::after_module_commit(marker, height, index);
         }
     }
-    /// Create a new hub executor.
+    /// Create a new vera executor.
     pub fn new(chain_id: u64) -> Self {
         Self {
             config: ExecutionConfig::new(chain_id),
@@ -88,7 +88,7 @@ impl VeraExecutor {
         }
     }
 
-    /// Create a new hub executor with full configuration.
+    /// Create a new vera executor with full configuration.
     pub fn with_config(config: ExecutionConfig) -> Self {
         Self {
             config,
@@ -212,7 +212,7 @@ impl VeraExecutor {
         block_ctx: &BlockExecCtx,
         acp: &mut AcpModule,
         bulletin: &mut BulletinModule,
-        hub: &mut VeraModule,
+        vera: &mut VeraModule,
         nonce_store: &mut NativeNonceStore,
         journal: &mut CTX,
     ) -> Result<ExecutionReceipt, ExecutionError> {
@@ -262,7 +262,7 @@ impl VeraExecutor {
             signer: signer_did,
         };
 
-        let before = (acp.clone(), bulletin.clone(), hub.clone());
+        let before = (acp.clone(), bulletin.clone(), vera.clone());
         let checkpoint = journal.journal_mut().checkpoint();
         let dispatch_result = catch_unwind(AssertUnwindSafe(|| {
             if native_tx.target == VALIDATOR_REGISTRY_ADDRESS {
@@ -278,7 +278,7 @@ impl VeraExecutor {
                 return crate::precompiles::validator_registry::dispatch_with_journal(
                     journal,
                     acp,
-                    hub,
+                    vera,
                     self.config.max_active_members(),
                     &tx_ctx,
                     &native_tx.calldata,
@@ -288,7 +288,7 @@ impl VeraExecutor {
             dispatch_to_module(
                 acp,
                 bulletin,
-                hub,
+                vera,
                 native_tx.target,
                 &native_tx.calldata,
                 block_ctx,
@@ -299,7 +299,7 @@ impl VeraExecutor {
         }));
 
         if !matches!(&dispatch_result, Ok(Ok(result)) if !result.precompile.reverted) {
-            (*acp, *bulletin, *hub) = before;
+            (*acp, *bulletin, *vera) = before;
             journal.journal_mut().checkpoint_revert(checkpoint);
         } else {
             journal.journal_mut().checkpoint_commit();
@@ -351,7 +351,7 @@ impl VeraExecutor {
             .end_blocker(block_ctx)
             .map_err(|error| ExecutionError::BlockValidation(format!("ACP lifecycle: {error}")))?;
         modules
-            .hub
+            .vera
             .check_and_update_expired_tokens(block_ctx)
             .map_err(|error| ExecutionError::BlockValidation(format!("Vera lifecycle: {error}")))?;
         Ok(())
@@ -416,7 +416,7 @@ impl VeraExecutor {
                 &block_ctx,
                 &mut modules.acp,
                 &mut modules.bulletin,
-                &mut modules.hub,
+                &mut modules.vera,
                 &mut modules.nonces,
                 &mut ctx,
             ) {
@@ -463,7 +463,7 @@ impl VeraExecutor {
             self.config.spec_id,
             modules.acp.clone(),
             modules.bulletin.clone(),
-            modules.hub.clone(),
+            modules.vera.clone(),
         )
         .with_genesis_id(self.config.genesis_id)
         .with_membership_limit(self.config.max_active_members());
@@ -531,10 +531,10 @@ impl VeraExecutor {
             outcome.changes.merge(changes);
         }
 
-        let (acp, bulletin, hub) = evm.precompiles.take_modules();
+        let (acp, bulletin, vera) = evm.precompiles.take_modules();
         modules.acp = acp;
         modules.bulletin = bulletin;
-        modules.hub = hub;
+        modules.vera = vera;
 
         if let Some(length) = self.config.membership_epoch_length {
             let height = context.header.number;
@@ -546,7 +546,7 @@ impl VeraExecutor {
                     crate::precompiles::validator_registry::active_consensus_keys(&mut evm.ctx)
                         .map_err(|error| ExecutionError::TxExecution(error.to_string()))?;
                 modules
-                    .hub
+                    .vera
                     .record_consensus_roster(epoch, &keys)
                     .map_err(|error| ExecutionError::TxExecution(error.to_string()))?;
             }
@@ -565,7 +565,7 @@ impl VeraExecutor {
             let stores = [
                 modules.acp.store(),
                 modules.bulletin.store(),
-                modules.hub.store(),
+                modules.vera.store(),
                 modules.nonces.store(),
             ];
             let changes = modules.diff_from(&base_modules);
@@ -731,7 +731,7 @@ mod tests {
 
     #[test]
     fn expiry_batches_match_proposal_verification_and_leave_parent_unchanged() {
-        use vera_modules::{hub::keys::JWS_TOKEN_EXPIRY_PREFIX, kv_store::InMemoryKvStore};
+        use vera_modules::{kv_store::InMemoryKvStore, vera::keys::JWS_TOKEN_EXPIRY_PREFIX};
 
         let executor = test_executor();
         let mut modules = ModuleState::default();
@@ -739,7 +739,7 @@ mod tests {
         let issuer = identity::Did::new("did:key:issuer").unwrap();
         for id in 0..257 {
             modules
-                .hub
+                .vera
                 .store_or_update_jws_token(
                     &issued,
                     &id.to_string(),
@@ -787,7 +787,7 @@ mod tests {
             );
             assert_eq!(
                 next.modules
-                    .hub
+                    .vera
                     .store()
                     .prefix_iter(JWS_TOKEN_EXPIRY_PREFIX)
                     .count(),
@@ -807,7 +807,7 @@ mod tests {
                 modules: ModuleState::from_stores(stores),
                 trees: None,
             };
-            parent.modules.hub.validate_restored_tokens().unwrap();
+            parent.modules.vera.validate_restored_tokens().unwrap();
         }
     }
 
@@ -822,7 +822,7 @@ mod tests {
             ),
             (
                 2,
-                vera_modules::hub::keys::jws_token_key("bad"),
+                vera_modules::vera::keys::jws_token_key("bad"),
                 "Vera lifecycle",
             ),
         ] {
@@ -831,7 +831,7 @@ mod tests {
             stores[partition].put(&key, vec![0]);
             if partition == 2 {
                 let index = [
-                    vera_modules::hub::keys::JWS_TOKEN_EXPIRY_PREFIX,
+                    vera_modules::vera::keys::JWS_TOKEN_EXPIRY_PREFIX,
                     &0u64.to_be_bytes(),
                     b"bad",
                 ]
@@ -889,7 +889,7 @@ mod tests {
         let block_ctx = test_block_ctx();
         let mut acp = AcpModule::new();
         let mut bulletin = BulletinModule::new();
-        let mut hub = VeraModule::new();
+        let mut vera = VeraModule::new();
         let mut nonces = NativeNonceStore::default();
 
         // 0x45 followed by garbage
@@ -899,7 +899,7 @@ mod tests {
             &block_ctx,
             &mut acp,
             &mut bulletin,
-            &mut hub,
+            &mut vera,
             &mut nonces,
             &mut test_journal(),
         );
@@ -922,7 +922,7 @@ mod tests {
         let block_ctx = test_block_ctx();
         let mut acp = AcpModule::new();
         let mut bulletin = BulletinModule::new();
-        let mut hub = VeraModule::new();
+        let mut vera = VeraModule::new();
         let mut nonces = NativeNonceStore::default();
 
         let result = executor.execute_native_tx(
@@ -930,7 +930,7 @@ mod tests {
             &block_ctx,
             &mut acp,
             &mut bulletin,
-            &mut hub,
+            &mut vera,
             &mut nonces,
             &mut test_journal(),
         );
@@ -959,7 +959,7 @@ mod tests {
         let block_ctx = test_block_ctx();
         let mut acp = AcpModule::new();
         let mut bulletin = BulletinModule::new();
-        let mut hub = VeraModule::new();
+        let mut vera = VeraModule::new();
         let mut nonces = NativeNonceStore::default();
 
         let result = executor.execute_native_tx(
@@ -967,7 +967,7 @@ mod tests {
             &block_ctx,
             &mut acp,
             &mut bulletin,
-            &mut hub,
+            &mut vera,
             &mut nonces,
             &mut test_journal(),
         );
@@ -1012,7 +1012,7 @@ mod tests {
         let block_ctx = test_block_ctx();
         let mut acp = AcpModule::new();
         let mut bulletin = BulletinModule::new();
-        let mut hub = VeraModule::new();
+        let mut vera = VeraModule::new();
         let mut nonces = NativeNonceStore::default();
 
         let result = executor.execute_native_tx(
@@ -1020,7 +1020,7 @@ mod tests {
             &block_ctx,
             &mut acp,
             &mut bulletin,
-            &mut hub,
+            &mut vera,
             &mut nonces,
             &mut test_journal(),
         );
@@ -1120,7 +1120,7 @@ mod tests {
         let block_ctx = test_block_ctx();
         let mut acp = AcpModule::new();
         let mut bulletin = BulletinModule::new();
-        let mut hub = VeraModule::new();
+        let mut vera = VeraModule::new();
         let mut nonces = NativeNonceStore::default();
 
         // Passes BLS verification and nonce check, dispatches to module query_params
@@ -1130,7 +1130,7 @@ mod tests {
                 &block_ctx,
                 &mut acp,
                 &mut bulletin,
-                &mut hub,
+                &mut vera,
                 &mut nonces,
                 &mut test_journal(),
             )
@@ -1206,7 +1206,7 @@ mod tests {
         let executor = test_executor();
         let block = test_block_ctx();
         let mut bulletin = BulletinModule::new();
-        let mut hub = VeraModule::new();
+        let mut vera = VeraModule::new();
         let mut nonces = NativeNonceStore::default();
         for sequence in 0..2 {
             let mut tx = NativeTx {
@@ -1224,7 +1224,7 @@ mod tests {
                     &block,
                     &mut acp,
                     &mut bulletin,
-                    &mut hub,
+                    &mut vera,
                     &mut nonces,
                     &mut test_journal(),
                 )
@@ -1256,7 +1256,7 @@ mod tests {
         let block_ctx = test_block_ctx();
         let mut acp = AcpModule::new();
         let mut bulletin = BulletinModule::new();
-        let mut hub = VeraModule::new();
+        let mut vera = VeraModule::new();
         let mut nonces = NativeNonceStore::default();
 
         let result = executor.execute_native_tx(
@@ -1264,7 +1264,7 @@ mod tests {
             &block_ctx,
             &mut acp,
             &mut bulletin,
-            &mut hub,
+            &mut vera,
             &mut nonces,
             &mut test_journal(),
         );
@@ -1285,7 +1285,7 @@ mod tests {
         let block_ctx = test_block_ctx();
         let mut acp = AcpModule::new();
         let mut bulletin = BulletinModule::new();
-        let mut hub = VeraModule::new();
+        let mut vera = VeraModule::new();
         let mut nonces = NativeNonceStore::default();
 
         // nonce 0 passes nonce check; empty calldata fails ABI decode → failed receipt
@@ -1295,7 +1295,7 @@ mod tests {
             &block_ctx,
             &mut acp,
             &mut bulletin,
-            &mut hub,
+            &mut vera,
             &mut nonces,
             &mut test_journal(),
         );
@@ -1308,7 +1308,7 @@ mod tests {
             &block_ctx,
             &mut acp,
             &mut bulletin,
-            &mut hub,
+            &mut vera,
             &mut nonces,
             &mut test_journal(),
         );
@@ -1321,7 +1321,7 @@ mod tests {
             &block_ctx,
             &mut acp,
             &mut bulletin,
-            &mut hub,
+            &mut vera,
             &mut nonces,
             &mut test_journal(),
         );
@@ -1339,7 +1339,7 @@ mod tests {
         let block_ctx = test_block_ctx();
         let mut acp = AcpModule::new();
         let mut bulletin = BulletinModule::new();
-        let mut hub = VeraModule::new();
+        let mut vera = VeraModule::new();
         let mut nonces = NativeNonceStore::default();
 
         // First: nonce 0 passes nonce check (empty calldata → failed receipt, but nonce consumed)
@@ -1349,7 +1349,7 @@ mod tests {
             &block_ctx,
             &mut acp,
             &mut bulletin,
-            &mut hub,
+            &mut vera,
             &mut nonces,
             &mut test_journal(),
         );
@@ -1362,7 +1362,7 @@ mod tests {
             &block_ctx,
             &mut acp,
             &mut bulletin,
-            &mut hub,
+            &mut vera,
             &mut nonces,
             &mut test_journal(),
         );

@@ -2,9 +2,9 @@
 
 use alloy_sol_types::SolCall;
 use k256::ecdsa::{Signature, SigningKey, signature::hazmat::PrehashSigner as _};
-use vera_modules::hub::abi::IHub;
+use vera_modules::vera::abi::IVera;
 
-pub use vera_modules::hub::administration::{
+pub use vera_modules::vera::administration::{
     AdministrationState, AdministrativeCommand, AdministrativeRequest, OperatorApproval,
     OperatorPolicy, SignedAdministrativeRequest,
 };
@@ -102,7 +102,7 @@ impl VeraClient {
         let response = self
             .read_current_record(
                 vera_permission::ModuleId::Vera,
-                vera_modules::hub::administration::STATE_KEY,
+                vera_modules::vera::administration::STATE_KEY,
                 minimum,
                 trusted,
                 vera_permission::RECORD_PROOF_BYTES,
@@ -126,10 +126,10 @@ impl VeraClient {
         let result = self
             .eth_call(
                 VERA_ADDRESS,
-                IHub::getAdministrationCall {}.abi_encode().into(),
+                IVera::getAdministrationCall {}.abi_encode().into(),
             )
             .await?;
-        let bytes = IHub::getAdministrationCall::abi_decode_returns(&result)
+        let bytes = IVera::getAdministrationCall::abi_decode_returns(&result)
             .map_err(|error| ClientError::AbiDecode(error.to_string()))?;
         Ok(serde_json::from_slice(&bytes)?)
     }
@@ -140,7 +140,7 @@ impl VeraClient {
         submitter: &BlsSigner,
         signed: &SignedAdministrativeRequest,
     ) -> Result<TransactionReceipt, ClientError> {
-        let calldata = IHub::applyAdministrationCall {
+        let calldata = IVera::applyAdministrationCall {
             request: serde_json::to_vec(signed)?.into(),
         }
         .abi_encode();
@@ -154,7 +154,7 @@ impl VeraClient {
         submitter: &EvmSigner,
         signed: &SignedAdministrativeRequest,
     ) -> Result<TransactionReceipt, ClientError> {
-        let calldata = IHub::applyAdministrationCall {
+        let calldata = IVera::applyAdministrationCall {
             request: serde_json::to_vec(signed)?.into(),
         }
         .abi_encode();
