@@ -150,7 +150,7 @@ pub(super) async fn recover_replica(snapshot: bool, interrupt: bool, pruning: bo
                     .append(true)
                     .open(dir.join("config.toml"))
                     .unwrap();
-                writeln!(config, "\n[pruning]\nmaintenance_interval = 1\nretained_consensus_revisions = 64\nretained_state_revisions = 0").unwrap();
+                writeln!(config, "\n[pruning]\nmaintenance_interval = 2\nretained_consensus_revisions = 32\nretained_state_revisions = 0").unwrap();
             }
         })
         .build()
