@@ -369,11 +369,25 @@ pub(super) async fn recover_replica(snapshot: bool, interrupt: bool, pruning: bo
     /// late. Two distinct dealers' dealings are direct evidence the derivation
     /// can complete, so the quorum check below never kills a peer while the
     /// replica still cannot sign.
-    async fn wait_for_epoch_share(cluster: &TestCluster, epoch: u64) {
-        let marker = format!("received dealing epoch=Epoch({epoch}) dealer=");
+    async fn wait_for_epoch_share(cluster: &TestCluster, floor_epoch: u64) {
         tokio::time::timeout(deadline(), async {
             loop {
                 let logs = fs::read_to_string(cluster.node(3).log_dir.join("stdout.log")).unwrap();
+                // The replica signs with its orchestrator's current epoch; that
+                // view, not any certified-height snapshot, decides which
+                // dealings must be in hand.
+                let epoch = logs
+                    .lines()
+                    .filter_map(|line| line.split_once("entered epoch epoch="))
+                    .filter_map(|(_, rest)| rest.split_whitespace().next())
+                    .filter_map(|epoch| epoch.parse::<u64>().ok())
+                    .filter(|epoch| *epoch >= floor_epoch)
+                    .max();
+                let Some(epoch) = epoch else {
+                    tokio::time::sleep(POLL).await;
+                    continue;
+                };
+                let marker = format!("received dealing epoch=Epoch({epoch}) dealer=");
                 let dealers: std::collections::HashSet<&str> = logs
                     .lines()
                     .filter_map(|line| line.split_once(&marker).map(|(_, dealer)| dealer))
@@ -394,7 +408,7 @@ pub(super) async fn recover_replica(snapshot: bool, interrupt: bool, pruning: bo
                 .filter_map(|(_, rest)| rest.split_once(&[')'][..]).map(|(epoch, _)| epoch))
                 .max()
                 .unwrap_or("none");
-            panic!("replica must derive its epoch-{epoch} share (latest dealings: epoch {latest})");
+            panic!("replica must derive its current-epoch share (latest dealings: epoch {latest})");
         });
     }
 
