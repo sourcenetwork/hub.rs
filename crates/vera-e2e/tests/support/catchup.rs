@@ -360,13 +360,44 @@ pub(super) async fn recover_replica(snapshot: bool, interrupt: bool, pruning: bo
         assert!(status["snapshotRevision"].as_u64().unwrap() >= snapshot_revision);
         check_pruned_rosters(&replica, target.height, &trusted_key, &expected_roster).await;
     }
+
+    /// Wait until the replica holds a signing share for `epoch`.
+    ///
+    /// Certifying heights proves nothing about the replica's own share: those
+    /// blocks finalize without it. The share is derived from the epoch's dealings,
+    /// which a replica that synced through the previous epoch's tail receives
+    /// late. Two distinct dealers' dealings are direct evidence the derivation
+    /// can complete, so the quorum check below never kills a peer while the
+    /// replica still cannot sign.
+    async fn wait_for_epoch_share(cluster: &TestCluster, epoch: u64) {
+        let marker = format!("received dealing epoch=Epoch({epoch}) dealer=");
+        tokio::time::timeout(deadline(), async {
+            loop {
+                let logs = fs::read_to_string(cluster.node(3).log_dir.join("stdout.log")).unwrap();
+                let dealers: std::collections::HashSet<&str> = logs
+                    .lines()
+                    .filter_map(|line| line.split_once(&marker).map(|(_, dealer)| dealer))
+                    .map(|dealer| dealer.split_whitespace().next().unwrap_or(""))
+                    .collect();
+                if dealers.len() >= 2 {
+                    return;
+                }
+                tokio::time::sleep(POLL).await;
+            }
+        })
+        .await
+        .expect("replica must derive its current-epoch share");
+    }
+
     // Allow a complete resharing ceremony after replay, then require this
     // replica's vote: only three of the four participants remain online.
     // One full epoch of live finalization past the next boundary: the
     // replica can reach any earlier height by replaying history without
     // participating in a resharing ceremony, and killing a peer before the
     // replica's current-epoch share exists drops the online set below quorum.
-    let ready = certified_height(&replica, (caught_up.epoch + 3) * 20 + 2, &trusted_key).await;
+    let gate_epoch = caught_up.epoch + 3;
+    let ready = certified_height(&replica, (gate_epoch) * 20 + 2, &trusted_key).await;
+    wait_for_epoch_share(&cluster, gate_epoch).await;
     cluster.kill_node(2);
 
     let subsequent = replica
