@@ -34,11 +34,21 @@ impl VeraApiImpl {
                         databases.2.read(),
                         databases.3.read(),
                     );
-                    let selected = index
-                        .latest_block()
-                        .ok_or_else(|| error("finalized revision unavailable"))?;
+                    let selected = match index.latest_block() {
+                        Some(selected) => selected,
+                        None => {
+                            drop((a, b, h, n));
+                            super::record::wait_for_proof_progress(&mut updates).await;
+                            continue;
+                        }
+                    };
                     if selected.number < minimum_height {
-                        return Err(error("finalized revision precedes required minimum"));
+                        // The index can trail a just-certified receipt; wait
+                        // for the next publication instead of failing a read
+                        // whose minimum is already finalized elsewhere.
+                        drop((a, b, h, n));
+                        super::record::wait_for_proof_progress(&mut updates).await;
+                        continue;
                     }
                     match vera_backend::native::prefix_page_at(
                         [&a, &b, &h, &n],

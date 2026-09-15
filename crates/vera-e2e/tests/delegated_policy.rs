@@ -39,7 +39,15 @@ async fn submit(
                 assert_eq!(receipt.transaction_hash, hash);
                 assert_eq!(receipt.signer_did.as_deref(), Some(signer.did()));
                 assert_eq!(receipt.native_nonce, Some(tx.nonce));
-                let evidence = client.read_receipt(hash, trusted).await.unwrap().unwrap();
+                // The receipt index can publish a moment before the height's
+                // finalization certificate; retry until the evidence lands.
+                let evidence = match client.read_receipt(hash, trusted).await.unwrap() {
+                    Some(evidence) => evidence,
+                    None => {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        continue;
+                    }
+                };
                 let verified = evidence.verify(hash, trusted).unwrap();
                 assert_eq!(evidence.revision.height, receipt.block_number);
                 assert_eq!(verified.success(), receipt.status == 1);
@@ -101,10 +109,10 @@ async fn policy(
                 Ok(proof) => {
                     return serde_json::from_slice(proof.record.value.as_ref().unwrap()).unwrap();
                 }
-                Err(ClientError::Rpc {
-                    code: -32002,
-                    message,
-                }) if message == "finalized revision precedes required minimum" => {
+                // -32002 here is a transient wait: the replica's index has
+                // not reached the confirmed revision yet, or its evidence
+                // deadline expired while waiting for it.
+                Err(ClientError::Rpc { code: -32002, .. }) => {
                     tokio::time::sleep(Duration::from_millis(50)).await;
                 }
                 Err(error) => panic!("verified policy read failed: {error}"),
