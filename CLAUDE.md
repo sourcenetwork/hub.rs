@@ -19,9 +19,9 @@ All repos follow gopath convention at `/Users/johnzampolin/go/src/github.com/{or
 
 | Component | Source repo | Used in vera.rs for |
 |-----------|-----------|-------------------|
-| Zanzibar engine (relation-tuple graph) | defradb.rs `crates/acp/src/zanzibar/` | ACP policy evaluation |
-| DID types, identity crate | defradb.rs `crates/identity/` | DID resolution (also check orbis-rs) |
-| YAML policy parser | defradb.rs `crates/acp/src/policy_yaml/` | ACP policy creation |
+| Zanzibar engine (relation-tuple graph) | vendored `crates/zanzibar/` (from defradb.rs 8d34d9c) | ACP policy evaluation |
+| DID types, identity crate | vendored `crates/identity/` (from defradb.rs 8d34d9c) | DID resolution |
+| YAML policy parser, DocumentACP types | vendored `crates/acp/` (from defradb.rs 8d34d9c) | ACP policy creation |
 | Simplex consensus, REVM executor, e2e harness | bankd-commonware | Consensus, EVM execution, testing |
 | BLS12-381 threshold crypto | commonware monorepo | Block signing, native tx verification |
 
