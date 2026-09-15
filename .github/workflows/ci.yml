@@ -37,6 +37,9 @@ jobs:
       - name: Clear stale checkout credentials
         run: git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
 
+      - name: Remove stale files from other branches
+        run: git clean -fdx -e /target
+
       - name: Fetch locked dependencies
         env:
           CARGO_NET_GIT_FETCH_WITH_CLI: "true"
@@ -65,6 +68,9 @@ jobs:
 
       - name: Clear stale checkout credentials
         run: git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
+
+      - name: Remove stale files from other branches
+        run: git clean -fdx -e /target
 
       - name: Fetch locked dependencies
         env:
@@ -111,6 +117,9 @@ jobs:
 
       - name: Clear stale checkout credentials
         run: git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
+
+      - name: Remove stale files from other branches
+        run: git clean -fdx -e /target
 
       - name: Fetch locked dependencies
         env:
@@ -159,6 +168,9 @@ jobs:
 
       - name: Clear stale checkout credentials
         run: git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
+
+      - name: Remove stale files from other branches
+        run: git clean -fdx -e /target
 
       - name: Fetch locked dependencies
         env:
@@ -210,6 +222,9 @@ jobs:
 
       - name: Clear stale checkout credentials
         run: git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
+
+      - name: Remove stale files from other branches
+        run: git clean -fdx -e /target
 
       - name: Fetch locked dependencies
         env:
