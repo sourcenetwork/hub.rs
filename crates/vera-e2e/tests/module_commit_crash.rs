@@ -72,9 +72,8 @@ async fn assert_replicas(cluster: &TestCluster, signer: &BlsSigner, receipt: &Tr
     .expect("replica convergence deadline");
 }
 
-
 /// Latest finalized height from a live node's status.
-async fn certified_head(client: &HubClient) -> u64 {
+async fn certified_head(client: &VeraClient) -> u64 {
     let status: serde_json::Value = client
         .rpc_call_typed("vera_nodeStatus", serde_json::json!([]))
         .await
