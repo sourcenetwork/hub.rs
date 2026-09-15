@@ -7,5 +7,5 @@
 mod did;
 mod error;
 
-pub use did::{DID_KEY_PREFIX, DID_OPK_PREFIX, Did};
+pub use did::{Did, DID_KEY_PREFIX, DID_OPK_PREFIX};
 pub use error::{Error, Result};
