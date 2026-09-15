@@ -94,20 +94,20 @@ jobs:
             test-features: ""
             tests: --test snapshot_catchup
           - suite: regolith-recovery
-            binary-features: regolith-history
+            binary-features: "--features regolith-history"
             test-features: ""
             tests: --test snapshot_catchup snapshot_replica_recovers_from_pruned_peers --exact
           - suite: regolith-interrupted
-            binary-features: regolith-history,fault-injection
-            test-features: fault-injection
+            binary-features: "--features regolith-history,fault-injection"
+            test-features: "--features fault-injection"
             tests: --test snapshot_interrupt interrupted_snapshot_resumes_from_pruned_peers --exact
           - suite: commit-crash
-            binary-features: fault-injection
-            test-features: fault-injection
+            binary-features: "--features fault-injection"
+            test-features: "--features fault-injection"
             tests: --test module_commit_crash
           - suite: snapshot-interrupted
-            binary-features: fault-injection
-            test-features: fault-injection
+            binary-features: "--features fault-injection"
+            test-features: "--features fault-injection"
             tests: --test snapshot_interrupt
     env:
       VERAD_BINARY: ${{ github.workspace }}/target/debug/verad
