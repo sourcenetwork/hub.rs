@@ -386,7 +386,16 @@ pub(super) async fn recover_replica(snapshot: bool, interrupt: bool, pruning: bo
             }
         })
         .await
-        .expect("replica must derive its current-epoch share");
+        .unwrap_or_else(|_| {
+            let logs = fs::read_to_string(cluster.node(3).log_dir.join("stdout.log")).unwrap();
+            let latest = logs
+                .lines()
+                .filter_map(|line| line.split_once("received dealing epoch=Epoch("))
+                .filter_map(|(_, rest)| rest.split_once(&[')'][..]).map(|(epoch, _)| epoch))
+                .max()
+                .unwrap_or("none");
+            panic!("replica must derive its epoch-{epoch} share (latest dealings: epoch {latest})");
+        });
     }
 
     // Allow a complete resharing ceremony after replay, then require this
@@ -395,9 +404,8 @@ pub(super) async fn recover_replica(snapshot: bool, interrupt: bool, pruning: bo
     // replica can reach any earlier height by replaying history without
     // participating in a resharing ceremony, and killing a peer before the
     // replica's current-epoch share exists drops the online set below quorum.
-    let gate_epoch = caught_up.epoch + 3;
-    let ready = certified_height(&replica, (gate_epoch) * 20 + 2, &trusted_key).await;
-    wait_for_epoch_share(&cluster, gate_epoch).await;
+    let ready = certified_height(&replica, (caught_up.epoch + 3) * 20 + 2, &trusted_key).await;
+    wait_for_epoch_share(&cluster, ready.height / 20).await;
     cluster.kill_node(2);
 
     let subsequent = replica
