@@ -34,22 +34,9 @@ jobs:
           clean: false
           persist-credentials: false
 
-      - name: Put cargo on PATH
-        run: |
-          set -x
-          echo "HOME=$HOME"
-          echo "PATH=$PATH"
-          for dir in "$HOME/.cargo/bin" /opt/homebrew/bin /usr/local/bin; do
-            if [ -x "$dir/cargo" ]; then
-              echo "$dir" >> "$GITHUB_PATH"
-              echo "using cargo from $dir"
-            fi
-          done
-          if command -v rustup >/dev/null 2>&1; then
-            rustup bin="$(rustup which cargo | xargs dirname)" 2>/dev/null || true
-            rustup which cargo | xargs dirname >> "$GITHUB_PATH" || true
-          fi
-          command -v cargo || echo "cargo not found after setup"
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: clippy, rustfmt
 
       - name: Clear stale checkout credentials
         run: git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
@@ -83,22 +70,9 @@ jobs:
           clean: false
           persist-credentials: false
 
-      - name: Put cargo on PATH
-        run: |
-          set -x
-          echo "HOME=$HOME"
-          echo "PATH=$PATH"
-          for dir in "$HOME/.cargo/bin" /opt/homebrew/bin /usr/local/bin; do
-            if [ -x "$dir/cargo" ]; then
-              echo "$dir" >> "$GITHUB_PATH"
-              echo "using cargo from $dir"
-            fi
-          done
-          if command -v rustup >/dev/null 2>&1; then
-            rustup bin="$(rustup which cargo | xargs dirname)" 2>/dev/null || true
-            rustup which cargo | xargs dirname >> "$GITHUB_PATH" || true
-          fi
-          command -v cargo || echo "cargo not found after setup"
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: clippy, rustfmt
 
       - name: Clear stale checkout credentials
         run: git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
@@ -149,22 +123,9 @@ jobs:
           clean: false
           persist-credentials: false
 
-      - name: Put cargo on PATH
-        run: |
-          set -x
-          echo "HOME=$HOME"
-          echo "PATH=$PATH"
-          for dir in "$HOME/.cargo/bin" /opt/homebrew/bin /usr/local/bin; do
-            if [ -x "$dir/cargo" ]; then
-              echo "$dir" >> "$GITHUB_PATH"
-              echo "using cargo from $dir"
-            fi
-          done
-          if command -v rustup >/dev/null 2>&1; then
-            rustup bin="$(rustup which cargo | xargs dirname)" 2>/dev/null || true
-            rustup which cargo | xargs dirname >> "$GITHUB_PATH" || true
-          fi
-          command -v cargo || echo "cargo not found after setup"
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: clippy, rustfmt
 
       - name: Clear stale checkout credentials
         run: git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
@@ -217,22 +178,9 @@ jobs:
           clean: false
           persist-credentials: false
 
-      - name: Put cargo on PATH
-        run: |
-          set -x
-          echo "HOME=$HOME"
-          echo "PATH=$PATH"
-          for dir in "$HOME/.cargo/bin" /opt/homebrew/bin /usr/local/bin; do
-            if [ -x "$dir/cargo" ]; then
-              echo "$dir" >> "$GITHUB_PATH"
-              echo "using cargo from $dir"
-            fi
-          done
-          if command -v rustup >/dev/null 2>&1; then
-            rustup bin="$(rustup which cargo | xargs dirname)" 2>/dev/null || true
-            rustup which cargo | xargs dirname >> "$GITHUB_PATH" || true
-          fi
-          command -v cargo || echo "cargo not found after setup"
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: clippy, rustfmt
 
       - name: Clear stale checkout credentials
         run: git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
@@ -288,22 +236,9 @@ jobs:
           clean: false
           persist-credentials: false
 
-      - name: Put cargo on PATH
-        run: |
-          set -x
-          echo "HOME=$HOME"
-          echo "PATH=$PATH"
-          for dir in "$HOME/.cargo/bin" /opt/homebrew/bin /usr/local/bin; do
-            if [ -x "$dir/cargo" ]; then
-              echo "$dir" >> "$GITHUB_PATH"
-              echo "using cargo from $dir"
-            fi
-          done
-          if command -v rustup >/dev/null 2>&1; then
-            rustup bin="$(rustup which cargo | xargs dirname)" 2>/dev/null || true
-            rustup which cargo | xargs dirname >> "$GITHUB_PATH" || true
-          fi
-          command -v cargo || echo "cargo not found after setup"
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: clippy, rustfmt
 
       - name: Clear stale checkout credentials
         run: git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
