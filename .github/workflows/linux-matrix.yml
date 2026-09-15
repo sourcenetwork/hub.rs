@@ -79,6 +79,7 @@ jobs:
       matrix:
         include:
           - suite: lifecycle
+            exact: ""
             binary-features: ""
             test-features: ""
             tests: >-
@@ -90,22 +91,27 @@ jobs:
               --test quorum_recovery
               --test cold_replay
           - suite: snapshot-catchup
+            exact: ""
             binary-features: ""
             test-features: ""
             tests: --test snapshot_catchup
           - suite: regolith-recovery
             binary-features: "--features regolith-history"
             test-features: ""
-            tests: --test snapshot_catchup snapshot_replica_recovers_from_pruned_peers --exact
+            tests: --test snapshot_catchup snapshot_replica_recovers_from_pruned_peers
+            exact: --exact
           - suite: regolith-interrupted
             binary-features: "--features regolith-history,fault-injection"
             test-features: "--features fault-injection"
-            tests: --test snapshot_interrupt interrupted_snapshot_resumes_from_pruned_peers --exact
+            tests: --test snapshot_interrupt interrupted_snapshot_resumes_from_pruned_peers
+            exact: --exact
           - suite: commit-crash
+            exact: ""
             binary-features: "--features fault-injection"
             test-features: "--features fault-injection"
             tests: --test module_commit_crash
           - suite: snapshot-interrupted
+            exact: ""
             binary-features: "--features fault-injection"
             test-features: "--features fault-injection"
             tests: --test snapshot_interrupt
@@ -157,7 +163,7 @@ jobs:
         run: >-
           cargo test --frozen -p hub-e2e ${{ matrix.test-features }}
           ${{ matrix.tests }}
-          -- --test-threads=1 --nocapture
+          -- --test-threads=1 --nocapture ${{ matrix.exact }}
 
       - name: Upload failed cluster logs
         if: failure()
