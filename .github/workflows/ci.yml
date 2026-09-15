@@ -34,8 +34,9 @@ jobs:
           clean: false
           persist-credentials: false
 
-      - name: Put cargo on PATH
-        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: clippy, rustfmt
 
       - name: Clear stale checkout credentials
         run: git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
@@ -69,8 +70,9 @@ jobs:
           clean: false
           persist-credentials: false
 
-      - name: Put cargo on PATH
-        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: clippy, rustfmt
 
       - name: Clear stale checkout credentials
         run: git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
@@ -121,8 +123,9 @@ jobs:
           clean: false
           persist-credentials: false
 
-      - name: Put cargo on PATH
-        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: clippy, rustfmt
 
       - name: Clear stale checkout credentials
         run: git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
@@ -175,8 +178,9 @@ jobs:
           clean: false
           persist-credentials: false
 
-      - name: Put cargo on PATH
-        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: clippy, rustfmt
 
       - name: Clear stale checkout credentials
         run: git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
@@ -232,8 +236,9 @@ jobs:
           clean: false
           persist-credentials: false
 
-      - name: Put cargo on PATH
-        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: clippy, rustfmt
 
       - name: Clear stale checkout credentials
         run: git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
