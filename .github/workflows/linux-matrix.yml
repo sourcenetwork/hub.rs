@@ -1,0 +1,168 @@
+name: Linux CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Linux checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      HUBD_BINARY: ${{ github.workspace }}/target/debug/hubd
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Clear stale checkout credentials
+        run: git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
+
+      - name: Remove stale files from other branches
+        run: git clean -fdx -e /target
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-dev cmake pkg-config libssl-dev protobuf-compiler
+
+      - name: Install pinned toolchain
+        run: |
+          rustc --version
+          cargo --version
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-checks
+
+      - name: Fetch locked dependencies
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: url.https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/.insteadOf
+          GIT_CONFIG_VALUE_0: https://github.com/sourcenetwork/
+        run: cargo fetch --locked
+
+      - name: Unit and storage tests
+        run: |
+          cargo test --frozen -p hub-modules --lib
+          cargo test --frozen -p hub-backend --lib
+          cargo test --frozen -p hub-backend --test native_state --test native_hydration
+          cargo test --frozen -p hub-e2e --example operation_baseline rejected_updates_preserve_results_and_stop_dependent_submissions
+          cargo test --frozen -p hub-node --lib --features regolith-history "history::"
+
+      - name: Build feature variants
+        run: |
+          cargo build --frozen -p hubd
+          cargo build --frozen -p hubd --features regolith-history
+          cargo build --frozen -p hubd --features fault-injection
+          cargo build --frozen -p hubd --features regolith-history,fault-injection
+          cargo build --frozen --release -p hubd
+
+  recovery:
+    name: Linux recovery (${{ matrix.suite }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: lifecycle
+            binary-features: ""
+            test-features: ""
+            tests: >-
+              --test native_permission
+              --test native_signed_operation
+              --test native_bulletin
+              --test native_registration
+              --test native_membership
+              --test quorum_recovery
+              --test cold_replay
+          - suite: snapshot-catchup
+            binary-features: ""
+            test-features: ""
+            tests: --test snapshot_catchup
+          - suite: regolith-recovery
+            binary-features: regolith-history
+            test-features: ""
+            tests: --test snapshot_catchup snapshot_replica_recovers_from_pruned_peers --exact
+          - suite: regolith-interrupted
+            binary-features: regolith-history,fault-injection
+            test-features: fault-injection
+            tests: --test snapshot_interrupt interrupted_snapshot_resumes_from_pruned_peers --exact
+          - suite: commit-crash
+            binary-features: fault-injection
+            test-features: fault-injection
+            tests: --test module_commit_crash
+          - suite: snapshot-interrupted
+            binary-features: fault-injection
+            test-features: fault-injection
+            tests: --test snapshot_interrupt
+    env:
+      HUBD_BINARY: ${{ github.workspace }}/target/debug/hubd
+      HUB_E2E_DEADLINE_SCALE: "8"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Clear stale checkout credentials
+        run: git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
+
+      - name: Remove stale files from other branches
+        run: git clean -fdx -e /target
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-dev cmake pkg-config libssl-dev protobuf-compiler
+
+      - name: Install pinned toolchain
+        run: |
+          rustc --version
+          cargo --version
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-recovery
+
+      - name: Fetch locked dependencies
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: url.https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/.insteadOf
+          GIT_CONFIG_VALUE_0: https://github.com/sourcenetwork/
+
+        run: cargo fetch --locked
+
+      - name: Build test binary
+        run: cargo build --frozen -p hubd ${{ matrix.binary-features }}
+
+      - name: Run suite
+        env:
+          RUST_LOG: warn,hub_storage=info
+          HUB_E2E_DIR: ${{ runner.temp }}/e2e-logs
+          HUB_E2E_KEEP: "1"
+        run: >-
+          cargo test --frozen -p hub-e2e ${{ matrix.test-features }}
+          ${{ matrix.tests }}
+          -- --test-threads=1 --nocapture
+
+      - name: Upload failed cluster logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.suite }}-cluster-logs
+          path: ${{ runner.temp }}/e2e-logs
+          if-no-files-found: ignore
