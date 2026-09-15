@@ -362,7 +362,11 @@ pub(super) async fn recover_replica(snapshot: bool, interrupt: bool, pruning: bo
     }
     // Allow a complete resharing ceremony after replay, then require this
     // replica's vote: only three of the four participants remain online.
-    let ready = certified_height(&replica, (caught_up.epoch + 2) * 20 + 2, &trusted_key).await;
+    // One full epoch of live finalization past the next boundary: the
+    // replica can reach any earlier height by replaying history without
+    // participating in a resharing ceremony, and killing a peer before the
+    // replica's current-epoch share exists drops the online set below quorum.
+    let ready = certified_height(&replica, (caught_up.epoch + 3) * 20 + 2, &trusted_key).await;
     cluster.kill_node(2);
 
     let subsequent = replica
