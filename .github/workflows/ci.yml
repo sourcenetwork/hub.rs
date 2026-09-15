@@ -34,6 +34,9 @@ jobs:
           clean: false
           persist-credentials: false
 
+      - name: Put cargo on PATH
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
       - name: Clear stale checkout credentials
         run: git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
 
@@ -65,6 +68,9 @@ jobs:
         with:
           clean: false
           persist-credentials: false
+
+      - name: Put cargo on PATH
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Clear stale checkout credentials
         run: git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
@@ -114,6 +120,9 @@ jobs:
         with:
           clean: false
           persist-credentials: false
+
+      - name: Put cargo on PATH
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Clear stale checkout credentials
         run: git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
@@ -165,6 +174,9 @@ jobs:
         with:
           clean: false
           persist-credentials: false
+
+      - name: Put cargo on PATH
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Clear stale checkout credentials
         run: git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
@@ -219,6 +231,9 @@ jobs:
         with:
           clean: false
           persist-credentials: false
+
+      - name: Put cargo on PATH
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Clear stale checkout credentials
         run: git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
