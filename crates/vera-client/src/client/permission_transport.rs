@@ -1,6 +1,51 @@
 use super::*;
 use std::io::{BufRead, Read, Write};
 
+#[tokio::test]
+async fn transport_capacity_is_released_on_cancellation() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let client = std::sync::Arc::new(
+        VeraClient::new(format!("http://{}", listener.local_addr().unwrap()))
+            .with_max_concurrent_requests(std::num::NonZeroU32::new(1).unwrap()),
+    );
+    let pending = {
+        let client = client.clone();
+        tokio::spawn(async move {
+            client
+                .rpc_call_typed::<u64>("test", serde_json::json!([]))
+                .await
+        })
+    };
+    let (first, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    let error = client
+        .rpc_call_typed::<u64>("test", serde_json::json!([]))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, ClientError::ResourceBusy(_)));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), listener.accept())
+            .await
+            .is_err()
+    );
+    pending.abort();
+    assert!(pending.await.unwrap_err().is_cancelled());
+    drop(first);
+    let pending = tokio::spawn(async move {
+        client
+            .rpc_call_typed::<u64>("test", serde_json::json!([]))
+            .await
+    });
+    let (_second, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    pending.abort();
+    assert!(pending.await.unwrap_err().is_cancelled());
+}
+
 async fn call(response: String, maximum: usize) -> Result<u64, ClientError> {
     call_transport(response, Some(maximum)).await
 }

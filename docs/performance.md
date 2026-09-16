@@ -72,6 +72,12 @@ verification. It is **not** consensus finality latency. Workflow latency include
 any configured permission read after confirmation. Throughput counts completed
 workflows over the driver's measured arrivals-and-drain interval.
 
+The Rust client limits each instance to 64 concurrent HTTP calls, including
+response decoding. `with_max_concurrent_requests` changes this bound. Calls
+over the limit return `ResourceBusy` before transmission; the workload counts
+these alongside server throttles and retries within its existing deadline.
+The outstanding-workflow limit is separate from this transport bound.
+
 RSS is sampled once per second. Missing samples are counted, not filled with
 zero; short peaks may be missed. A short fixed-state run cannot establish a
 memory plateau, and growing state has a different working set. Plots contain

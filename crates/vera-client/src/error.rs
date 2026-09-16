@@ -14,7 +14,7 @@ pub enum ClientError {
         message: String,
     },
 
-    /// The server explicitly rejected work because temporary capacity is exhausted.
+    /// The client or server rejected work because temporary capacity is exhausted.
     #[error("RPC service busy: {0}")]
     ResourceBusy(String),
 

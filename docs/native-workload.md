@@ -79,6 +79,9 @@ JSONL format version 2 reports:
 - Certified write-confirmation latency and complete-workflow latency from the
   scheduled arrival, including scheduler lag.
 - Permission-read latency and completed-workflow throughput.
+- Failed request stage (`submit`, `receipt`, or `permission`), elapsed time for
+  failed calls, and nested transport error details. Workflow deadlines leave
+  the failed-call duration absent because they can expire during retry backoff.
 - Preparation time, request bytes, concurrency limit and receipt polling interval.
 - Post-run replica consistency and restart receipt/state comparisons.
 - Per-node RSS and cumulative CPU time sampled with `ps` once per second during

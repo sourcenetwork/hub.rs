@@ -46,6 +46,8 @@ pub(super) struct Observation {
     permission_ms: Option<f64>,
     workflow_ms: Option<f64>,
     error: Option<String>,
+    failure_stage: Option<&'static str>,
+    failed_request_ms: Option<f64>,
     verification_failure: bool,
     submit_throttles: u64,
     receipt_throttles: u64,
@@ -71,6 +73,7 @@ impl Observation {
             "submit_rpc_ms": self.submit_ms, "scheduled_to_certified_receipt_ms": self.receipt_ms,
             "permission_read_ms": self.permission_ms, "scheduled_to_workflow_ms": self.workflow_ms,
             "height": self.receipt.as_ref().map(|r| r.block_number), "error": self.error,
+            "failure_stage": self.failure_stage, "failed_request_ms": self.failed_request_ms,
             "verification_failure": self.verification_failure,
             "submit_throttles": self.submit_throttles,
             "read_throttles": self.receipt_throttles + self.permission_throttles,
@@ -99,6 +102,8 @@ pub(super) async fn observe(
         permission_ms: None,
         workflow_ms: None,
         error: None,
+        failure_stage: None,
+        failed_request_ms: None,
         verification_failure: false,
         submit_throttles: 0,
         receipt_throttles: 0,
@@ -110,9 +115,12 @@ pub(super) async fn observe(
         return observation;
     };
     observation.outcome = "unknown";
+    let mut stage = "submit";
+    let mut request_started = Instant::now();
     let completed = tokio::time::timeout(REQUEST_TIMEOUT, async {
         let submit_start = Instant::now();
         let result = loop {
+            request_started = Instant::now();
             let result = client.send_native_tx(&observation.request.raw).await;
             if result.as_ref().is_err_and(is_throttled) {
                 observation.submit_throttles += 1;
@@ -128,11 +136,13 @@ pub(super) async fn observe(
                 if matches!(error, ClientError::Rpc { .. }) || is_throttled(&error) {
                     observation.outcome = "rejected";
                 }
-                observation.error = Some(error.to_string());
+                observation.error = Some(format!("{error:?}"));
                 return;
             }
         }
         loop {
+            stage = "receipt";
+            request_started = Instant::now();
             match client
                 .read_receipt(observation.request.hash, &reads.trusted)
                 .await
@@ -164,6 +174,8 @@ pub(super) async fn observe(
                         };
                         let started = Instant::now();
                         let permission = loop {
+                            stage = "permission";
+                            request_started = Instant::now();
                             let result = client
                                 .verify_current_access(
                                     &reads.policy,
@@ -195,7 +207,7 @@ pub(super) async fn observe(
                                         | ClientError::Receipt(_)
                                         | ClientError::Permission(_)
                                 );
-                                observation.error = Some(error.to_string());
+                                observation.error = Some(format!("{error:?}"));
                                 return;
                             }
                         }
@@ -218,7 +230,9 @@ pub(super) async fn observe(
                             | ClientError::Receipt(_)
                             | ClientError::Permission(_)
                     );
-                    observation.error = Some(error.to_string());
+                    observation.error = Some(format!("{error:?}"));
+                    observation.failed_request_ms =
+                        Some(request_started.elapsed().as_secs_f64() * 1000.0);
                     if observation.verification_failure
                         && let Ok(Some(response)) = client
                             .rpc_call_typed::<Option<ReceiptResponse>>(
@@ -242,6 +256,14 @@ pub(super) async fn observe(
     .await;
     if completed.is_err() && observation.error.is_none() {
         observation.error = Some("request deadline elapsed; submission was not retried".into());
+    }
+    if observation.error.is_some() {
+        observation.failure_stage = Some(stage);
+        if completed.is_ok() {
+            observation
+                .failed_request_ms
+                .get_or_insert_with(|| request_started.elapsed().as_secs_f64() * 1000.0);
+        }
     }
     observation
 }

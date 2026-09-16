@@ -99,7 +99,7 @@ def main():
         'scope': 'Four members on one host; receipt latency is not consensus finality latency. No maximum capacity or WAN claim.',
     }
     (args.directory / 'report.json').write_text(json.dumps(details, indent=2, allow_nan=False) + '\n')
-    receipt_p95 = summary['scheduled_to_certified_receipt_ms']['p95']
+    receipt_p95 = (summary['scheduled_to_certified_receipt_ms'] or {}).get('p95')
     receipt_p95_text = 'unavailable' if receipt_p95 is None else f'{receipt_p95:.2f} ms'
     (args.directory / 'report.md').write_text(
         f"# Vera performance\n\n{state}.\n\n"

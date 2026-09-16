@@ -38,6 +38,7 @@ pub struct VeraClient {
     rpc_url: String,
     http: reqwest::Client,
     id: AtomicU64,
+    requests: tokio::sync::Semaphore,
 }
 
 impl VeraClient {
@@ -47,7 +48,16 @@ impl VeraClient {
             rpc_url: rpc_url.into(),
             http: reqwest::Client::new(),
             id: AtomicU64::new(1),
+            requests: tokio::sync::Semaphore::new(64),
         }
+    }
+
+    /// Bound concurrent HTTP calls, including response decoding (default: 64).
+    /// Saturation returns `ResourceBusy` before sending any request bytes.
+    #[must_use]
+    pub fn with_max_concurrent_requests(mut self, maximum: std::num::NonZeroU32) -> Self {
+        self.requests = tokio::sync::Semaphore::new(maximum.get() as usize);
+        self
     }
 
     fn next_id(&self) -> u64 {
@@ -79,6 +89,10 @@ impl VeraClient {
         params: serde_json::Value,
         maximum: usize,
     ) -> Result<T, ClientError> {
+        let _permit = self
+            .requests
+            .try_acquire()
+            .map_err(|_| ClientError::ResourceBusy("client request capacity exhausted".into()))?;
         debug!(method, "JSON-RPC request");
         let id = self.next_id();
         let mut response = self
