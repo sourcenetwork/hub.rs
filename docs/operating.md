@@ -4,6 +4,9 @@ Deployment, recovery, monitoring and limits for a `verad` validator. Protocol
 behaviour is documented in the linked pages; this one covers the operational
 surface.
 
+See [architecture and flows](architecture.md) for service boundaries and the
+relationship between consensus, operator-managed membership, and ACP.
+
 ## Deployment
 
 A network needs one `genesis.json` shared by all nodes, one validator key and
@@ -39,8 +42,12 @@ existing participant identity.
 | `history/` | Durable execution and finalization records |
 | `native-genesis.bin` | Published after all seven partitions first seal |
 
-Backing up `validator.key` and `secrets.json` is sufficient to reconstitute a
-participant; the remaining state re-syncs from peers.
+Retain `validator.key` and `secrets.json` together with independently provisioned
+genesis, configuration, and peer material. Recovering the remaining state depends
+on reachable peers and available authenticated state and history. Delayed
+snapshot catch-up has an unresolved liveness defect; a secret backup alone does
+not establish that a restore will succeed. Exercise restores before relying on
+this recovery path.
 
 ## Recovery behaviour
 
@@ -68,11 +75,14 @@ rejected and require an explicit migration decision, not silent reset.
   the archive window is bounded by retention divided by the section size —
   size deployments accordingly.
 - **Snapshot catch-up** (`[snapshot]`): opt-in for newly admitted members;
-  `record_bytes` and `peer_timeout_ms` must be positive.
+  `record_bytes`, `peer_timeout_ms`, and `initialization_timeout_ms` must be positive.
+  Initialization defaults to a five-minute deadline. Exceeding it stops the
+  process; restart is not a guarantee of convergence.
 - **Finality watchdog** (`watchdog_stall_seconds`, default 600, `0` disables): fails the
   process after that long without a new finalization while peers stay connected, so supervised
-  restarts re-enter the boot-time rejoin that re-syncs from a current floor. It arms only after
-  the first finalization, so initial synchronization is never interrupted.
+  restarts re-enter boot-time recovery. It starts after database readiness and
+  arms from retained history or an observed finalization. Snapshot initialization
+  has its separate deadline; supervised restart does not guarantee recovery.
 - **History backend**: default RocksDB; the `regolith-history` build feature
   selects Regolith with synchronous writes. The two backends reject each
   other's directory layouts — pick one per deployment.

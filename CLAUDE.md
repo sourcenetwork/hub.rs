@@ -2,6 +2,9 @@
 
 Native Rust implementation of Vera's access control, bulletin, identity and transparency services, using Commonware consensus and storage. Native requests use BLS12-381 signing; optional EVM execution reaches the same module logic.
 
+See [architecture and request flows](docs/architecture.md) for service boundaries,
+operator-managed membership, ACP, storage, threshold services, and recovery limits.
+
 ## Related Repos
 
 All repos follow gopath convention at `/Users/johnzampolin/go/src/github.com/{org}/{repo}`:
