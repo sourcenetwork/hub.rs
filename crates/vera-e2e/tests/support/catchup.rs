@@ -307,17 +307,18 @@ pub(super) async fn recover_replica_with_delay(
             }
         })
         .await
-        .expect("stale snapshot target must fail within its initialization deadline");
-        assert!(
-            crash_marker.exists(),
-            "history import must not have started"
-        );
-        let logs = fs::read_to_string(cluster.node(3).log_dir.join("stderr.log")).unwrap();
-        assert!(
-            logs.contains("snapshot initialization deadline exceeded"),
-            "{logs}"
-        );
-        return;
+        .expect("stale snapshot target must finish initialization within its deadline");
+        if crash_marker.exists() {
+            let logs = fs::read_to_string(cluster.node(3).log_dir.join("stderr.log")).unwrap();
+            assert!(
+                logs.contains("snapshot initialization deadline exceeded"),
+                "{logs}"
+            );
+            eprintln!("stale snapshot target reached its initialization deadline");
+            return;
+        }
+        // Successful transfer reaches the injected crash and must pass recovery checks below.
+        eprintln!("stale snapshot target reached durable history import");
     }
     if interrupt {
         tokio::time::timeout(deadline(), async {
@@ -339,7 +340,8 @@ pub(super) async fn recover_replica_with_delay(
         );
         let path = directory.join("config.toml");
         let config = fs::read_to_string(&path).unwrap();
-        fs::write(path, config.replace("\n[snapshot]\n", "\n")).unwrap();
+        let (base, _) = config.split_once("\n[snapshot]\n").unwrap();
+        fs::write(path, base).unwrap();
         cluster.restart_node(3).unwrap();
     }
     cluster.wait_ready(deadline()).await.unwrap();

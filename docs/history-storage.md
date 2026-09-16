@@ -73,8 +73,10 @@ network require longer initialization. Durable import progress is preserved.
 Actor failures are also reported while database startup is pending.
 
 The `snapshot_interrupt` case
-`stale_snapshot_target_exits_within_budget` pauses the joining node
-after discovery while peers advance beyond retention. It checks that the node
-reports the initialization deadline before writing a durable history record.
-This protects startup from an indefinite wait; it does not resolve the underlying
-stale-target synchronization failure.
+`stale_snapshot_target_recovers_or_reaches_initialization_deadline` pauses the
+joining node after discovery while peers advance beyond retention. If transfer
+cannot finish, it requires the explicit initialization deadline before durable
+history import. If transfer succeeds, it injects a crash during history import
+and verifies recovery, certified state, receipts, restart persistence and quorum
+participation. The test bounds startup failure without requiring transfer to fail;
+it does not establish convergence for every retention window.

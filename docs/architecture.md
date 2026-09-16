@@ -208,9 +208,9 @@ configurable deadline bound failures; successful recovery still depends on peer
 availability and retention.
 Proposals are skipped and verification remains pending until execution state is
 ready, before either can request speculative DKG artifacts.
-The deliberately stale-target test still reaches the initialization deadline
-inside database transfer. Epoch progress alone does not establish convergence;
-this remains a recovery limitation.
+A deliberately stale target can reach history import or exhaust the initialization
+deadline during database transfer. Epoch progress alone does not establish
+convergence under continuous pruning; this remains a recovery limitation.
 See [snapshot recovery](snapshot-recovery.md) and [history storage](history-storage.md).
 
 ## Implementation map
