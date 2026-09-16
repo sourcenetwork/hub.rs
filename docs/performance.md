@@ -40,15 +40,30 @@ validators, QMDB state, RocksDB history, and growing ACP object registrations
 with certified receipt verification. Permission reads were disabled. Signing
 happened before timing.
 
-| Preset | Offered writes/s | Operations | Completed writes/s | Median confirmation | p95 confirmation | p99 confirmation |
-|---|---:|---:|---:|---:|---:|---:|
-| Normal | 200 | 6,000 | 194.04 | 729 ms | 1,588 ms | 2,001 ms |
-| Fast | 200 | 6,000 | 195.88 | 783 ms | 1,975 ms | 2,390 ms |
+| Preset | Offered duration | Offered writes/s | Operations | Completed writes/s | Median confirmation | p95 confirmation | p99 confirmation |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Normal | 30 s | 200 | 6,000 | 194.04 | 729 ms | 1,588 ms | 2,001 ms |
+| Fast | 30 s | 200 | 6,000 | 195.88 | 783 ms | 1,975 ms | 2,390 ms |
+| Fast | 120 s | 200 | 24,000 | 199.23 | 777 ms | 2,006 ms | 2,580 ms |
+| Normal | 30 s | 400 | 12,000 | 388.54 | 1,143 ms | 2,675 ms | 4,179 ms |
 
 Every offered operation completed. All four replicas agreed, and receipt/state
-checks passed after a member was forcibly restarted. Neither run had uncertain,
-rejected, reverted or unverifiable outcomes. Bounded submission and receipt-read
-retries handled admission throttling.
+checks passed after a member was forcibly restarted. None of these runs had
+uncertain, rejected, reverted or unverifiable outcomes. Bounded submission and receipt-read
+retries handled admission throttling. The 400/s run observed 488 submission
+throttles and 32,119 receipt-read throttles; these are individual retry responses,
+not failed operations. This higher offered load increases the demonstrated load
+point, but is not evidence that the optimization doubled capacity.
+
+A two-minute follow-up at 400 offered writes/s did **not** pass the complete-load
+qualification gate. It confirmed 47,961 of 48,000 scheduled writes; the driver
+left 39 unsent when its 1,024-outstanding-workflow cap filled between 99.16 and
+99.71 seconds. Submitted writes had no uncertain, rejected, reverted or
+unverifiable outcomes, and replica/restart checks matched all expected results,
+including absence for the unsent writes. The report correctly marks this run
+failed. The short 400/s result therefore does not establish sustained capacity.
+The failed run observed 2,154 submission and 127,746 receipt-read throttle
+responses; their contribution to the backlog needs separate measurement.
 
 For comparison, the earlier sequential-verification revision
 `c1f9cff9ac399757684b5dc539252934241278fa` passed these Normal-preset runs on the
@@ -60,11 +75,11 @@ same host:
 | 100 | 3,000 | 96.58 | 671 ms | 1,351 ms | 1,645 ms |
 | 200 | 6,000 | 196.66 | 775 ms | 1,682 ms | 2,176 ms |
 
-These are individual 30-second offered-load measurements, followed by draining
+These are individual fixed-load measurements, followed by draining
 outstanding work. Completed writes/s includes that drain interval. They establish
 a passing local load point, not maximum or sustained capacity, or a statistically
-established throughput improvement. Normal had lower tail latency than Fast in
-the new runs. Confirmation includes admission, execution, consensus, polling and
+established throughput improvement. At 200 offered writes/s, Normal had lower
+tail latency than Fast in the new runs. Confirmation includes admission, execution, consensus, polling and
 proof verification; these measurements do not establish 300 ms consensus
 finality. WAN deployment and write-plus-permission workflows require separate
 qualification.
@@ -74,6 +89,10 @@ The new workload arguments were:
 ```text
 6000 200 1024 0 normal 100 20 0 0 32
 6000 200 1024 0 fast 100 20 0 0 32
+24000 200 1024 0 fast 100 20 0 0 32
+12000 400 1024 0 normal 100 20 0 0 32
+# Failed two-minute complete-load gate:
+48000 400 1024 0 normal 100 20 0 0 32
 ```
 
 All runs used 50 ms receipt polling, a 30-second workflow deadline, 20 revisions
@@ -86,7 +105,10 @@ execute, exceeding its 100 ms leader and 200 ms notarization deadlines. A focuse
 follow-up measured median authentication around 590 microseconds per operation,
 versus 8 microseconds for dispatch. These diagnostic runs used extra logging;
 they are not throughput baselines. Parallel verification retains the original
-Fast timeouts. Its passing short run does not qualify prolonged overload,
+Fast timeouts. The two-minute follow-up at implementation revision
+`ecd431aa092301161c41406e162e70554796dd0f` confirmed operations from revision 28
+through 377 and passed recovery at revision 421. This crosses the previously
+observed revision-179 failure point, but does not qualify prolonged overload,
 all epoch-transition failure scenarios, or WAN operation.
 
 ## Run locally
