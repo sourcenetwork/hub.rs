@@ -1,0 +1,17 @@
+//! Core QMDB abstractions and traits for vera.
+
+#![doc(issue_tracker_base_url = "https://github.com/sourcenetwork/vera.rs/issues/")]
+#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
+
+mod changes;
+pub use changes::{AccountUpdate, ChangeSet};
+
+mod encoding;
+pub use encoding::{AccountEncoding, StorageKey};
+
+mod error;
+pub use error::QmdbError;
+
+mod root;
+pub use root::StateRoot;

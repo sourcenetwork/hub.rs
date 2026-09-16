@@ -1,4 +1,4 @@
-# hub.rs
+# vera.rs
 
 Native Rust implementation of Vera's access control, bulletin, identity and transparency services, using Commonware consensus and storage. Native requests use BLS12-381 signing; optional EVM execution reaches the same module logic.
 
@@ -8,16 +8,16 @@ All repos follow gopath convention at `/Users/johnzampolin/go/src/github.com/{or
 
 | Repo | Org | Purpose |
 |------|-----|---------|
-| **hub.rs** | sourcenetwork | This repo — SourceHub rewrite on Commonware |
+| **vera.rs** | sourcenetwork | This repo — SourceHub rewrite on Commonware |
 | **sourcehub** | sourcenetwork | Go implementation (Cosmos SDK) — the upstream being replaced |
-| **orbis-rs** | sourcenetwork | Threshold key management — primary consumer of hub.rs (BLS native txs) |
-| **defradb.rs** | sourcenetwork | CRDT storage — queries ACP via hub.rs (EVM precompile calls) |
+| **orbis-rs** | sourcenetwork | Threshold key management — primary consumer of vera.rs (BLS native txs) |
+| **defradb.rs** | sourcenetwork | CRDT storage — queries ACP via vera.rs (EVM precompile calls) |
 | **bankd-commonware** | mizufinance | Reference: Commonware + REVM chain (infrastructure source for Phase 1) |
 | **monorepo** | commonwarexyz | Commonware primitives (consensus, crypto, p2p, storage) |
 
 ### Code reuse across repos
 
-| Component | Source repo | Used in hub.rs for |
+| Component | Source repo | Used in vera.rs for |
 |-----------|-----------|-------------------|
 | Zanzibar engine (relation-tuple graph) | defradb.rs `crates/acp/src/zanzibar/` | ACP policy evaluation |
 | DID types, identity crate | defradb.rs `crates/identity/` | DID resolution (also check orbis-rs) |
@@ -31,9 +31,9 @@ recovery, crash injection, and a normal release build.
 
 ## Architecture
 
-### Node assembly (`hub-node`)
+### Node assembly (`vera-node`)
 
-`hubd` parses its CLI into `NodeSettings` and calls `hub_node::run_node`, which
+`verad` parses its CLI into `NodeSettings` and calls `vera_node::run_node`, which
 assembles the Commonware actor graph on a tokio runtime and runs until one actor
 stops:
 
@@ -47,19 +47,19 @@ stops:
   storage) driven by the glue `orchestrator` running Simplex with a
   `FixedEpocher` over genesis `blocks_per_epoch` and a VRF elector that feeds
   each round's threshold seed to the application.
-- **Execution:** the glue `Stateful` actor wrapping `hub-app`'s
-  `StatefulHubApp` (below).
+- **Execution:** the glue `Stateful` actor wrapping `vera-app`'s
+  `StatefulVeraApp` (below).
 - **DKG/resharing:** the glue `probe` actor discovers the latest epoch when a
   node needs state sync, while the `reshare` actor deals BLS shares for the next
   epoch to the active set returned by `RegistryParticipants` from finalized
   state. Shares persist in `FileSecretStore`. Production validators create
-  epoch-0 material together with `hubd genesis`, which runs Commonware's
+  epoch-0 material together with `verad genesis`, which runs Commonware's
   distributed bootstrap DKG; `trusted_setup` is limited to local dev/test
-  networks and is reused by `hub-harness`.
+  networks and is reused by `vera-harness`.
 - **Transaction gossip:** `TxGossip` admits RPC-submitted transactions via a
   `MempoolValidator` checked against committed state and forwards them to all
   validators. There is no leader prediction.
-- **RPC:** the `hub-jsonrpc` server over the live committed state (below).
+- **RPC:** the `vera-jsonrpc` server over the live committed state (below).
 
 The finalization callback persists execution and certificate history together
 in one durable batch before returning to Commonware's acknowledgement path. Disk writes run
@@ -76,16 +76,16 @@ execution. The finalized round and newer rounds remain available, and late
 elector callbacks cannot reinsert retired seeds. This follows finality progress;
 it does not impose a cap on rounds accumulated while finality is stalled.
 
-### Execution (`hub-app` + `hub-executor`)
+### Execution (`vera-app` + `vera-executor`)
 
-`StatefulHubApp` implements `commonware_glue::stateful::Application`: it builds
+`StatefulVeraApp` implements `commonware_glue::stateful::Application`: it builds
 blocks from the mempool, executes them against forked QMDB batch state, verifies
 proposals by re-execution, and hands finalized receipts to a `FinalizedSink`
 (`NodeSink`), which indexes blocks, logs, and light blocks and feeds the RPC
-subscription channels. Block execution goes through `HubExecutor`:
+subscription channels. Block execution goes through `VeraExecutor`:
 
 ```
-                     HubExecutor
+                     VeraExecutor
                           |
           +---------------+---------------+
           |                               |
@@ -107,7 +107,7 @@ subscription channels. Block execution goes through `HubExecutor`:
 |---------|--------|---------|
 | `0x0810` | ACP | Access control policies (Zanzibar relation tuples) |
 | `0x0811` | Bulletin | Coordination / DKG messages / posts |
-| `0x0812` | Hub | Identity / JWT token lifecycle |
+| `0x0812` | Vera | Identity / JWT token lifecycle |
 | `0x0813` | ValidatorRegistry | Validator identity management (feeds resharing) |
 
 ### Shared module pattern
@@ -147,9 +147,9 @@ batches, publishing their head only after completion; normal recovery reuses
 a matching index. These reads return execution data, with finality verified
 separately by proof consumers.
 
-The node uses `hub-app::OrderedState`: three execution partitions (accounts,
+The node uses `vera-app::OrderedState`: three execution partitions (accounts,
 storage, code) and four ordered Commonware current-QMDB partitions (ACP, bulletin,
-hub, native sequences). `StatefulHubApp` seals all seven targets into each proposal
+vera, native sequences). `StatefulVeraApp` seals all seven targets into each proposal
 and verifies them by re-execution. An in-memory commitment participates in the same
 Commonware coordinator generation, binding the native current-state root to the
 selected operation-log targets. It is reconstructed from the durable recovery
@@ -206,7 +206,7 @@ and any descendants beyond the recovery anchor without advancing execution.
 The storage handoff waits for history recovery at the final selected revision.
 See `docs/receipt-commitments.md` for protocol and upgrade details.
 
-`hub-backend::native` rebuilds query maps from the retained operation log and
+`vera-backend::native` rebuilds query maps from the retained operation log and
 activity bitmap, reading at most 32 operations at a time under partition read
 locks. This bounds temporary hydration buffers; all live query maps remain in
 memory. Keys sharing their first 256 bytes scan one index bucket.
@@ -216,21 +216,21 @@ node publishes an execution index or finality evidence. A 50 ms fallback handles
 custom publishers without notifications. Readers release storage guards before
 waiting; existing proof admission and two-second request deadlines still apply.
 
-`hub_getCurrentPermissionProof` returns a selected finalized revision with its
+`vera_getCurrentPermissionProof` returns a selected finalized revision with its
 Commonware membership, absence and complete-prefix witnesses. Generation holds
 all four native partition read locks and applies aggregate record and byte
 limits, then releases the locks before waiting for the revision's certificate.
-`HubClient::verify_current_access` verifies the certificate, caller's minimum
+`VeraClient::verify_current_access` verifies the certificate, caller's minimum
 height and evidence before running the shared ACP evaluator. Callers supply any
-additional freshness policy. The separate `hub_getPermissionProof` endpoint
+additional freshness policy. The separate `vera_getPermissionProof` endpoint
 requires the requested root to remain available.
-`hub_getCurrentRecordProof` captures a native record and its certified revision;
-`HubClient::read_current_record` verifies membership or absence against the requested
-module, key and minimum revision. `hub_getCurrentPrefixProof` and
-`HubClient::read_current_prefix` provide complete native prefixes with the same
+`vera_getCurrentRecordProof` captures a native record and its certified revision;
+`VeraClient::read_current_record` verifies membership or absence against the requested
+module, key and minimum revision. `vera_getCurrentPrefixProof` and
+`VeraClient::read_current_prefix` provide complete native prefixes with the same
 captured-revision guarantees. `PrefixResponse::verify_object_owner` derives live
-ownership from complete owner evidence and treats archived records as unregistered. Standalone `hub_getStateProof` and
-`hub_getRelationProof` remain JMT-only and are unavailable on the native node.
+ownership from complete owner evidence and treats archived records as unregistered. Standalone `vera_getStateProof` and
+`vera_getRelationProof` remain JMT-only and are unavailable on the native node.
 Historical native activity proofs are not retained.
 Proof RPCs share eight in-flight slots per node; blocking historical certificate
 lookups have a separate eight-slot limit. Excess work returns JSON-RPC -32002
@@ -280,20 +280,20 @@ range or filter. Reversed ranges fail with -32602. Results are never silently
 truncated. These limits also apply when compatibility methods are enabled on a
 native service.
 
-`hub-jsonrpc` limits each batch to 64 calls and each connection to eight
+`vera-jsonrpc` limits each batch to 64 calls and each connection to eight
 subscriptions, eight queued output messages and eight WebSocket request tasks.
 The receive loop stops accepting messages at the task limit; each task retains
 its slot until its response enters the output queue. Response and ping writes
 time out after ten seconds, and socket closure after one second.
 
-`hub-jsonrpc` serves HTTP + WebSocket JSON-RPC:
+`vera-jsonrpc` serves HTTP + WebSocket JSON-RPC:
 
 | Surface | Methods | Consumer |
 |----------|---------|----------|
 | `eth_*` | `eth_sendRawTransaction`, `eth_call`, `eth_getStorageAt`, `eth_getTransactionReceipt`, … | defradb.rs, MetaMask, wallets |
 | `eth_subscribe` | `newHeads`, `logs` | Indexers, light clients |
-| `hub_subscribeHeaders` | `hub_header` notifications; `hub_unsubscribeHeaders` cancellation | Native verified consumers |
-| `hub_*` | `hub_nodeStatus`, `hub_sendNativeTx`, `hub_getTransactionReceipt`, `hub_getNativeNonce`, `hub_getStateProof`, `hub_getLightBlock` | orbis-rs, BLS identities, light clients |
+| `vera_subscribeHeaders` | `vera_header` notifications; `vera_unsubscribeHeaders` cancellation | Native verified consumers |
+| `hub_*` | `vera_nodeStatus`, `vera_sendNativeTx`, `vera_getTransactionReceipt`, `vera_getNativeNonce`, `vera_getStateProof`, `vera_getLightBlock` | orbis-rs, BLS identities, light clients |
 
 ### Light-client material
 
@@ -312,43 +312,43 @@ keys are recovered from validated epoch-boundary records using the deployment's
 fixed epoch length. These cache limits do not bound total node history.
 
 A `LightBlock` carries the canonical block, the BLS threshold finalization
-certificate, and the epoch's group public key; `hub_domain::verify_light_block`
+certificate, and the epoch's group public key; `vera_domain::verify_light_block`
 verifies it with one aggregate signature. `ModuleStateProof`s verify module
 state against the header's `module_state_root`. Both are served over the `hub_*`
-RPC methods above, and signed `GossipHeader`s stream through `hub_subscribeHeaders` as blocks finalize.
+RPC methods above, and signed `GossipHeader`s stream through `vera_subscribeHeaders` as blocks finalize.
 The native stream is available with only the header broadcaster configured.
 Consumers authenticate headers against their configured finality trust; receiving a
 notification alone does not establish its authority.
 
 ## Crate Structure
 
-Workspace membership comes from the root `Cargo.toml` (`bin/hubd` + `crates/*`).
+Workspace membership comes from the root `Cargo.toml` (`bin/verad` + `crates/*`).
 
 ```
-hub.rs/
-    bin/hubd/                  # CLI binary: validator, devnet, testnet, genesis DKG, client
+vera.rs/
+    bin/verad/                  # CLI binary: validator, devnet, testnet, genesis DKG, client
     crates/
-        hub-app/               # Glue stateful Application around the block executor
-        hub-backend/           # Concrete QMDB backend: HubStateSet, BatchState, DbTargets
-        hub-cli/               # CLI utilities (backtrace + SIGSEGV handlers)
-        hub-client/            # Rust client library (EVM + BLS tx paths, typed queries)
-        hub-config/            # Node configuration types (node, network, rpc, execution)
-        hub-consensus/         # Consensus application layer: mempool, proposal, traits
-        hub-crypto/            # BLS12-381, secp256k1, and JWT utilities
-        hub-domain/            # Block, tx, light block, proof, and DKG payload types
-        hub-e2e/               # End-to-end test harness (see crates/hub-e2e/README.md)
-        hub-executor/          # Block execution: REVM, precompiles, HubExecutor
-        hub-genesis/           # Extended genesis configuration (validators, native mint)
-        hub-harness/           # Node manager, cluster builder, observability (test-only)
-        hub-indexer/           # Block/tx/light-block indexes backing RPC queries
-        hub-jsonrpc/           # eth_* + hub_* JSON-RPC server and subscriptions
-        hub-modules/           # ACP, Bulletin, Hub, ValidatorRegistry module logic
-        hub-node/              # Validator assembly: p2p, marshal, DKG, stateful glue, RPC
-        hub-overlay/           # Overlay state for unpersisted QMDB changes
-        hub-permission/        # Permission/record/prefix evidence types and verification
-        hub-qmdb/              # Core QMDB abstractions and traits
-        hub-state/             # JMT-backed module state trees (RocksDB persistence)
-        hub-traits/            # StateDb trait abstractions for storage/consensus
+        vera-app/               # Glue stateful Application around the block executor
+        vera-backend/           # Concrete QMDB backend: VeraStateSet, BatchState, DbTargets
+        vera-cli/               # CLI utilities (backtrace + SIGSEGV handlers)
+        vera-client/            # Rust client library (EVM + BLS tx paths, typed queries)
+        vera-config/            # Node configuration types (node, network, rpc, execution)
+        vera-consensus/         # Consensus application layer: mempool, proposal, traits
+        vera-crypto/            # BLS12-381, secp256k1, and JWT utilities
+        vera-domain/            # Block, tx, light block, proof, and DKG payload types
+        vera-e2e/               # End-to-end test harness (see crates/vera-e2e/README.md)
+        vera-executor/          # Block execution: REVM, precompiles, VeraExecutor
+        vera-genesis/           # Extended genesis configuration (validators, native mint)
+        vera-harness/           # Node manager, cluster builder, observability (test-only)
+        vera-indexer/           # Block/tx/light-block indexes backing RPC queries
+        vera-jsonrpc/           # eth_* + hub_* JSON-RPC server and subscriptions
+        vera-modules/           # ACP, Bulletin, Vera, ValidatorRegistry module logic
+        vera-node/              # Validator assembly: p2p, marshal, DKG, stateful glue, RPC
+        vera-overlay/           # Overlay state for unpersisted QMDB changes
+        vera-permission/        # Permission/record/prefix evidence types and verification
+        vera-qmdb/              # Core QMDB abstractions and traits
+        vera-state/             # JMT-backed module state trees (RocksDB persistence)
+        vera-traits/            # StateDb trait abstractions for storage/consensus
         test-infra/            # Shared test primitives: process, ports, logs, binary resolver
         vera-verifier/          # C shared-library verifier for receipts, records, prefixes and policies
 ```
@@ -357,8 +357,8 @@ hub.rs/
 
 ```bash
 cargo check                        # type-check workspace
-cargo build -p hubd                # build binary
-cargo test --workspace --exclude hub-e2e  # run non-e2e tests
+cargo build -p verad                # build binary
+cargo test --workspace --exclude vera-e2e  # run non-e2e tests
 cargo clippy --all -- -D warnings  # lint
 cargo fmt                    # format
 ```
@@ -382,17 +382,17 @@ Borrowed from [defradb.rs](https://github.com/sourcenetwork/defradb.rs):
 ## Before Committing
 
 1. `cargo check` passes
-2. `cargo test --workspace --exclude hub-e2e` passes
+2. `cargo test --workspace --exclude vera-e2e` passes
 3. `cargo clippy --all -- -D warnings` clean
 4. `cargo fmt` applied
-5. `cargo test -p hub-e2e --test hub_e2e_canonical` passes (requires `cargo build -p hubd` first)
+5. `cargo test -p vera-e2e --test vera_e2e_canonical` passes (requires `cargo build -p verad` first)
 
-The e2e test (`hub_e2e_canonical`) is the baseline gate. It exercises both EVM and BLS transaction paths through a 4-node cluster: create policies, verify receipts, query state back, check cross-node consistency, and assert cluster health. Any change that breaks this test has broken the core pipeline.
+The e2e test (`vera_e2e_canonical`) is the baseline gate. It exercises both EVM and BLS transaction paths through a 4-node cluster: create policies, verify receipts, query state back, check cross-node consistency, and assert cluster health. Any change that breaks this test has broken the core pipeline.
 
 ## Git Conventions
 
 - Present tense commit messages
-- Worktree workflow: `git worktree add ../hub.rs-foo -b feat/foo`
+- Worktree workflow: `git worktree add ../vera.rs-foo -b feat/foo`
 
 Bulletin posts require a nonempty payload and ACP create-post permission. Proof
 bytes are optional application data and are retained unchanged when supplied.
@@ -402,7 +402,7 @@ The creation event also retains the submitted artifact label.
 Token invalidation events identify the token issuer even when an authorized
 account performs the revocation; the record retains that account in invalidated_by.
 
-Resource diagnostics are opt-in with `RUST_LOG=warn,hub_diagnostics=debug`.
+Resource diagnostics are opt-in with `RUST_LOG=warn,vera_diagnostics=debug`.
 Every 30 seconds the node logs existing Commonware metrics, resident execution
 index counts and accounted revision bytes, finalization/epoch cache entries and
 buffer capacity, and history backend memtable/table-reader/block-cache byte counters.

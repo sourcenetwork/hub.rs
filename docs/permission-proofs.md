@@ -1,8 +1,8 @@
 # Verified record and permission reads
 
-The native node serves a finalized revision and its Commonware permission evidence together through `hub_getCurrentPermissionProof`. `hub_getPermissionProof` accepts a caller-selected revision when its evidence is available. `hub_getCurrentRecordProof` provides native record membership and absence; `hub_getCurrentPrefixProof` proves complete current prefixes. The older `hub_getStateProof` and `hub_getRelationProof` endpoints require an explicitly configured legacy JMT server.
+The native node serves a finalized revision and its Commonware permission evidence together through `vera_getCurrentPermissionProof`. `vera_getPermissionProof` accepts a caller-selected revision when its evidence is available. `vera_getCurrentRecordProof` provides native record membership and absence; `vera_getCurrentPrefixProof` proves complete current prefixes. The older `vera_getStateProof` and `vera_getRelationProof` endpoints require an explicitly configured legacy JMT server.
 
-On a JMT server, `hub_getRelationProof(prefix, height)` returns every ACP relationship record under a raw prefix, with evidence for completeness at the requested finalized height. `prefix` is a hex byte string beginning with `relationship/` and ending with `/`. For example, a relation prefix has the form `relationship/<policy-id>//rel/<resource>/<object>/<relation>/`.
+On a JMT server, `vera_getRelationProof(prefix, height)` returns every ACP relationship record under a raw prefix, with evidence for completeness at the requested finalized height. `prefix` is a hex byte string beginning with `relationship/` and ending with `/`. For example, a relation prefix has the form `relationship/<policy-id>//rel/<resource>/<object>/<relation>/`.
 
 The response contains `version`, `count`, and `records`. Each uses the existing `ModuleStateProof` encoding. The version proof establishes the relationship-index format. The count proof establishes the number of records under the exact prefix, including archived records. Records must have distinct, ordered keys under that prefix, with an inclusion proof for each value. A missing count means zero only when the format marker is authenticated at the same revision.
 
@@ -22,9 +22,9 @@ Activation changes consensus execution and the next module commitment. Existing 
 
 ## Native record reads
 
-`hub_getCurrentRecordProof(module, key, minimum_height)` returns
+`vera_getCurrentRecordProof(module, key, minimum_height)` returns
 `{ "revision": LightBlock, "record": RecordProof }`. Modules are `acp`,
-`bulletin`, `hub` and `native_nonce`; `key` is a hex byte string. The record
+`bulletin`, `vera` and `native_nonce`; `key` is a hex byte string. The record
 contains the exact module and key, an optional value, all four namespace roots
 and canonical Commonware membership or exclusion evidence. A missing value is
 accepted only with a valid exclusion proof.
@@ -35,7 +35,7 @@ and certificate lookup share a two-second timeout. An unavailable revision or
 unmet minimum returns `RESOURCE_UNAVAILABLE`; it is not proven absence. A
 deadline exceed is also `RESOURCE_UNAVAILABLE` with `retryable: true`.
 
-`HubClient::read_current_record` bounds the response before deserialization and
+`VeraClient::read_current_record` bounds the response before deserialization and
 verifies the certificate with the caller's consensus key. `RecordResponse::verify`
 binds the requested module and key, minimum revision, combined module root and
 record evidence. Callers must provide any additional timestamp or age policy.
@@ -54,10 +54,10 @@ must validate record semantics or use verified permission evaluation.
 
 ## Native prefix and owner reads
 
-`hub_getCurrentPrefixProof(module, prefix, minimum_height)` returns
+`vera_getCurrentPrefixProof(module, prefix, minimum_height)` returns
 `{ "revision": LightBlock, "prefix": PrefixProof }`. It captures a complete
 ordered prefix under the four native partition read locks, then releases them
-before fetching the matching certificate. `HubClient::read_current_prefix`
+before fetching the matching certificate. `VeraClient::read_current_prefix`
 verifies finality, the requested module/prefix and minimum revision, combined
 roots, the prefix boundary and every successor. Omitting the first or last
 record, truncating the scan, changing a value or mixing roots fails verification.
@@ -79,7 +79,7 @@ Ownership alone does not replace permission evaluation.
 
 ## Permission requests
 
-`hub_getCurrentPermissionProof(policy, request, minimum_height)` returns
+`vera_getCurrentPermissionProof(policy, request, minimum_height)` returns
 `{ "revision": LightBlock, "proof": PermissionProof }`. The server selects its
 current finalized revision, requires its height to meet the supplied minimum,
 and captures permission evidence while holding all four native partition read
@@ -91,7 +91,7 @@ two-second timeout; this is not a bound on synchronous evaluation or storage
 work. Exceeding it returns `RESOURCE_UNAVAILABLE` with `retryable: true`, since
 the evidence is delayed rather than absent.
 
-`HubClient::verify_current_access` fetches this response once, verifies the
+`VeraClient::verify_current_access` fetches this response once, verifies the
 certificate against the caller's independently provisioned consensus key,
 enforces the minimum height, and evaluates the requested permission using the
 authenticated evidence. It returns the verified revision and local decision.
@@ -108,9 +108,9 @@ artifacts, permission evidence and the RPC envelope. Verification separately
 checks revision and proof limits. The service uses `PERMISSION_LIMITS` and the
 corresponding `PERMISSION_RESPONSE_BYTES` transport bound.
 
-`hub_getPermissionProof(policy, request, height)` returns the policy and relationship evidence needed to evaluate an `AccessRequest` at the requested finalized revision. The request contains an actor DID and one or more operations, each naming an object resource, object ID and permission. The response contains tagged point and complete-prefix reads. It carries no authoritative allow/deny flag.
+`vera_getPermissionProof(policy, request, height)` returns the policy and relationship evidence needed to evaluate an `AccessRequest` at the requested finalized revision. The request contains an actor DID and one or more operations, each naming an object resource, object ID and permission. The response contains tagged point and complete-prefix reads. It carries no authoritative allow/deny flag.
 
-`hub_permission::verify_permission_proof` authenticates every read against the caller's trusted module root and height, then runs the shared ACP evaluator on the caller's policy ID, actor and operations. Missing coverage remains an error, including within an exclusion. Proven policy absence returns false. Duplicate reads, mixed revisions and malformed records are rejected. Repeated reads consume the evaluation budget even when they use the same evidence.
+`vera_permission::verify_permission_proof` authenticates every read against the caller's trusted module root and height, then runs the shared ACP evaluator on the caller's policy ID, actor and operations. Missing coverage remains an error, including within an exclusion. Proven policy absence returns false. Duplicate reads, mixed revisions and malformed records are rejected. Repeated reads consume the evaluation budget even when they use the same evidence.
 
 Direct entity-set grants follow the referenced object's named relation, including
 nested groups and computed permissions. Cycles do not grant access, and revoked
@@ -118,7 +118,7 @@ memberships stop granting at the selected revision. Nodes and verifying consumer
 must use the same shared ACP evaluator revision; different evaluator versions can
 disagree even when they authenticate the same state.
 
-`HubClient::verify_access_at` verifies a supplied finalized revision against an independently configured consensus key, fetches bounded evidence and evaluates it locally. It checks the HTTP response size before deserialization, including chunked responses, checks the JSON-RPC request ID, and applies a ten-second request timeout. The caller controls revision freshness. The method does not fall back to an older revision or interpret unavailable evidence as a denial or grant.
+`VeraClient::verify_access_at` verifies a supplied finalized revision against an independently configured consensus key, fetches bounded evidence and evaluates it locally. It checks the HTTP response size before deserialization, including chunked responses, checks the JSON-RPC request ID, and applies a ten-second request timeout. The caller controls revision freshness. The method does not fall back to an older revision or interpret unavailable evidence as a denial or grant.
 
 Service limits are 64 operations, 64 KiB of serialized policy ID and request, 256 evaluation reads, 4,096 returned records across those reads, 1 MiB of request-key and returned-record bytes, and 4 MiB of serialized evidence. JMT complete-prefix reads also obey the relation endpoint's limits. Client transport permits the proof limit plus 1 KiB for the RPC envelope. Clients may impose tighter limits. These read limits do not bound pure expression work or establish a sustained-throughput guarantee.
 
@@ -128,9 +128,9 @@ The server captures reads from one immutable current module snapshot, generates 
 
 The same permission endpoint supports ordered Commonware module storage when the
 server is constructed with `with_hub_native_modules`, as in the native node.
-The older `hub_getStateProof` and `hub_getRelationProof` endpoints remain JMT-based.
+The older `vera_getStateProof` and `vera_getRelationProof` endpoints remain JMT-based.
 
-This format adds `roots`, the four namespace roots in ACP, bulletin, hub and
+This format adds `roots`, the four namespace roots in ACP, bulletin, vera and
 sequence order. Their combined commitment must match the caller's verified
 revision. Reads use `kind: "current_point"` or `kind: "current_prefix"`, with
 canonical Commonware evidence encoded as hex bytes. A point carries its key and
@@ -162,19 +162,19 @@ proofs; operation-log history proofs cannot establish historical membership or
 absence.
 
 The current-state root can advance during revisions that do not change the
-requested relationship. Use `hub_getCurrentPermissionProof` for current reads
+requested relationship. Use `vera_getCurrentPermissionProof` for current reads
 to capture the revision and evidence together. A caller using the separate
-revision and `hub_getPermissionProof` requests can encounter
+revision and `vera_getPermissionProof` requests can encounter
 `RESOURCE_UNAVAILABLE` between them and must restart the read within its deadline,
 preserving its minimum revision and freshness requirements. Neither endpoint
 provides arbitrary historical activity proofs.
 
 ## Bounded prefix pages
 
-`hub_getCurrentPrefixPageProof(request, minimum_height)` captures one certified
+`vera_getCurrentPrefixPageProof(request, minimum_height)` captures one certified
 page. The request contains `module`, hex-encoded `prefix` and `start`, and `limit`
 (1–128). Start is an inclusive lower bound within the prefix; use the prefix
-itself for the first page. `HubClient::read_current_prefix_page` verifies the
+itself for the first page. `VeraClient::read_current_prefix_page` verifies the
 captured certificate, minimum revision, exact request and consecutive membership
 witnesses. `PrefixPageResponse::verify` returns entries and an authenticated
 continuation key, or no continuation when the prefix ends at that revision.
@@ -191,7 +191,7 @@ carry the preceding revision forward as their next minimum revision.
 
 ## Typed bulletin reads
 
-`hub_client::bulletin` provides certified namespace, post and collaborator reads,
+`vera_client::bulletin` provides certified namespace, post and collaborator reads,
 plus bounded listings for each record family. Names are unprefixed inputs (for
 example, `team` selects the stored `bulletin/team` namespace). A point read
 returns a typed value or certified absence, with the revision and timestamp.

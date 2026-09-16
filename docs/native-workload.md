@@ -3,12 +3,12 @@
 Build optimized binaries before measuring:
 
 ```sh
-cargo build --release -p hubd
-cargo build --release -p hub-e2e --example operation_baseline
-HUB_E2E_KEEP=1 HUBD_BINARY=target/release/hubd target/release/examples/operation_baseline 1500 25 128 1
+cargo build --release -p verad
+cargo build --release -p vera-e2e --example operation_baseline
+VERA_E2E_KEEP=1 VERAD_BINARY=target/release/verad target/release/examples/operation_baseline 1500 25 128 1
 ```
 
-`HUB_E2E_KEEP=1` preserves the printed run directories, including node logs and
+`VERA_E2E_KEEP=1` preserves the printed run directories, including node logs and
 state, for diagnosis. Replica reconciliation reuses one HTTP client per node
 to avoid exhausting local connection ports during large runs. Replica and restart
 checks process at most eight operations concurrently, reduced to the configured

@@ -2,26 +2,26 @@
 
 use alloy_primitives::{B256, Bytes};
 use commonware_codec::DecodeExt as _;
-use hub_domain::{ConsensusPublicKey, RECEIPT_RESPONSE_BYTES, ReceiptResponse};
-use hub_permission::{
+use serde::Deserialize;
+use serde_json::{Value, json};
+use vera_domain::{ConsensusPublicKey, RECEIPT_RESPONSE_BYTES, ReceiptResponse};
+use vera_permission::{
     AccessRequest, DecisionOperation, ModuleId, Object, PERMISSION_LIMITS, PermissionResponse,
     PrefixResponse, RECORD_PROOF_BYTES, RecordResponse,
 };
-use serde::Deserialize;
-use serde_json::{Value, json};
 
 /// Maximum encoded verification request, including independently configured trust.
 pub const MAX_REQUEST_BYTES: usize =
-    RECEIPT_RESPONSE_BYTES + 4 * hub_permission::current::MAX_KEY_BYTES + 4096;
+    RECEIPT_RESPONSE_BYTES + 4 * vera_permission::current::MAX_KEY_BYTES + 4096;
 
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum Request {
     PrefixPage {
         trusted_key: String,
-        request: hub_permission::PrefixPageRequest,
+        request: vera_permission::PrefixPageRequest,
         minimum_height: u64,
-        proof: Box<hub_permission::PrefixPageResponse>,
+        proof: Box<vera_permission::PrefixPageResponse>,
     },
     ValidatePolicy {
         definition: String,
@@ -94,7 +94,7 @@ fn verify(input: &[u8]) -> Result<Value, String> {
                     &request,
                     minimum_height,
                     &trusted_key(&key)?,
-                    hub_permission::PAGE_PROOF_BYTES,
+                    vera_permission::PAGE_PROOF_BYTES,
                 )
                 .map_err(|error| error.to_string())?;
             let entries: Vec<_> = page
@@ -112,7 +112,7 @@ fn verify(input: &[u8]) -> Result<Value, String> {
             )
         }
         Request::ValidatePolicy { definition, format } => {
-            use hub_modules::acp::types::PolicyMarshalingType;
+            use vera_modules::acp::types::PolicyMarshalingType;
             let marshal_type = if format.eq_ignore_ascii_case("yaml") {
                 PolicyMarshalingType::ShortYaml
             } else if format.eq_ignore_ascii_case("json") {
@@ -120,8 +120,10 @@ fn verify(input: &[u8]) -> Result<Value, String> {
             } else {
                 PolicyMarshalingType::Unknown
             };
-            match hub_modules::acp::AcpModule::validate_policy_definition(&definition, marshal_type)
-            {
+            match vera_modules::acp::AcpModule::validate_policy_definition(
+                &definition,
+                marshal_type,
+            ) {
                 Ok(_) => Ok(json!({"valid": true, "reason": ""})),
                 Err(error) => Ok(json!({"valid": false, "reason": error.to_string()})),
             }

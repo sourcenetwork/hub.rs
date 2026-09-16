@@ -17,7 +17,7 @@ open indefinitely. The receive loop observes writer termination, including
 while dispatch is full, and releases the connection slot.
 
 Vera uses a direct path dependency so downstream Git builds retain this patch.
-The focused regression is hub-jsonrpc's websocket_dispatch_applies_backpressure.
+The focused regression is vera-jsonrpc's websocket_dispatch_applies_backpressure.
 Remove this fork when upstream provides equivalent dispatch and task ownership
 bounds. The original README follows.
 

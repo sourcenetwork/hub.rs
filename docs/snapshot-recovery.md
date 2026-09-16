@@ -36,7 +36,7 @@ resumes at a later verified revision, history starts a new descending pass from
 that revision to the same previously committed prefix. This can refetch already
 staged records. Unpublished imports remain unavailable to history clients.
 
-`hub_nodeStatus` includes `snapshotRevision` after snapshot recovery. On restart,
+`vera_nodeStatus` includes `snapshotRevision` after snapshot recovery. On restart,
 it reports the persisted snapshot recovery floor, which can also cover execution
 completed during the original handoff. It is operational status; clients still
 verify revision certificates and permission evidence independently.

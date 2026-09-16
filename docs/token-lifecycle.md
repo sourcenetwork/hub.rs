@@ -19,7 +19,7 @@ bytes, mismatched token hashes or inconsistent deadlines fail execution. Ordinar
 record reads also validate the stored token hash against the requested key.
 Proposal-local failures cannot publish partially updated module state.
 
-Indexes persist with Hub state and recover with its snapshots. Existing stores
+Indexes persist with Vera state and recover with its snapshots. Existing stores
 require an explicit migration that builds indexes for active, expiring tokens;
 startup does not automatically migrate them. This change removes scans of token
 history from each revision. When more than 128 tokens are due, later revisions
@@ -35,7 +35,7 @@ record identities are errors. Account selectors must contain 1–255 bytes; DID
 selectors are also capped at 255 bytes. Token writes validate every index
 component before changing state, avoiding key-encoder panics and partial writes.
 
-`HubClient::read_token_record` returns lifecycle metadata or certified absence
+`VeraClient::read_token_record` returns lifecycle metadata or certified absence
 for a SHA-256 token hash at a caller-selected minimum revision. It verifies the
 certificate, record key and stored token-content hash before returning the record.
 After invalidation, read at or after the certified invalidation revision to check

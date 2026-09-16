@@ -1,7 +1,7 @@
 # Finality proofs
 
-`hub_getLightBlock(height)` returns the requested revision with evidence that
-it is finalized. Verify it with `hub_domain::verify_light_block` and the
+`vera_getLightBlock(height)` returns the requested revision with evidence that
+it is finalized. Verify it with `vera_domain::verify_light_block` and the
 consensus public key from authenticated deployment configuration.
 
 A revision can finalize through a descendant without receiving its own direct

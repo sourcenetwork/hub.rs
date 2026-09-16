@@ -1,4 +1,4 @@
-"""Stop nodes launched from one CI workspace's hubd binary."""
+"""Stop nodes launched from one CI workspace's verad binary."""
 
 import pathlib
 import re
@@ -8,8 +8,8 @@ import sys
 
 def process_pattern(binary):
     path = pathlib.Path(binary)
-    if not path.is_absolute() or path.name != "hubd":
-        raise ValueError("expected an absolute path to hubd")
+    if not path.is_absolute() or path.name != "verad":
+        raise ValueError("expected an absolute path to verad")
     return "^" + re.escape(str(path)) + "( |$)"
 
 

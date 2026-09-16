@@ -1,5 +1,5 @@
 [workspace]
-members = ["bin/hubd", "crates/*"]
+members = ["bin/verad", "crates/*"]
 exclude = ["vendor/jsonrpsee-server"]
 resolver = "2"
 
@@ -8,7 +8,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.98"
 license = "MIT"
-repository = "https://github.com/sourcenetwork/hub.rs"
+repository = "https://github.com/sourcenetwork/vera.rs"
 
 [workspace.lints.rust]
 missing-debug-implementations = "warn"
@@ -52,27 +52,27 @@ strip = "symbols"
 
 [workspace.dependencies]
 # Core crates
-hub-backend = { path = "crates/hub-backend" }
-hub-modules = { path = "crates/hub-modules" }
-hub-cli = { path = "crates/hub-cli" }
-hub-config = { path = "crates/hub-config" }
-hub-consensus = { path = "crates/hub-consensus" }
-hub-crypto = { path = "crates/hub-crypto" }
-hub-domain = { path = "crates/hub-domain" }
-hub-indexer = { path = "crates/hub-indexer" }
-hub-overlay = { path = "crates/hub-overlay" }
-hub-qmdb = { path = "crates/hub-qmdb" }
-hub-jsonrpc = { path = "crates/hub-jsonrpc" }
-hub-traits = { path = "crates/hub-traits" }
+vera-backend = { path = "crates/vera-backend" }
+vera-modules = { path = "crates/vera-modules" }
+vera-cli = { path = "crates/vera-cli" }
+vera-config = { path = "crates/vera-config" }
+vera-consensus = { path = "crates/vera-consensus" }
+vera-crypto = { path = "crates/vera-crypto" }
+vera-domain = { path = "crates/vera-domain" }
+vera-indexer = { path = "crates/vera-indexer" }
+vera-overlay = { path = "crates/vera-overlay" }
+vera-qmdb = { path = "crates/vera-qmdb" }
+vera-jsonrpc = { path = "crates/vera-jsonrpc" }
+vera-traits = { path = "crates/vera-traits" }
 
-hub-app = { path = "crates/hub-app" }
-hub-node = { path = "crates/hub-node" }
-hub-client = { path = "crates/hub-client" }
-hub-permission = { path = "crates/hub-permission" }
-hub-executor = { path = "crates/hub-executor" }
-hub-genesis = { path = "crates/hub-genesis" }
-hub-state = { path = "crates/hub-state" }
-hub-harness = { path = "crates/hub-harness" }
+vera-app = { path = "crates/vera-app" }
+vera-node = { path = "crates/vera-node" }
+vera-client = { path = "crates/vera-client" }
+vera-permission = { path = "crates/vera-permission" }
+vera-executor = { path = "crates/vera-executor" }
+vera-genesis = { path = "crates/vera-genesis" }
+vera-state = { path = "crates/vera-state" }
+vera-harness = { path = "crates/vera-harness" }
 test-infra = { path = "crates/test-infra" }
 
 # Commonware (calver 2026.2.0)

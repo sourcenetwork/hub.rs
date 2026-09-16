@@ -1,6 +1,6 @@
 # Operating a validator
 
-Deployment, recovery, monitoring and limits for a `hubd` validator. Protocol
+Deployment, recovery, monitoring and limits for a `verad` validator. Protocol
 behaviour is documented in the linked pages; this one covers the operational
 surface.
 
@@ -10,16 +10,16 @@ A network needs one `genesis.json` shared by all nodes, one validator key and
 epoch-0 BLS share per node, and a `peers.json` listing every participant's
 dialable address. Two paths produce that material:
 
-- `hubd genesis --peers peers.json` runs the distributed epoch-0 DKG across
+- `verad genesis --peers peers.json` runs the distributed epoch-0 DKG across
   the participants and is the production path.
-- `hubd --chain-id <id> testnet --nodes 4 --init-only ...` generates
+- `verad --chain-id <id> testnet --nodes 4 --init-only ...` generates
   trusted-dealer material locally; see [wan-gates.md](wan-gates.md) for a
   worked multi-host example.
 
 Run a node with:
 
 ```sh
-hubd --config nodeN/config.toml --data-dir nodeN \
+verad --config nodeN/config.toml --data-dir nodeN \
      --chain-id <id> validator --peers peers.json
 ```
 
@@ -83,9 +83,9 @@ rejected and require an explicit migration decision, not silent reset.
 
 ## Monitoring
 
-- `hub_nodeStatus` over JSON-RPC reports height, view, finalization count and
+- `vera_nodeStatus` over JSON-RPC reports height, view, finalization count and
   peer count — poll it for liveness and progress alarms.
-- `RUST_LOG=warn,hub_diagnostics=debug` emits a resource snapshot every 30
+- `RUST_LOG=warn,vera_diagnostics=debug` emits a resource snapshot every 30
   seconds (runtime metrics, resident execution index, cache occupancy,
   history-backend memory counters) plus per-revision apply and publication
   times. Collection runs off the async executor and is opt-in.
