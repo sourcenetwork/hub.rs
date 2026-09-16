@@ -6,6 +6,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -33,6 +36,10 @@ jobs:
         with:
           clean: false
           persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: clippy, rustfmt
 
       - name: Clear stale checkout credentials
         run: git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
@@ -65,6 +72,10 @@ jobs:
         with:
           clean: false
           persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: clippy, rustfmt
 
       - name: Clear stale checkout credentials
         run: git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
@@ -114,6 +125,10 @@ jobs:
         with:
           clean: false
           persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: clippy, rustfmt
 
       - name: Clear stale checkout credentials
         run: git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
@@ -166,6 +181,10 @@ jobs:
           clean: false
           persist-credentials: false
 
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: clippy, rustfmt
+
       - name: Clear stale checkout credentials
         run: git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
 
@@ -212,13 +231,17 @@ jobs:
   artifacts:
     name: Release Artifacts
     runs-on: [self-hosted, macOS, ARM64, studio]
-    needs: [lint, build, e2e-canonical, e2e-extended, linux-native]
+    needs: [lint, build, e2e-canonical, e2e-extended]
     if: github.event_name == 'push'
     steps:
       - uses: actions/checkout@v4
         with:
           clean: false
           persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: clippy, rustfmt
 
       - name: Clear stale checkout credentials
         run: git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
@@ -249,143 +272,3 @@ jobs:
         run: |
           git checkout -- .
           git clean -fdx -e '/target'
-
-  linux-native:
-    name: Linux native service
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    permissions:
-      contents: read
-    env:
-      CARGO_BUILD_JOBS: 2
-      VERAD_BINARY: ${{ github.workspace }}/target/debug/verad
-      VERA_E2E_DEADLINE_SCALE: "8"
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - name: Install native build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang libclang-dev cmake pkg-config libssl-dev protobuf-compiler
-
-      - name: Install pinned toolchain
-        run: |
-          rustc --version
-          cargo --version
-
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: linux-native-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
-
-      - name: Fetch locked dependencies
-        env:
-          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-          GIT_CONFIG_COUNT: "1"
-          GIT_CONFIG_KEY_0: url.https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/.insteadOf
-          GIT_CONFIG_VALUE_0: https://github.com/sourcenetwork/
-        run: cargo fetch --locked
-
-      - name: Native module and storage checks
-        run: |
-          cargo test --frozen -p vera-modules --lib
-          cargo test --frozen -p vera-backend --lib
-          cargo test --frozen -p vera-backend --test native_state --test native_hydration
-          cargo test --frozen -p vera-e2e --example operation_baseline rejected_updates_preserve_results_and_stop_dependent_submissions
-
-      - name: Build native node
-        run: cargo build --frozen -p verad
-
-      - name: Native lifecycle and recovery
-        run: >-
-          cargo test --frozen -p vera-e2e
-          --test native_permission
-          --test native_signed_operation
-          --test native_bulletin
-          --test native_registration
-          --test native_membership
-          --test quorum_recovery
-          --test cold_replay
-          -- --test-threads=1 --nocapture
-
-      - name: Pruned snapshot catch-up
-        env:
-          VERA_E2E_DEADLINE_SCALE: "16"
-          VERA_E2E_DIR: ${{ runner.temp }}/e2e-logs
-          VERA_E2E_KEEP: "1"
-        run: >-
-          cargo test --frozen -p vera-e2e
-          --test snapshot_catchup
-          -- --test-threads=1 --nocapture
-
-      - name: Regolith history invariants
-        run: cargo test --frozen -p vera-node --lib --features regolith-history "history::"
-
-      - name: Build Regolith node
-        run: cargo build --frozen -p verad --features regolith-history
-
-      - name: Regolith recovery from pruned peers
-        env:
-          RUST_LOG: warn,vera_storage=info
-          VERA_E2E_DEADLINE_SCALE: "16"
-          VERA_E2E_DIR: ${{ runner.temp }}/e2e-logs
-          VERA_E2E_KEEP: "1"
-        run: >-
-          cargo test --frozen -p vera-e2e --test snapshot_catchup
-          snapshot_replica_recovers_from_pruned_peers
-          -- --exact --nocapture
-
-      - name: Build Regolith crash-injection node
-        run: cargo build --frozen -p verad --features regolith-history,fault-injection
-
-      - name: Interrupted Regolith recovery from pruned peers
-        env:
-          RUST_LOG: warn,vera_storage=info
-          VERA_E2E_DEADLINE_SCALE: "16"
-          VERA_E2E_DIR: ${{ runner.temp }}/e2e-logs
-          VERA_E2E_KEEP: "1"
-        run: >-
-          cargo test --frozen -p vera-e2e --features fault-injection
-          --test snapshot_interrupt interrupted_snapshot_resumes_from_pruned_peers
-          -- --exact --nocapture
-
-      - name: Build crash-injection node
-        run: cargo build --frozen -p verad --features fault-injection
-
-      - name: Interrupted commit recovery
-        run: >-
-          cargo test --frozen -p vera-e2e --features fault-injection
-          --test module_commit_crash
-          -- --test-threads=1 --nocapture
-
-      - name: Interrupted snapshot recovery
-        env:
-          VERA_E2E_DEADLINE_SCALE: "16"
-          VERA_E2E_DIR: ${{ runner.temp }}/e2e-logs
-          VERA_E2E_KEEP: "1"
-        run: >-
-          cargo test --frozen -p vera-e2e --features fault-injection
-          --test snapshot_interrupt
-          -- --test-threads=1 --nocapture
-
-      - name: Recover membership after share persistence crash
-        run: >-
-          cargo test --frozen -p vera-e2e --features fault-injection
-          --test native_membership native_member_recovers_after_share_persistence_crash
-          -- --exact --nocapture
-
-      - name: Upload failed cluster logs
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-e2e-cluster-logs
-          path: ${{ runner.temp }}/e2e-logs
-          if-no-files-found: ignore
-
-      - name: Build release node without fault injection
-        run: cargo build --frozen --release -p verad

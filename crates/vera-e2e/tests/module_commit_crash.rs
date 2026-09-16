@@ -72,6 +72,15 @@ async fn assert_replicas(cluster: &TestCluster, signer: &BlsSigner, receipt: &Tr
     .expect("replica convergence deadline");
 }
 
+/// Latest finalized height from a live node's status.
+async fn certified_head(client: &VeraClient) -> u64 {
+    let status: serde_json::Value = client
+        .rpc_call_typed("vera_nodeStatus", serde_json::json!([]))
+        .await
+        .unwrap();
+    status["finalizedCount"].as_u64().unwrap()
+}
+
 #[tokio::test]
 async fn recover_after_each_module_commit() {
     let mut cluster = TestCluster::builder()
@@ -113,9 +122,13 @@ async fn recover_after_each_module_commit() {
             .map(|s| s.parse().unwrap())
             .collect();
         assert_eq!(observed[1], store);
+        // Module stores commit lazily — gaps of many blocks are normal — so
+        // the first commit after arming can land well past the receipt's
+        // block. Bound above by the finalized head after the crash instead.
+        let head = certified_head(&origin).await;
         assert!(
-            observed[0] >= floor && observed[0] <= receipt.block_number,
-            "crash witness {observed:?} outside the applied range"
+            observed[0] >= floor && observed[0] <= head,
+            "crash witness {observed:?} outside the applied range (head {head})"
         );
         assert!(
             !marker.exists(),

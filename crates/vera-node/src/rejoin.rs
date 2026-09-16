@@ -33,7 +33,7 @@ pub(crate) const REJOIN_EPOCHS: u64 = 3;
 /// ceremonies forward; the progress watchdog covers the case where following
 /// stalls instead of catching up.
 pub(crate) const fn stranded(our_epoch: u64, network_epoch: u64) -> bool {
-    network_epoch >= our_epoch + REJOIN_EPOCHS
+    network_epoch.saturating_sub(our_epoch) >= REJOIN_EPOCHS
 }
 
 /// Discard sync bookkeeping so the next plan initialization re-arms peer
@@ -42,7 +42,7 @@ pub(crate) const fn stranded(our_epoch: u64, network_epoch: u64) -> bool {
 /// transcript is discarded with it: the rejoin path only runs when the node
 /// is epochs behind, outside any ceremony it could still participate in, and
 /// a stale transcript left behind the reconciling state sync stalls recovery.
-pub(crate) fn reset_sync_bookkeeping(data_dir: &Path) {
+pub(crate) fn reset_sync_bookkeeping(data_dir: &Path) -> std::io::Result<()> {
     let storage = data_dir.join("commonware");
     for suffix in [STATE_SYNC_METADATA, DKG_STATE_SYNC] {
         let partition = storage.join(format!("{PARTITION_PREFIX}{suffix}"));
@@ -52,10 +52,14 @@ pub(crate) fn reset_sync_bookkeeping(data_dir: &Path) {
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => {
-                tracing::error!(partition = %partition.display(), %error, "failed to reset state sync bookkeeping")
+                return Err(std::io::Error::new(
+                    error.kind(),
+                    format!("failed to reset {}: {error}", partition.display()),
+                ));
             }
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -68,6 +72,20 @@ mod tests {
         assert!(!stranded(4, 6));
         assert!(stranded(4, 7));
         assert!(stranded(6, 378));
+        assert!(!stranded(u64::MAX, 0));
+        assert!(!stranded(u64::MAX - 2, u64::MAX));
+        assert!(stranded(u64::MAX - 3, u64::MAX));
+    }
+
+    #[test]
+    fn reset_reports_unremovable_bookkeeping() {
+        let directory = tempfile::tempdir().unwrap();
+        let storage = directory.path().join("commonware");
+        std::fs::create_dir(&storage).unwrap();
+        let metadata = storage.join(format!("{PARTITION_PREFIX}{STATE_SYNC_METADATA}"));
+        std::fs::write(&metadata, b"not a partition directory").unwrap();
+        assert!(reset_sync_bookkeeping(directory.path()).is_err());
+        assert!(metadata.is_file());
     }
 
     #[test]
@@ -81,7 +99,7 @@ mod tests {
             std::fs::create_dir_all(path).unwrap();
             std::fs::write(path.join("blob"), [0u8; 8]).unwrap();
         }
-        reset_sync_bookkeeping(directory.path());
+        reset_sync_bookkeeping(directory.path()).unwrap();
         assert!(!metadata.exists());
         assert!(!transcript.exists());
         assert!(history.exists());

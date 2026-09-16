@@ -306,7 +306,7 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
                     network_epoch = artifact.floor.proposal.round.epoch().get(),
                     "durable state predates reachable reshare ceremonies; re-arming state sync"
                 );
-                rejoin::reset_sync_bookkeeping(&config.data_dir);
+                rejoin::reset_sync_bookkeeping(&config.data_dir)?;
                 plan = SyncPlan::init(&stateful_startup, PARTITION_PREFIX).await;
                 snapshot_sync = true;
                 probe_artifact = Some(artifact);
