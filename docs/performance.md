@@ -87,6 +87,25 @@ This passes the previously failing two-minute workload with different client
 admission behavior; a single trial does not establish a repeatable speedup or
 maximum capacity. Permission reads and WAN operation remain unqualified here.
 
+Adding one verified current-owner permission read after each registration produced
+the following results with the same binaries and bounded client queue:
+
+| Offered workflows/s | Duration | Completed / offered | Complete-load gate | Completed workflows/s | Permission read median / p95 | Full workflow p95 |
+|---:|---:|---:|---|---:|---:|---:|
+| 200 | 30 s | 6,000 / 6,000 | Passed | 191.59 | 2.66 / 76.35 ms | 1,572 ms |
+| 400 | 120 s | 46,158 / 48,000 | **Failed** | 380.06 | 68.18 / 2,113.09 ms | 4,027 ms |
+
+Both runs passed replica and hard-restart reconciliation with zero uncertain,
+rejected, reverted or unverifiable outcomes. The 400/s run left 1,842 operations
+unsent when the outstanding-workflow cap filled; its throughput and latency
+describe completed operations only, not qualified capacity. It recorded zero
+local client throttles, 51,333 remote permission throttles and 28,947 remote
+receipt throttles. Remote retryable errors include evidence waits as well as
+admission rejection, so these counts alone do not identify the server bottleneck.
+Permission latency includes retries, queuing and proof verification. These reads
+check owner access on new objects; they do not qualify revocation workloads or WAN
+latency. The passing write-only 400/s result does not extend to this combined path.
+
 For comparison, the earlier sequential-verification revision
 `c1f9cff9ac399757684b5dc539252934241278fa` passed these Normal-preset runs on the
 same host:
