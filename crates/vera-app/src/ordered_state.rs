@@ -487,6 +487,8 @@ where
         if config.executor.module_trees().is_some() {
             return Err("ordered storage cannot attach JMT trees".into());
         }
+        tracing::debug!(target: "vera_diagnostics", height = %anchor.height,
+            "snapshot database transfer started");
         let (databases, anchor) = Box::pin(OrderedDatabases::sync(
             context,
             config.databases,
@@ -497,15 +499,23 @@ where
             sync_config,
         ))
         .await?;
+        tracing::debug!(target: "vera_diagnostics", height = %anchor.height,
+            "snapshot database transfer completed");
         Self::check_module_root(&databases)
             .await
             .map_err(|e| e.to_string())?;
         if let Some(handoff) = config.sync_handoff {
+            tracing::debug!(target: "vera_diagnostics", height = %anchor.height,
+                "snapshot history handoff started");
             handoff(anchor).await?;
+            tracing::debug!(target: "vera_diagnostics", height = %anchor.height,
+                "snapshot history handoff completed");
         }
         let state = Self::hydrate(databases, config.executor)
             .await
             .map_err(|e| e.to_string())?;
+        tracing::debug!(target: "vera_diagnostics", height = %anchor.height,
+            "snapshot query state hydrated");
         Ok((state, anchor))
     }
 }

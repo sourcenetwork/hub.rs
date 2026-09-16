@@ -414,3 +414,7 @@ The same diagnostics target logs per-revision database-apply and query-state
 publication times, plus synchronization startup time. Startup ends when the
 Commonware durability handle is returned; it is not completion of that handle.
 These elapsed times include lock waits and executor scheduling.
+
+Snapshot diagnostics on the same target report database transfer, history handoff,
+and query-state hydration, with the selected revision at each stage. Transfer may
+advance its selected revision before the history handoff begins.
