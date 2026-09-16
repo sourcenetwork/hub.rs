@@ -29,15 +29,16 @@ env:
 
 jobs:
   lint:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     name: Lint
     runs-on: [self-hosted, macOS, ARM64, studio]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           clean: false
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: clippy, rustfmt
 
@@ -65,15 +66,16 @@ jobs:
         run: cargo clippy --frozen --all -- -D warnings
 
   build:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     name: Build & Test
     runs-on: [self-hosted, macOS, ARM64, studio]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           clean: false
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: clippy, rustfmt
 
@@ -112,6 +114,7 @@ jobs:
           git clean -fd
 
   e2e-canonical:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     name: "E2E (canonical)"
     runs-on: [self-hosted, macOS, ARM64, studio]
     needs: [build]
@@ -121,12 +124,12 @@ jobs:
       HUBD_BINARY: ${{ github.workspace }}/target/debug/hubd
       TMPDIR: $RUNNER_TEMP/hub-e2e-${{ github.run_id }}-${{ github.run_attempt }}-canonical
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           clean: false
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: clippy, rustfmt
 
@@ -165,6 +168,7 @@ jobs:
           rm -rf "$TMPDIR"
 
   e2e-extended:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     name: "E2E (extended)"
     runs-on: [self-hosted, macOS, ARM64, studio]
     # Serialized with the canonical suite: both start multi-node clusters on
@@ -176,12 +180,12 @@ jobs:
       HUBD_BINARY: ${{ github.workspace }}/target/debug/hubd
       TMPDIR: $RUNNER_TEMP/hub-e2e-${{ github.run_id }}-${{ github.run_attempt }}-extended
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           clean: false
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: clippy, rustfmt
 
@@ -231,15 +235,15 @@ jobs:
   artifacts:
     name: Release Artifacts
     runs-on: [self-hosted, macOS, ARM64, studio]
-    needs: [lint, build, e2e-canonical, e2e-extended]
+    needs: [lint, build, e2e-canonical, e2e-extended, linux-checks, linux-recovery]
     if: github.event_name == 'push'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           clean: false
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: clippy, rustfmt
 
@@ -261,7 +265,7 @@ jobs:
         run: cargo build --frozen --release -p hubd
 
       - name: Upload hubd
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: hubd-aarch64-apple-darwin
           path: target/release/hubd
@@ -272,3 +276,165 @@ jobs:
         run: |
           git checkout -- .
           git clean -fd
+
+  linux-checks:
+    name: Linux checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      HUBD_BINARY: ${{ github.workspace }}/target/debug/hubd
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Clear stale checkout credentials
+        run: git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
+
+      - name: Remove stale files from other branches
+        run: git clean -fdx -e /target
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-dev cmake pkg-config libssl-dev protobuf-compiler
+
+      - name: Install pinned toolchain
+        run: |
+          rustc --version
+          cargo --version
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: linux-checks
+
+      - name: Fetch locked dependencies
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: url.https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/.insteadOf
+          GIT_CONFIG_VALUE_0: https://github.com/sourcenetwork/
+        run: cargo fetch --locked
+
+      - name: Unit and storage tests
+        run: |
+          cargo test --frozen -p hub-modules --lib
+          cargo test --frozen -p hub-backend --lib
+          cargo test --frozen -p hub-backend --test native_state --test native_hydration
+          cargo test --frozen -p hub-e2e --example operation_baseline rejected_updates_preserve_results_and_stop_dependent_submissions
+          cargo test --frozen -p hub-node --lib --features regolith-history "history::"
+
+      - name: Build feature variants
+        run: |
+          cargo build --frozen -p hubd
+          cargo build --frozen -p hubd --features regolith-history
+          cargo build --frozen -p hubd --features fault-injection
+          cargo build --frozen -p hubd --features regolith-history,fault-injection
+          cargo build --frozen --release -p hubd
+
+  linux-recovery:
+    name: Linux recovery (${{ matrix.suite }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: lifecycle
+            exact: ""
+            binary-features: ""
+            test-features: ""
+            tests: >-
+              --test native_permission
+              --test native_signed_operation
+              --test native_bulletin
+              --test native_registration
+              --test native_membership
+              --test quorum_recovery
+              --test cold_replay
+          - suite: snapshot-catchup
+            exact: ""
+            binary-features: ""
+            test-features: ""
+            tests: --test snapshot_catchup
+          - suite: regolith-recovery
+            binary-features: "--features regolith-history"
+            test-features: ""
+            tests: --test snapshot_catchup snapshot_replica_recovers_from_pruned_peers
+            exact: --exact
+          - suite: regolith-interrupted
+            binary-features: "--features regolith-history,fault-injection"
+            test-features: "--features fault-injection"
+            tests: --test snapshot_interrupt interrupted_snapshot_resumes_from_pruned_peers
+            exact: --exact
+          - suite: commit-crash
+            exact: ""
+            binary-features: "--features fault-injection"
+            test-features: "--features fault-injection"
+            tests: --test module_commit_crash
+          - suite: snapshot-interrupted
+            exact: ""
+            binary-features: "--features fault-injection"
+            test-features: "--features fault-injection"
+            tests: --test snapshot_interrupt
+    env:
+      HUBD_BINARY: ${{ github.workspace }}/target/debug/hubd
+      HUB_E2E_DEADLINE_SCALE: "8"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Clear stale checkout credentials
+        run: git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
+
+      - name: Remove stale files from other branches
+        run: git clean -fdx -e /target
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-dev cmake pkg-config libssl-dev protobuf-compiler
+
+      - name: Install pinned toolchain
+        run: |
+          rustc --version
+          cargo --version
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: linux-recovery
+
+      - name: Fetch locked dependencies
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: url.https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/.insteadOf
+          GIT_CONFIG_VALUE_0: https://github.com/sourcenetwork/
+
+        run: cargo fetch --locked
+
+      - name: Build test binary
+        run: cargo build --frozen -p hubd ${{ matrix.binary-features }}
+
+      - name: Run suite
+        env:
+          RUST_LOG: warn,hub_storage=info
+          HUB_E2E_DIR: ${{ runner.temp }}/e2e-logs
+          HUB_E2E_KEEP: "1"
+        run: >-
+          cargo test --frozen -p hub-e2e ${{ matrix.test-features }}
+          ${{ matrix.tests }}
+          -- --test-threads=1 --nocapture ${{ matrix.exact }}
+
+      - name: Upload failed cluster logs
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: linux-${{ matrix.suite }}-cluster-logs
+          path: ${{ runner.temp }}/e2e-logs
+          if-no-files-found: ignore
