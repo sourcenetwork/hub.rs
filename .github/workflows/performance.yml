@@ -1,0 +1,94 @@
+name: Performance
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: performance-${{ github.event.workflow_run.head_sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  workload:
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        history: [rocksdb, regolith]
+    env:
+      CARGO_TERM_COLOR: always
+      HISTORY_BACKEND: ${{ matrix.history }}
+      VERA_E2E_KEEP: '0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+
+      - name: Install build and reporting dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-dev cmake pkg-config libssl-dev protobuf-compiler python3-venv
+          python3 -m venv "$RUNNER_TEMP/performance-python"
+          "$RUNNER_TEMP/performance-python/bin/pip" install -r tools/performance/requirements.txt
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: performance-${{ matrix.history }}
+
+      - name: Fetch locked dependencies
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+          GIT_CONFIG_COUNT: '1'
+          GIT_CONFIG_KEY_0: url.https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/.insteadOf
+          GIT_CONFIG_VALUE_0: https://github.com/sourcenetwork/
+        run: cargo +1.98.0 fetch --locked
+
+      - name: Build release artifacts before measurement
+        shell: bash
+        run: |
+          set -euo pipefail
+          features=()
+          if [[ "$HISTORY_BACKEND" == regolith ]]; then features=(--features regolith-history); fi
+          cargo +1.98.0 build --frozen --release -p verad "${features[@]}"
+          cargo +1.98.0 build --frozen --release -p vera-e2e --example operation_baseline
+          python3 -m unittest discover -s tools/performance -p 'test_*.py'
+
+      - name: Measure growing and fixed state
+        env:
+          VERA_E2E_DIR: ${{ runner.temp }}/vera-performance-nodes
+        shell: bash
+        run: |
+          set -euo pipefail
+          result=0
+          for objects in 0 128; do
+            directory="performance-results/objects-$objects"
+            python3 tools/performance/record.py \
+              --node target/release/verad --runner target/release/examples/operation_baseline \
+              --history "$HISTORY_BACKEND" --output "$directory" \
+              3000 50 128 1 normal 100 20 0 "$objects" 32 || result=1
+            "$RUNNER_TEMP/performance-python/bin/python" tools/performance/report.py "$directory" || result=1
+            if [[ -f "$directory/report.md" ]]; then sed '/^!\[/d' "$directory/report.md" >> "$GITHUB_STEP_SUMMARY"; fi
+          done
+          exit "$result"
+
+      - name: Upload measurements and provenance
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: performance-${{ matrix.history }}-${{ github.event.workflow_run.head_sha || github.sha }}
+          path: performance-results/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Stop workload processes
+        if: always()
+        run: python3 .github/scripts/stop-test-nodes.py "$GITHUB_WORKSPACE/target/release/verad"

@@ -28,6 +28,7 @@ protocols and secrets remain separate from consensus.
 - [Submission retries and operation identities](docs/operation-identities.md)
 - [Consensus and application threshold capabilities](docs/threshold-capabilities.md)
 - [Operating a member](docs/operating.md), [storage](docs/history-storage.md), and [snapshot recovery](docs/snapshot-recovery.md)
+- [Performance reports and benchmark jobs](docs/performance.md)
 - [Native workload measurement](docs/native-workload.md)
 
 ## Development
