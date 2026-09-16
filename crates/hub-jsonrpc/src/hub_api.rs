@@ -6,9 +6,23 @@ use alloy_primitives::{B256, Bytes, U64};
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 
 use commonware_cryptography::Hasher as _;
-use hub_domain::{LightBlock, ModuleId, ModuleStateProof};
+use hub_domain::{LightBlock, ModuleId, ModuleStateProof, RelationPrefixProof};
+
+#[cfg(test)]
+mod admission_tests;
+mod page;
+mod permission;
+mod prefix;
+mod receipt;
+mod record;
+mod relation;
+mod state_proof;
 use hub_executor::{ModuleTrees, SharedModuleState};
 use hub_indexer::{BlockIndex, LightBlockIndex};
+use hub_permission::{
+    AccessRequest, PermissionProof, PermissionResponse, PrefixPageRequest, PrefixPageResponse,
+    PrefixResponse, RecordResponse,
+};
 
 use crate::{
     error::RpcError,
@@ -16,6 +30,13 @@ use crate::{
     state::{NodeState, NodeStatus},
     types::{RpcLog, RpcNativeReceipt},
 };
+
+/// Durable light-block lookup, executed outside the asynchronous RPC worker.
+pub type LightBlockLookup = Arc<dyn Fn(u64) -> Result<LightBlock, String> + Send + Sync>;
+
+/// Durable receipt evidence lookup, executed on a bounded blocking worker.
+pub type ReceiptProofLookup =
+    Arc<dyn Fn(B256) -> Result<Option<hub_domain::ReceiptResponse>, String> + Send + Sync>;
 
 /// Hub-specific JSON-RPC API trait.
 ///
@@ -41,6 +62,12 @@ pub trait HubApi {
     #[method(name = "getTransactionReceipt")]
     async fn get_transaction_receipt(&self, hash: B256) -> RpcResult<Option<RpcNativeReceipt>>;
 
+    /// Return the complete receipt commitment and finality evidence for a submission.
+    /// A missing response does not prove that the submission was never accepted.
+    #[method(name = "getReceiptProof")]
+    async fn get_receipt_proof(&self, hash: B256)
+    -> RpcResult<Option<hub_domain::ReceiptResponse>>;
+
     /// Returns the on-chain native nonce for a BLS identity.
     #[method(name = "getNativeNonce")]
     async fn get_native_nonce(&self, did: String) -> RpcResult<U64>;
@@ -57,11 +84,63 @@ pub trait HubApi {
         height: U64,
     ) -> RpcResult<ModuleStateProof>;
 
-    /// Returns a self-contained light block at the given height.
+    /// Prove a complete ACP relationship prefix at a retained finalized height.
+    /// Returns unavailable if the current record index cannot enumerate that revision.
+    #[method(name = "getRelationProof")]
+    async fn get_relation_proof(
+        &self,
+        prefix: Bytes,
+        height: U64,
+    ) -> RpcResult<RelationPrefixProof>;
+
+    /// Return bounded evidence for evaluating this request at a finalized revision.
+    #[method(name = "getPermissionProof")]
+    async fn get_permission_proof(
+        &self,
+        policy: String,
+        request: AccessRequest,
+        height: U64,
+    ) -> RpcResult<PermissionProof>;
+
+    /// Capture current native evidence and return its matching finalized revision.
+    #[method(name = "getCurrentPermissionProof")]
+    async fn get_current_permission_proof(
+        &self,
+        policy: String,
+        request: AccessRequest,
+        minimum_height: U64,
+    ) -> RpcResult<PermissionResponse>;
+
+    /// Capture a native record and its finalized revision, including proven absence.
+    #[method(name = "getCurrentRecordProof")]
+    async fn get_current_record_proof(
+        &self,
+        module: ModuleId,
+        key: Bytes,
+        minimum_height: U64,
+    ) -> RpcResult<RecordResponse>;
+
+    /// Capture every native record under a prefix with its finalized revision.
+    #[method(name = "getCurrentPrefixProof")]
+    async fn get_current_prefix_proof(
+        &self,
+        module: ModuleId,
+        prefix: Bytes,
+        minimum_height: U64,
+    ) -> RpcResult<PrefixResponse>;
+
+    /// Capture a bounded native page with its finalized revision.
+    #[method(name = "getCurrentPrefixPageProof")]
+    async fn get_current_prefix_page_proof(
+        &self,
+        request: PrefixPageRequest,
+        minimum_height: U64,
+    ) -> RpcResult<PrefixPageResponse>;
+
+    /// Returns a light block at the given height.
     ///
-    /// Includes the canonical block, aggregate finalization, and epoch verifier material —
-    /// everything needed to verify the block's authenticity via
-    /// `hub_domain::verify_light_block`.
+    /// Verify it with `hub_domain::verify_light_block` and a consensus key from
+    /// the deployment's authenticated bootstrap configuration.
     #[method(name = "getLightBlock")]
     async fn get_light_block(&self, height: U64) -> RpcResult<LightBlock>;
 }
@@ -73,7 +152,11 @@ pub struct HubApiImpl {
     index: Option<Arc<BlockIndex>>,
     modules: Option<SharedModuleState>,
     module_trees: Option<ModuleTrees>,
+    native_modules: Option<hub_backend::native::NativeStateSet>,
     light_block_index: Option<Arc<LightBlockIndex>>,
+    light_block_lookup: Option<LightBlockLookup>,
+    receipt_proof_lookup: Option<ReceiptProofLookup>,
+    archive: Option<crate::ArchiveReader>,
 }
 
 impl std::fmt::Debug for HubApiImpl {
@@ -84,7 +167,9 @@ impl std::fmt::Debug for HubApiImpl {
             .field("index", &self.index.is_some())
             .field("modules", &self.modules.is_some())
             .field("module_trees", &self.module_trees.is_some())
+            .field("native_modules", &self.native_modules.is_some())
             .field("light_block_index", &self.light_block_index.is_some())
+            .field("light_block_lookup", &self.light_block_lookup.is_some())
             .finish()
     }
 }
@@ -99,7 +184,11 @@ impl HubApiImpl {
             index: None,
             modules: None,
             module_trees: None,
+            native_modules: None,
             light_block_index: None,
+            light_block_lookup: None,
+            receipt_proof_lookup: None,
+            archive: None,
         }
     }
 
@@ -122,10 +211,41 @@ impl HubApiImpl {
         self
     }
 
+    /// Serve permission evidence from the selected ordered module databases.
+    #[must_use]
+    pub fn with_native_modules(
+        mut self,
+        databases: hub_backend::native::NativeStateSet,
+        modules: SharedModuleState,
+    ) -> Self {
+        self.native_modules = Some(databases);
+        self.modules = Some(modules);
+        self
+    }
+
     /// Set the light block index for `getLightBlock` queries.
     #[must_use]
     pub fn with_light_block_index(mut self, index: Arc<LightBlockIndex>) -> Self {
         self.light_block_index = Some(index);
+        self
+    }
+
+    /// Serve direct and indirect finality proofs from durable history.
+    #[must_use]
+    pub fn with_light_block_lookup(mut self, lookup: LightBlockLookup) -> Self {
+        self.light_block_lookup = Some(lookup);
+        self
+    }
+
+    /// Configure durable receipt evidence for submissions absent from the memory index.
+    pub fn with_receipt_proof_lookup(mut self, lookup: ReceiptProofLookup) -> Self {
+        self.receipt_proof_lookup = Some(lookup);
+        self
+    }
+
+    /// Enable durable point reads for receipts absent from memory.
+    pub fn with_archive(mut self, archive: crate::ArchiveReader) -> Self {
+        self.archive = Some(archive);
         self
     }
 }
@@ -172,11 +292,18 @@ impl HubApiServer for HubApiImpl {
             return Err(RpcError::Internal("block index not available".into()).into());
         };
 
-        let Some(receipt) = index.get_receipt(&hash) else {
+        let mut execution = index.receipt_with_transaction(&hash);
+        if execution.is_none()
+            && let Some(archive) = &self.archive
+            && let Some(index) = archive
+                .read(hub_indexer::IndexQuery::Submission(hash))
+                .await?
+        {
+            execution = index.receipt_with_transaction(&hash);
+        }
+        let Some((receipt, tx)) = execution else {
             return Ok(None);
         };
-
-        let tx = index.get_transaction(&hash);
         let native_nonce = tx.as_ref().and_then(|t| {
             if receipt.signer_did.is_some() {
                 Some(U64::from(t.nonce))
@@ -225,6 +352,13 @@ impl HubApiServer for HubApiImpl {
         }))
     }
 
+    async fn get_receipt_proof(
+        &self,
+        hash: B256,
+    ) -> RpcResult<Option<hub_domain::ReceiptResponse>> {
+        self.receipt_proof(hash).await
+    }
+
     async fn get_native_nonce(&self, did: String) -> RpcResult<U64> {
         let Some(ref modules) = self.modules else {
             return Err(RpcError::Internal("module state not available".into()).into());
@@ -233,7 +367,10 @@ impl HubApiServer for HubApiImpl {
         let guard = modules
             .read()
             .map_err(|_| RpcError::Internal("lock poisoned".into()))?;
-        let nonce = guard.nonces.get_nonce(&did);
+        let nonce = guard
+            .nonces
+            .get_nonce(&did)
+            .map_err(|e| RpcError::Internal(e.to_string()))?;
         Ok(U64::from(nonce))
     }
 
@@ -243,88 +380,111 @@ impl HubApiServer for HubApiImpl {
         key: String,
         height: U64,
     ) -> RpcResult<ModuleStateProof> {
-        let Some(ref trees) = self.module_trees else {
-            return Err(RpcError::Internal("module state trees not available".into()).into());
-        };
+        let _permit = self.state.proof_permit()?;
+        self.state_proof(module, key, height).await
+    }
 
-        let module_id = ModuleId::from_str_name(&module).ok_or_else(|| {
-            RpcError::InvalidTransaction(format!(
-                "unknown module: {module} (expected acp, bulletin, hub, or native_nonce)"
-            ))
-        })?;
+    async fn get_relation_proof(
+        &self,
+        prefix: Bytes,
+        height: U64,
+    ) -> RpcResult<RelationPrefixProof> {
+        let _permit = self.state.proof_permit()?;
+        self.relation_proof(&prefix, height.to()).await
+    }
 
-        let key_bytes = hex::decode(key.strip_prefix("0x").unwrap_or(&key))
-            .map_err(|e| RpcError::InvalidTransaction(format!("invalid key hex: {e}")))?;
+    async fn get_permission_proof(
+        &self,
+        policy: String,
+        request: AccessRequest,
+        height: U64,
+    ) -> RpcResult<PermissionProof> {
+        let _permit = self.state.proof_permit()?;
+        self.permission_proof(&policy, &request, height.to()).await
+    }
 
-        let height_val: u64 = height.to();
+    async fn get_current_permission_proof(
+        &self,
+        policy: String,
+        request: AccessRequest,
+        minimum_height: U64,
+    ) -> RpcResult<PermissionResponse> {
+        let _permit = self.state.proof_permit()?;
+        self.current_permission_proof(&policy, &request, minimum_height.to())
+            .await
+    }
 
-        let mut all_roots = [[0u8; 32]; 4];
-        for (i, tree_mutex) in trees.iter().enumerate() {
-            let tree = tree_mutex
-                .lock()
-                .map_err(|_| RpcError::Internal("tree lock poisoned".into()))?;
-            let root = tree
-                .root_at_height(height_val)
-                .map_err(|e| RpcError::Internal(format!("root at height: {e}")))?;
-            all_roots[i] = root.0;
-        }
+    async fn get_current_record_proof(
+        &self,
+        module: ModuleId,
+        key: Bytes,
+        minimum_height: U64,
+    ) -> RpcResult<RecordResponse> {
+        let _permit = self.state.proof_permit()?;
+        self.current_record_proof(module, &key, minimum_height.to())
+            .await
+    }
 
-        let target_tree = trees[module_id.index()]
-            .lock()
-            .map_err(|_| RpcError::Internal("tree lock poisoned".into()))?;
+    async fn get_current_prefix_proof(
+        &self,
+        module: ModuleId,
+        prefix: Bytes,
+        minimum_height: U64,
+    ) -> RpcResult<PrefixResponse> {
+        let _permit = self.state.proof_permit()?;
+        self.current_prefix_proof(module, &prefix, minimum_height.to())
+            .await
+    }
 
-        let (value, jmt_proof, root_hash) = target_tree
-            .prove_at_height(&key_bytes, height_val)
-            .map_err(|e| RpcError::Internal(format!("proof generation: {e}")))?;
-
-        all_roots[module_id.index()] = root_hash.0;
-
-        let proof = ModuleStateProof::new(
-            module_id,
-            height_val,
-            &key_bytes,
-            value.as_deref(),
-            &jmt_proof,
-            root_hash.0,
-            all_roots,
-        );
-
-        Ok(proof)
+    async fn get_current_prefix_page_proof(
+        &self,
+        request: PrefixPageRequest,
+        minimum_height: U64,
+    ) -> RpcResult<PrefixPageResponse> {
+        let _permit = self.state.proof_permit()?;
+        self.current_prefix_page_proof(&request, minimum_height.to())
+            .await
     }
 
     async fn get_light_block(&self, height: U64) -> RpcResult<LightBlock> {
-        let Some(ref block_index) = self.index else {
-            return Err(RpcError::Internal("block index not available".into()).into());
-        };
-        let Some(ref light_index) = self.light_block_index else {
-            return Err(RpcError::Internal("light block index not available".into()).into());
-        };
-
-        let height_val: u64 = height.to();
-        let block = block_index
-            .get_block_by_number(height_val)
-            .ok_or_else(|| RpcError::Internal(format!("block not found at height {height_val}")))?;
-
-        let digest = commonware_cryptography::Sha256::hash(&[block.hash.as_slice()]).0;
-        let finalization = light_index.get_finalization(&digest).ok_or_else(|| {
-            RpcError::Internal(format!(
-                "finalization certificate not found for height {height_val}"
-            ))
-        })?;
-
-        let material = light_index
-            .get_epoch_material(finalization.epoch)
-            .ok_or_else(|| {
-                RpcError::Internal(format!(
-                    "epoch material not found for epoch {}",
-                    finalization.epoch
-                ))
-            })?;
-
-        LightBlock::from_encoded_block(&finalization.block, &finalization.bytes, &material.bytes)
-            .map_err(|error| {
-                RpcError::Internal(format!("light block assembly failed: {error}")).into()
+        let height: u64 = height.to();
+        if let Some(light_index) = &self.light_block_index {
+            let finalization = self
+                .index
+                .as_ref()
+                .and_then(|index| index.get_block_by_number(height))
+                .and_then(|block| {
+                    let digest = commonware_cryptography::Sha256::hash(&[block.hash.as_slice()]).0;
+                    light_index.get_finalization(&digest)
+                });
+            if let Some(finalization) = finalization
+                && let Some(material) = light_index.get_epoch_material(finalization.epoch)
+            {
+                return LightBlock::from_encoded_block(
+                    &finalization.block,
+                    &finalization.bytes,
+                    &material.bytes,
+                )
+                .map_err(|error| {
+                    RpcError::Internal(format!("light block assembly failed: {error}")).into()
+                });
+            }
+        }
+        if let Some(lookup) = &self.light_block_lookup {
+            let lookup = lookup.clone();
+            let permit = self.state.light_lookup_permit()?;
+            return tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                lookup(height)
             })
+            .await
+            .map_err(|error| RpcError::Internal(format!("light block lookup failed: {error}")))?
+            .map_err(|error| RpcError::Internal(error).into());
+        }
+        Err(RpcError::Internal(format!(
+            "finalization certificate not found for height {height}"
+        ))
+        .into())
     }
 }
 

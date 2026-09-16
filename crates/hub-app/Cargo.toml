@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 description = "Glue stateful application around the hub block executor"
 
+[features]
+fault-injection = ["hub-executor/fault-injection"]
+
 [lints]
 workspace = true
 
@@ -32,6 +35,15 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+hub-indexer.workspace = true
+serde_json.workspace = true
+hub-jsonrpc.workspace = true
+commonware-parallel.workspace = true
+commonware-p2p.workspace = true
+commonware-codec.workspace = true
+hub-state.workspace = true
+hub-client.workspace = true
+alloy-sol-types.workspace = true
 hub-domain = { workspace = true, features = ["evm"] }
 alloy-primitives.workspace = true
 k256.workspace = true

@@ -2,6 +2,17 @@
 
 use alloy_primitives::{Address, B256, Bytes, U256};
 
+/// A point lookup into retained execution history.
+#[derive(Debug, Clone, Copy)]
+pub enum IndexQuery {
+    /// Revision number.
+    Revision(u64),
+    /// Canonical revision hash.
+    RevisionHash(B256),
+    /// Submission identifier.
+    Submission(B256),
+}
+
 /// An indexed block containing header information and transaction hashes.
 #[derive(Debug, Clone)]
 pub struct IndexedBlock {
@@ -111,6 +122,8 @@ pub struct IndexedLog {
 /// Statistics about the block index.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct IndexStats {
+    /// Accounted resident revision bytes, excluding map overhead and evicted reader snapshots.
+    pub cached_bytes: usize,
     /// Total number of indexed blocks.
     pub block_count: usize,
     /// Total number of indexed transactions.

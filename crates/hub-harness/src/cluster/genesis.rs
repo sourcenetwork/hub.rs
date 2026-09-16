@@ -5,6 +5,7 @@
 
 use std::path::Path;
 
+use hub_modules::hub::administration::OperatorPolicy;
 use serde::Serialize;
 
 /// Matches hub-genesis HubGenesis JSON schema exactly.
@@ -12,6 +13,9 @@ use serde::Serialize;
 pub struct HubGenesis {
     /// Chain ID for the test network.
     pub chain_id: u64,
+    /// Initial operator approval policy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operators: Option<OperatorPolicy>,
     /// Human-readable chain name.
     pub chain_name: String,
     /// Genesis timestamp (unix seconds).
@@ -98,6 +102,7 @@ pub struct GenesisStorage {
 #[derive(Debug)]
 pub struct GenesisBuilder {
     chain_id: u64,
+    operators: Option<OperatorPolicy>,
     chain_name: String,
     allocations: Vec<GenesisAllocation>,
     native_mint: NativeMintConfig,
@@ -112,6 +117,7 @@ impl Default for GenesisBuilder {
     fn default() -> Self {
         Self {
             chain_id: 9001,
+            operators: None,
             chain_name: "hub-test".to_string(),
             allocations: Vec::new(),
             native_mint: NativeMintConfig::default(),
@@ -134,6 +140,7 @@ impl GenesisBuilder {
     pub fn devnet() -> Self {
         Self {
             chain_id: 9001,
+            operators: None,
             chain_name: "hub-devnet".to_string(),
             allocations: vec![
                 GenesisAllocation {
@@ -156,6 +163,13 @@ impl GenesisBuilder {
             epoch_info: None,
             blocks_per_epoch: 20,
         }
+    }
+
+    /// Set the initial operator approval policy.
+    #[must_use]
+    pub fn operators(mut self, policy: OperatorPolicy) -> Self {
+        self.operators = Some(policy);
+        self
     }
 
     /// Set the chain ID.
@@ -267,6 +281,7 @@ impl GenesisBuilder {
     pub fn build(self) -> HubGenesis {
         HubGenesis {
             chain_id: self.chain_id,
+            operators: self.operators.clone(),
             chain_name: self.chain_name,
             timestamp: 0,
             allocations: self.allocations,
@@ -283,6 +298,7 @@ impl GenesisBuilder {
     pub fn build_and_write(&self, dir: &Path) -> eyre::Result<HubGenesis> {
         let genesis = HubGenesis {
             chain_id: self.chain_id,
+            operators: self.operators.clone(),
             chain_name: self.chain_name.clone(),
             timestamp: 0,
             allocations: self.allocations.clone(),

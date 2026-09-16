@@ -4,7 +4,7 @@ use alloy_primitives::{Address, Bytes, U256};
 use hub_modules::ModuleState;
 use hub_traits::StateDbRead;
 use revm::{
-    Context, ExecuteEvm, Journal, MainBuilder,
+    Context, InspectEvm, Journal, MainBuilder,
     context::block::BlockEnv,
     context::result::{ExecutionResult, Output},
     database::State,
@@ -98,11 +98,15 @@ pub fn simulate_call<S: StateDbRead>(
         },
     );
 
-    let mut evm = ctx.build_mainnet().with_precompiles(precompiles);
+    let mut evm = ctx
+        .build_mainnet_with_inspector(precompiles.inspector())
+        .with_precompiles(precompiles);
 
-    let result_and_state = evm
-        .transact(tx_env)
-        .map_err(|e| ExecutionError::TxExecution(format!("{e:?}")))?;
+    evm.precompiles.begin_transaction();
+    let execution = evm.inspect_tx(tx_env);
+    evm.precompiles
+        .finish_transaction(execution.as_ref().is_ok_and(|r| r.result.is_success()));
+    let result_and_state = execution.map_err(|e| ExecutionError::TxExecution(format!("{e:?}")))?;
 
     match result_and_state.result {
         ExecutionResult::Success {

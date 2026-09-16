@@ -12,7 +12,7 @@ use commonware_utils::{NZU32, sequence::Unit};
 use std::fmt;
 use std::num::NonZeroU32;
 
-use crate::{BlockId, ConsensusContext, DbTargets, Idents, StateRoot, Tx, TxCfg};
+use crate::{BlockId, ConsensusContext, DbTarget, DbTargets, Idents, StateRoot, Tx, TxCfg};
 
 /// BLS variant used by the DKG reshare payload.
 pub type DkgVariant = MinSig;
@@ -73,9 +73,27 @@ pub struct Block {
     pub payload: Option<DkgPayload>,
     /// Per-partition QMDB targets after this block.
     pub db_targets: DbTargets,
+    /// Ordered module log targets in ACP, bulletin, hub and sequence order.
+    /// Presence selects the native commitment encoding; legacy blocks omit them.
+    pub native_targets: Option<[DbTarget; 4]>,
+    /// Commitment to ordered execution receipts and the execution gas limit.
+    /// Legacy encodings omit this field; native execution requires it.
+    pub receipt_commitment: Option<B256>,
 }
 
 impl Block {
+    /// Check wire budgets before proposing or executing an in-memory block.
+    #[must_use]
+    pub fn fits_wire_limits(&self) -> bool {
+        self.txs.len() <= crate::MAX_BLOCK_TXS
+            && self
+                .txs
+                .iter()
+                .all(|tx| tx.bytes.len() <= crate::MAX_TX_BYTES)
+            && self.txs.encode_size() <= crate::MAX_BLOCK_TX_BYTES
+            && self.encode_size() <= crate::MAX_BLOCK_BYTES
+    }
+
     /// Compute the block identifier from its encoded contents.
     pub fn id(&self) -> BlockId {
         BlockId(keccak256(self.encode()))
@@ -149,7 +167,18 @@ impl Write for Block {
         self.state_root.write(buf);
         Idents::write_b256(&self.module_state_root, buf);
         self.txs.write(buf);
-        self.payload.write(buf);
+        if let Some(commitment) = &self.receipt_commitment {
+            3_u8.write(buf);
+            self.payload.write(buf);
+            self.native_targets.write(buf);
+            Idents::write_b256(commitment, buf);
+        } else if let Some(targets) = &self.native_targets {
+            2_u8.write(buf);
+            self.payload.write(buf);
+            targets.write(buf);
+        } else {
+            self.payload.write(buf);
+        }
         self.db_targets.write(buf);
     }
 }
@@ -164,7 +193,15 @@ impl EncodeSize for Block {
             + self.state_root.encode_size()
             + 32
             + self.txs.encode_size()
-            + self.payload.encode_size()
+            + if self.receipt_commitment.is_some() {
+                1 + self.payload.encode_size() + self.native_targets.encode_size() + 32
+            } else {
+                self.payload.encode_size()
+                    + self
+                        .native_targets
+                        .as_ref()
+                        .map_or(0, |targets| 1 + targets.encode_size())
+            }
             + self.db_targets.encode_size()
     }
 }
@@ -173,6 +210,7 @@ impl Read for Block {
     type Cfg = BlockCfg;
 
     fn read_cfg(buf: &mut impl Buf, cfg: &Self::Cfg) -> Result<Self, CodecError> {
+        let buf = &mut buf.take(crate::MAX_BLOCK_BYTES);
         let context = ConsensusContext::read(buf)?;
         let parent = BlockId::read(buf)?;
         let height = u64::read(buf)?;
@@ -180,8 +218,33 @@ impl Read for Block {
         let prevrandao = Idents::read_b256(buf)?;
         let state_root = StateRoot::read(buf)?;
         let module_state_root = Idents::read_b256(buf)?;
-        let txs = Vec::<Tx>::read_cfg(buf, &(RangeCfg::new(0..=cfg.max_txs), cfg.tx))?;
-        let payload = Option::<DkgPayload>::read_cfg(buf, &DKG_PAYLOAD_CFG)?;
+        let txs = Vec::<Tx>::read_cfg(
+            &mut (&mut *buf).take(crate::MAX_BLOCK_TX_BYTES),
+            &(
+                RangeCfg::new(0..=cfg.max_txs.min(crate::MAX_BLOCK_TXS)),
+                cfg.tx,
+            ),
+        )?;
+        // Tags 0 and 1 retain the original optional DKG payload encoding.
+        let (payload, native_targets, receipt_commitment) = match u8::read(buf)? {
+            0 => (None, None, None),
+            1 => (
+                Some(DkgPayload::read_cfg(buf, &DKG_PAYLOAD_CFG)?),
+                None,
+                None,
+            ),
+            2 => (
+                Option::<DkgPayload>::read_cfg(buf, &DKG_PAYLOAD_CFG)?,
+                Some(<[DbTarget; 4]>::read(buf)?),
+                None,
+            ),
+            3 => (
+                Option::<DkgPayload>::read_cfg(buf, &DKG_PAYLOAD_CFG)?,
+                Option::<[DbTarget; 4]>::read(buf)?,
+                Some(Idents::read_b256(buf)?),
+            ),
+            _ => return Err(CodecError::Invalid("Block", "unknown commitment encoding")),
+        };
         let db_targets = DbTargets::read(buf)?;
         Ok(Self {
             context,
@@ -194,6 +257,8 @@ impl Read for Block {
             txs,
             payload,
             db_targets,
+            native_targets,
+            receipt_commitment,
         })
     }
 }
@@ -221,6 +286,8 @@ impl fmt::Debug for Block {
             .field("txs", &self.txs.len())
             .field("payload", &self.payload.is_some())
             .field("db_targets", &self.db_targets)
+            .field("native_targets", &self.native_targets)
+            .field("receipt_commitment", &self.receipt_commitment)
             .finish()
     }
 }
@@ -236,6 +303,39 @@ mod tests {
     use commonware_utils::{N3f1, TestRng, ordered::Set, sequence::Unit};
 
     use super::*;
+
+    #[test]
+    fn block_transaction_count_respects_protocol_and_caller_limits() {
+        let mut block = sample_block();
+        block.txs = vec![block.txs[0].clone(); crate::MAX_BLOCK_TXS];
+        let mut cfg = default_block_cfg();
+        cfg.max_txs = usize::MAX;
+        assert!(block.fits_wire_limits());
+        assert_eq!(Block::decode_cfg(block.encode(), &cfg).unwrap(), block);
+        cfg.max_txs = crate::MAX_BLOCK_TXS - 1;
+        assert!(Block::decode_cfg(block.encode(), &cfg).is_err());
+        cfg.max_txs = usize::MAX;
+        block.txs.push(block.txs[0].clone());
+        assert!(!block.fits_wire_limits());
+        assert!(Block::decode_cfg(block.encode(), &cfg).is_err());
+    }
+
+    #[test]
+    fn large_block_transaction_budget() {
+        let cfg = BlockCfg {
+            max_txs: crate::MAX_BLOCK_TXS,
+            tx: TxCfg {
+                max_tx_bytes: crate::MAX_TX_BYTES,
+            },
+        };
+        let mut block = sample_block();
+        block.txs = vec![Tx::new(vec![255; crate::MAX_TX_BYTES].into())];
+        assert_eq!(Block::decode_cfg(block.encode(), &cfg).unwrap(), block);
+        block.txs.push(block.txs[0].clone());
+        assert!(Block::decode_cfg(block.encode(), &cfg).is_err());
+        block.txs = vec![Tx::new(vec![255; crate::MAX_TX_BYTES + 1].into())];
+        assert!(Block::decode_cfg(block.encode(), &cfg).is_err());
+    }
 
     fn default_block_cfg() -> BlockCfg {
         BlockCfg {
@@ -257,6 +357,8 @@ mod tests {
             module_state_root: B256::ZERO,
             txs: vec![Tx::new(Bytes::from_static(&[0xde, 0xad, 0xbe, 0xef]))],
             payload: None,
+            native_targets: None,
+            receipt_commitment: None,
             db_targets: crate::DbTargets::default(),
         }
     }
@@ -335,6 +437,95 @@ mod tests {
     }
 
     #[test]
+    fn native_commitment_encoding_is_tagged_bounded_and_streamable() {
+        for legacy in [sample_block(), sample_block_with_payload()] {
+            let original = legacy.encode();
+            let offset =
+                original.len() - legacy.db_targets.encode_size() - legacy.payload.encode_size();
+            assert_eq!(original[offset], u8::from(legacy.payload.is_some()));
+            let mut native = legacy.clone();
+            native.native_targets = Some(std::array::from_fn(|i| DbTarget {
+                root: commonware_cryptography::sha256::Digest::from([u8::try_from(i).unwrap(); 32]),
+                floor: 0,
+                tip: 1,
+            }));
+            let bytes = native.encode();
+            assert_eq!(bytes[offset], 2);
+            assert_eq!(bytes.len(), native.encode_size());
+            assert_eq!(
+                Block::decode_cfg(bytes.clone(), &default_block_cfg()).unwrap(),
+                native
+            );
+            assert_ne!(native.id(), legacy.id());
+            let mut changed = native.clone();
+            changed.native_targets.as_mut().unwrap()[3].tip += 1;
+            assert_ne!(native.id(), changed.id());
+            let mut concatenated = bytes.to_vec();
+            concatenated.extend_from_slice(&original);
+            let mut input = concatenated.as_slice();
+            assert_eq!(
+                Block::read_cfg(&mut input, &default_block_cfg()).unwrap(),
+                native
+            );
+            assert_eq!(
+                Block::read_cfg(&mut input, &default_block_cfg()).unwrap(),
+                legacy
+            );
+            assert!(input.is_empty());
+            let mut invalid = bytes.to_vec();
+            invalid[offset] = 4;
+            assert!(Block::decode_cfg(invalid.as_slice(), &default_block_cfg()).is_err());
+            for end in offset..bytes.len() {
+                assert!(Block::decode_cfg(&bytes[..end], &default_block_cfg()).is_err());
+            }
+            native.native_targets = None;
+            assert_eq!(native.encode(), original);
+        }
+    }
+
+    #[test]
+    fn receipt_commitment_is_canonical_bound_and_streamable() {
+        for legacy in [sample_block(), sample_block_with_payload()] {
+            for targets in [None, Some([DbTarget::default(); 4])] {
+                let offset = legacy.encode_size()
+                    - legacy.db_targets.encode_size()
+                    - legacy.payload.encode_size();
+                let mut block = legacy.clone();
+                block.native_targets = targets;
+                let previous = block.encode();
+                block.receipt_commitment = Some(B256::repeat_byte(7));
+                let encoded = block.encode();
+                assert_eq!(encoded[offset], 3);
+                assert_eq!(encoded.len(), block.encode_size());
+                assert_eq!(
+                    Block::decode_cfg(encoded.clone(), &default_block_cfg()).unwrap(),
+                    block
+                );
+                let mut changed = block.clone();
+                changed.receipt_commitment = Some(B256::repeat_byte(8));
+                assert_ne!(block.id(), changed.id());
+                let mut concatenated = encoded.to_vec();
+                concatenated.extend_from_slice(&previous);
+                let mut input = concatenated.as_slice();
+                assert_eq!(
+                    Block::read_cfg(&mut input, &default_block_cfg()).unwrap(),
+                    block
+                );
+                block.receipt_commitment = None;
+                assert_eq!(block.encode(), previous);
+                assert_eq!(
+                    Block::read_cfg(&mut input, &default_block_cfg()).unwrap(),
+                    block
+                );
+                assert!(input.is_empty());
+                for end in offset..encoded.len() {
+                    assert!(Block::decode_cfg(&encoded[..end], &default_block_cfg()).is_err());
+                }
+            }
+        }
+    }
+
+    #[test]
     fn empty_block_roundtrip() {
         let block = Block {
             context: Block::genesis_context(),
@@ -346,6 +537,8 @@ mod tests {
             module_state_root: B256::ZERO,
             txs: vec![],
             payload: None,
+            native_targets: None,
+            receipt_commitment: None,
             db_targets: crate::DbTargets::default(),
         };
         let encoded = block.encode();
@@ -394,9 +587,9 @@ mod tests {
     fn payload_rejects_non_canonical_presence_byte() {
         let block = sample_block_with_payload();
         let mut encoded = block.encode().to_vec();
-        let payload_start = encoded.len() - block.payload.encode_size();
-        // Flip the Option presence byte from 1 (Some) to 2 (invalid).
-        encoded[payload_start] = 2;
+        let payload_start =
+            encoded.len() - block.db_targets.encode_size() - block.payload.encode_size();
+        encoded[payload_start] = 4;
         assert!(Block::decode_cfg(encoded.as_slice(), &default_block_cfg()).is_err());
     }
 

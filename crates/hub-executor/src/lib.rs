@@ -14,8 +14,12 @@ pub use context::{BlockContext, ParentBlock};
 mod error;
 pub use error::ExecutionError;
 
+mod module_snapshot;
 mod outcome;
+pub use module_snapshot::ModuleSnapshot;
 pub use outcome::{ExecutionOutcome, ExecutionReceipt};
+
+pub use hub_domain::receipt_commitment;
 
 mod revm;
 pub use revm::{
@@ -33,6 +37,9 @@ pub use validation::{
 };
 
 mod executor;
+#[cfg(feature = "fault-injection")]
+mod faults;
+mod relation_index;
 pub use executor::{HubExecutor, ModuleTrees};
 pub use hub_modules::module_state::{ModuleState, SharedModuleState};
 

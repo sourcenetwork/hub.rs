@@ -1,0 +1,58 @@
+# Bulletin collection queries
+
+Collection queries return complete results only within their work budget:
+
+- At most 128 inspected records.
+- At most 1 MiB of inspected storage keys and encoded record values.
+- A selection prefix no longer than 64 KiB.
+- For glob queries, a pattern no longer than 4 KiB.
+
+The same collector serves namespace lists, namespace collaborators, namespace
+posts, all posts and glob-selected posts. Nonmatching glob records count against
+the inspection budget. Oversized queries return an explicit error; partial
+results are never returned as complete. Malformed records and record/key
+mismatches also return errors instead of being skipped.
+
+For larger collections, use `HubClient::list_bulletin_namespaces`,
+`list_bulletin_posts` or `list_bulletin_collaborators`. These existing native APIs
+verify certified prefix pages and return continuation cursors. Apply any glob
+filter to each verified post page locally. Each page has its own selected
+revision; pagination does not pin a historical snapshot.
+
+Globs retain literal matching with `*` spanning any sequence, including `/`.
+Matching uses anchored prefix/suffix checks and forward searches for literal
+segments, with no recursive backtracking. No other wildcard syntax is interpreted.
+
+These read limits do not cap stored history or establish a measured execution
+throughput target. Transport response limits apply separately from stored-byte
+inspection limits.
+
+Native startup and snapshot recovery validate complete bulletin records before
+publishing query state. Truncated or trailing record bytes, namespace/post/
+collaborator key mismatches, invalid policy-ID encoding and malformed parameters
+stop restoration with a storage error. Absent settings remain valid for an
+uninitialized module. Recovery does not repair or discard corrupt records.
+
+`HubClient::read_bulletin_policy_id` authenticates the bulletin's ACP policy ID
+against caller-provided consensus trust. Before the first namespace initializes
+the policy, it returns certified absence. Present IDs must be canonical 64-byte
+lowercase hexadecimal strings and are returned as 32-byte values. Use
+`read_policy` with that ID and at least the returned revision to inspect the
+policy definition. The two reads may select different finalized revisions;
+policy presence does not itself grant permission to create posts or manage
+collaborators.
+
+Bulletin policy initialization distinguishes absence from invalid stored IDs.
+Empty or non-UTF-8 values return errors before creating an ACP policy or changing
+bulletin state. Posting and collaborator management use the same fallible reader.
+Bulletin and core parameter reads also return decoding errors for corrupt stored
+bytes; defaults apply only to missing keys. Native recovery checks these values
+before publishing query state.
+
+Namespace registration, posting, and collaborator changes reject empty namespace names before reading or mutating policy state. Failed empty-name registration does not initialize the bulletin policy.
+
+Namespace inputs accept short names (`team`) and stored IDs (`bulletin/team`).
+Registration results can be passed directly to subsequent reads, posting, and
+collaborator changes. Both forms select the same namespace and authorization
+object; an already prefixed ID is preserved. Verified client reads use the same
+normalization and enforce limits on the resulting storage key.

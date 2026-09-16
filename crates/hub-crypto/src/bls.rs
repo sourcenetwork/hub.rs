@@ -3,11 +3,10 @@
 //! Matches orbis-rs conventions: G1 pubkeys (48 bytes), G2 signatures (96 bytes),
 //! IETF-standard hash-to-curve DST.
 
-use ark_bls12_381::{Bls12_381, G1Affine, G2Affine, G2Projective, g2::Config as G2Config};
+use ark_bls12_381::{G1Affine, G2Affine, G2Projective, g2::Config as G2Config};
 use ark_ec::{
     AffineRepr, CurveGroup,
     hashing::{HashToCurve, curve_maps::wb::WBMap, map_to_curve_hasher::MapToCurveBasedHasher},
-    pairing::Pairing,
 };
 use ark_ff::{Zero, field_hashers::DefaultFieldHasher};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
@@ -72,27 +71,47 @@ pub fn sign(secret_key: &ark_bls12_381::Fr, msg: &[u8]) -> Result<Vec<u8>, BlsEr
 /// Verify a BLS signature against a G1 public key and message.
 ///
 /// Rejects identity points for both the public key and signature to prevent
-/// trivial forgery via degenerate pairing (matches orbis-rs `sign.rs:157-190`).
+/// trivial forgery. Uses blst with signature subgroup and public-key validation.
 pub fn verify(pubkey: &G1Affine, msg: &[u8], sig_bytes: &[u8]) -> Result<(), BlsError> {
     if pubkey.is_zero() {
         return Err(BlsError::InvalidSignature);
     }
 
-    let sig = G2Affine::deserialize_compressed(sig_bytes).map_err(|_| BlsError::Deserialize)?;
-    if sig.is_zero() {
+    let mut encoded_key = [0u8; 48];
+    pubkey
+        .serialize_compressed(encoded_key.as_mut_slice())
+        .map_err(|_| BlsError::Serialize)?;
+    verify_compressed(&encoded_key, msg, sig_bytes).map(|_| ())
+}
+
+/// Verify a compressed G1 key/G2 signature and return the authenticated signer's DID.
+/// Both points are validated before deriving the DID from the canonical key encoding.
+pub fn verify_and_identify(
+    pubkey: &[u8],
+    msg: &[u8],
+    signature: &[u8],
+) -> Result<String, BlsError> {
+    let key = verify_compressed(pubkey, msg, signature)?;
+    Ok(did_from_encoded_key(&key.to_bytes()))
+}
+
+fn verify_compressed(
+    pubkey: &[u8],
+    msg: &[u8],
+    sig_bytes: &[u8],
+) -> Result<blst::min_pk::PublicKey, BlsError> {
+    if pubkey.len() != 48 || sig_bytes.len() != 96 {
+        return Err(BlsError::Deserialize);
+    }
+    let key = blst::min_pk::PublicKey::from_bytes(pubkey).map_err(|_| BlsError::Deserialize)?;
+    let signature =
+        blst::min_pk::Signature::from_bytes(sig_bytes).map_err(|_| BlsError::Deserialize)?;
+    if signature.verify(true, msg, BLS_SIG_DOMAIN, &[], &key, true)
+        != blst::BLST_ERROR::BLST_SUCCESS
+    {
         return Err(BlsError::InvalidSignature);
     }
-
-    let h_msg = hash_to_g2(msg)?;
-    let g1_gen = G1Affine::generator();
-
-    let lhs = Bls12_381::pairing(*pubkey, h_msg);
-    let rhs = Bls12_381::pairing(g1_gen, sig);
-
-    if lhs != rhs {
-        return Err(BlsError::InvalidSignature);
-    }
-    Ok(())
+    Ok(key)
 }
 
 /// Deserialize a compressed BLS G1 public key (48 bytes).
@@ -113,20 +132,21 @@ pub fn did_from_bls_pubkey(pubkey: &G1Affine) -> Result<String, BlsError> {
     if pubkey.is_zero() {
         return Err(BlsError::InvalidPublicKey);
     }
+    let mut pubkey_bytes = [0u8; 48];
+    pubkey
+        .serialize_compressed(pubkey_bytes.as_mut_slice())
+        .map_err(|_| BlsError::Serialize)?;
+    Ok(did_from_encoded_key(&pubkey_bytes))
+}
+
+fn did_from_encoded_key(pubkey: &[u8; 48]) -> String {
     let mut varint_buf = [0u8; 10];
     let varint = unsigned_varint::encode::u64(BLS_G1_MULTICODEC, &mut varint_buf);
-
-    let mut pubkey_bytes = Vec::with_capacity(48);
-    pubkey
-        .serialize_compressed(&mut pubkey_bytes)
-        .map_err(|_| BlsError::Serialize)?;
-
-    let mut codec_bytes = Vec::with_capacity(varint.len() + pubkey_bytes.len());
+    let mut codec_bytes = Vec::with_capacity(varint.len() + pubkey.len());
     codec_bytes.extend_from_slice(varint);
-    codec_bytes.extend_from_slice(&pubkey_bytes);
-
+    codec_bytes.extend_from_slice(pubkey);
     let encoded = multibase::encode(multibase::Base::Base58Btc, &codec_bytes);
-    Ok(format!("did:key:{encoded}"))
+    format!("did:key:{encoded}")
 }
 
 #[cfg(test)]
@@ -152,6 +172,45 @@ mod tests {
         let msg = b"test message";
         let sig = sign(&sk, msg).expect("sign");
         verify(&pk, msg, &sig).expect("verify");
+    }
+
+    #[test]
+    fn verify_rejects_non_subgroup_public_key_and_trailing_signature_bytes() {
+        let (sk, pk) = generate_keypair();
+        let mut signature = sign(&sk, b"message").unwrap();
+        let torsion =
+            G1Affine::new_unchecked(ark_bls12_381::Fq::from(0), ark_bls12_381::Fq::from(2));
+        assert!(torsion.is_on_curve());
+        assert!(!torsion.is_in_correct_subgroup_assuming_on_curve());
+        assert!(verify(&torsion, b"message", &signature).is_err());
+        signature.push(0);
+        assert!(verify(&pk, b"message", &signature).is_err());
+    }
+
+    #[test]
+    fn compressed_verification_preserves_identity_and_rejects_invalid_inputs() {
+        let (sk, pk) = generate_keypair();
+        let mut encoded = Vec::new();
+        pk.serialize_compressed(&mut encoded).unwrap();
+        let signature = sign(&sk, b"message").unwrap();
+        assert_eq!(
+            verify_and_identify(&encoded, b"message", &signature).unwrap(),
+            did_from_bls_pubkey(&pk).unwrap()
+        );
+        assert!(verify_and_identify(&encoded, b"other", &signature).is_err());
+        assert!(verify_and_identify(&encoded[..47], b"message", &signature).is_err());
+        let torsion =
+            G1Affine::new_unchecked(ark_bls12_381::Fq::from(0), ark_bls12_381::Fq::from(2));
+        for invalid in [G1Affine::zero(), torsion] {
+            let mut encoded = Vec::new();
+            invalid.serialize_compressed(&mut encoded).unwrap();
+            assert!(verify_and_identify(&encoded, b"message", &signature).is_err());
+        }
+        let mut identity_signature = Vec::new();
+        G2Affine::zero()
+            .serialize_compressed(&mut identity_signature)
+            .unwrap();
+        assert!(verify_and_identify(&encoded, b"message", &identity_signature).is_err());
     }
 
     #[test]

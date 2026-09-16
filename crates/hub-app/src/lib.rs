@@ -8,8 +8,14 @@
 
 #![recursion_limit = "256"]
 
+mod app_state;
+pub use app_state::{ApplicationState, StateExecution};
+
 mod app;
-pub use app::{StatefulHubApp, VrfSeedCache};
+pub use app::StatefulHubApp;
+
+mod vrf_cache;
+pub use vrf_cache::VrfSeedCache;
 
 mod error;
 pub use error::AppError;
@@ -28,3 +34,12 @@ pub use sink::{FinalizedSink, NoopSink};
 
 mod targets;
 pub use targets::{db_targets_from_merkleized, db_targets_from_sync, sync_targets};
+
+mod module_db;
+pub use module_db::{
+    DisabledModuleSync, ModuleBatch, ModuleDb, ModuleTarget, VeraMerkleized, VeraStateSet,
+    VeraSyncTargets, VeraUnmerkleized, vera_state_config,
+};
+
+/// Ordered native storage integrated with execution and synchronized query-state publication.
+pub mod ordered_state;

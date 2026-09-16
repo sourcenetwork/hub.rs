@@ -111,7 +111,7 @@ impl EthSubscriptionApiImpl {
         }
     }
 
-    /// Enable gossip header subscriptions via `hub_subscribe("headers")`.
+    /// Enable gossip header subscriptions via `eth_subscribe("headers")`.
     #[must_use]
     pub fn with_headers(mut self, tx: broadcast::Sender<GossipHeader>) -> Self {
         self.headers_tx = Some(tx);
@@ -133,7 +133,12 @@ impl EthSubscriptionApiServer for EthSubscriptionApiImpl {
                 let mut rx = self.heads_tx.subscribe();
                 tokio::spawn(async move {
                     loop {
-                        match rx.recv().await {
+                        let received = tokio::select! {
+                            biased;
+                            () = sink.closed() => break,
+                            received = rx.recv() => received,
+                        };
+                        match received {
                             Ok(block) => {
                                 let value = match serde_json::to_value(&block) {
                                     Ok(v) => v,
@@ -156,6 +161,7 @@ impl EthSubscriptionApiServer for EthSubscriptionApiImpl {
                             }
                             Err(broadcast::error::RecvError::Lagged(n)) => {
                                 warn!(lagged = n, "newHeads subscriber lagged, dropping");
+                                signal_lag(&sink, n).await;
                                 break;
                             }
                             Err(broadcast::error::RecvError::Closed) => break,
@@ -174,39 +180,7 @@ impl EthSubscriptionApiServer for EthSubscriptionApiImpl {
                         .await;
                     return Ok(());
                 };
-                let sink = pending.accept().await?;
-                let mut rx = headers_tx.subscribe();
-                tokio::spawn(async move {
-                    loop {
-                        match rx.recv().await {
-                            Ok(header) => {
-                                let value = match serde_json::to_value(&header) {
-                                    Ok(v) => v,
-                                    Err(e) => {
-                                        warn!(error = %e, "failed to serialize gossip header");
-                                        break;
-                                    }
-                                };
-                                let msg = match SubscriptionMessage::from_json(&value) {
-                                    Ok(m) => m,
-                                    Err(e) => {
-                                        warn!(error = %e, "failed to build headers subscription message");
-                                        break;
-                                    }
-                                };
-                                if sink.send(msg).await.is_err() {
-                                    trace!("headers subscriber disconnected");
-                                    break;
-                                }
-                            }
-                            Err(broadcast::error::RecvError::Lagged(n)) => {
-                                warn!(lagged = n, "headers subscriber lagged, dropping");
-                                break;
-                            }
-                            Err(broadcast::error::RecvError::Closed) => break,
-                        }
-                    }
-                });
+                crate::header_subscribe::stream_headers(pending, headers_tx).await?;
             }
             "logs" => {
                 let filter: SubscriptionLogFilter = match params {
@@ -230,7 +204,15 @@ impl EthSubscriptionApiServer for EthSubscriptionApiImpl {
                 let mut rx = self.logs_tx.subscribe();
                 tokio::spawn(async move {
                     loop {
-                        match rx.recv().await {
+                        // Observe disconnects even when the filter never
+                        // matches: without this select a quiet filter keeps
+                        // the task and its broadcast receiver alive forever.
+                        let received = tokio::select! {
+                            biased;
+                            () = sink.closed() => break,
+                            received = rx.recv() => received,
+                        };
+                        match received {
                             Ok(logs) => {
                                 for log in &logs {
                                     if !matches_filter(log, &filter) {
@@ -258,6 +240,7 @@ impl EthSubscriptionApiServer for EthSubscriptionApiImpl {
                             }
                             Err(broadcast::error::RecvError::Lagged(n)) => {
                                 warn!(lagged = n, "logs subscriber lagged, dropping");
+                                signal_lag(&sink, n).await;
                                 break;
                             }
                             Err(broadcast::error::RecvError::Closed) => break,
@@ -279,6 +262,19 @@ impl EthSubscriptionApiServer for EthSubscriptionApiImpl {
     }
 }
 
+/// Deliver a terminal signal to a subscriber dropped for lagging, so a slow
+/// consumer learns the feed ended instead of waiting on silence.
+async fn signal_lag(sink: &jsonrpsee::core::server::SubscriptionSink, missed: u64) {
+    let notice = serde_json::json!({
+        "error": format!("subscription lagged by {missed} messages; resubscribe"),
+    });
+    if let Ok(message) = SubscriptionMessage::from_json(&notice)
+        && sink.send(message).await.is_err()
+    {
+        trace!("lagging subscriber already disconnected");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloy_primitives::{Address, B256, Bytes, U64};
@@ -291,7 +287,7 @@ mod tests {
     /// Returns the server handle, the bound address, and the broadcast senders
     /// for heads and logs.
     async fn setup_test_server() -> (
-        jsonrpsee::server::ServerHandle,
+        jsonrpsee_server::ServerHandle,
         std::net::SocketAddr,
         broadcast::Sender<RpcBlock>,
         broadcast::Sender<Vec<RpcLog>>,

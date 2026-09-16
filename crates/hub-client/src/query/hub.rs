@@ -38,6 +38,20 @@ impl HubClient {
         Ok(decoded)
     }
 
+    /// Look up recorded delegations bound to a submitting DID.
+    pub async fn get_delegations_by_submitter(
+        &self,
+        submitter: &str,
+    ) -> Result<Bytes, ClientError> {
+        let calldata = IHub::getDelegationsBySubmitterCall {
+            submitter: submitter.into(),
+        }
+        .abi_encode();
+        let result = self.eth_call(HUB_ADDRESS, calldata.into()).await?;
+        IHub::getDelegationsBySubmitterCall::abi_decode_returns(&result)
+            .map_err(|e| ClientError::AbiDecode(e.to_string()))
+    }
+
     /// Fetch the chain configuration.
     pub async fn get_chain_config(&self) -> Result<Bytes, ClientError> {
         let calldata = IHub::getChainConfigCall {}.abi_encode();

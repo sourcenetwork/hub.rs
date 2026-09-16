@@ -21,7 +21,8 @@ use alloy_primitives::{Address, Bytes};
 use alloy_sol_types::SolCall;
 
 use hub_client::{ACP_ADDRESS, BlsSigner, EvmSigner, HubClient, TransactionReceipt};
-use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, TestCluster};
+use hub_domain::{ConsensusPublicKey, LightBlock, verify_light_block};
+use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, KeySet, TestCluster};
 use hub_e2e::{RECEIPT_POLL_ATTEMPTS, RECEIPT_POLL_INTERVAL};
 use hub_modules::acp::abi::IAcp;
 
@@ -37,6 +38,28 @@ resources:
       - name: read
         expr: owner
 ";
+
+async fn wait_light_block(
+    client: &HubClient,
+    height: u64,
+    trusted_key: ConsensusPublicKey,
+) -> LightBlock {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if let Ok(light) = client
+                .rpc_call_typed::<LightBlock>("hub_getLightBlock", serde_json::json!([height]))
+                .await
+            {
+                verify_light_block(&light, &trusted_key)
+                    .expect("historical finalization should verify");
+                return light;
+            }
+            tokio::time::sleep(RECEIPT_POLL_INTERVAL).await;
+        }
+    })
+    .await
+    .expect("historical light block deadline")
+}
 
 fn create_policy_calldata() -> Vec<u8> {
     IAcp::createPolicyCall {
@@ -165,14 +188,43 @@ async fn poll_until(
     }
 }
 
+async fn wait_for_nonce(rpc_url: &str, address: Address, expected: u64) {
+    let rpc_url = rpc_url.to_owned();
+    poll_until(
+        "restarted replica sequence convergence",
+        Duration::from_secs(120),
+        Duration::from_millis(500),
+        move || {
+            let rpc_url = rpc_url.clone();
+            Box::pin(async move {
+                match HubClient::new(rpc_url).get_nonce(address).await {
+                    Ok(nonce) if nonce >= expected => None,
+                    Ok(nonce) => Some(format!("sequence {nonce}, need {expected}")),
+                    Err(error) => Some(error.to_string()),
+                }
+            })
+        },
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn node_restart_preserves_state() {
     let chain_id = 9001;
+    let trusted_key = *KeySet::builder()
+        .seed(chain_id)
+        .build()
+        .expect("bootstrap keys")
+        .epoch_info()
+        .output
+        .public()
+        .public();
     let genesis = GenesisBuilder::devnet().funded_accounts(1, "1000000000000000000000000");
 
     let mut cluster = TestCluster::builder()
         .binary(hub_e2e::resolve_binary().expect("resolve hubd binary"))
         .nodes(4)
+        .seed(chain_id)
         .chain_id(chain_id)
         .genesis(genesis)
         .preset(ConsensusPreset::Stress)
@@ -181,7 +233,7 @@ async fn node_restart_preserves_state() {
         .expect("cluster should start");
 
     cluster
-        .wait_ready(Duration::from_secs(30))
+        .wait_ready(hub_e2e::readiness_deadline())
         .await
         .expect("cluster should become healthy");
 
@@ -253,6 +305,37 @@ async fn node_restart_preserves_state() {
         .map(|s| s.effective_height())
         .max()
         .unwrap_or(0);
+
+    let before_restart = HubClient::new(cluster.node(3).rpc_url());
+    let mut history = Vec::new();
+    for receipt in [&evm_receipt, &bls_receipt] {
+        let confirmed = before_restart
+            .wait_for_receipt(
+                receipt.transaction_hash,
+                RECEIPT_POLL_INTERVAL,
+                RECEIPT_POLL_ATTEMPTS,
+            )
+            .await
+            .expect("replica should confirm the historical operation");
+        history.push(confirmed);
+    }
+
+    let historical_light = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            for height in (1..=bls_receipt.block_number.max(evm_receipt.block_number)).rev() {
+                if let Ok(light) = before_restart
+                    .rpc_call_typed::<LightBlock>("hub_getLightBlock", serde_json::json!([height]))
+                    .await
+                {
+                    verify_light_block(&light, &trusted_key).unwrap();
+                    return (height, light);
+                }
+            }
+            tokio::time::sleep(RECEIPT_POLL_INTERVAL).await;
+        }
+    })
+    .await
+    .expect("replica should serve a verifiable historical entry");
 
     // ── 3. Kill node 3 ──────────────────────────────────────────
 
@@ -355,27 +438,7 @@ async fn node_restart_preserves_state() {
     // tx submitted while it was down.
     let restarted_url = cluster.node(3).rpc_url();
     let addr = evm_signer.address();
-    let target_nonce = while_down_evm_nonce;
-    poll_until(
-        "restarted node EVM nonce convergence",
-        Duration::from_secs(120),
-        Duration::from_millis(500),
-        {
-            let url = restarted_url.clone();
-            move || {
-                let url = url.clone();
-                Box::pin(async move {
-                    let nonce = HubClient::new(url).get_nonce(addr).await.unwrap_or(0);
-                    if nonce >= target_nonce {
-                        None
-                    } else {
-                        Some(format!("nonce {nonce}, need {target_nonce}"))
-                    }
-                })
-            }
-        },
-    )
-    .await;
+    wait_for_nonce(&restarted_url, addr, while_down_evm_nonce).await;
 
     // The restarted node should now see the policy created while it was down.
     let converged_policies = restarted_client
@@ -387,6 +450,23 @@ async fn node_restart_preserves_state() {
         "restarted node should have more policies after catching up (pre-kill: {}, now: {})",
         pre_kill_policies.len(),
         converged_policies.len()
+    );
+
+    for receipt in history {
+        let restored = restarted_client
+            .get_transaction_receipt(receipt.transaction_hash)
+            .await
+            .unwrap()
+            .expect("confirmed receipt must survive restart");
+        assert_eq!(
+            serde_json::to_value(restored).unwrap(),
+            serde_json::to_value(&receipt).unwrap()
+        );
+    }
+    let restored_light = wait_light_block(&restarted_client, historical_light.0, trusted_key).await;
+    assert_eq!(
+        restored_light, historical_light.1,
+        "historical proof material changed on restart"
     );
 
     // ── 7. Post-restart EVM + BLS transactions ──────────────────
@@ -433,6 +513,10 @@ async fn node_restart_preserves_state() {
     //
     // Verifies the restarted node's mempool accepts txs and gossips
     // them to all validators for inclusion.
+
+    // A receipt from replica 0 does not guarantee replica 3 has applied the write.
+    let post_evm_nonce = client.get_nonce(addr).await.expect("sequence after write");
+    wait_for_nonce(&restarted_url, addr, post_evm_nonce).await;
 
     let through_restarted_receipt = send_evm_tx_to_node(
         &restarted_client,

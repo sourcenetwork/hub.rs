@@ -7,7 +7,7 @@ use alloy_primitives::{B256, Bytes, U256, keccak256};
 use hub_qmdb::{AccountUpdate, ChangeSet};
 use hub_traits::StateDb;
 use revm::{
-    Context, ExecuteEvm, Journal, MainBuilder,
+    Context, ExecuteCommitEvm, ExecuteEvm, Journal, MainBuilder,
     bytecode::Bytecode,
     context::{
         block::BlockEnv,
@@ -253,7 +253,9 @@ impl<S: StateDb> BlockExecutor<S> for RevmExecutor {
                 build_receipt(&result_and_state.result, tx_hash, gas_used, cumulative_gas);
             outcome.receipts.push(receipt);
 
-            let changes = extract_changes(result_and_state.state);
+            let changes = extract_changes(&result_and_state.state);
+            // Advance the proposal cache without writing canonical state.
+            evm.commit(result_and_state.state);
             outcome.changes.merge(changes);
         }
 
@@ -499,7 +501,7 @@ pub fn build_receipt(
 }
 
 /// Extract state changes from REVM execution state.
-pub fn extract_changes(state: EvmState) -> ChangeSet {
+pub fn extract_changes(state: &EvmState) -> ChangeSet {
     let mut changes = ChangeSet::new();
 
     for (address, account) in state {
@@ -532,7 +534,7 @@ pub fn extract_changes(state: EvmState) -> ChangeSet {
             storage,
         };
 
-        changes.insert(address, update);
+        changes.insert(*address, update);
     }
 
     changes
@@ -617,8 +619,10 @@ mod tests {
             },
         ));
 
-        let mut header = Header::default();
-        header.gas_limit = 1000;
+        let mut header = Header {
+            gas_limit: 1000,
+            ..Default::default()
+        };
         assert!(
             <RevmExecutor as BlockExecutor<MockStateDb>>::validate_header(&executor, &header)
                 .is_err()
@@ -650,11 +654,13 @@ mod tests {
             base_fee_per_gas: None,
         };
 
-        let mut header = Header::default();
-        header.parent_hash = B256::repeat_byte(1);
-        header.number = 101;
-        header.timestamp = 1001;
-        header.gas_limit = 30_000_000;
+        let mut header = Header {
+            parent_hash: B256::repeat_byte(1),
+            number: 101,
+            timestamp: 1001,
+            gas_limit: 30_000_000,
+            ..Default::default()
+        };
 
         assert!(
             executor
@@ -683,11 +689,13 @@ mod tests {
             base_fee_per_gas: None,
         };
 
-        let mut header = Header::default();
-        header.parent_hash = B256::repeat_byte(1);
-        header.number = 101;
-        header.timestamp = 999;
-        header.gas_limit = 30_000_000;
+        let header = Header {
+            parent_hash: B256::repeat_byte(1),
+            number: 101,
+            timestamp: 999,
+            gas_limit: 30_000_000,
+            ..Default::default()
+        };
 
         assert!(
             executor
@@ -709,11 +717,13 @@ mod tests {
             base_fee_per_gas: None,
         };
 
-        let mut header = Header::default();
-        header.parent_hash = B256::repeat_byte(1);
-        header.number = 101;
-        header.timestamp = 1001;
-        header.gas_limit = 35_000_000;
+        let header = Header {
+            parent_hash: B256::repeat_byte(1),
+            number: 101,
+            timestamp: 1001,
+            gas_limit: 35_000_000,
+            ..Default::default()
+        };
 
         assert!(
             executor
@@ -790,7 +800,7 @@ mod tests {
     #[test]
     fn extract_changes_empty() {
         let state = EvmState::default();
-        let changes = extract_changes(state);
+        let changes = extract_changes(&state);
         assert!(changes.is_empty());
     }
 
@@ -814,7 +824,7 @@ mod tests {
 
         state.insert(Address::ZERO, account);
 
-        let changes = extract_changes(state);
+        let changes = extract_changes(&state);
         assert_eq!(changes.len(), 1);
 
         let update = changes.accounts.get(&Address::ZERO).unwrap();
@@ -836,7 +846,7 @@ mod tests {
 
         state.insert(Address::ZERO, account);
 
-        let changes = extract_changes(state);
+        let changes = extract_changes(&state);
         assert!(changes.is_empty());
     }
 
@@ -854,7 +864,7 @@ mod tests {
 
         state.insert(Address::ZERO, account);
 
-        let changes = extract_changes(state);
+        let changes = extract_changes(&state);
         assert_eq!(changes.len(), 1);
 
         let update = changes.accounts.get(&Address::ZERO).unwrap();
@@ -875,7 +885,7 @@ mod tests {
 
         state.insert(Address::ZERO, account);
 
-        let changes = extract_changes(state);
+        let changes = extract_changes(&state);
         assert_eq!(changes.len(), 1);
 
         let update = changes.accounts.get(&Address::ZERO).unwrap();

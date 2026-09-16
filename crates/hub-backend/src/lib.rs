@@ -18,3 +18,9 @@ pub use state_set::{
     AccountsDb, CodeDb, Ctx, HubConfig, HubDatabases, HubMerkleized, HubReaders, HubStateSet,
     HubSyncTargets, HubUnmerkleized, MerkleizedTriple, StorageDb, combined_root, state_set_config,
 };
+
+/// Ordered native module storage and logical record changes.
+pub mod native;
+
+/// Bounded peer transport for persisted state partitions.
+pub mod p2p;

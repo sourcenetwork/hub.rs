@@ -1,11 +1,12 @@
 [workspace]
 members = ["bin/hubd", "crates/*"]
+exclude = ["vendor/jsonrpsee-server"]
 resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.91.1"
+rust-version = "1.98"
 license = "MIT"
 repository = "https://github.com/sourcenetwork/hub.rs"
 
@@ -67,6 +68,7 @@ hub-traits = { path = "crates/hub-traits" }
 hub-app = { path = "crates/hub-app" }
 hub-node = { path = "crates/hub-node" }
 hub-client = { path = "crates/hub-client" }
+hub-permission = { path = "crates/hub-permission" }
 hub-executor = { path = "crates/hub-executor" }
 hub-genesis = { path = "crates/hub-genesis" }
 hub-state = { path = "crates/hub-state" }
@@ -87,11 +89,11 @@ commonware-resolver = "2026.9.0"
 commonware-macros = "2026.9.0"
 commonware-glue = "2026.9.0"
 
-# defradb.rs (main @ 5af2d3d)
-acp = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "5af2d3d50a71d7def8c0e50e1193f531c0063fae", default-features = false }
-identity = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "5af2d3d50a71d7def8c0e50e1193f531c0063fae" }
-storage = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "5af2d3d50a71d7def8c0e50e1193f531c0063fae", default-features = false }
-zanzibar = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "5af2d3d50a71d7def8c0e50e1193f531c0063fae", default-features = false }
+# Shared Defra types and policy evaluation
+acp = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "8d34d9c426bd6aef7e92891f2af1c6d14f9b3028", default-features = false }
+identity = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "8d34d9c426bd6aef7e92891f2af1c6d14f9b3028" }
+storage = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "8d34d9c426bd6aef7e92891f2af1c6d14f9b3028", default-features = false }
+zanzibar = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "8d34d9c426bd6aef7e92891f2af1c6d14f9b3028", default-features = false }
 
 # Alloy
 alloy-primitives = "1.0"
@@ -144,7 +146,7 @@ ark-std = "0.4"
 axum = "0.8"
 tower = { version = "0.5", features = ["limit"] }
 tower-http = { version = "0.6", features = ["cors"] }
-jsonrpsee = { version = "0.24", features = ["server", "macros", "ws-client"] }
+jsonrpsee = { version = "0.24", features = ["server-core", "macros", "ws-client"] }
 reqwest = { version = "0.12", features = ["json", "blocking"] }
 
 # Concurrency

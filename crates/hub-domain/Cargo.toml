@@ -22,7 +22,7 @@ commonware-utils.workspace = true
 # Execution
 alloy-evm = { workspace = true, features = ["std"] }
 alloy-primitives = { workspace = true, features = ["serde"] }
-alloy-consensus = { workspace = true, optional = true }
+alloy-consensus = { workspace = true, features = ["serde"] }
 alloy-eips = { workspace = true, optional = true }
 k256 = { workspace = true, optional = true }
 sha3 = { workspace = true, optional = true }
@@ -53,4 +53,4 @@ alloy-eips.workspace = true
 jmt = { version = "0.11", features = ["mocks"] }
 
 [features]
-evm = ["dep:alloy-consensus", "dep:alloy-eips", "dep:k256", "dep:sha3"]
+evm = ["dep:alloy-eips", "dep:k256", "dep:sha3"]

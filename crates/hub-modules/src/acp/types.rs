@@ -31,13 +31,6 @@ pub struct Operation {
     pub permission: String,
 }
 
-/// Content type discriminator for signed payloads.
-#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
-pub enum ContentType {
-    Unknown,
-    Jws,
-}
-
 /// Policy serialization format.
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub enum PolicyMarshalingType {
@@ -131,7 +124,7 @@ pub enum PolicyCmdResult {
     },
     RevealRegistration {
         record: RelationshipRecord,
-        event: AmendmentEvent,
+        event: Option<AmendmentEvent>,
     },
     FlagHijackAttempt {
         event: AmendmentEvent,
@@ -248,11 +241,19 @@ pub enum AcpOp {
     },
 }
 
-/// Module-level parameters (governance-controlled).
-#[derive(
-    Clone, Debug, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize,
-)]
+/// Module-level parameters.
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AcpParams {
     pub policy_command_max_expiration_delta: u64,
     pub registrations_commitment_validity: Duration,
+}
+
+impl Default for AcpParams {
+    fn default() -> Self {
+        Self {
+            policy_command_max_expiration_delta: 12 * 60 * 60,
+            registrations_commitment_validity: Duration::Seconds(10 * 60),
+        }
+    }
 }

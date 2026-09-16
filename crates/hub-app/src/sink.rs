@@ -7,6 +7,12 @@ use hub_executor::ExecutionReceipt;
 
 /// Receives proposals and finalized blocks with their receipts.
 pub trait FinalizedSink: Clone + Send + Sync + 'static {
+    /// Highest published finalized revision, including recovered state.
+    /// Zero preserves full ancestry scanning for sinks without a durable index.
+    fn finalized_height(&self) -> u64 {
+        0
+    }
+
     /// Called after this node built a proposal.
     fn proposed(&self, _block: &Block) {}
 

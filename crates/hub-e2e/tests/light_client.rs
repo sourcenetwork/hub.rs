@@ -11,14 +11,22 @@ use std::time::Duration;
 use alloy_primitives::{Address, Bytes, FixedBytes};
 use alloy_sol_types::SolCall;
 
-use hub_client::{ACP_ADDRESS, EvmSigner, HubClient, TransactionReceipt};
-use hub_domain::{LightBlock, ModuleStateProof, verify_light_block, verify_module_state_proof};
-use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, TestCluster};
+use hub_client::{
+    ACP_ADDRESS, EvmSigner, HubClient, ModuleId, PERMISSION_LIMITS, RECORD_PROOF_BYTES,
+    TransactionReceipt,
+};
+use hub_domain::{LightBlock, verify_light_block};
+use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, KeySet, TestCluster};
 use hub_e2e::{RECEIPT_POLL_ATTEMPTS, RECEIPT_POLL_INTERVAL};
 use hub_modules::acp::abi::IAcp;
 use jsonrpsee::core::client::SubscriptionClientT;
 use jsonrpsee::rpc_params;
 use jsonrpsee::ws_client::WsClientBuilder;
+
+#[path = "light_client/decision.rs"]
+mod decision;
+#[path = "light_client/permission.rs"]
+mod permission;
 
 const HARDHAT_KEY_0: &str = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 
@@ -27,11 +35,11 @@ name: test-policy
 resources:
   - name: document
     relations:
-      - name: owner
       - name: reader
+      - name: blocked
     permissions:
       - name: read
-        expr: owner + reader
+        expr: reader - blocked->blocked
 ";
 
 fn parse_policy_id(hex_str: &str) -> FixedBytes<32> {
@@ -82,13 +90,21 @@ async fn broadcast_evm_tx(
 
 #[tokio::test]
 async fn light_client_proof_verification() {
-    // ── Phase 1: Setup ───────────────────────────────────────────────
     let chain_id = 9003;
+    let trusted_key = *KeySet::builder()
+        .seed(chain_id)
+        .build()
+        .expect("bootstrap keys")
+        .epoch_info()
+        .output
+        .public()
+        .public();
     let genesis = GenesisBuilder::devnet().funded_accounts(1, "1000000000000000000000000");
 
     let cluster = TestCluster::builder()
         .binary(hub_e2e::resolve_binary().expect("resolve hubd binary"))
         .nodes(4)
+        .seed(chain_id)
         .chain_id(chain_id)
         .genesis(genesis)
         .preset(ConsensusPreset::Fast)
@@ -97,7 +113,7 @@ async fn light_client_proof_verification() {
         .expect("cluster should start");
 
     cluster
-        .wait_ready(Duration::from_secs(30))
+        .wait_ready(hub_e2e::readiness_deadline())
         .await
         .expect("cluster should become healthy");
 
@@ -121,9 +137,7 @@ async fn light_client_proof_verification() {
         "post-genesis prevrandao must come from the threshold VRF seed"
     );
     let evm_signer = EvmSigner::from_hex(HARDHAT_KEY_0, chain_id).expect("valid signer");
-    let evm_did = evm_signer.did();
 
-    // ── Phase 2: Create ACP policy + register document ───────────────
     let create_calldata = IAcp::createPolicyCall {
         policy: TEST_POLICY_YAML.as_bytes().to_vec().into(),
         marshalType: 1,
@@ -157,7 +171,6 @@ async fn light_client_proof_verification() {
     assert_eq!(register_receipt.status, 1, "register_object should succeed");
     let h_register = register_receipt.block_number;
 
-    // ── Phase 3: Subscribe to gossip headers ─────────────────────────
     let ws_client = WsClientBuilder::default()
         .build(&cluster.node(0).ws_url())
         .await
@@ -198,14 +211,13 @@ async fn light_client_proof_verification() {
         .as_str()
         .expect("module_state_root should be a string");
 
-    // ── Phase 4: Verify light block at H₁ ────────────────────────────
     let light_block: LightBlock = client
         .rpc_call_typed("hub_getLightBlock", serde_json::json!([h1]))
         .await
         .expect("hub_getLightBlock should succeed");
 
     let (_state_root, module_state_root) =
-        verify_light_block(&light_block).expect("light block should verify");
+        verify_light_block(&light_block, &trusted_key).expect("light block should verify");
 
     let lb_msr_hex = format!("0x{}", hex::encode(module_state_root.as_slice()));
     assert_eq!(
@@ -213,30 +225,43 @@ async fn light_client_proof_verification() {
         "light block module_state_root should match gossip header"
     );
 
-    // ── Phase 5: Verify module state proof at H₁ ─────────────────────
     let policy_id_str = &policy_ids[0];
     let acp_key = format!("policy/objs/{policy_id_str}");
-    let key_hex = format!("0x{}", hex::encode(acp_key.as_bytes()));
-
-    let proof_1: ModuleStateProof = client
-        .rpc_call_typed("hub_getStateProof", serde_json::json!(["acp", key_hex, h1]))
+    let response = client
+        .read_current_record(
+            ModuleId::Acp,
+            acp_key.as_bytes(),
+            h1,
+            &trusted_key,
+            RECORD_PROOF_BYTES,
+        )
         .await
-        .expect("hub_getStateProof should succeed");
-
-    assert!(
-        proof_1.value.is_some(),
-        "policy record should exist (proof.value should be Some)"
+        .unwrap();
+    let proof_1 = response.record;
+    assert!(proof_1.value.is_some());
+    let reader_prefix = format!(
+        "relationship/{policy_id_str}/{}",
+        hub_modules::acp::keys::relation_prefix("document", "doc1", "reader")
     );
-    verify_module_state_proof(module_state_root, &proof_1)
-        .expect("module state proof should verify against module_state_root");
+    let request = permission::request();
+    let empty_readers = permission::evidence(&client, policy_id_str, &request, h1).await;
+    assert!(
+        !empty_readers
+            .verify(policy_id_str, &request, h1, &trusted_key, PERMISSION_LIMITS)
+            .unwrap()
+    );
+    assert!(
+        permission::prefix(&empty_readers.proof, &reader_prefix)
+            .entries
+            .is_empty()
+    );
 
-    // ── Phase 6: Mutate — add a reader relationship ──────────────────
     let set_rel_calldata = IAcp::setRelationshipCall {
         policyId: policy_id,
         resource: "document".into(),
         objectId: "doc1".into(),
         relation: "reader".into(),
-        actor: evm_did.clone(),
+        actor: permission::READER_DID.into(),
     }
     .abi_encode();
     let mutate_receipt = broadcast_evm_tx(
@@ -250,12 +275,7 @@ async fn light_client_proof_verification() {
     assert_eq!(mutate_receipt.status, 1, "set_relationship should succeed");
     let h_mutate = mutate_receipt.block_number;
 
-    // ── Phase 7: Detect state change by re-verifying old proof ─────
-    //
-    // A light client holds proof_1 (valid at h1). For each new gossip
-    // header it verifies the light block, then checks whether proof_1
-    // still verifies against that block's module_state_root. The first
-    // block where verification fails is where the ACP tree changed.
+    // Native proof roots may advance on empty revisions; require the confirmed mutation.
     let invalidation_height = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let h = headers_sub
@@ -264,14 +284,21 @@ async fn light_client_proof_verification() {
                 .expect("subscription should not close")
                 .expect("header should deserialize");
             let height = h["height"].as_u64().expect("height should be u64");
+            if height < h_mutate {
+                continue;
+            }
 
             let lb: LightBlock = client
                 .rpc_call_typed("hub_getLightBlock", serde_json::json!([height]))
                 .await
                 .expect("hub_getLightBlock should succeed");
-            let (_, msr) = verify_light_block(&lb).expect("light block should verify");
+            let (_, msr) =
+                verify_light_block(&lb, &trusted_key).expect("light block should verify");
 
-            if verify_module_state_proof(msr, &proof_1).is_err() {
+            if proof_1
+                .verify(msr, ModuleId::Acp, acp_key.as_bytes(), RECORD_PROOF_BYTES)
+                .is_err()
+            {
                 return (height, msr);
             }
         }
@@ -286,20 +313,100 @@ async fn light_client_proof_verification() {
          (invalidated at {h_invalidated}, mutation at {h_mutate})"
     );
 
-    // ── Phase 8: Verify fresh proof at the invalidation height ───────
-    let proof_2: ModuleStateProof = client
-        .rpc_call_typed(
-            "hub_getStateProof",
-            serde_json::json!(["acp", key_hex, h_invalidated]),
+    let response = client
+        .read_current_record(
+            ModuleId::Acp,
+            acp_key.as_bytes(),
+            h_invalidated,
+            &trusted_key,
+            RECORD_PROOF_BYTES,
         )
         .await
-        .expect("hub_getStateProof at invalidation height should succeed");
-
-    verify_module_state_proof(module_state_root_2, &proof_2)
-        .expect("fresh proof should verify at invalidation height");
-
-    assert_ne!(
-        proof_2.module_root, proof_1.module_root,
-        "ACP module root should differ after set_relationship"
+        .unwrap();
+    let proof_2 = response.record;
+    assert_ne!(proof_2.roots[0], proof_1.roots[0]);
+    assert!(
+        proof_1
+            .verify(
+                module_state_root_2,
+                ModuleId::Acp,
+                acp_key.as_bytes(),
+                RECORD_PROOF_BYTES
+            )
+            .is_err()
     );
+    // A direct grant needs only a point; an unrelated actor requires complete enumeration.
+    let mut outsider = request.clone();
+    outsider.actor = hub_client::Actor(
+        "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+            .parse()
+            .unwrap(),
+    );
+    let readers = permission::evidence(&client, policy_id_str, &outsider, h_invalidated).await;
+    assert!(
+        !readers
+            .verify(
+                policy_id_str,
+                &outsider,
+                h_invalidated,
+                &trusted_key,
+                PERMISSION_LIMITS
+            )
+            .unwrap()
+    );
+    assert_eq!(
+        permission::prefix(&readers.proof, &reader_prefix)
+            .entries
+            .len(),
+        1
+    );
+    let mut omitted = readers.clone();
+    permission::remove_prefix_records(&mut omitted.proof, &reader_prefix);
+    assert!(
+        omitted
+            .verify(
+                policy_id_str,
+                &outsider,
+                h_invalidated,
+                &trusted_key,
+                PERMISSION_LIMITS
+            )
+            .is_err()
+    );
+    let historical = client
+        .verify_access_at(
+            policy_id_str,
+            &request,
+            &empty_readers.revision,
+            &trusted_key,
+            PERMISSION_LIMITS,
+        )
+        .await;
+    assert!(
+        historical.is_err(),
+        "changed native state cannot provide historical activity evidence"
+    );
+    let mut mixed = empty_readers;
+    mixed.revision = readers.revision;
+    assert!(
+        mixed
+            .verify(
+                policy_id_str,
+                &request,
+                h_invalidated,
+                &trusted_key,
+                PERMISSION_LIMITS
+            )
+            .is_err()
+    );
+    permission::check_permissions(
+        &cluster,
+        &client,
+        &evm_signer,
+        policy_id_str,
+        h_invalidated,
+        &trusted_key,
+    )
+    .await;
+    decision::check_decisions(&cluster, &client, &evm_signer, policy_id_str, &trusted_key).await;
 }

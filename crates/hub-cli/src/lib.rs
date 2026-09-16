@@ -6,6 +6,8 @@
 
 mod backtrace;
 pub use backtrace::Backtracing;
+mod private_file;
+pub use private_file::write_private;
 
 #[cfg(unix)]
 mod sigsegv;

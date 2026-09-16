@@ -53,9 +53,30 @@ All targets live in `crates/hub-e2e/tests/`:
 | `cross_object_acp` | `cross_object_grant_replicates_across_nodes` | Seeds a cross-object parent edge (subject is another object's userset) plus a child grant on node 0, then asserts on every other node that both replicate and that access resolves across the edge via `TupleToUserset`. |
 | `gossip_headers` | `gossip_headers_subscription` | Verifies `eth_subscribe("headers")` delivers signed `GossipHeader` events (chain id, height, hashes, roots, signature) as blocks finalize. |
 | `light_client` | `light_client_proof_verification` | Full light-client pipeline: gossip headers, `verify_light_block` on the BLS threshold certificate + epoch group key, module state proofs against `module_state_root`, and state-change detection across block boundaries. |
+| `native_permission` | `native_permission_reads_follow_finalized_grants_and_denials` | Signed native grants and denial, independently authenticated current permission evidence on all four nodes, owner access, and rejection of old grant evidence at the later root. Uses combined revision/evidence responses without client proof retries; also runs 20 permission reads alongside four object registrations. |
 | `node_restart` | `node_restart_preserves_state` | Starts 4 nodes, submits EVM + BLS txs, kills node 3, verifies the 3-node cluster continues, restarts it, and verifies pre-kill state survived (QMDB persistence), catch-up, post-restart txs on both paths, and tx submission *through* the restarted node. |
+| `snapshot_catchup` | `snapshot_replica_recovers_history_and_rejoins_consensus` | An empty admitted replica uses authenticated state/history transfer after missing two epochs, restores exact receipts and verified permission reads, restarts from its recovery floor and later supplies a required quorum vote. |
+| `snapshot_interrupt` | `interrupted_snapshot_resumes_without_an_explicit_request` | Requires `fault-injection` in both test and node builds. Aborts after one imported history record is durable, removes the snapshot request from configuration, and verifies automatic resume, restart, receipts, proofs, revocation and quorum participation. |
+| `cold_replay` | `cold_replica_replays_across_epochs` | Starts a replica from bootstrap files after two epochs offline; checks recovered receipts, certified roots, native sequences and access revocation through combined revision/evidence responses, then requires its vote for continued quorum after another member stops. Uses retained peer history, not snapshot transfer or a new membership identity. |
 | `validator_bootstrap` | `validator_bootstrap`, `validator_registry_adversarial` | Validators configured in genesis are readable via the ValidatorRegistry precompile; add/remove/status-change/self-update writes work through EVM txs, and adversarial inputs are rejected. Tests serialize on the global lock above. |
 | `validator_epoch_transition` | `validator_epoch_transition` | Verifies ValidatorRegistry membership feeds resharing and that the engine actually enters the next epoch whose key material includes a newly registered validator. |
+
+The native node uses ordered Commonware module storage. `light_client` still
+exercises standalone JMT point/relation proofs and requires migration; those
+endpoints are unavailable on a native node. `native_permission` covers the native
+permission endpoint, without claiming historical proof availability or load qualification.
+
+With both the binary and test built using `--features fault-injection`,
+`module_commit_crash` aborts after each of the four native module journals becomes
+durable, restarts the node, and verifies receipts, sequences, module records and
+continued submission. Fault builds apply module journals sequentially to expose
+these boundaries. This checks process recovery, not power-loss durability.
+
+The fault-enabled `native_member_recovers_after_share_persistence_crash` case in
+`native_membership` exits immediately after a newly generated share is durable,
+before returning to the DKG caller. It restarts the incoming member without a
+bootstrap share, then checks quorum participation, another restart, and member
+removal. The marker is consumed before exit so recovery does not crash again.
 
 ## Harness environment and file contracts
 
@@ -63,7 +84,9 @@ All targets live in `crates/hub-e2e/tests/`:
   Each run gets an isolated `{timestamp}-{random}` directory.
 - `HUB_E2E_KEEP=1` — preserve the run directory on drop instead of deleting it.
 - `RUST_LOG` — forwarded to every node process (default `info`); `NO_COLOR=1`
-  is always set for node logs.
+  is always set for node logs. Pruning tests require `hub_storage=info` to
+  verify completed pruning from the logs; keep that target enabled when
+  overriding the default filter.
 - Per-node layout under the run dir: `node{i}/` holds the node's config,
   data dir, and `logs/`; `TestNode` exposes `rpc_url()` / `ws_url()` on
   ephemeral OS-allocated ports (RPC and P2P allocated together per node).
@@ -79,3 +102,7 @@ When a test fails, the cluster's run directory is the primary diagnostic: node
 logs under `node{i}/logs/`, per-node config/genesis, and data dirs. Re-run the
 failing target with `HUB_E2E_KEEP=1` to retain the whole run directory for
 inspection instead of letting RAII cleanup remove it.
+
+### `HUB_E2E_DEADLINE_SCALE`
+
+Multiplies the 30-second cluster-readiness base deadline; CI sets 8 (Linux native) or 4 (studio e2e).

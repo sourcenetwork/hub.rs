@@ -1,9 +1,15 @@
 //! Validator set epoch transition integration test.
 //!
-//! Verifies that ValidatorRegistry membership feeds resharing and that Simplex
-//! enters an epoch whose key material includes a newly registered validator.
+//! Verifies registry changes across epoch transitions and checks that reshared
+//! certificates remain verifiable with the bootstrap consensus identity.
 //!
 //! Requires `cargo build -p hubd` before running.
+
+#[path = "support/administration.rs"]
+mod administration;
+
+use hub_client::BlsSigner;
+use hub_client::administration::AdministrativeCommand;
 
 use std::time::Duration;
 
@@ -15,7 +21,8 @@ use commonware_cryptography::{Signer as _, ed25519};
 use hub_client::{
     ACP_ADDRESS, EvmSigner, HubClient, TransactionReceipt, VALIDATOR_REGISTRY_ADDRESS,
 };
-use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, TestCluster};
+use hub_domain::{EpochMaterial, LightBlock, verify_light_block};
+use hub_e2e::cluster::{ConsensusPreset, GenesisBuilder, KeySet, TestCluster};
 use hub_e2e::{RECEIPT_POLL_ATTEMPTS, RECEIPT_POLL_INTERVAL};
 use hub_modules::acp::abi::IAcp;
 use hub_modules::validator_registry::abi::IValidatorRegistry;
@@ -117,13 +124,20 @@ async fn setup_acp_policy(cluster: &TestCluster, client: &HubClient, admin: &Evm
     let receipt = broadcast_evm_tx(cluster, client, admin, ACP_ADDRESS, calldata).await;
     assert_eq!(receipt.status, 1, "setRelationship should succeed");
 
-    let calldata = IValidatorRegistry::setPolicyCall {
-        policyId: B256::from(policy_id.0),
-    }
-    .abi_encode();
-    let receipt =
-        broadcast_evm_tx(cluster, client, admin, VALIDATOR_REGISTRY_ADDRESS, calldata).await;
-    assert_eq!(receipt.status, 1, "setPolicy should succeed");
+    let signed = administration::approve(
+        client,
+        AdministrativeCommand::InitializeMembershipPolicy(policy_id.0),
+        0,
+    )
+    .await;
+    let receipt = client
+        .native_apply_administration(
+            &BlsSigner::new(42u64.into(), admin.chain_id()).unwrap(),
+            &signed,
+        )
+        .await
+        .expect("initialize membership policy");
+    assert_eq!(receipt.status, 1);
 }
 
 #[tokio::test]
@@ -131,7 +145,14 @@ async fn validator_epoch_transition() {
     // ── SETUP ─────────────────────────────────────────────────────
 
     let chain_id = 9010;
-    let genesis = GenesisBuilder::devnet().funded_accounts(3, "1000000000000000000000000");
+    let bootstrap = KeySet::builder()
+        .seed(chain_id)
+        .build()
+        .expect("bootstrap keys");
+    let trusted_key = *bootstrap.epoch_info().output.public().public();
+    let genesis = GenesisBuilder::devnet()
+        .operators(administration::operators())
+        .funded_accounts(3, "1000000000000000000000000");
 
     let cluster = TestCluster::builder()
         .binary(hub_e2e::resolve_binary().expect("resolve hubd binary"))
@@ -145,7 +166,7 @@ async fn validator_epoch_transition() {
         .expect("cluster should start");
 
     cluster
-        .wait_ready(Duration::from_secs(30))
+        .wait_ready(hub_e2e::readiness_deadline())
         .await
         .expect("cluster should become healthy");
 
@@ -219,7 +240,7 @@ async fn validator_epoch_transition() {
     state
         .wait_for_height(42, Duration::from_secs(60))
         .await
-        .expect("cluster should enter epoch 2 with the added validator");
+        .expect("cluster should advance to epoch 2 after the registry update");
 
     let logs = tokio::fs::read_to_string(state.node_logs(0).log_path())
         .await
@@ -230,6 +251,32 @@ async fn validator_epoch_transition() {
         entered_epochs >= 3,
         "expected the engine to enter epochs 0, 1, and 2, got {entered_epochs} entries"
     );
+
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let latest = client.block_number().await.expect("latest height");
+            for height in (42..=latest).rev() {
+                if let Ok(light) = client
+                    .rpc_call_typed::<LightBlock>("hub_getLightBlock", serde_json::json!([height]))
+                    .await
+                {
+                    assert!(light.epoch >= 2);
+                    verify_light_block(&light, &trusted_key)
+                        .expect("reshared group must retain the bootstrap identity");
+                    let material = EpochMaterial::decode_bounded(
+                        &hex::decode(light.epoch_material.trim_start_matches("0x")).unwrap(),
+                    )
+                    .unwrap();
+                    assert_ne!(material.sharing, *bootstrap.epoch_info().output.public(),
+                        "resharing must update the polynomial while preserving the consensus identity");
+                    return;
+                }
+            }
+            tokio::time::sleep(RECEIPT_POLL_INTERVAL).await;
+        }
+    })
+    .await
+    .expect("reshared epoch should serve a verifiable light block");
 
     // ── E: Deactivate a validator → triggers another epoch ────────
 

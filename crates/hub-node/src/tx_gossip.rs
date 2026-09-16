@@ -52,26 +52,30 @@ pub(crate) async fn admit(
     chain_id: u64,
     bytes: Bytes,
 ) -> Result<bool, String> {
+    if bytes.len() > hub_domain::MAX_TX_BYTES {
+        return Err("signed request exceeds its byte limit".into());
+    }
     let validator = validator
         .get()
         .ok_or_else(|| "node is still starting".to_string())?;
     let tx = Tx::new(bytes.clone());
     let is_native = !bytes.is_empty() && NativeTx::is_native_tx(bytes[0]);
-    if is_native {
-        let pre = MempoolValidator::<CommittedState>::pre_validate_native(chain_id, &bytes)
-            .map_err(|e| e.to_string())?;
-        validator
-            .lock()
-            .await
-            .admit_native(&pre)
-            .map_err(|e| e.to_string())?;
+    let pre = if is_native {
+        Some(
+            MempoolValidator::<CommittedState>::pre_validate_native(chain_id, &bytes)
+                .map_err(|e| e.to_string())?,
+        )
     } else {
-        validator
-            .lock()
-            .await
-            .validate_tx(&bytes)
-            .await
-            .map_err(|e| e.to_string())?;
+        None
+    };
+    let mut guard = validator.lock().await;
+    if !mempool.can_insert(&tx) {
+        return Err("pending request capacity reached".into());
+    }
+    if let Some(pre) = pre {
+        guard.admit_native(&pre).map_err(|e| e.to_string())?;
+    } else {
+        guard.validate_tx(&bytes).await.map_err(|e| e.to_string())?;
     }
     Ok(mempool.insert(tx))
 }
@@ -141,7 +145,7 @@ pub fn spawn_tx_receiver<E: Spawner, R: Receiver + Send + 'static>(
     mempool: InMemoryMempool,
     validator: SharedValidator,
     chain_id: u64,
-) {
+) -> commonware_runtime::Handle<()> {
     context.spawn(move |_| async move {
         loop {
             match receiver.recv().await {
@@ -159,5 +163,5 @@ pub fn spawn_tx_receiver<E: Spawner, R: Receiver + Send + 'static>(
                 }
             }
         }
-    });
+    })
 }

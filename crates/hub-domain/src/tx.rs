@@ -51,7 +51,13 @@ impl Read for Tx {
     type Cfg = TxCfg;
 
     fn read_cfg(buf: &mut impl Buf, cfg: &Self::Cfg) -> Result<Self, CodecError> {
-        let data = Vec::<u8>::read_cfg(buf, &(RangeCfg::new(0..=cfg.max_tx_bytes), ()))?;
+        let data = Vec::<u8>::read_cfg(
+            buf,
+            &(
+                RangeCfg::new(0..=cfg.max_tx_bytes.min(crate::MAX_TX_BYTES)),
+                (),
+            ),
+        )?;
         Ok(Self {
             bytes: Bytes::from(data),
         })

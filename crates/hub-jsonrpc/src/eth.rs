@@ -163,6 +163,31 @@ pub trait Web3Api {
     fn sha3(&self, data: Bytes) -> RpcResult<B256>;
 }
 
+/// Maximum accepted `eth_feeHistory` reward percentiles.
+///
+/// The percentile array sizes the reward matrix (up to 1,024 blocks x
+/// percentiles), so its length must be bounded by the handler rather than the
+/// request body limit.
+const MAX_REWARD_PERCENTILES: usize = 128;
+
+fn validate_percentiles(percentiles: Vec<f64>) -> RpcResult<Vec<f64>> {
+    if percentiles.len() > MAX_REWARD_PERCENTILES {
+        return Err(RpcError::InvalidParams(format!(
+            "at most {MAX_REWARD_PERCENTILES} reward percentiles"
+        ))
+        .into());
+    }
+    if percentiles
+        .iter()
+        .any(|percentile| !(0.0..=100.0).contains(percentile))
+    {
+        return Err(
+            RpcError::InvalidParams("reward percentiles must be within [0, 100]".into()).into(),
+        );
+    }
+    Ok(percentiles)
+}
+
 /// Fee history response.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -393,6 +418,7 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
         _newest_block: BlockNumberOrTag,
         reward_percentiles: Option<Vec<f64>>,
     ) -> RpcResult<FeeHistory> {
+        let percentiles = reward_percentiles.map(validate_percentiles).transpose()?;
         let count = block_count.to::<usize>().min(1024);
         let base_fee = U256::from(1_000_000_000u64);
 
@@ -400,7 +426,7 @@ impl<S: StateProvider + 'static> EthApiServer for EthApiImpl<S> {
             base_fee_per_gas: vec![base_fee; count + 1],
             gas_used_ratio: vec![0.5; count],
             oldest_block: U64::ZERO,
-            reward: reward_percentiles.map(|percentiles| {
+            reward: percentiles.map(|percentiles| {
                 vec![vec![U256::from(1_000_000_000u64); percentiles.len()]; count]
             }),
         })
@@ -589,5 +615,23 @@ mod tests {
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), expected);
+    }
+}
+
+#[cfg(test)]
+mod fee_history_tests {
+    use super::*;
+
+    #[test]
+    fn percentile_validation_bounds_the_reward_matrix() {
+        assert_eq!(
+            validate_percentiles(vec![0.0, 50.0, 100.0]).unwrap(),
+            vec![0.0, 50.0, 100.0]
+        );
+        let too_many = vec![50.0; MAX_REWARD_PERCENTILES + 1];
+        assert!(validate_percentiles(too_many).is_err());
+        for invalid in [vec![-0.1], vec![100.1], vec![f64::NAN]] {
+            assert!(validate_percentiles(invalid).is_err());
+        }
     }
 }

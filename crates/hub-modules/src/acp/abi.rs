@@ -5,7 +5,10 @@ sol! {
     interface IAcp {
         // ── Events ──────────────────────────────────────────────────────
 
+        event RegistrationsCommitted(uint64 indexed commitmentId, bytes32 indexed policyId, bytes32 commitment);
+
         event PolicyCreated(string indexed policyId, string creator);
+        event DelegatedPolicyCreated(bytes32 indexed policyId, string creator);
         event PolicyEdited(string indexed policyId, string creator, uint256 relationshipsRemoved);
         event RelationshipSet(string indexed policyId, string resource, string objectId, string relation, string actor);
         event RelationshipDeleted(string indexed policyId, string resource, string objectId, string relation, string actor);
@@ -19,6 +22,8 @@ sol! {
         function batchCalls(bytes[] calldata calls) external returns (bytes[] results);
         function createPolicy(bytes calldata policy, uint8 marshalType) external returns (bytes);
         function editPolicy(bytes32 policyId, bytes calldata policy, uint8 marshalType) external returns (uint64 relationshipsRemoved, bytes record);
+        function bearerCreatePolicy(string bearerToken, bytes calldata policy, uint8 marshalType) external returns (bytes);
+        function bearerEditPolicy(string bearerToken, bytes32 policyId, bytes calldata policy, uint8 marshalType) external returns (uint64 relationshipsRemoved, bytes record);
 
         function setRelationship(
             bytes32 policyId,
@@ -88,6 +93,8 @@ sol! {
 
         function flagHijackAttempt(uint64 eventId) external returns (bytes event);
 
+        function bearerCheckAccess(string bearerToken, bytes32 policyId, bytes request) external returns (bytes);
+
         function checkAccess(
             bytes32 policyId,
             string[] resources,
@@ -104,7 +111,6 @@ sol! {
             string actor
         ) external view returns (bool);
 
-        function signedPolicyCmd(bytes payload, uint8 contentType) external returns (bytes);
         function bearerPolicyCmd(string bearerToken, bytes32 policyId, bytes cmd) external returns (bytes);
         function updateParams(bytes params) external;
 

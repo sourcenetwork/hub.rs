@@ -6,6 +6,15 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 #[allow(missing_docs)]
 pub enum HubError {
+    #[error("invalid threshold object: {reason}")]
+    InvalidThresholdObject { reason: String },
+    #[error("invalid ring request: {reason}")]
+    InvalidRingRequest { reason: String },
+    #[error("invalid node request: {reason}")]
+    InvalidNodeRequest { reason: String },
+    #[error("invalid administrative request: {reason}")]
+    InvalidAdministrativeRequest { reason: String },
+
     #[error("JWS token not found: {token_hash}")]
     TokenNotFound { token_hash: String },
 

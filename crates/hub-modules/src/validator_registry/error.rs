@@ -24,8 +24,17 @@ pub enum ValidatorRegistryError {
     #[error("invalid p2p address: {0}")]
     InvalidP2PAddress(String),
 
-    #[error("native transactions not supported for ValidatorRegistry")]
-    NativeNotSupported,
+    #[error("membership change would leave no active participants")]
+    EmptyCommittee,
+
+    #[error("membership limit reached: {0}")]
+    MembershipLimit(u32),
+
+    #[error("epoch capacity permits at most {0} active participants")]
+    EpochCapacity(u32),
+
+    #[error("consensus key is already registered")]
+    DuplicateConsensusKey,
 
     #[error("state error: {0}")]
     State(String),

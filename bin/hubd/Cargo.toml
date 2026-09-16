@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 description = "hubd — SourceHub validator node"
 
+[features]
+fault-injection = ["hub-node/fault-injection"]
+regolith-history = ["hub-node/regolith-history"]
+
 [[bin]]
 name = "hubd"
 path = "src/main.rs"

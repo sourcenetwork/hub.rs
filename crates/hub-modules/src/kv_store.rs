@@ -2,12 +2,14 @@
 
 use std::collections::{BTreeMap, HashSet};
 
+use bytes::Bytes;
+use futures::{TryStream, TryStreamExt as _};
+use imbl::{OrdMap, ordmap::DiffItem};
+
 /// Key-value store abstraction for module state.
 ///
 /// Each module holds a single `impl ModuleKvStore` instead of raw `HashMap`s.
-/// The `InMemoryKvStore` implementation wraps a `BTreeMap` so that
-/// `prefix_scan` returns keys in sorted order (enabling efficient
-/// sub-prefix iteration).
+/// `prefix_scan` returns keys in sorted order, enabling sub-prefix iteration.
 pub trait ModuleKvStore: Clone + std::fmt::Debug + Default + Send + Sync {
     /// Read a value by key.
     fn get(&self, key: &[u8]) -> Option<Vec<u8>>;
@@ -27,14 +29,14 @@ pub trait ModuleKvStore: Clone + std::fmt::Debug + Default + Send + Sync {
     }
 }
 
-/// `BTreeMap`-backed in-memory KV store.
+/// Ordered in-memory KV store with shared snapshots.
 ///
 /// Tracks dirty keys modified since the last `reset_dirty()` call (or clone).
-/// Cloning produces a copy with an empty dirty set — execution isolation
-/// starts from a clean slate so only that execution's mutations are captured.
+/// Writes copy the affected tree path and share unchanged values. Each clone
+/// starts with an empty dirty set so only that execution's mutations are captured.
 #[derive(Debug, Default)]
 pub struct InMemoryKvStore {
-    data: BTreeMap<Vec<u8>, Vec<u8>>,
+    data: OrdMap<Vec<u8>, Bytes>,
     dirty: HashSet<Vec<u8>>,
 }
 
@@ -48,26 +50,64 @@ impl Clone for InMemoryKvStore {
 }
 
 impl InMemoryKvStore {
+    /// Borrow a value from this immutable view.
+    pub fn get_ref(&self, key: &[u8]) -> Option<&[u8]> {
+        self.data.get(key).map(Bytes::as_ref)
+    }
+
+    /// Borrow ordered prefix entries without materializing the entire result.
+    pub fn prefix_iter<'a>(
+        &'a self,
+        prefix: &'a [u8],
+    ) -> impl Iterator<Item = (&'a [u8], &'a [u8])> {
+        self.data
+            .range(prefix.to_vec()..)
+            .take_while(move |(key, _)| key.starts_with(prefix))
+            .map(|(key, value)| (key.as_slice(), value.as_ref()))
+    }
+
     /// Construct a store from raw key-value pairs (e.g. loaded from RocksDB raw_kv CF).
     pub fn from_pairs(pairs: Vec<(Vec<u8>, Vec<u8>)>) -> Self {
         Self {
-            data: pairs.into_iter().collect(),
+            data: pairs
+                .into_iter()
+                .map(|(key, value)| (key, Bytes::from(value)))
+                .collect(),
             dirty: HashSet::new(),
         }
     }
 
+    /// Load owned records incrementally, without recording execution changes.
+    /// Returns no store if the stream fails; duplicate keys keep the last value.
+    pub async fn try_from_stream<S>(records: S) -> Result<Self, S::Error>
+    where
+        S: TryStream<Ok = (Vec<u8>, Bytes)>,
+    {
+        Ok(Self {
+            data: records.try_collect().await?,
+            dirty: HashSet::new(),
+        })
+    }
+
     /// Serialize the entire store contents to a Borsh byte vector.
     pub fn serialize(&self) -> Vec<u8> {
-        borsh::to_vec(&self.data).expect("BTreeMap serialization cannot fail")
+        let entries: BTreeMap<_, _> = self
+            .data
+            .iter()
+            .map(|(key, value)| (key, value.as_ref()))
+            .collect();
+        borsh::to_vec(&entries).expect("BTreeMap serialization cannot fail")
     }
 
     /// Reconstruct a store from Borsh-serialized bytes.
     pub fn deserialize(bytes: &[u8]) -> Result<Self, borsh::io::Error> {
         let data: BTreeMap<Vec<u8>, Vec<u8>> = borsh::from_slice(bytes)?;
-        Ok(Self {
-            data,
-            dirty: HashSet::new(),
-        })
+        Ok(Self::from_pairs(data.into_iter().collect()))
+    }
+
+    /// Whether two snapshots share the same map root.
+    pub fn shares_values_with(&self, other: &Self) -> bool {
+        self.data.ptr_eq(&other.data)
     }
 
     /// Check whether the store contains any entries.
@@ -80,7 +120,7 @@ impl InMemoryKvStore {
         self.dirty
             .iter()
             .map(|k| {
-                let val = self.data.get(k).cloned();
+                let val = self.data.get(k).map(|value| value.to_vec());
                 (k.clone(), val)
             })
             .collect()
@@ -97,29 +137,31 @@ impl InMemoryKvStore {
     /// This captures ALL mutations regardless of clone boundaries, making it safe to use
     /// when intermediate clones reset the dirty set (e.g. the precompile clone path).
     pub fn diff_from(&self, base: &Self) -> Vec<(Vec<u8>, Option<Vec<u8>>)> {
-        let mut changes = Vec::new();
-        for (k, v) in &self.data {
-            if base.data.get(k) != Some(v) {
-                changes.push((k.clone(), Some(v.clone())));
-            }
-        }
-        for k in base.data.keys() {
-            if !self.data.contains_key(k) {
-                changes.push((k.clone(), None));
-            }
-        }
-        changes
+        base.data
+            .diff(&self.data)
+            .map(|change| match change {
+                DiffItem::Add(key, value)
+                | DiffItem::Update {
+                    new: (key, value), ..
+                } => (key.clone(), Some(value.to_vec())),
+                DiffItem::Remove(key, _) => (key.clone(), None),
+            })
+            .collect()
     }
 }
 
 impl ModuleKvStore for InMemoryKvStore {
     fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.data.get(key).cloned()
+        self.get_ref(key).map(<[u8]>::to_vec)
+    }
+
+    fn has(&self, key: &[u8]) -> bool {
+        self.data.contains_key(key)
     }
 
     fn put(&mut self, key: &[u8], value: Vec<u8>) {
         self.dirty.insert(key.to_vec());
-        self.data.insert(key.to_vec(), value);
+        self.data.insert(key.to_vec(), Bytes::from(value));
     }
 
     fn delete(&mut self, key: &[u8]) {
@@ -128,10 +170,8 @@ impl ModuleKvStore for InMemoryKvStore {
     }
 
     fn prefix_scan(&self, prefix: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
-        self.data
-            .range(prefix.to_vec()..)
-            .take_while(|(k, _)| k.starts_with(prefix))
-            .map(|(k, v)| (k.clone(), v.clone()))
+        self.prefix_iter(prefix)
+            .map(|(key, value)| (key.to_vec(), value.to_vec()))
             .collect()
     }
 }
@@ -216,7 +256,10 @@ mod tests {
         let mut store = InMemoryKvStore::default();
         store.put(b"key", b"val".to_vec());
         let mut fork = store.clone();
+        assert!(store.shares_values_with(&fork));
+        assert!(store.diff_from(&fork).is_empty());
         fork.put(b"key", b"new".to_vec());
+        assert!(!store.shares_values_with(&fork));
         assert_eq!(store.get(b"key").unwrap(), b"val");
         assert_eq!(fork.get(b"key").unwrap(), b"new");
     }
@@ -306,5 +349,58 @@ mod tests {
         assert!(store.dirty_entries().is_empty());
         assert_eq!(store.get(b"k1").unwrap(), b"v1");
         assert_eq!(store.get(b"k2").unwrap(), b"v2");
+    }
+
+    #[test]
+    fn streamed_load_keeps_owned_values_and_stops_on_error() {
+        futures::executor::block_on(async {
+            let value = Bytes::from(vec![7; 4096]);
+            let mut store = InMemoryKvStore::try_from_stream(futures::stream::iter([
+                Ok::<_, &str>((b"shared".to_vec(), value.clone())),
+                Ok((b"replace".to_vec(), Bytes::from_static(b"old"))),
+                Ok((b"replace".to_vec(), Bytes::from_static(b"new"))),
+            ]))
+            .await
+            .unwrap();
+            assert_eq!(store.get_ref(b"shared").unwrap().as_ptr(), value.as_ptr());
+            assert_eq!(store.get_ref(b"replace"), Some(b"new".as_slice()));
+            assert!(store.dirty_entries().is_empty());
+            assert_eq!(
+                store.serialize(),
+                InMemoryKvStore::from_pairs(vec![
+                    (b"shared".to_vec(), value.to_vec()),
+                    (b"replace".to_vec(), b"new".to_vec()),
+                ])
+                .serialize()
+            );
+            let snapshot = store.clone();
+            store.put(b"replace", b"changed".to_vec());
+            assert_eq!(snapshot.get_ref(b"replace"), Some(b"new".as_slice()));
+            assert_eq!(
+                store.dirty_entries(),
+                vec![(b"replace".to_vec(), Some(b"changed".to_vec()))]
+            );
+
+            let mut consumed = 0;
+            let records = futures::stream::iter([
+                Ok((b"valid".to_vec(), value)),
+                Err("damaged record"),
+                Ok((b"unread".to_vec(), Bytes::new())),
+            ])
+            .inspect_ok(|_| consumed += 1);
+            assert_eq!(
+                InMemoryKvStore::try_from_stream(records).await.unwrap_err(),
+                "damaged record"
+            );
+            assert_eq!(consumed, 1);
+            assert_eq!(snapshot.get_ref(b"replace"), Some(b"new".as_slice()));
+            let empty = InMemoryKvStore::try_from_stream(futures::stream::empty::<
+                Result<(Vec<u8>, Bytes), &str>,
+            >())
+            .await
+            .unwrap();
+            assert!(empty.is_empty());
+            assert!(empty.dirty_entries().is_empty());
+        });
     }
 }

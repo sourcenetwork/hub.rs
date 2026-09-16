@@ -6,6 +6,13 @@
 //!
 //! Requires `cargo build -p hubd` before running.
 
+#[path = "support/administration.rs"]
+mod administration;
+
+use commonware_cryptography::{Signer as _, ed25519};
+use hub_client::BlsSigner;
+use hub_client::administration::AdministrativeCommand;
+
 use std::{sync::OnceLock, time::Duration};
 
 use alloy_primitives::{Address, B256, Bytes, FixedBytes, U256};
@@ -35,16 +42,20 @@ resources:
         expr: admin
 ";
 
+fn consensus_key(seed: u64) -> B256 {
+    B256::from_slice(ed25519::PrivateKey::from_seed(seed).public_key().as_ref())
+}
+
 fn test_validators() -> Vec<ValidatorConfig> {
     vec![
         ValidatorConfig {
             evm_address: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266".to_string(),
-            consensus_pubkey: "aa".repeat(32),
+            consensus_pubkey: hex::encode(consensus_key(1)),
             p2p_address: "127.0.0.1:30300".to_string(),
         },
         ValidatorConfig {
             evm_address: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".to_string(),
-            consensus_pubkey: "bb".repeat(32),
+            consensus_pubkey: hex::encode(consensus_key(2)),
             p2p_address: "127.0.0.1:30301".to_string(),
         },
     ]
@@ -112,6 +123,7 @@ async fn validator_bootstrap() {
     let chain_id = 9001;
     let validators = test_validators();
     let genesis = GenesisBuilder::devnet()
+        .operators(administration::operators())
         .funded_accounts(3, "1000000000000000000000000")
         .validators(validators.clone());
 
@@ -126,7 +138,7 @@ async fn validator_bootstrap() {
         .expect("cluster should start");
 
     cluster
-        .wait_ready(Duration::from_secs(30))
+        .wait_ready(hub_e2e::readiness_deadline())
         .await
         .expect("cluster should become healthy");
 
@@ -232,26 +244,27 @@ async fn validator_bootstrap() {
     assert_eq!(receipt.status, 1, "setRelationship should succeed");
 
     // ACP4: Set the policy on the ValidatorRegistry
-    let calldata = IValidatorRegistry::setPolicyCall {
-        policyId: B256::from(policy_id.0),
-    }
-    .abi_encode();
-    let receipt = broadcast_evm_tx(
-        &cluster,
+    let signed = administration::approve(
         &client,
-        &admin_signer,
-        VALIDATOR_REGISTRY_ADDRESS,
-        calldata,
+        AdministrativeCommand::InitializeMembershipPolicy(policy_id.0),
+        0,
     )
     .await;
-    assert_eq!(receipt.status, 1, "setPolicy should succeed");
+    let receipt = client
+        .native_apply_administration(
+            &BlsSigner::new(42u64.into(), admin_signer.chain_id()).unwrap(),
+            &signed,
+        )
+        .await
+        .expect("initialize membership policy");
+    assert_eq!(receipt.status, 1);
 
     // ── B: Add a new validator via EVM tx ─────────────────────────
 
     let new_validator_addr: Address = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
         .parse()
         .unwrap();
-    let new_consensus_key = B256::repeat_byte(0xCC);
+    let new_consensus_key = consensus_key(3);
     let calldata = IValidatorRegistry::addValidatorCall {
         evmAddr: new_validator_addr,
         consensusPubkey: new_consensus_key,
@@ -447,6 +460,7 @@ async fn validator_registry_adversarial() {
     let chain_id = 9002;
     let validators = test_validators();
     let genesis = GenesisBuilder::devnet()
+        .operators(administration::operators())
         .funded_accounts(4, "1000000000000000000000000")
         .validators(validators.clone());
 
@@ -461,7 +475,7 @@ async fn validator_registry_adversarial() {
         .expect("cluster should start");
 
     cluster
-        .wait_ready(Duration::from_secs(30))
+        .wait_ready(hub_e2e::readiness_deadline())
         .await
         .expect("cluster should become healthy");
 
@@ -479,7 +493,7 @@ async fn validator_registry_adversarial() {
 
     let calldata = IValidatorRegistry::addValidatorCall {
         evmAddr: rogue_signer.address(),
-        consensusPubkey: B256::repeat_byte(0xDD),
+        consensusPubkey: consensus_key(4),
         p2pAddr: "127.0.0.1:40000".to_string(),
     }
     .abi_encode();
@@ -551,19 +565,20 @@ async fn validator_registry_adversarial() {
     let receipt = broadcast_evm_tx(&cluster, &client, &admin_signer, ACP_ADDRESS, calldata).await;
     assert_eq!(receipt.status, 1, "setRelationship should succeed");
 
-    let calldata = IValidatorRegistry::setPolicyCall {
-        policyId: B256::from(policy_id.0),
-    }
-    .abi_encode();
-    let receipt = broadcast_evm_tx(
-        &cluster,
+    let signed = administration::approve(
         &client,
-        &admin_signer,
-        VALIDATOR_REGISTRY_ADDRESS,
-        calldata,
+        AdministrativeCommand::InitializeMembershipPolicy(policy_id.0),
+        0,
     )
     .await;
-    assert_eq!(receipt.status, 1, "setPolicy should succeed");
+    let receipt = client
+        .native_apply_administration(
+            &BlsSigner::new(42u64.into(), admin_signer.chain_id()).unwrap(),
+            &signed,
+        )
+        .await
+        .expect("initialize membership policy");
+    assert_eq!(receipt.status, 1);
 
     // ── N3: setPolicy again → revert (immutable) ────────────────
 
@@ -580,12 +595,28 @@ async fn validator_registry_adversarial() {
     )
     .await;
     assert_eq!(receipt.status, 0, "N3: setPolicy twice should revert");
+    let repeated = administration::approve(
+        &client,
+        AdministrativeCommand::InitializeMembershipPolicy(policy_id.0),
+        1,
+    )
+    .await;
+    assert!(matches!(
+        client
+            .native_apply_administration(
+                &BlsSigner::new(43u64.into(), chain_id).unwrap(),
+                &repeated,
+            )
+            .await,
+        Err(hub_client::ClientError::TxReverted { .. })
+    ));
+    assert_eq!(client.administration().await.unwrap().unwrap().sequence, 1);
 
     // ── N4: Unauthorized caller → revert ────────────────────────
 
     let calldata = IValidatorRegistry::addValidatorCall {
         evmAddr: rogue_signer.address(),
-        consensusPubkey: B256::repeat_byte(0xDD),
+        consensusPubkey: consensus_key(4),
         p2pAddr: "127.0.0.1:40000".to_string(),
     }
     .abi_encode();
@@ -606,7 +637,7 @@ async fn validator_registry_adversarial() {
 
     let calldata = IValidatorRegistry::addValidatorCall {
         evmAddr: Address::ZERO,
-        consensusPubkey: B256::repeat_byte(0xDD),
+        consensusPubkey: consensus_key(4),
         p2pAddr: "127.0.0.1:40000".to_string(),
     }
     .abi_encode();
@@ -652,7 +683,7 @@ async fn validator_registry_adversarial() {
         evmAddr: "0x90F79bf6EB2c4f870365E785982E1f101E93b906"
             .parse()
             .unwrap(),
-        consensusPubkey: B256::repeat_byte(0xEE),
+        consensusPubkey: consensus_key(5),
         p2pAddr: "not-a-socket-addr".to_string(),
     }
     .abi_encode();
@@ -675,7 +706,7 @@ async fn validator_registry_adversarial() {
         evmAddr: "0x90F79bf6EB2c4f870365E785982E1f101E93b906"
             .parse()
             .unwrap(),
-        consensusPubkey: B256::repeat_byte(0xEE),
+        consensusPubkey: consensus_key(5),
         p2pAddr: "111.222.333.444:55555-padding-xx".to_string(),
     }
     .abi_encode();
@@ -696,7 +727,7 @@ async fn validator_registry_adversarial() {
 
     let calldata = IValidatorRegistry::addValidatorCall {
         evmAddr: rogue_signer.address(),
-        consensusPubkey: B256::repeat_byte(0xDD),
+        consensusPubkey: consensus_key(4),
         p2pAddr: "127.0.0.1:40000".to_string(),
     }
     .abi_encode();
@@ -714,7 +745,7 @@ async fn validator_registry_adversarial() {
 
     let calldata = IValidatorRegistry::addValidatorCall {
         evmAddr: rogue_signer.address(),
-        consensusPubkey: B256::repeat_byte(0xFF),
+        consensusPubkey: consensus_key(6),
         p2pAddr: "127.0.0.1:40001".to_string(),
     }
     .abi_encode();

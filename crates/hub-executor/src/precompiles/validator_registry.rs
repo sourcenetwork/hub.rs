@@ -6,9 +6,11 @@
 
 use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_sol_types::SolCall;
+use commonware_codec::ReadExt as _;
 use hub_modules::acp::AcpModule;
 use hub_modules::acp::types::{AccessRequest, Actor, Object, Operation};
-use hub_modules::types::{BlockExecCtx, TxExecCtx};
+use hub_modules::hub::HubModule;
+use hub_modules::types::TxExecCtx;
 use hub_modules::validator_registry::abi::IValidatorRegistry;
 use hub_modules::validator_registry::error::ValidatorRegistryError;
 use hub_modules::validator_registry::types::ValidatorInfo;
@@ -20,6 +22,13 @@ use super::{
     DispatchReturn, VALIDATOR_REGISTRY_ADDRESS, decode_error, did_from_signer, err_dispatch,
     event_log, json_bytes, ok_dispatch,
 };
+
+pub(super) fn is_query(input: &[u8]) -> bool {
+    matches!(input.get(..4), Some(selector) if
+        selector == IValidatorRegistry::getValidatorsCall::SELECTOR
+        || selector == IValidatorRegistry::getValidatorCall::SELECTOR
+        || selector == IValidatorRegistry::getActiveValidatorCountCall::SELECTOR)
+}
 
 const ADD_VALIDATOR_GAS: u64 = 150_000;
 const REMOVE_VALIDATOR_GAS: u64 = 150_000;
@@ -82,18 +91,28 @@ fn u256_to_address(val: U256) -> Address {
 
 // ── Journal helpers ────────────────────────────────────────────────────
 
-fn journal_sload<CTX: ContextTr>(context: &mut CTX, slot: U256) -> U256 {
+fn journal_sload<CTX: ContextTr>(context: &mut CTX, slot: U256) -> Result<U256, PrecompileError> {
     context
         .journal_mut()
         .sload(VALIDATOR_REGISTRY_ADDRESS, slot)
         .map(|r| r.data)
-        .unwrap_or_default()
+        .map_err(|error| {
+            PrecompileError::Fatal(format!("membership storage read failed: {error:?}"))
+        })
 }
 
-fn journal_sstore<CTX: ContextTr>(context: &mut CTX, slot: U256, value: U256) {
-    let _ = context
+fn journal_sstore<CTX: ContextTr>(
+    context: &mut CTX,
+    slot: U256,
+    value: U256,
+) -> Result<(), PrecompileError> {
+    context
         .journal_mut()
-        .sstore(VALIDATOR_REGISTRY_ADDRESS, slot, value);
+        .sstore(VALIDATOR_REGISTRY_ADDRESS, slot, value)
+        .map(|_| ())
+        .map_err(|error| {
+            PrecompileError::Fatal(format!("membership storage write failed: {error:?}"))
+        })
 }
 
 // ── ACP access check ──────────────────────────────────────────────────
@@ -131,9 +150,20 @@ fn check_manage_access(
     }
 }
 
-fn load_policy_id<CTX: ContextTr>(context: &mut CTX) -> String {
-    let val = journal_sload(context, SLOT_POLICY_ID);
-    hex::encode(val.to_be_bytes::<32>())
+fn load_policy_id<CTX: ContextTr>(
+    context: &mut CTX,
+    hub: &HubModule,
+) -> Result<String, PrecompileError> {
+    let state = hub
+        .administration()
+        .map_err(|error| PrecompileError::Other(error.to_string().into()))?;
+    if let Some(policy) = state.and_then(|state| state.membership_policy) {
+        return Ok(hex::encode(policy));
+    }
+    // Retain policies installed in existing genesis configurations.
+    Ok(hex::encode(
+        journal_sload(context, SLOT_POLICY_ID)?.to_be_bytes::<32>(),
+    ))
 }
 
 fn validate_p2p_address(addr: &str) -> Result<(), ValidatorRegistryError> {
@@ -152,29 +182,75 @@ fn validate_p2p_address(addr: &str) -> Result<(), ValidatorRegistryError> {
 
 // ── Read helpers ───────────────────────────────────────────────────────
 
+fn load_member_count<CTX: ContextTr>(context: &mut CTX) -> Result<u64, PrecompileError> {
+    let count = journal_sload(context, SLOT_VALIDATOR_COUNT)?;
+    if count > U256::from(hub_domain::MAX_DKG_PARTICIPANTS.get()) {
+        return Err(PrecompileError::Fatal(
+            "membership count exceeds the protocol limit".into(),
+        ));
+    }
+    Ok(count.as_limbs()[0])
+}
+
+type StoredValidator = (Address, [u8; 32], String, bool, u64);
+
 fn load_validator_raw<CTX: ContextTr>(
     context: &mut CTX,
     addr: Address,
-) -> Option<(Address, [u8; 32], String, bool, u64)> {
+) -> Result<Option<StoredValidator>, PrecompileError> {
     let entry_base = mapping_slot(addr, SLOT_VALIDATORS_MAPPING_BASE);
-    let packed = journal_sload(context, entry_base);
+    let packed = journal_sload(context, entry_base)?;
     if packed.is_zero() {
-        return None;
+        return Ok(None);
     }
     let (evm_address, active) = unpack_address_active(packed);
+    let packed_bytes = packed.to_be_bytes::<32>();
+    if evm_address != addr || packed_bytes[20] > 1 || packed_bytes[21..].iter().any(|b| *b != 0) {
+        return Err(PrecompileError::Fatal(
+            "invalid membership identity or status".into(),
+        ));
+    }
     let consensus_bytes: [u8; 32] =
-        journal_sload(context, entry_base.wrapping_add(U256::from(1))).to_be_bytes();
-    let index = journal_sload(context, entry_base.wrapping_add(U256::from(2))).as_limbs()[0];
-    let p2p_len =
-        journal_sload(context, entry_base.wrapping_add(U256::from(3))).as_limbs()[0] as usize;
+        journal_sload(context, entry_base.wrapping_add(U256::from(1)))?.to_be_bytes();
+    let stored_index = journal_sload(context, entry_base.wrapping_add(U256::from(2)))?;
+    if stored_index >= U256::from(load_member_count(context)?) {
+        return Err(PrecompileError::Fatal(
+            "membership index exceeds the registry count".into(),
+        ));
+    }
+    let index = stored_index.as_limbs()[0];
+    if journal_sload(
+        context,
+        array_element_slot(SLOT_VALIDATORS_ARRAY_BASE, index),
+    )? != address_to_padded_u256(addr)
+    {
+        return Err(PrecompileError::Fatal(
+            "membership array and record disagree".into(),
+        ));
+    }
+    let stored_length = journal_sload(context, entry_base.wrapping_add(U256::from(3)))?;
+    if stored_length > U256::from(MAX_P2P_ADDRESS_LEN) {
+        return Err(PrecompileError::Fatal(
+            "membership route exceeds its storage bound".into(),
+        ));
+    }
+    let p2p_len = stored_length.as_limbs()[0] as usize;
     let p2p_data: [u8; 32] =
-        journal_sload(context, entry_base.wrapping_add(U256::from(4))).to_be_bytes();
-    let p2p_address = String::from_utf8_lossy(&p2p_data[..p2p_len.min(32)]).to_string();
+        journal_sload(context, entry_base.wrapping_add(U256::from(4)))?.to_be_bytes();
+    let p2p_address = std::str::from_utf8(&p2p_data[..p2p_len])
+        .map_err(|_| PrecompileError::Fatal("membership route is not UTF-8".into()))?
+        .to_owned();
 
-    Some((evm_address, consensus_bytes, p2p_address, active, index))
+    Ok(Some((
+        evm_address,
+        consensus_bytes,
+        p2p_address,
+        active,
+        index,
+    )))
 }
 
-fn to_validator_info(raw: (Address, [u8; 32], String, bool, u64)) -> ValidatorInfo {
+fn to_validator_info(raw: StoredValidator) -> ValidatorInfo {
     ValidatorInfo {
         evm_address: format!("{:?}", raw.0),
         consensus_pubkey: hex::encode(raw.1),
@@ -184,17 +260,66 @@ fn to_validator_info(raw: (Address, [u8; 32], String, bool, u64)) -> ValidatorIn
     }
 }
 
-fn load_all_validators<CTX: ContextTr>(context: &mut CTX) -> Vec<ValidatorInfo> {
-    let count = journal_sload(context, SLOT_VALIDATOR_COUNT).as_limbs()[0];
+fn load_all_validators<CTX: ContextTr>(
+    context: &mut CTX,
+) -> Result<Vec<ValidatorInfo>, PrecompileError> {
+    let count = load_member_count(context)?;
     let mut validators = Vec::with_capacity(count as usize);
     for i in 0..count {
         let addr_slot = array_element_slot(SLOT_VALIDATORS_ARRAY_BASE, i);
-        let addr = u256_to_address(journal_sload(context, addr_slot));
-        if let Some(raw) = load_validator_raw(context, addr) {
-            validators.push(to_validator_info(raw));
+        let addr = u256_to_address(journal_sload(context, addr_slot)?);
+        let raw = load_validator_raw(context, addr)?.ok_or_else(|| {
+            PrecompileError::Fatal("membership array references a missing record".into())
+        })?;
+        if raw.0 != addr || raw.4 != i {
+            return Err(PrecompileError::Fatal(
+                "membership array and record disagree".into(),
+            ));
+        }
+        validators.push(to_validator_info(raw));
+    }
+    Ok(validators)
+}
+
+pub(crate) fn active_consensus_keys<CTX: ContextTr>(
+    context: &mut CTX,
+) -> Result<Vec<[u8; 32]>, PrecompileError> {
+    context
+        .journal_mut()
+        .load_account(VALIDATOR_REGISTRY_ADDRESS)
+        .map_err(|error| {
+            PrecompileError::Fatal(format!("membership account read failed: {error:?}"))
+        })?;
+    let mut keys = Vec::new();
+    for member in load_all_validators(context)? {
+        if member.active {
+            let mut key = [0; 32];
+            hex::decode_to_slice(member.consensus_pubkey, &mut key)
+                .map_err(|_| PrecompileError::Fatal("invalid consensus key encoding".into()))?;
+            hub_domain::PublicKey::read(&mut key.as_slice())
+                .map_err(|_| PrecompileError::Fatal("invalid consensus key".into()))?;
+            keys.push(key);
         }
     }
-    validators
+    keys.sort_unstable();
+    if keys.is_empty() || keys.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(PrecompileError::Fatal(
+            "empty or duplicate consensus roster".into(),
+        ));
+    }
+    Ok(keys)
+}
+
+fn removes_last_active<CTX: ContextTr>(
+    context: &mut CTX,
+    active: bool,
+) -> Result<bool, PrecompileError> {
+    Ok(active
+        && load_all_validators(context)?
+            .iter()
+            .filter(|member| member.active)
+            .count()
+            <= 1)
 }
 
 // ── Write helpers ──────────────────────────────────────────────────────
@@ -206,25 +331,25 @@ fn store_validator_raw<CTX: ContextTr>(
     p2p_address: &str,
     active: bool,
     index: u64,
-) {
+) -> Result<(), PrecompileError> {
     let entry_base = mapping_slot(addr, SLOT_VALIDATORS_MAPPING_BASE);
-    journal_sstore(context, entry_base, pack_address_active(addr, active));
+    journal_sstore(context, entry_base, pack_address_active(addr, active))?;
     journal_sstore(
         context,
         entry_base.wrapping_add(U256::from(1)),
         U256::from_be_bytes(consensus_pubkey),
-    );
+    )?;
     journal_sstore(
         context,
         entry_base.wrapping_add(U256::from(2)),
         U256::from(index),
-    );
+    )?;
     let p2p_bytes = p2p_address.as_bytes();
     journal_sstore(
         context,
         entry_base.wrapping_add(U256::from(3)),
         U256::from(p2p_bytes.len()),
-    );
+    )?;
     let mut padded = [0u8; 32];
     let copy_len = p2p_bytes.len().min(32);
     padded[..copy_len].copy_from_slice(&p2p_bytes[..copy_len]);
@@ -232,26 +357,32 @@ fn store_validator_raw<CTX: ContextTr>(
         context,
         entry_base.wrapping_add(U256::from(4)),
         U256::from_be_bytes(padded),
-    );
+    )?;
+    Ok(())
 }
 
-fn clear_validator<CTX: ContextTr>(context: &mut CTX, addr: Address) {
+fn clear_validator<CTX: ContextTr>(
+    context: &mut CTX,
+    addr: Address,
+) -> Result<(), PrecompileError> {
     let entry_base = mapping_slot(addr, SLOT_VALIDATORS_MAPPING_BASE);
     for offset in 0..5u64 {
         journal_sstore(
             context,
             entry_base.wrapping_add(U256::from(offset)),
             U256::ZERO,
-        );
+        )?;
     }
+    Ok(())
 }
 
 // ── Dispatch entry point ───────────────────────────────────────────────
 
-pub(super) fn dispatch_with_journal<CTX: ContextTr>(
+pub(crate) fn dispatch_with_journal<CTX: ContextTr>(
     context: &mut CTX,
     acp: &AcpModule,
-    _block_ctx: &BlockExecCtx,
+    hub: &HubModule,
+    max_active_members: u32,
     tx_ctx: &TxExecCtx,
     input: &[u8],
     gas_limit: u64,
@@ -272,7 +403,7 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
             let call =
                 IValidatorRegistry::addValidatorCall::abi_decode(input).map_err(decode_error)?;
 
-            let policy_id = load_policy_id(context);
+            let policy_id = load_policy_id(context, hub)?;
             let caller_did = match did_from_signer(&tx_ctx.signer) {
                 Ok(d) => d,
                 Err(_) => {
@@ -289,19 +420,38 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
                     "zero address".to_string(),
                 )));
             }
-            if call.consensusPubkey == B256::ZERO {
+            if call.consensusPubkey == B256::ZERO
+                || hub_domain::PublicKey::read(&mut call.consensusPubkey.as_slice()).is_err()
+            {
                 return Ok(err_dispatch(ValidatorRegistryError::InvalidPublicKey));
             }
             if let Err(e) = validate_p2p_address(&call.p2pAddr) {
                 return Ok(err_dispatch(e));
             }
-            if load_validator_raw(context, call.evmAddr).is_some() {
+            if load_validator_raw(context, call.evmAddr)?.is_some() {
                 return Ok(err_dispatch(
                     ValidatorRegistryError::ValidatorAlreadyExists(format!("{:?}", call.evmAddr)),
                 ));
             }
 
-            let count = journal_sload(context, SLOT_VALIDATOR_COUNT).as_limbs()[0];
+            let count = load_member_count(context)?;
+            if count == u64::from(hub_domain::MAX_DKG_PARTICIPANTS.get()) {
+                return Ok(err_dispatch(ValidatorRegistryError::MembershipLimit(
+                    hub_domain::MAX_DKG_PARTICIPANTS.get(),
+                )));
+            }
+            let members = load_all_validators(context)?;
+            if members.iter().filter(|member| member.active).count() >= max_active_members as usize
+            {
+                return Ok(err_dispatch(ValidatorRegistryError::EpochCapacity(
+                    max_active_members,
+                )));
+            }
+            for existing in members {
+                if existing.consensus_pubkey == hex::encode(call.consensusPubkey) {
+                    return Ok(err_dispatch(ValidatorRegistryError::DuplicateConsensusKey));
+                }
+            }
             store_validator_raw(
                 context,
                 call.evmAddr,
@@ -309,11 +459,11 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
                 &call.p2pAddr,
                 true,
                 count,
-            );
+            )?;
 
             let addr_slot = array_element_slot(SLOT_VALIDATORS_ARRAY_BASE, count);
-            journal_sstore(context, addr_slot, address_to_padded_u256(call.evmAddr));
-            journal_sstore(context, SLOT_VALIDATOR_COUNT, U256::from(count + 1));
+            journal_sstore(context, addr_slot, address_to_padded_u256(call.evmAddr))?;
+            journal_sstore(context, SLOT_VALIDATOR_COUNT, U256::from(count + 1))?;
 
             let event = IValidatorRegistry::ValidatorAdded {
                 evmAddr: call.evmAddr,
@@ -334,7 +484,7 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
             let call =
                 IValidatorRegistry::removeValidatorCall::abi_decode(input).map_err(decode_error)?;
 
-            let policy_id = load_policy_id(context);
+            let policy_id = load_policy_id(context, hub)?;
             let caller_did = match did_from_signer(&tx_ctx.signer) {
                 Ok(d) => d,
                 Err(_) => {
@@ -347,7 +497,7 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
                 return Ok(err_dispatch(e));
             }
 
-            let (_, _, _, _, val_index) = match load_validator_raw(context, call.evmAddr) {
+            let (_, _, _, active, val_index) = match load_validator_raw(context, call.evmAddr)? {
                 Some(v) => v,
                 None => {
                     return Ok(err_dispatch(ValidatorRegistryError::ValidatorNotFound(
@@ -356,20 +506,23 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
                 }
             };
 
-            let count = journal_sload(context, SLOT_VALIDATOR_COUNT).as_limbs()[0];
+            if removes_last_active(context, active)? {
+                return Ok(err_dispatch(ValidatorRegistryError::EmptyCommittee));
+            }
+            let count = load_member_count(context)?;
             let last_index = count - 1;
 
             if val_index != last_index {
                 let last_addr_slot = array_element_slot(SLOT_VALIDATORS_ARRAY_BASE, last_index);
-                let last_addr_val = journal_sload(context, last_addr_slot);
+                let last_addr_val = journal_sload(context, last_addr_slot)?;
                 let last_addr = u256_to_address(last_addr_val);
 
                 let removed_slot = array_element_slot(SLOT_VALIDATORS_ARRAY_BASE, val_index);
-                journal_sstore(context, removed_slot, last_addr_val);
+                journal_sstore(context, removed_slot, last_addr_val)?;
 
-                match load_validator_raw(context, last_addr) {
+                match load_validator_raw(context, last_addr)? {
                     Some((la, lc, lp, ls, _)) => {
-                        store_validator_raw(context, la, lc, &lp, ls, val_index);
+                        store_validator_raw(context, la, lc, &lp, ls, val_index)?;
                     }
                     None => {
                         return Ok(err_dispatch(ValidatorRegistryError::State(
@@ -377,14 +530,14 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
                         )));
                     }
                 }
-                journal_sstore(context, last_addr_slot, U256::ZERO);
+                journal_sstore(context, last_addr_slot, U256::ZERO)?;
             } else {
                 let removed_slot = array_element_slot(SLOT_VALIDATORS_ARRAY_BASE, val_index);
-                journal_sstore(context, removed_slot, U256::ZERO);
+                journal_sstore(context, removed_slot, U256::ZERO)?;
             }
 
-            clear_validator(context, call.evmAddr);
-            journal_sstore(context, SLOT_VALIDATOR_COUNT, U256::from(last_index));
+            clear_validator(context, call.evmAddr)?;
+            journal_sstore(context, SLOT_VALIDATOR_COUNT, U256::from(last_index))?;
 
             let event = IValidatorRegistry::ValidatorRemoved {
                 evmAddr: call.evmAddr,
@@ -397,32 +550,9 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
         }
 
         IValidatorRegistry::setPolicyCall::SELECTOR => {
-            let gas_required = SET_STATUS_GAS + input_cost(input.len());
-            if gas_limit < gas_required {
-                return Err(PrecompileError::OutOfGas);
-            }
-            let call =
-                IValidatorRegistry::setPolicyCall::abi_decode(input).map_err(decode_error)?;
-
-            let current = load_policy_id(context);
-            if !current.chars().all(|c| c == '0') {
-                return Ok(err_dispatch(ValidatorRegistryError::Unauthorized(
-                    "policy already configured".to_string(),
-                )));
-            }
-            if call.policyId == B256::ZERO {
-                return Ok(err_dispatch(ValidatorRegistryError::Unauthorized(
-                    "cannot set zero policy".to_string(),
-                )));
-            }
-
-            journal_sstore(
-                context,
-                SLOT_POLICY_ID,
-                U256::from_be_bytes(call.policyId.0),
-            );
-
-            Ok(ok_dispatch(gas_required, Vec::new(), vec![]))
+            Ok(err_dispatch(ValidatorRegistryError::Unauthorized(
+                "operator approvals are required to initialize membership policy".into(),
+            )))
         }
 
         IValidatorRegistry::setValidatorStatusCall::SELECTOR => {
@@ -433,7 +563,7 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
             let call = IValidatorRegistry::setValidatorStatusCall::abi_decode(input)
                 .map_err(decode_error)?;
 
-            let policy_id = load_policy_id(context);
+            let policy_id = load_policy_id(context, hub)?;
             let caller_did = match did_from_signer(&tx_ctx.signer) {
                 Ok(d) => d,
                 Err(_) => {
@@ -446,15 +576,31 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
                 return Ok(err_dispatch(e));
             }
 
-            let (addr, consensus, p2p, _, index) = match load_validator_raw(context, call.evmAddr) {
-                Some(v) => v,
-                None => {
-                    return Ok(err_dispatch(ValidatorRegistryError::ValidatorNotFound(
-                        format!("{:?}", call.evmAddr),
-                    )));
-                }
-            };
-            store_validator_raw(context, addr, consensus, &p2p, call.active, index);
+            let (addr, consensus, p2p, active, index) =
+                match load_validator_raw(context, call.evmAddr)? {
+                    Some(v) => v,
+                    None => {
+                        return Ok(err_dispatch(ValidatorRegistryError::ValidatorNotFound(
+                            format!("{:?}", call.evmAddr),
+                        )));
+                    }
+                };
+            if !call.active && removes_last_active(context, active)? {
+                return Ok(err_dispatch(ValidatorRegistryError::EmptyCommittee));
+            }
+            if call.active
+                && !active
+                && load_all_validators(context)?
+                    .iter()
+                    .filter(|member| member.active)
+                    .count()
+                    >= max_active_members as usize
+            {
+                return Ok(err_dispatch(ValidatorRegistryError::EpochCapacity(
+                    max_active_members,
+                )));
+            }
+            store_validator_raw(context, addr, consensus, &p2p, call.active, index)?;
 
             let event = IValidatorRegistry::ValidatorStatusChanged {
                 evmAddr: call.evmAddr,
@@ -475,7 +621,7 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
             let call = IValidatorRegistry::setValidatorStatusByIndexCall::abi_decode(input)
                 .map_err(decode_error)?;
 
-            let policy_id = load_policy_id(context);
+            let policy_id = load_policy_id(context, hub)?;
             let caller_did = match did_from_signer(&tx_ctx.signer) {
                 Ok(d) => d,
                 Err(_) => {
@@ -488,24 +634,40 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
                 return Ok(err_dispatch(e));
             }
 
-            let count = journal_sload(context, SLOT_VALIDATOR_COUNT).as_limbs()[0];
-            let idx = call.index.as_limbs()[0];
-            if idx >= count {
+            let count = load_member_count(context)?;
+            if call.index >= U256::from(count) {
                 return Ok(err_dispatch(ValidatorRegistryError::ValidatorNotFound(
-                    format!("index {idx} out of range (count={count})"),
+                    format!("index {} out of range (count={count})", call.index),
                 )));
             }
+            let idx = call.index.as_limbs()[0];
             let addr_slot = array_element_slot(SLOT_VALIDATORS_ARRAY_BASE, idx);
-            let target_addr = u256_to_address(journal_sload(context, addr_slot));
-            let (addr, consensus, p2p, _, index) = match load_validator_raw(context, target_addr) {
-                Some(v) => v,
-                None => {
-                    return Ok(err_dispatch(ValidatorRegistryError::State(format!(
-                        "validator at index {idx} has corrupted mapping"
-                    ))));
-                }
-            };
-            store_validator_raw(context, addr, consensus, &p2p, call.active, index);
+            let target_addr = u256_to_address(journal_sload(context, addr_slot)?);
+            let (addr, consensus, p2p, active, index) =
+                match load_validator_raw(context, target_addr)? {
+                    Some(v) => v,
+                    None => {
+                        return Ok(err_dispatch(ValidatorRegistryError::State(format!(
+                            "validator at index {idx} has corrupted mapping"
+                        ))));
+                    }
+                };
+            if !call.active && removes_last_active(context, active)? {
+                return Ok(err_dispatch(ValidatorRegistryError::EmptyCommittee));
+            }
+            if call.active
+                && !active
+                && load_all_validators(context)?
+                    .iter()
+                    .filter(|member| member.active)
+                    .count()
+                    >= max_active_members as usize
+            {
+                return Ok(err_dispatch(ValidatorRegistryError::EpochCapacity(
+                    max_active_members,
+                )));
+            }
+            store_validator_raw(context, addr, consensus, &p2p, call.active, index)?;
 
             let event = IValidatorRegistry::ValidatorStatusChanged {
                 evmAddr: target_addr,
@@ -535,16 +697,16 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
             if let Err(e) = validate_p2p_address(&call.p2pAddr) {
                 return Ok(err_dispatch(e));
             }
-            let (addr, consensus, _, active, index) = match load_validator_raw(context, caller_addr)
-            {
-                Some(v) => v,
-                None => {
-                    return Ok(err_dispatch(ValidatorRegistryError::Unauthorized(
-                        "caller is not a registered validator".to_string(),
-                    )));
-                }
-            };
-            store_validator_raw(context, addr, consensus, &call.p2pAddr, active, index);
+            let (addr, consensus, _, active, index) =
+                match load_validator_raw(context, caller_addr)? {
+                    Some(v) => v,
+                    None => {
+                        return Ok(err_dispatch(ValidatorRegistryError::Unauthorized(
+                            "caller is not a registered validator".to_string(),
+                        )));
+                    }
+                };
+            store_validator_raw(context, addr, consensus, &call.p2pAddr, active, index)?;
 
             let event = IValidatorRegistry::ValidatorUpdated {
                 evmAddr: caller_addr,
@@ -561,7 +723,7 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
             if gas_limit < gas_required {
                 return Err(PrecompileError::OutOfGas);
             }
-            let validators = load_all_validators(context);
+            let validators = load_all_validators(context)?;
             let ret =
                 IValidatorRegistry::getValidatorsCall::abi_encode_returns(&json_bytes(&validators));
             Ok(ok_dispatch(gas_required, ret, vec![]))
@@ -574,7 +736,7 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
             }
             let call =
                 IValidatorRegistry::getValidatorCall::abi_decode(input).map_err(decode_error)?;
-            let validator = load_validator_raw(context, call.evmAddr).map(to_validator_info);
+            let validator = load_validator_raw(context, call.evmAddr)?.map(to_validator_info);
             let ret =
                 IValidatorRegistry::getValidatorCall::abi_encode_returns(&json_bytes(&validator));
             Ok(ok_dispatch(gas_required, ret, vec![]))
@@ -585,7 +747,7 @@ pub(super) fn dispatch_with_journal<CTX: ContextTr>(
             if gas_limit < gas_required {
                 return Err(PrecompileError::OutOfGas);
             }
-            let validators = load_all_validators(context);
+            let validators = load_all_validators(context)?;
             let active_count = validators.iter().filter(|v| v.active).count();
             let ret = IValidatorRegistry::getActiveValidatorCountCall::abi_encode_returns(
                 &U256::from(active_count),
