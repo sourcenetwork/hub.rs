@@ -836,3 +836,62 @@ fn archive_results_preserve_registration_and_object_boundaries() {
         assert!(!can_read(&candidate, &policy_id));
     }
 }
+
+#[test]
+fn cyclic_exclusions_cannot_create_successful_access_decisions() {
+    use vera_modules::types::{BlockExecCtx, Timestamp, TxExecCtx};
+
+    let mut module = AcpModule::new();
+    let policy = module.create_policy(
+        &owner(),
+        "name: exclusions\nresources:\n  - name: file\n    relations:\n      - name: reader\n        types: [actor]\n    permissions:\n      - name: read\n        expr: reader - excluded\n      - name: excluded\n        expr: read\n",
+        PolicyMarshalingType::ShortYaml,
+    ).unwrap();
+    let id = policy.policy.id;
+    for command in [
+        PolicyCmd::RegisterObject(object()),
+        PolicyCmd::SetRelationship(Relationship::with_entity(
+            "file",
+            "report",
+            "reader",
+            reader(),
+        )),
+    ] {
+        module.direct_policy_cmd(&owner(), &id, command).unwrap();
+    }
+    let request = AccessRequest {
+        actor: Actor(reader()),
+        operations: vec![Operation {
+            object: object(),
+            permission: "read".into(),
+        }],
+    };
+    let block = BlockExecCtx {
+        genesis_id: [7; 32],
+        deployment_id: 9001,
+        timestamp: Timestamp {
+            seconds: 100,
+            block_height: 5,
+        },
+    };
+    let tx = TxExecCtx {
+        sequence: 0,
+        tx_hash: vec![9; 32],
+        signer: owner().to_string(),
+    };
+    for mut candidate in [module.clone(), restore(&module)] {
+        candidate.validate_restored_state().unwrap();
+        let before = candidate.store().serialize();
+        assert!(
+            candidate
+                .query_verify_access_request(&id, &request)
+                .is_err()
+        );
+        assert!(
+            candidate
+                .check_access(&owner(), &id, &request, &block, &tx)
+                .is_err()
+        );
+        assert_eq!(candidate.store().serialize(), before);
+    }
+}

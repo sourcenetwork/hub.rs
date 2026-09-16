@@ -90,10 +90,9 @@ commonware-macros = "2026.9.0"
 commonware-glue = "2026.9.0"
 
 # Shared Defra types and policy evaluation
-acp = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "8d34d9c426bd6aef7e92891f2af1c6d14f9b3028", default-features = false }
-identity = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "8d34d9c426bd6aef7e92891f2af1c6d14f9b3028" }
-storage = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "8d34d9c426bd6aef7e92891f2af1c6d14f9b3028", default-features = false }
-zanzibar = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "8d34d9c426bd6aef7e92891f2af1c6d14f9b3028", default-features = false }
+acp = { path = "crates/acp" }
+identity = { path = "crates/identity" }
+zanzibar = { path = "crates/zanzibar" }
 
 # Alloy
 alloy-primitives = "1.0"
@@ -111,12 +110,14 @@ revm = { version = "34.0.0", default-features = false, features = ["optional_bal
 # Async
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
+async-lock = "3"
 async-trait = "0.1"
 
 # Serialization
 borsh = { version = "1", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml = "0.9"
 toml = "0.8"
 
 # CLI
@@ -165,6 +166,7 @@ rand = "0.8"
 rand_core = "0.6"
 bytes = "1"
 regex = "1"
+proptest = "1"
 sha2 = "0.10"
 libc = "0.2"
 
