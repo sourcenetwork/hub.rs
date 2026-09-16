@@ -63,3 +63,18 @@ import resumption. Run it with both the node and test built with
 `fault-injection`, and the node additionally built with `regolith-history`.
 Keep `vera_storage=info` enabled. This checks process-crash recovery, not power-loss
 or failed-write behavior.
+
+Snapshot database and history initialization has a five-minute deadline,
+configurable through `snapshot.initialization_timeout_ms`. Exceeding it exits
+with `snapshot initialization deadline exceeded`; restart the node to discover
+a fresh certified target. Restarting does not guarantee convergence if peer
+retention is too short for synchronization. Increase the budget when the expected dataset and
+network require longer initialization. Durable import progress is preserved.
+Actor failures are also reported while database startup is pending.
+
+The `snapshot_interrupt` case
+`stale_snapshot_target_exits_within_budget` pauses the joining node
+after discovery while peers advance beyond retention. It checks that the node
+reports the initialization deadline before writing a durable history record.
+This protects startup from an indefinite wait; it does not resolve the underlying
+stale-target synchronization failure.

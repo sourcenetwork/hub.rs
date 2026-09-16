@@ -92,8 +92,11 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     let gas_limit = config.execution.gas_limit;
     let snapshot = config.snapshot.clone().unwrap_or_default();
     anyhow::ensure!(
-        snapshot.record_bytes > 0 && snapshot.peer_timeout_ms > 0 && snapshot.logs > 0,
-        "snapshot byte limit, log limit and peer deadline must be positive"
+        snapshot.record_bytes > 0
+            && snapshot.peer_timeout_ms > 0
+            && snapshot.initialization_timeout_ms > 0
+            && snapshot.logs > 0,
+        "snapshot byte limit, log limit and deadlines must be positive"
     );
     let blocks_per_epoch = std::num::NonZeroU64::new(genesis.blocks_per_epoch)
         .ok_or_else(|| anyhow::anyhow!("genesis blocks_per_epoch must be non-zero"))?;
@@ -340,6 +343,16 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         None => None,
     };
     if let Some(artifact) = &probe_artifact {
+        #[cfg(feature = "fault-injection")]
+        {
+            let pause = config.data_dir.join("snapshot-probe-pause");
+            if pause.try_exists()? {
+                std::fs::write(config.data_dir.join("snapshot-probe-ready"), [])?;
+                while pause.try_exists()? {
+                    ::tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }
+        }
         provider.register(
             artifact.info.epoch,
             ConsensusScheme::verifier(
@@ -679,9 +692,40 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
             .await?;
     }
     let stateful_handle = stateful_actor.start();
+    state_resolver_handles.extend([
+        p2p_handle,
+        broadcast_handle,
+        probe_handle,
+        orchestrator_handle,
+        marshal_handle,
+        stateful_handle,
+        history_peer_handle,
+    ]);
+    let startup_actors = Handle::select(std::mem::take(&mut state_resolver_handles));
+    ::tokio::pin!(startup_actors);
 
     // Transaction gossip and RPC over the live committed state.
-    let databases = stateful_mailbox.subscribe_databases().await;
+    let readiness = async {
+        if snapshot_sync {
+            ::tokio::time::timeout(
+                Duration::from_millis(snapshot.initialization_timeout_ms),
+                stateful_mailbox.subscribe_databases(),
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!(
+                "snapshot initialization deadline exceeded; restart to discover a fresh certified target"
+            ))
+        } else {
+            Ok(stateful_mailbox.subscribe_databases().await)
+        }
+    };
+    let databases = ::tokio::select! {
+        biased;
+        result = &mut startup_actors => {
+            anyhow::bail!("validator actor stopped during startup: {result:?}");
+        }
+        result = readiness => result?,
+    };
     let native_databases = databases.native_databases();
     let state_set = databases.execution_databases();
     let committed_state = CommittedState::new(state_set.clone());
@@ -808,19 +852,12 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     });
     info!(validator_index, %rpc_addr, "vera validator started");
 
-    state_resolver_handles.extend([
-        p2p_handle,
-        broadcast_handle,
-        probe_handle,
-        reshare_handle,
-        orchestrator_handle,
-        marshal_handle,
-        stateful_handle,
-        history_peer_handle,
-    ]);
-    Handle::select(state_resolver_handles)
-        .await
-        .map_err(|e| anyhow::anyhow!("validator actor failed: {e:?}"))
+    state_resolver_handles.push(reshare_handle);
+    ::tokio::select! {
+        result = &mut startup_actors => result,
+        result = Handle::select(state_resolver_handles) => result,
+    }
+    .map_err(|e| anyhow::anyhow!("validator actor failed: {e:?}"))
 }
 
 pub(crate) const fn block_cfg() -> vera_domain::BlockCfg {
