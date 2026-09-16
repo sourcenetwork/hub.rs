@@ -44,7 +44,9 @@ pub(crate) const fn stranded(our_epoch: u64, network_epoch: u64) -> bool {
 /// a stale transcript left behind the reconciling state sync stalls recovery.
 pub(crate) fn reset_sync_bookkeeping(data_dir: &Path) -> std::io::Result<()> {
     let storage = data_dir.join("commonware");
-    for suffix in [STATE_SYNC_METADATA, DKG_STATE_SYNC] {
+    // Keep the completed-sync marker until the stale DKG transcript is durably
+    // removed, so an interrupted reset takes this recovery path again.
+    for suffix in [DKG_STATE_SYNC, STATE_SYNC_METADATA] {
         let partition = storage.join(format!("{PARTITION_PREFIX}{suffix}"));
         match std::fs::remove_dir_all(&partition) {
             Ok(()) => {
@@ -58,6 +60,7 @@ pub(crate) fn reset_sync_bookkeeping(data_dir: &Path) -> std::io::Result<()> {
                 ));
             }
         }
+        std::fs::File::open(&storage)?.sync_all()?;
     }
     Ok(())
 }
@@ -86,6 +89,19 @@ mod tests {
         std::fs::write(&metadata, b"not a partition directory").unwrap();
         assert!(reset_sync_bookkeeping(directory.path()).is_err());
         assert!(metadata.is_file());
+    }
+
+    #[test]
+    fn failed_transcript_reset_keeps_the_completed_sync_marker() {
+        let directory = tempfile::tempdir().unwrap();
+        let storage = directory.path().join("commonware");
+        let metadata = storage.join(format!("{PARTITION_PREFIX}{STATE_SYNC_METADATA}"));
+        let transcript = storage.join(format!("{PARTITION_PREFIX}{DKG_STATE_SYNC}"));
+        std::fs::create_dir_all(&metadata).unwrap();
+        std::fs::write(metadata.join("blob"), b"completed").unwrap();
+        std::fs::write(&transcript, b"not a partition directory").unwrap();
+        assert!(reset_sync_bookkeeping(directory.path()).is_err());
+        assert_eq!(std::fs::read(metadata.join("blob")).unwrap(), b"completed");
     }
 
     #[test]
