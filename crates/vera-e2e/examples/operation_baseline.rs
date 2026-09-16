@@ -115,7 +115,13 @@ async fn main() {
         .wait_ready(Duration::from_secs(30))
         .await
         .expect("ready cluster");
-    let client = Arc::new(VeraClient::new(cluster.node(0).rpc_url()));
+    let client_queue_capacity =
+        std::num::NonZeroU32::new(u32::try_from(outstanding).unwrap()).unwrap();
+    let client_queue_timeout = Duration::from_secs(1);
+    let client = Arc::new(
+        VeraClient::new(cluster.node(0).rpc_url())
+            .with_request_queue(client_queue_capacity, client_queue_timeout),
+    );
     let setup = BlsSigner::new(((count + 1) as u64).into(), CHAIN_ID).unwrap();
     let raw = setup
         .sign_native_tx(
@@ -228,6 +234,9 @@ async fn main() {
             "max_operations_per_revision": vera_domain::MAX_BLOCK_TXS,
             "max_encoded_operation_bytes_per_revision": vera_domain::MAX_BLOCK_TX_BYTES,
             "max_encoded_revision_bytes": vera_domain::MAX_BLOCK_BYTES,
+            "client_max_concurrent_requests": 64,
+            "client_queue_capacity": client_queue_capacity.get(),
+            "client_queue_timeout_ms": client_queue_timeout.as_millis(),
             "rpc_max_connections": rpc_connections.get(), "nodes": 4, "preset": format!("{preset:?}"),
             "leader_timeout_ms": timing.leader_timeout.as_millis(),
             "notarization_timeout_ms": timing.notarization_timeout.as_millis(),

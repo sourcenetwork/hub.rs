@@ -75,6 +75,18 @@ investigation target, but does not close the failed two-minute 400/s gate.
 A separate run with per-receipt diagnostic logging dropped 4,319 offered writes;
 it remains failed evidence and is excluded from the passing results above.
 
+With bounded client request queuing enabled, a subsequent Normal-preset run
+completed **48,000/48,000 writes at 400 offered writes/s for 120 seconds**.
+Including drain, throughput was **392.49 writes/s**; certified confirmation was
+**976 ms median, 1,897 ms p95, and 2,249 ms p99**. All four replicas and the
+hard-restart checks agreed on all 48,000 operations. There were no unsent,
+uncertain, rejected, reverted or unverifiable outcomes. Local client throttles
+were zero; 11,356 remote receipt-read throttles resolved within the deadline.
+HTTP concurrency remained 64 and outstanding workflows remained capped at 1,024.
+This passes the previously failing two-minute workload with different client
+admission behavior; a single trial does not establish a repeatable speedup or
+maximum capacity. Permission reads and WAN operation remain unqualified here.
+
 For comparison, the earlier sequential-verification revision
 `c1f9cff9ac399757684b5dc539252934241278fa` passed these Normal-preset runs on the
 same host:
@@ -101,7 +113,7 @@ The new workload arguments were:
 6000 200 1024 0 fast 100 20 0 0 32
 24000 200 1024 0 fast 100 20 0 0 32
 12000 400 1024 0 normal 100 20 0 0 32
-# Failed two-minute complete-load gate:
+# Two-minute gate: failed with fail-fast admission; passed with bounded queuing:
 48000 400 1024 0 normal 100 20 0 0 32
 ```
 
@@ -171,9 +183,15 @@ workflows over the driver's measured arrivals-and-drain interval.
 
 The Rust client limits each instance to 64 concurrent HTTP calls, including
 response decoding. `with_max_concurrent_requests` changes this bound. Calls
-over the limit return `ResourceBusy` before transmission; the workload counts
-these alongside server throttles and retries within its existing deadline.
-The outstanding-workflow limit is separate from this transport bound.
+over the limit return `ClientCapacityExhausted` before transmission by default.
+`with_request_queue` optionally enables FIFO waiting with a bounded waiter count
+and timeout; cancellation releases capacity. It does not increase HTTP concurrency.
+The workload enables this queue with its outstanding-workflow limit as the waiter
+budget and a one-second admission timeout. Its configuration records these values;
+older runs used fail-fast admission. Queue time remains included in measured RPC
+and confirmation latency, within the unchanged workflow deadline. Client and
+server throttle counters distinguish local admission failures from remote limits.
+The outstanding-workflow limit is separate from the HTTP concurrency bound.
 
 RSS is sampled once per second. Missing samples are counted, not filled with
 zero; short peaks may be missed. A short fixed-state run cannot establish a
