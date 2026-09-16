@@ -63,7 +63,17 @@ unverifiable outcomes, and replica/restart checks matched all expected results,
 including absence for the unsent writes. The report correctly marks this run
 failed. The short 400/s result therefore does not establish sustained capacity.
 The failed run observed 2,154 submission and 127,746 receipt-read throttle
-responses; their contribution to the backlog needs separate measurement.
+responses. These older counters combined local client saturation and remote
+rejections; they cannot establish a server admission bottleneck.
+
+A subsequent 30-second run with separate throttle-origin counters completed all
+12,000 writes at 389.66/s (median 1,091 ms, p95 2,343 ms), including replica and
+restart checks. It recorded 26,602 local client-capacity events and 1,495 remote
+throttles. Its successful receipt calls, including client verification, took
+6.93 ms median and 21.15 ms p95. This identifies client request scheduling as an
+investigation target, but does not close the failed two-minute 400/s gate.
+A separate run with per-receipt diagnostic logging dropped 4,319 offered writes;
+it remains failed evidence and is excluded from the passing results above.
 
 For comparison, the earlier sequential-verification revision
 `c1f9cff9ac399757684b5dc539252934241278fa` passed these Normal-preset runs on the
@@ -141,7 +151,10 @@ interval. See [workload semantics and arguments](native-workload.md).
 
 For diagnosis, pass `--rust-log warn,vera_storage=info,vera_diagnostics=debug`.
 The `native execution stages` event separates block-wide signature authentication
-from ordered native dispatch. Nodes share one Commonware verification pool across
+from ordered native dispatch. The `receipt proof stages` event measures finality
+evidence lookup/assembly (`finality_us`) and receipt construction/size checking
+(`assembly_us`), before transport serialization. These are server request costs,
+not consensus finality latency. Nodes share one Commonware verification pool across
 executor clones, capped at four workers (or the available CPU count if smaller).
 Every signature is still verified independently; nonce checks, module mutations,
 receipts and error selection retain their original transaction order.

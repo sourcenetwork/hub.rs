@@ -53,7 +53,7 @@ impl VeraClient {
     }
 
     /// Bound concurrent HTTP calls, including response decoding (default: 64).
-    /// Saturation returns `ResourceBusy` before sending any request bytes.
+    /// Saturation returns `ClientCapacityExhausted` before sending any request bytes.
     #[must_use]
     pub fn with_max_concurrent_requests(mut self, maximum: std::num::NonZeroU32) -> Self {
         self.requests = tokio::sync::Semaphore::new(maximum.get() as usize);
@@ -92,7 +92,7 @@ impl VeraClient {
         let _permit = self
             .requests
             .try_acquire()
-            .map_err(|_| ClientError::ResourceBusy("client request capacity exhausted".into()))?;
+            .map_err(|_| ClientError::ClientCapacityExhausted)?;
         debug!(method, "JSON-RPC request");
         let id = self.next_id();
         let mut response = self

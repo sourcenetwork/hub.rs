@@ -14,7 +14,11 @@ pub enum ClientError {
         message: String,
     },
 
-    /// The client or server rejected work because temporary capacity is exhausted.
+    /// The client rejected work before sending because its request slots are occupied.
+    #[error("client request capacity exhausted")]
+    ClientCapacityExhausted,
+
+    /// The server rejected work because temporary capacity is exhausted.
     #[error("RPC service busy: {0}")]
     ResourceBusy(String),
 
@@ -89,7 +93,7 @@ impl ClientError {
     /// Callers must still bound retries and preserve submission identity.
     #[must_use]
     pub fn is_throttled(&self) -> bool {
-        matches!(self, Self::ResourceBusy(_))
+        matches!(self, Self::ClientCapacityExhausted | Self::ResourceBusy(_))
             || matches!(self, Self::Transport(error) if error.status() == Some(reqwest::StatusCode::TOO_MANY_REQUESTS))
     }
 
@@ -117,6 +121,17 @@ impl ClientError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_throttle_cannot_impersonate_local_capacity() {
+        let error = ClientError::from_rpc(&serde_json::json!({
+            "code": -32002,
+            "message": "client request capacity exhausted",
+            "data": {"retryable": true}
+        }));
+        assert!(matches!(error, ClientError::ResourceBusy(_)));
+        assert!(error.is_throttled());
+    }
 
     #[test]
     fn only_explicit_capacity_errors_are_throttled() {

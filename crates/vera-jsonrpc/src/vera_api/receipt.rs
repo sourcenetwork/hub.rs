@@ -18,6 +18,8 @@ impl VeraApiImpl {
             return self.archived_receipt(hash).await;
         };
         let _permit = self.state.proof_permit()?;
+        let started = tracing::enabled!(target: "vera_diagnostics", tracing::Level::DEBUG)
+            .then(std::time::Instant::now);
         let block = &execution.block;
         let Some(revision) = tokio::time::timeout(
             std::time::Duration::from_secs(2),
@@ -28,6 +30,7 @@ impl VeraApiImpl {
         else {
             return Ok(None);
         };
+        let finality_elapsed = started.map(|started| started.elapsed());
         if execution.receipts.len() != block.transaction_hashes.len()
             || execution
                 .receipts
@@ -67,6 +70,12 @@ impl VeraApiImpl {
             receipts,
         };
         validate_size(&response)?;
+        if let Some((started, finality)) = started.zip(finality_elapsed) {
+            tracing::debug!(target: "vera_diagnostics", height = block.number,
+                receipts = response.receipts.len(), finality_us = finality.as_micros(),
+                assembly_us = (started.elapsed() - finality).as_micros(),
+                "receipt proof stages");
+        }
         Ok(Some(response))
     }
 

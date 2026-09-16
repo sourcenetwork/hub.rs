@@ -24,7 +24,8 @@ async fn transport_capacity_is_released_on_cancellation() {
         .rpc_call_typed::<u64>("test", serde_json::json!([]))
         .await
         .unwrap_err();
-    assert!(matches!(error, ClientError::ResourceBusy(_)));
+    assert!(matches!(error, ClientError::ClientCapacityExhausted));
+    assert!(error.is_throttled());
     assert!(
         tokio::time::timeout(Duration::from_millis(20), listener.accept())
             .await
