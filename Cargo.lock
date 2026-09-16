@@ -7656,6 +7656,7 @@ dependencies = [
  "ark-serialize 0.4.2",
  "ark-std 0.4.0",
  "commonware-codec",
+ "commonware-parallel",
  "futures",
  "hex",
  "identity",

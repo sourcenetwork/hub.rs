@@ -10,6 +10,7 @@ use crate::{
     extract_changes,
 };
 use alloy_primitives::{B256, Bytes, U256, keccak256};
+use commonware_parallel::{Rayon, Sequential, Strategy};
 use revm::{
     Context, ExecuteCommitEvm, InspectEvm, Journal, MainBuilder,
     context::{block::BlockEnv, result::ExecutionResult},
@@ -19,6 +20,7 @@ use revm::{
     primitives::hardfork::SpecId,
 };
 use tracing::warn;
+#[cfg(test)]
 use vera_crypto::bls;
 use vera_domain::NativeTx;
 use vera_modules::acp::AcpModule;
@@ -38,7 +40,10 @@ use crate::precompiles::{
 /// Gas budget for native BLS transactions dispatched to modules.
 const NATIVE_TX_GAS_LIMIT: u64 = 1_000_000;
 
+mod native_authentication;
 mod recovery;
+
+use native_authentication::AuthenticatedNativeTx;
 
 /// Per-module JMT-backed state trees: [acp, bulletin, vera, nonces].
 pub type ModuleTrees = [Arc<Mutex<ModuleStateTree>>; 4];
@@ -56,6 +61,7 @@ pub struct VeraExecutor {
     config: ExecutionConfig,
     modules: SharedModuleState,
     module_trees: Option<ModuleTrees>,
+    native_verification: Option<Rayon>,
     commit_lock: Arc<Mutex<()>>,
     #[cfg(feature = "fault-injection")]
     crash_marker: Option<std::path::PathBuf>,
@@ -88,6 +94,7 @@ impl VeraExecutor {
             config: ExecutionConfig::new(chain_id),
             modules: Arc::new(RwLock::new(ModuleState::default())),
             module_trees: None,
+            native_verification: None,
             commit_lock: Arc::default(),
             #[cfg(feature = "fault-injection")]
             crash_marker: None,
@@ -100,10 +107,19 @@ impl VeraExecutor {
             config,
             modules: Arc::new(RwLock::new(ModuleState::default())),
             module_trees: None,
+            native_verification: None,
             commit_lock: Arc::default(),
             #[cfg(feature = "fault-injection")]
             crash_marker: None,
         }
+    }
+
+    /// Share a bounded worker pool for independent native signature checks.
+    /// Nonce checks and module execution remain in transaction order.
+    #[must_use]
+    pub fn with_native_verification_strategy(mut self, strategy: Rayon) -> Self {
+        self.native_verification = Some(strategy);
+        self
     }
 
     /// Attach JMT-backed module state trees for authenticated state roots.
@@ -212,6 +228,7 @@ impl VeraExecutor {
 
     /// Execute a native BLS transaction: verify signature, derive DID, dispatch to module.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     fn execute_native_tx<CTX: ContextTr>(
         &self,
         tx_bytes: &[u8],
@@ -222,31 +239,32 @@ impl VeraExecutor {
         nonce_store: &mut NativeNonceStore,
         journal: &mut CTX,
     ) -> Result<ExecutionReceipt, ExecutionError> {
-        let native_tx = NativeTx::decode_wire(tx_bytes)
-            .map_err(|e| ExecutionError::TxDecode(format!("native tx: {e}")))?;
-
-        if native_tx.chain_id != self.config.chain_id {
-            return Err(ExecutionError::ChainIdMismatch {
-                expected: self.config.chain_id,
-                got: native_tx.chain_id,
-            });
-        }
-
-        let signer_did = bls::verify_and_identify(
-            native_tx.bls_pubkey.as_slice(),
-            &native_tx.signing_data(),
-            native_tx.signature.as_slice(),
+        self.execute_authenticated_native_tx(
+            self.authenticate_native_tx(tx_bytes)?,
+            block_ctx,
+            acp,
+            bulletin,
+            vera,
+            nonce_store,
+            journal,
         )
-        .map_err(|e| ExecutionError::BlsVerification(format!("signature: {e}")))?;
+    }
 
-        if native_tx.target != ACP_ADDRESS
-            && native_tx.target != BULLETIN_ADDRESS
-            && native_tx.target != VERA_ADDRESS
-            && native_tx.target != VALIDATOR_REGISTRY_ADDRESS
-        {
-            return Err(ExecutionError::UnknownNativeTarget(native_tx.target));
-        }
-
+    #[allow(clippy::too_many_arguments)]
+    fn execute_authenticated_native_tx<CTX: ContextTr>(
+        &self,
+        authenticated: AuthenticatedNativeTx,
+        block_ctx: &BlockExecCtx,
+        acp: &mut AcpModule,
+        bulletin: &mut BulletinModule,
+        vera: &mut VeraModule,
+        nonce_store: &mut NativeNonceStore,
+        journal: &mut CTX,
+    ) -> Result<ExecutionReceipt, ExecutionError> {
+        let AuthenticatedNativeTx {
+            native_tx,
+            signer_did,
+        } = authenticated;
         nonce_store
             .check_and_increment(&signer_did, native_tx.nonce)
             .map_err(|e| match e {
@@ -412,24 +430,38 @@ impl VeraExecutor {
                 blk.prevrandao = Some(context.prevrandao);
             });
 
-        for (i, tx_bytes) in txs.iter().enumerate() {
-            if tx_bytes.is_empty() || !NativeTx::is_native_tx(tx_bytes[0]) {
-                continue;
-            }
-
-            let receipt = match self.execute_native_tx(
-                tx_bytes,
-                &block_ctx,
-                &mut modules.acp,
-                &mut modules.bulletin,
-                &mut modules.vera,
-                &mut modules.nonces,
-                &mut ctx,
-            ) {
+        let native_started = tracing::enabled!(target: "vera_diagnostics", tracing::Level::DEBUG)
+            .then(std::time::Instant::now);
+        let native = txs.iter().enumerate().filter(|(_, bytes)| {
+            bytes
+                .first()
+                .is_some_and(|byte| NativeTx::is_native_tx(*byte))
+        });
+        let authenticate = |(i, bytes): (usize, &Bytes)| (i, self.authenticate_native_tx(bytes));
+        // Retain errors in order: an earlier nonce or dispatch failure must win
+        // over a later authentication failure during proposal verification.
+        let authenticated = match &self.native_verification {
+            Some(strategy) => strategy.map_collect_vec(native, authenticate),
+            None => Sequential.map_collect_vec(native, authenticate),
+        };
+        let authentication_elapsed = native_started.map(|started| started.elapsed());
+        let native_count = authenticated.len();
+        for (i, authenticated) in authenticated {
+            let receipt = match authenticated.and_then(|authenticated| {
+                self.execute_authenticated_native_tx(
+                    authenticated,
+                    &block_ctx,
+                    &mut modules.acp,
+                    &mut modules.bulletin,
+                    &mut modules.vera,
+                    &mut modules.nonces,
+                    &mut ctx,
+                )
+            }) {
                 Ok(r) => r,
                 Err(error @ ExecutionError::TxExecution(_)) => return Err(error),
                 Err(e) if building => {
-                    let tx_hash = keccak256(tx_bytes);
+                    let tx_hash = keccak256(&txs[i]);
                     warn!(%tx_hash, ?e, "skipping native tx");
                     continue;
                 }
@@ -463,6 +495,13 @@ impl VeraExecutor {
             let mut receipt = receipt;
             receipt.receipt.cumulative_gas_used = cumulative_gas;
             outcome.receipts.push(receipt);
+        }
+
+        if let Some((started, authentication)) = native_started.zip(authentication_elapsed) {
+            tracing::debug!(target: "vera_diagnostics", height = context.header.number,
+                native_count, authentication_us = authentication.as_micros(),
+                dispatch_us = (started.elapsed() - authentication).as_micros(),
+                "native execution stages");
         }
 
         let precompiles = VeraPrecompiles::with_modules(
@@ -887,6 +926,71 @@ mod tests {
             <VeraExecutor as BlockExecutor<MockStateDb>>::validate_header(&executor, &header)
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn parallel_native_authentication_preserves_execution_and_error_order() {
+        let sequential = test_executor();
+        let parallel = test_executor().with_native_verification_strategy(
+            Rayon::new(std::num::NonZeroUsize::new(2).unwrap()).unwrap(),
+        );
+        let (sk, pk) = test_bls_keypair();
+        let mut txs: Vec<Bytes> = (0..64)
+            .map(|nonce| signed_native_tx(&sk, &pk, nonce).into())
+            .collect();
+        let mut invalid = NativeTx::decode_wire(&txs[3]).unwrap();
+        invalid.calldata = Bytes::from_static(b"tampered");
+        txs.insert(3, invalid.encode_wire().into());
+        txs.insert(5, signed_native_tx(&sk, &pk, 0).into());
+        txs.insert(7, Bytes::new());
+        let context = BlockContext::new(
+            alloy_consensus::Header {
+                number: 1,
+                gas_limit: 100_000_000,
+                ..Default::default()
+            },
+            B256::ZERO,
+            B256::ZERO,
+        );
+        let before = parallel.snapshot().unwrap().modules.state_root();
+        let expected = sequential.execute(&MockStateDb, &context, &txs).unwrap();
+        let actual = parallel.execute(&MockStateDb, &context, &txs).unwrap();
+        assert_eq!(actual.receipts.len(), 64);
+        assert_eq!(actual.executed_tx_indices, expected.executed_tx_indices);
+        assert_eq!(actual.module_state_root, expected.module_state_root);
+        assert_eq!(actual.gas_used, expected.gas_used);
+        assert_eq!(
+            serde_json::to_value(&actual.receipts).unwrap(),
+            serde_json::to_value(&expected.receipts).unwrap()
+        );
+        let included: Vec<_> = actual
+            .executed_tx_indices
+            .unwrap()
+            .into_iter()
+            .map(|i| txs[i].clone())
+            .collect();
+        let verified = parallel
+            .execute(
+                &MockStateDb,
+                &context.clone().with_verification(),
+                &included,
+            )
+            .unwrap();
+        assert_eq!(verified.module_state_root, actual.module_state_root);
+        assert_eq!(
+            serde_json::to_value(verified.receipts).unwrap(),
+            serde_json::to_value(actual.receipts).unwrap()
+        );
+        assert!(matches!(
+            parallel.execute(&MockStateDb, &context.clone().with_verification(), &txs),
+            Err(ExecutionError::BlsVerification(_))
+        ));
+        txs.swap(3, 5);
+        assert!(matches!(
+            parallel.execute(&MockStateDb, &context.with_verification(), &txs),
+            Err(ExecutionError::NonceMismatch { .. })
+        ));
+        assert_eq!(parallel.snapshot().unwrap().modules.state_root(), before);
     }
 
     #[test]

@@ -34,11 +34,25 @@ results; no performance site is published by this workflow.
 
 ## Measured local results
 
-At revision `c1f9cff9ac399757684b5dc539252934241278fa`, release builds on an
-Apple M5 Max host (18 logical CPUs, 64 GiB RAM) produced the following results.
-Each run used four local validators, QMDB state, RocksDB history, the Normal
-consensus preset, and growing ACP object registrations with certified receipt
-verification. Permission reads were disabled. Signing happened before timing.
+Release builds with bounded parallel native verification produced these results
+on an Apple M5 Max host (18 logical CPUs, 64 GiB RAM). Each run used four local
+validators, QMDB state, RocksDB history, and growing ACP object registrations
+with certified receipt verification. Permission reads were disabled. Signing
+happened before timing.
+
+| Preset | Offered writes/s | Operations | Completed writes/s | Median confirmation | p95 confirmation | p99 confirmation |
+|---|---:|---:|---:|---:|---:|---:|
+| Normal | 200 | 6,000 | 194.04 | 729 ms | 1,588 ms | 2,001 ms |
+| Fast | 200 | 6,000 | 195.88 | 783 ms | 1,975 ms | 2,390 ms |
+
+Every offered operation completed. All four replicas agreed, and receipt/state
+checks passed after a member was forcibly restarted. Neither run had uncertain,
+rejected, reverted or unverifiable outcomes. Bounded submission and receipt-read
+retries handled admission throttling.
+
+For comparison, the earlier sequential-verification revision
+`c1f9cff9ac399757684b5dc539252934241278fa` passed these Normal-preset runs on the
+same host:
 
 | Offered writes/s | Operations | Completed writes/s | Median confirmation | p95 confirmation | p99 confirmation |
 |---:|---:|---:|---:|---:|---:|
@@ -46,34 +60,34 @@ verification. Permission reads were disabled. Signing happened before timing.
 | 100 | 3,000 | 96.58 | 671 ms | 1,351 ms | 1,645 ms |
 | 200 | 6,000 | 196.66 | 775 ms | 1,682 ms | 2,176 ms |
 
-Every offered operation completed in these runs. All four replicas agreed, and
-receipt/state checks passed after a member was forcibly restarted. The 200/s run
-observed 99 submission throttles and 2,315 receipt-read throttles; bounded retries
-completed within the workload deadline, with no uncertain or failed outcomes.
-
 These are individual 30-second offered-load measurements, followed by draining
 outstanding work. Completed writes/s includes that drain interval. They establish
-a passing local load point, not maximum or sustained capacity. Confirmation
-includes admission, execution, consensus, polling and proof verification; these
-measurements do not establish 300 ms consensus finality. WAN deployment and
-write-plus-permission workflows require separate qualification.
+a passing local load point, not maximum or sustained capacity, or a statistically
+established throughput improvement. Normal had lower tail latency than Fast in
+the new runs. Confirmation includes admission, execution, consensus, polling and
+proof verification; these measurements do not establish 300 ms consensus
+finality. WAN deployment and write-plus-permission workflows require separate
+qualification.
 
-The 200/s workload arguments were:
+The new workload arguments were:
 
 ```text
 6000 200 1024 0 normal 100 20 0 0 32
+6000 200 1024 0 fast 100 20 0 0 32
 ```
 
-The 20/s and 100/s runs used an outstanding-workflow limit of 256. All three used
-50 ms receipt polling, a 30-second workflow deadline, 20 revisions per epoch,
-and retention of 32 consensus revisions.
+All runs used 50 ms receipt polling, a 30-second workflow deadline, 20 revisions
+per epoch, and retention of 32 consensus revisions. The earlier 20/s and 100/s
+runs used an outstanding-workflow limit of 256.
 
-The Fast testing preset remains unqualified for this workload. A subsequent
-100/s diagnostic run stalled at height 20: repeated 256-operation proposals took
-approximately 294–298 ms to execute, exceeding its 100 ms leader and 200 ms
-notarization deadlines. Additional logging and a stack sample were enabled in
-that run, so its timings are diagnostic evidence, not another baseline. Reducing
-timeouts requires validating execution budgets and progress under backlog.
+Before parallel verification, a Fast diagnostic at 100 offered writes/s stalled
+at height 20: repeated 256-operation proposals took approximately 294–298 ms to
+execute, exceeding its 100 ms leader and 200 ms notarization deadlines. A focused
+follow-up measured median authentication around 590 microseconds per operation,
+versus 8 microseconds for dispatch. These diagnostic runs used extra logging;
+they are not throughput baselines. Parallel verification retains the original
+Fast timeouts. Its passing short run does not qualify prolonged overload,
+all epoch-transition failure scenarios, or WAN operation.
 
 ## Run locally
 
@@ -104,6 +118,11 @@ post-run correctness checks do not contribute to the driver's measured workload
 interval. See [workload semantics and arguments](native-workload.md).
 
 For diagnosis, pass `--rust-log warn,vera_storage=info,vera_diagnostics=debug`.
+The `native execution stages` event separates block-wide signature authentication
+from ordered native dispatch. Nodes share one Commonware verification pool across
+executor clones, capped at four workers (or the available CPU count if smaller).
+Every signature is still verified independently; nonce checks, module mutations,
+receipts and error selection retain their original transaction order.
 The recorder stores the selected filter in the manifest. Additional logging can
 affect throughput and latency; treat diagnostic runs separately from baselines.
 
