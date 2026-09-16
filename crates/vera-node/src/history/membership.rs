@@ -49,7 +49,7 @@ impl FinalizedHistory {
     }
 }
 
-pub(super) fn roster_from_boundary(
+pub(crate) fn roster_from_boundary(
     block: &Block,
     epoch: Epoch,
     height: u64,

@@ -415,7 +415,8 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         players.clone(),
         history.clone(),
         blocks_per_epoch,
-    );
+    )
+    .with_marshal(marshal.clone());
     let (reshare_actor, reshare_mailbox) = reshare::Actor::new(
         context.child("reshare"),
         reshare::Config {
@@ -605,13 +606,15 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         },
     );
 
-    let deferred = Deferred::new(
-        context.child("deferred"),
-        reshare::Application::new(
+    let (application, application_ready) =
+        crate::ready_application::ReadyApplication::new(reshare::Application::new(
             stateful_mailbox.clone(),
             reshare_mailbox.clone(),
             blocks_per_epoch,
-        ),
+        ));
+    let deferred = Deferred::new(
+        context.child("deferred"),
+        application,
         marshal.clone(),
         FixedEpocher::new(blocks_per_epoch),
     );
@@ -691,6 +694,7 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
             )
             .await?;
     }
+    let reshare_handle = reshare_actor.start(dkg_network);
     let stateful_handle = stateful_actor.start();
     state_resolver_handles.extend([
         p2p_handle,
@@ -699,6 +703,7 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         orchestrator_handle,
         marshal_handle,
         stateful_handle,
+        reshare_handle,
         history_peer_handle,
     ]);
     let startup_actors = Handle::select(std::mem::take(&mut state_resolver_handles));
@@ -729,7 +734,6 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     let native_databases = databases.native_databases();
     let state_set = databases.execution_databases();
     let committed_state = CommittedState::new(state_set.clone());
-    let reshare_handle = reshare_actor.start(dkg_network);
     sink.attach_state(state_set.clone());
     {
         // Hold the module read lock through publication so finalization cannot
@@ -740,6 +744,7 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         admission.reset(committed_state.clone(), recovered_modules.nonces.clone());
         let _ = validator.set(::tokio::sync::Mutex::new(admission));
     }
+    application_ready.send_replace(true);
     let gossip = TxGossip::new(mempool.clone(), validator.clone(), chain_id, mempool_sender);
     state_resolver_handles.push(spawn_tx_receiver(
         context.child("tx_receiver"),
@@ -852,7 +857,6 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     });
     info!(validator_index, %rpc_addr, "vera validator started");
 
-    state_resolver_handles.push(reshare_handle);
     ::tokio::select! {
         result = &mut startup_actors => result,
         result = Handle::select(state_resolver_handles) => result,

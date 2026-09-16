@@ -4,7 +4,10 @@ use std::{num::NonZeroU64, sync::Arc};
 
 use alloy_primitives::{Address, keccak256};
 use commonware_codec::ReadExt as _;
-use commonware_consensus::types::Epoch;
+use commonware_consensus::{
+    marshal::Identifier,
+    types::{Epoch, Height},
+};
 use commonware_cryptography::ed25519;
 use commonware_glue::dkg::ParticipantsProvider;
 use commonware_utils::{ordered::Set, sequence::Unit};
@@ -20,12 +23,22 @@ pub fn validator_address(public_key: &PublicKey) -> Address {
 }
 
 /// Future committees selected by finalized execution, independent of lookup time.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct RegistryParticipants {
     modules: SharedModuleState,
     genesis_players: Set<PublicKey>,
     history: Arc<crate::FinalizedHistory>,
     epoch_length: NonZeroU64,
+    marshal: Option<crate::marshal_floor::VeraMarshal>,
+}
+
+impl std::fmt::Debug for RegistryParticipants {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegistryParticipants")
+            .field("epoch_length", &self.epoch_length)
+            .field("genesis_players", &self.genesis_players)
+            .finish_non_exhaustive()
+    }
 }
 
 impl RegistryParticipants {
@@ -42,7 +55,12 @@ impl RegistryParticipants {
             genesis_players,
             history,
             epoch_length,
+            marshal: None,
         }
+    }
+    pub(crate) fn with_marshal(mut self, marshal: crate::marshal_floor::VeraMarshal) -> Self {
+        self.marshal = Some(marshal);
+        self
     }
 }
 
@@ -54,9 +72,29 @@ impl ParticipantsProvider for RegistryParticipants {
         if epoch.get() <= 2 {
             return self.genesis_players.clone();
         }
-        let modules = self.modules.read().expect("module state lock poisoned");
-        let Some(bytes) = modules.vera.consensus_roster(epoch.get()) else {
-            drop(modules);
+        let bytes = {
+            let modules = self.modules.read().expect("module state lock poisoned");
+            modules
+                .vera
+                .consensus_roster(epoch.get())
+                .map(<[u8]>::to_vec)
+        };
+        let Some(bytes) = bytes else {
+            // Height lookups return only finalized blocks. Their boundary payloads
+            // provide the same roster before execution state is recovered.
+            if let Some(marshal) = &self.marshal {
+                let height = (epoch.get() - 1)
+                    .checked_mul(self.epoch_length.get())
+                    .and_then(|height| height.checked_sub(1))
+                    .expect("consensus roster boundary overflow");
+                if let Some(block) = marshal
+                    .get_block(Identifier::Height(Height::new(height)))
+                    .await
+                {
+                    return crate::history::roster_from_boundary(&block, epoch, height)
+                        .expect("finalized consensus roster must be valid");
+                }
+            }
             return self
                 .history
                 .consensus_roster(epoch, self.epoch_length)

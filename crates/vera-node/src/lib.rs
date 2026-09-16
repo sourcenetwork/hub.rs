@@ -40,6 +40,7 @@ mod participants;
 pub use participants::{RegistryParticipants, validator_address};
 
 mod provider;
+mod ready_application;
 mod rejoin;
 mod watchdog;
 pub use provider::{DynamicProvider, Registrar};

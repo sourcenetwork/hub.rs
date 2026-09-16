@@ -184,7 +184,7 @@ protocols. Commonware's DKG primitives do not supply those protocols wholesale;
 consensus secrets must never serve as application keys. See
 [threshold capabilities](threshold-capabilities.md).
 
-## Snapshot recovery and its current limit
+## Snapshot recovery
 
 ```mermaid
 flowchart LR
@@ -194,14 +194,23 @@ flowchart LR
     History --> Hydrate[Hydrate and validate query state]
     Hydrate --> Ready[Publish service readiness]
     Transfer -. Needs newer finalized targets when peers prune .-> Progress[Consensus and epoch progress]
-    Progress -. Current startup dependency .-> Transfer
+    Probe --> Reshare[Resharing with certified boundary rosters]
+    Reshare --> Progress
+    Progress --> Transfer
 ```
 
-The current ordering starts resharing after database readiness. A delayed
-snapshot target can stall inside database transfer while newer epoch progress
-depends on resharing. Startup supervision and a configurable initialization
-deadline bound failure; they do not guarantee recovery on restart. The recovery
-gate remains open. The diagram records this dependency, not a repaired flow.
+Resharing runs during database initialization so epoch progress can supply newer
+transfer targets when peers prune. Before execution rosters are available, the
+membership provider reads the requested selection from a finalized epoch boundary
+in the consensus archive and validates its height and selected epoch. Admission
+and RPC still wait for database and history recovery. Startup supervision and a
+configurable deadline bound failures; successful recovery still depends on peer
+availability and retention.
+Proposals are skipped and verification remains pending until execution state is
+ready, before either can request speculative DKG artifacts.
+The deliberately stale-target test still reaches the initialization deadline
+inside database transfer. Epoch progress alone does not establish convergence;
+this remains a recovery limitation.
 See [snapshot recovery](snapshot-recovery.md) and [history storage](history-storage.md).
 
 ## Implementation map

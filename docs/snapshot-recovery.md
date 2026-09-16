@@ -31,6 +31,15 @@ and later consensus progress; they do not request another snapshot.
    Commonware makes any pending execution suffix durable and records completion
    before exposing the databases. Admission and RPC start after this handoff.
 
+Resharing starts alongside database recovery. When execution state cannot yet
+provide a committee selection, the membership provider uses the corresponding
+finalized boundary in the consensus archive, checking its height, selected epoch
+and nonempty roster. This lets epoch progress advance the transfer target while
+admission and RPC remain unavailable until recovery finishes.
+The outer application skips proposals and keeps verification pending until
+execution state is ready, so speculative DKG requests cannot ask for future
+committee selections before the recovered policy state is available.
+
 An interrupted history import retains its selection, trust and cursor. If storage
 resumes at a later verified revision, history starts a new descending pass from
 that revision to the same previously committed prefix. This can refetch already
