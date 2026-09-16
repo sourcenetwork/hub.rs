@@ -12,16 +12,19 @@ class RecorderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             runner = root / 'runner'
-            runner.write_text('#!/bin/sh\nprintf "partial measurement\\n"\nexit 7\n')
+            runner.write_text('#!/bin/sh\nprintf "partial measurement\\n"\nprintf "%s" "$RUST_LOG" >&2\nexit 7\n')
             runner.chmod(0o700)
             output = root / 'result'
             command = [sys.executable, str(Path(__file__).with_name('record.py')),
                        '--node', str(runner), '--runner', str(runner),
-                       '--history', 'rocksdb', '--output', str(output), '1']
+                       '--history', 'rocksdb', '--output', str(output),
+                       '--rust-log', 'warn,vera_diagnostics=debug', '1']
             result = subprocess.run(command, capture_output=True, text=True)
             self.assertEqual(result.returncode, 7, result.stderr)
             metadata = json.loads((output / 'manifest.json').read_text())
             self.assertEqual(metadata['exit_code'], 7)
+            self.assertEqual(metadata['rust_log'], 'warn,vera_diagnostics=debug')
+            self.assertEqual((output / 'stderr.log').read_text(), metadata['rust_log'])
             self.assertEqual((output / 'workload.jsonl').read_text(), 'partial measurement\n')
             repeated = subprocess.run(command, capture_output=True, text=True)
             self.assertNotEqual(repeated.returncode, 0)

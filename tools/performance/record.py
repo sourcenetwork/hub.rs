@@ -36,6 +36,7 @@ def main():
     parser.add_argument('--runner', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--history', required=True, choices=['rocksdb', 'regolith'])
+    parser.add_argument('--rust-log', default='warn,vera_storage=info')
     parser.add_argument('workload_args', nargs='+')
     args = parser.parse_args()
     node, runner = args.node.resolve(strict=True), args.runner.resolve(strict=True)
@@ -48,6 +49,7 @@ def main():
         'dirty': bool(subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=no'])),
         'node_sha256': digest(node), 'runner_sha256': digest(runner),
         'history': args.history, 'arguments': args.workload_args,
+        'rust_log': args.rust_log,
         'platform': platform.platform(), 'architecture': platform.machine(),
         'logical_cpus': os.cpu_count(), 'cpu_model': cpu_model(), 'load_before': os.getloadavg(),
         'runner_image': os.environ.get('ImageVersion'),
@@ -60,7 +62,7 @@ def main():
         manifest['physical_memory_bytes'] = None
     path = args.output / 'manifest.json'
     path.write_text(json.dumps(manifest, indent=2) + '\n')
-    environment = dict(os.environ, VERAD_BINARY=str(node), RUST_LOG='warn,vera_storage=info')
+    environment = dict(os.environ, VERAD_BINARY=str(node), RUST_LOG=args.rust_log)
     with (args.output / 'workload.jsonl').open('w') as output, (args.output / 'stderr.log').open('w') as error:
         process = subprocess.Popen([str(runner), *args.workload_args], env=environment,
                                    stdout=output, stderr=error, start_new_session=True)

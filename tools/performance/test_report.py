@@ -38,7 +38,19 @@ class ReportTests(unittest.TestCase):
 
     def test_missing_recovery_cannot_pass(self):
         self.rows = [row for row in self.rows if row['kind'] != 'recovery']
-        with self.assertRaisesRegex(ValueError, 'recovery'):
+        result = self.load()
+        self.assertFalse(result[3])
+        self.assertEqual(result[-1], {})
+
+    def test_missing_replica_verification_cannot_pass(self):
+        self.rows = [row for row in self.rows if row['kind'] != 'verification']
+        result = self.load()
+        self.assertFalse(result[3])
+        self.assertEqual(result[-2], {})
+
+    def test_duplicate_recovery_is_rejected(self):
+        self.rows.append(dict(self.rows[4]))
+        with self.assertRaisesRegex(ValueError, 'expected one recovery'):
             self.load()
 
     def test_observation_failure_overrides_success_summary(self):

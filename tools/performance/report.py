@@ -9,15 +9,17 @@ from pathlib import Path
 def load_run(directory):
     manifest = json.loads((directory / 'manifest.json').read_text())
     records = [json.loads(line) for line in (directory / 'workload.jsonl').read_text().splitlines() if line.strip()]
-    def one(kind):
+    def one(kind, required=True):
         matches = [row for row in records if row.get('kind') == kind]
+        if not matches and not required:
+            return {}
         if len(matches) != 1:
             raise ValueError(f'expected one {kind} record, found {len(matches)}')
         return matches[0]
     config, summary = one('configuration'), one('summary')
     if config.get('format_version') != 2:
         raise ValueError('unsupported workload format')
-    verification, recovery = one('verification'), one('recovery')
+    verification, recovery = one('verification', required=False), one('recovery', required=False)
     observations = [row for row in records if row.get('kind') == 'observation']
     passed = (
         manifest.get('exit_code') == 0
@@ -27,10 +29,10 @@ def load_run(directory):
         and all(row.get('outcome') == 'confirmed' and row.get('verification_failure') is False
                 and row.get('error') is None for row in observations)
         and all(summary.get(key) == 0 for key in ('verification_failures', 'unknown', 'rejected', 'reverted', 'not_sent', 'confirmed_incomplete_workflows'))
-        and verification['verified'] == config['count'] and verification['unresolved'] == 0
-        and verification['replicas'] == config['nodes']
-        and recovery['inspected_operations'] == config['count']
-        and recovery['receipt_mismatches'] == recovery['state_mismatches'] == 0
+        and verification.get('verified') == config['count'] and verification.get('unresolved') == 0
+        and verification.get('replicas') == config['nodes']
+        and recovery.get('inspected_operations') == config['count']
+        and recovery.get('receipt_mismatches') == recovery.get('state_mismatches') == 0
     )
     latencies = []
     for row in observations:
@@ -54,14 +56,14 @@ def load_run(directory):
             seen.add(pid)
             series[pid].append((row['elapsed_seconds'], rss / 1024))
         missing += len(series.keys() - seen)
-    return manifest, config, summary, passed, latencies, series, missing
+    return manifest, config, summary, passed, latencies, series, missing, verification, recovery
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('directory', type=Path)
     args = parser.parse_args()
-    manifest, config, summary, passed, latencies, series, missing = load_run(args.directory)
+    manifest, config, summary, passed, latencies, series, missing, verification, recovery = load_run(args.directory)
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -93,14 +95,22 @@ def main():
         'status': 'passed' if passed else 'failed', 'manifest': manifest,
         'configuration': {key: value for key, value in config.items() if key != 'node_data_dirs'},
         'summary': summary, 'missing_member_samples': missing,
+        'verification': verification or None, 'recovery': recovery or None,
         'scope': 'Four members on one host; receipt latency is not consensus finality latency. No maximum capacity or WAN claim.',
     }
     (args.directory / 'report.json').write_text(json.dumps(details, indent=2, allow_nan=False) + '\n')
+    receipt_p95 = summary['scheduled_to_certified_receipt_ms']['p95']
+    receipt_p95_text = 'unavailable' if receipt_p95 is None else f'{receipt_p95:.2f} ms'
     (args.directory / 'report.md').write_text(
         f"# Vera performance\n\n{state}.\n\n"
         f"Source: `{manifest['source']}`. Backend: {manifest['history']}.\n\n"
         f"Completed workflows/s: {summary['completed_workflows_per_second']:.2f}. "
-        f"Receipt p95: {summary['scheduled_to_certified_receipt_ms']['p95']:.2f} ms.\n\n"
+        f"Receipt p95: {receipt_p95_text} (measured receipts only).\n\n"
+        f"Completed: {summary['completed_workflows']}/{summary['offered']}. "
+        f"Not sent: {summary['not_sent']}. Unknown: {summary['unknown']}. "
+        f"Rejected: {summary['rejected']}. Reverted: {summary['reverted']}. "
+        f"Confirmed but incomplete: {summary['confirmed_incomplete_workflows']}. "
+        f"Verification failures: {summary['verification_failures']}.\n\n"
         f"Missing member resource samples: {missing}.\n\n{details['scope']}\n\n"
         '![Measured receipt latency and resident memory](measurements.svg)\n'
     )

@@ -60,6 +60,10 @@ group and remains a failed measurement. Compilation, report rendering, and
 post-run correctness checks do not contribute to the driver's measured workload
 interval. See [workload semantics and arguments](native-workload.md).
 
+For diagnosis, pass `--rust-log warn,vera_storage=info,vera_diagnostics=debug`.
+The recorder stores the selected filter in the manifest. Additional logging can
+affect throughput and latency; treat diagnostic runs separately from baselines.
+
 ## Interpret the charts
 
 Receipt latency runs from scheduled arrival through verified confirmation. It
