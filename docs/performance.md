@@ -32,6 +32,49 @@ Only measurement files are uploaded. Member data directories, identities, and
 secret stores are outside the artifact directory. Artifacts retain 30 days of
 results; no performance site is published by this workflow.
 
+## Measured local results
+
+At revision `c1f9cff9ac399757684b5dc539252934241278fa`, release builds on an
+Apple M5 Max host (18 logical CPUs, 64 GiB RAM) produced the following results.
+Each run used four local validators, QMDB state, RocksDB history, the Normal
+consensus preset, and growing ACP object registrations with certified receipt
+verification. Permission reads were disabled. Signing happened before timing.
+
+| Offered writes/s | Operations | Completed writes/s | Median confirmation | p95 confirmation | p99 confirmation |
+|---:|---:|---:|---:|---:|---:|
+| 20 | 600 | 19.65 | 625 ms | 1,316 ms | 1,566 ms |
+| 100 | 3,000 | 96.58 | 671 ms | 1,351 ms | 1,645 ms |
+| 200 | 6,000 | 196.66 | 775 ms | 1,682 ms | 2,176 ms |
+
+Every offered operation completed in these runs. All four replicas agreed, and
+receipt/state checks passed after a member was forcibly restarted. The 200/s run
+observed 99 submission throttles and 2,315 receipt-read throttles; bounded retries
+completed within the workload deadline, with no uncertain or failed outcomes.
+
+These are individual 30-second offered-load measurements, followed by draining
+outstanding work. Completed writes/s includes that drain interval. They establish
+a passing local load point, not maximum or sustained capacity. Confirmation
+includes admission, execution, consensus, polling and proof verification; these
+measurements do not establish 300 ms consensus finality. WAN deployment and
+write-plus-permission workflows require separate qualification.
+
+The 200/s workload arguments were:
+
+```text
+6000 200 1024 0 normal 100 20 0 0 32
+```
+
+The 20/s and 100/s runs used an outstanding-workflow limit of 256. All three used
+50 ms receipt polling, a 30-second workflow deadline, 20 revisions per epoch,
+and retention of 32 consensus revisions.
+
+The Fast testing preset remains unqualified for this workload. A subsequent
+100/s diagnostic run stalled at height 20: repeated 256-operation proposals took
+approximately 294–298 ms to execute, exceeding its 100 ms leader and 200 ms
+notarization deadlines. Additional logging and a stack sample were enabled in
+that run, so its timings are diagnostic evidence, not another baseline. Reducing
+timeouts requires validating execution budgets and progress under backlog.
+
 ## Run locally
 
 Build both executables from the same checkout and record any dirty changes:
