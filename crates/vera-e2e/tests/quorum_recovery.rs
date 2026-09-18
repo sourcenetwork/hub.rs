@@ -62,7 +62,7 @@ async fn minority_write_waits_for_quorum_and_survives_replica_recovery() {
     }
 
     cluster.restart_node(2).unwrap();
-    let revision = tokio::time::timeout(Duration::from_secs(60), async {
+    let outcome = tokio::time::timeout(Duration::from_secs(60), async {
         loop {
             if let Some(proof) = clients[0].read_receipt(id, &trusted).await.unwrap() {
                 assert!(proof.verify(id, &trusted).unwrap().success());
@@ -71,8 +71,15 @@ async fn minority_write_waits_for_quorum_and_survives_replica_recovery() {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     })
-    .await
-    .expect("the surviving replicas must retain and finalize the admitted write");
+    .await;
+    if outcome.is_err() {
+        for (index, client) in clients[..3].iter().enumerate() {
+            let status = tokio::time::timeout(Duration::from_secs(2), client.node_status()).await;
+            eprintln!("quorum recovery timed out: node={index}, request={id:?}, status={status:?}");
+        }
+    }
+    let revision =
+        outcome.expect("the surviving replicas must retain and finalize the admitted write");
 
     cluster.restart_node(3).unwrap();
     cluster
