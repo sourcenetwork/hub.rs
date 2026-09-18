@@ -31,7 +31,6 @@ jobs:
       CARGO_TERM_COLOR: always
       CARGO_INCREMENTAL: '0'
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
-      VERA_E2E_DIR: ${{ runner.temp }}/vera-pr-nodes
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -88,6 +87,7 @@ jobs:
           done
       - name: Measure interleaved passes and compare
         env:
+          VERA_E2E_DIR: ${{ runner.temp }}/vera-pr-nodes
           MPLCONFIGDIR: ${{ runner.temp }}/vera-matplotlib
           XDG_CACHE_HOME: ${{ runner.temp }}/vera-cache
         run: |
