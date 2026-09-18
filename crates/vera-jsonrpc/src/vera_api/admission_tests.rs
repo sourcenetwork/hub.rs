@@ -119,6 +119,9 @@ async fn receipt_poll_does_not_wait_for_a_missing_certificate() {
             Err("finalization certificate not found".into())
         }));
     api.index = Some(index);
+    let _waiting: Vec<_> = (0..8)
+        .map(|_| state.permission_read_permit().unwrap())
+        .collect();
     assert!(
         tokio::time::timeout(Duration::from_secs(1), api.get_receipt_proof(hash))
             .await
@@ -300,4 +303,37 @@ async fn evidence_deadline_is_a_retryable_error() {
     assert_eq!(error.data().unwrap().get(), r#"{"retryable":true}"#);
     assert_eq!(error.message(), "receipt finality deadline exceeded");
     release.send(()).unwrap();
+}
+
+#[tokio::test]
+async fn current_permission_admission_is_bounded_and_released_on_validation_error() {
+    let state = Arc::new(NodeState::new(1, 0, 1));
+    let api = VeraApiImpl::new(state.clone(), None);
+    let request = || AccessRequest {
+        actor: vera_permission::Actor(
+            "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+                .parse()
+                .unwrap(),
+        ),
+        operations: vec![],
+    };
+    let mut waiting: Vec<_> = (0..8)
+        .map(|_| state.permission_read_permit().unwrap())
+        .collect();
+    let busy = api
+        .get_current_permission_proof("policy".into(), request(), U64::ZERO)
+        .await
+        .unwrap_err();
+    assert_eq!(busy.code(), codes::RESOURCE_UNAVAILABLE);
+    assert_eq!(busy.data().unwrap().get(), r#"{"retryable":true}"#);
+    let _proofs: Vec<_> = (0..8).map(|_| state.proof_permit().unwrap()).collect();
+    drop(waiting.pop());
+    for _ in 0..2 {
+        let invalid = api
+            .get_current_permission_proof("policy".into(), request(), U64::ZERO)
+            .await
+            .unwrap_err();
+        assert_eq!(invalid.code(), codes::INVALID_PARAMS);
+    }
+    assert!(state.permission_read_permit().is_ok());
 }

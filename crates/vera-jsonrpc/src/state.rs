@@ -32,6 +32,7 @@ struct NodeStateInner {
     backfilling: AtomicBool,
     snapshot_revision: AtomicU64,
     proof_requests: Arc<tokio::sync::Semaphore>,
+    permission_reads: Arc<tokio::sync::Semaphore>,
     light_lookups: Arc<tokio::sync::Semaphore>,
     proof_progress: tokio::sync::watch::Sender<()>,
 }
@@ -67,6 +68,7 @@ impl NodeState {
                 backfilling: AtomicBool::new(false),
                 snapshot_revision: AtomicU64::new(0),
                 proof_requests: Arc::new(tokio::sync::Semaphore::new(8)),
+                permission_reads: Arc::new(tokio::sync::Semaphore::new(8)),
                 light_lookups: Arc::new(tokio::sync::Semaphore::new(8)),
                 proof_progress: tokio::sync::watch::channel(()).0,
             }),
@@ -83,6 +85,14 @@ impl NodeState {
         &self,
     ) -> jsonrpsee::core::RpcResult<tokio::sync::OwnedSemaphorePermit> {
         acquire(&self.inner.light_lookups)
+    }
+
+    /// Bound current-permission requests while publication may block storage reads.
+    /// These requests also need a shared proof permit before allocating evidence.
+    pub(crate) fn permission_read_permit(
+        &self,
+    ) -> jsonrpsee::core::RpcResult<tokio::sync::OwnedSemaphorePermit> {
+        acquire(&self.inner.permission_reads)
     }
 
     /// Wake proof readers after publishing an execution index or finality evidence.

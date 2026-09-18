@@ -75,7 +75,7 @@ impl VeraApiImpl {
         let mut proof_time = Duration::ZERO;
         let mut finality_time = Duration::ZERO;
         let result = tokio::time::timeout(Duration::from_secs(2), async {
-            let (selected, proof) = loop {
+            let (selected, proof, _permit) = loop {
                 attempts += 1;
                 let captured = {
                     phase = "storage_lock";
@@ -106,6 +106,9 @@ impl VeraApiImpl {
                         continue;
                     }
                     height = selected.number;
+                    // Storage/publication waits must not reserve evidence capacity.
+                    // Keep this permit with the proof through finality and encoding.
+                    let permit = self.state.proof_permit()?;
                     phase = "proof";
                     let stage = started.map(|_| Instant::now());
                     let snapshot = self.permission_snapshot()?;
@@ -120,7 +123,7 @@ impl VeraApiImpl {
                     .await;
                     proof_time += stage.map_or(Duration::ZERO, |s| s.elapsed());
                     match proof {
-                        Ok(proof) => Some((selected, proof)),
+                        Ok(proof) => Some((selected, proof, permit)),
                         Err(vera_backend::BackendError::Permission(PermissionError::Invalid(
                             "selected module root changed",
                         ))) => None,

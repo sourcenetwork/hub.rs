@@ -157,6 +157,17 @@ Permission latency includes retries, queuing and proof verification. These reads
 check owner access on new objects; they do not qualify revocation workloads or WAN
 latency. The passing write-only 400/s result does not extend to this combined path.
 
+A follow-up separated bounded permission waiting from shared proof generation
+(described below), without increasing the eight-permit evidence budget. The same
+two-minute combined 400/s workload completed 46,573/48,000 operations and left
+1,427 unsent: it **still failed** the complete-load gate. Replica and hard-restart
+reconciliation passed for all expected outcomes. Completed-subset throughput was
+382.54 workflows/s; permission p95 was 1,423 ms and full-workflow p95 was 3,234 ms.
+It recorded 9,184 receipt and 43,482 permission remote throttles, with no local
+throttles or uncertain, rejected, reverted or unverifiable outcomes. These are
+individual trials; the reduced receipt throttling does not establish a repeatable
+speedup or qualified 400/s combined capacity.
+
 For comparison, the earlier sequential-verification revision
 `c1f9cff9ac399757684b5dc539252934241278fa` passed these Normal-preset runs on the
 same host:
@@ -272,6 +283,15 @@ older runs used fail-fast admission. Queue time remains included in measured RPC
 and confirmation latency, within the unchanged workflow deadline. Client and
 server throttle counters distinguish local admission failures from remote limits.
 The outstanding-workflow limit is separate from the HTTP concurrency bound.
+
+The server admits at most eight current-permission requests, including requests
+waiting for storage publication. They acquire a separate shared proof permit only
+after obtaining the partition read guards and selecting a sufficiently recent
+revision. Publication retries release that proof permit. A generated proof keeps
+its permit through finality lookup and size validation; at most eight shared
+proof operations can hold evidence at once. This lets receipt requests use shared
+proof capacity while permission requests wait for storage, without an unbounded
+waiting queue or a higher evidence-allocation budget.
 
 RSS is sampled once per second. Missing samples are counted, not filled with
 zero; short peaks may be missed. A short fixed-state run cannot establish a
