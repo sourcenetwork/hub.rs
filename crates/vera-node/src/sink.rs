@@ -147,8 +147,12 @@ impl FinalizedSink for NodeSink {
     }
 
     async fn finalized(&self, block: &Block, receipts: Vec<ExecutionReceipt>) {
+        let started =
+            tracing::enabled!(target: "vera_publication_diagnostics", tracing::Level::DEBUG)
+                .then(std::time::Instant::now);
         // Marshal serves lookups independently of the stateful callback.
         let artifacts = (self.finalization_lookup)(block.height).await;
+        let lookup_elapsed = started.map(|started| started.elapsed());
         let history = self.history.clone();
         let persisted = block.clone();
         let gas_limit = self.gas_limit;
@@ -159,6 +163,7 @@ impl FinalizedSink for NodeSink {
         .await
         .expect("finalized history writer stopped")
         .expect("persist finalized execution before publication");
+        let persisted_elapsed = started.map(|started| started.elapsed());
         self.node_state.inc_finalized();
         self.node_state.set_view(block.context.round.view().get());
         self.node_state.set_backfilling(false);
@@ -166,6 +171,15 @@ impl FinalizedSink for NodeSink {
         let gas_used = receipts.iter().map(|r| r.gas_used).sum();
         index_finalized_block(&self.index, block, self.gas_limit, &receipts, gas_used);
         self.node_state.notify_proof_progress();
+        if let Some(((started, lookup), persisted)) =
+            started.zip(lookup_elapsed).zip(persisted_elapsed)
+        {
+            tracing::debug!(target: "vera_publication_diagnostics", height = block.height,
+                transactions = block.txs.len(), lookup_us = lookup.as_micros(),
+                history_us = (persisted - lookup).as_micros(),
+                index_us = (started.elapsed() - persisted).as_micros(),
+                "finalized revision publication");
+        }
         let (rpc_block, rpc_logs) = subscription_data(block, self.gas_limit, &receipts, gas_used);
         if self.heads.send(rpc_block).is_err() {
             trace!(height = block.height, "no newHeads subscribers");

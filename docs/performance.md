@@ -264,6 +264,14 @@ completed-stage counter; requests cancelled by their caller may emit no sample.
 Admission rejections are excluded from these samples. This target does not enable
 the per-receipt diagnostics, and its timings are diagnostic evidence only.
 
+`vera_publication_diagnostics=debug` separately records per-revision database apply
+and module-snapshot publication, followed by certificate lookup, durable history
+writing (including blocking-pool scheduling), and query-index publication. These
+durations include lock waits and executor scheduling; database apply is not a
+disk-only measurement. Use this target without `vera_diagnostics` to avoid the
+per-receipt trace. It observes existing ordering and never publishes an index
+before its history write succeeds.
+
 ## Interpret the charts
 
 Receipt latency runs from scheduled arrival through verified confirmation. It
