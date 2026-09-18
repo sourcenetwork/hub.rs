@@ -60,7 +60,13 @@ jobs:
           if [[ "$HISTORY_BACKEND" == regolith ]]; then features=(--features regolith-history); fi
           cargo +1.98.0 build --frozen --release -p verad "${features[@]}"
           cargo +1.98.0 build --frozen --release -p vera-e2e --example operation_baseline
+          cargo +1.98.0 build --frozen --release -p vera-e2e --example component_baseline
           python3 -m unittest discover -s tools/performance -p 'test_*.py'
+
+      - name: Measure local components
+        run: |
+          mkdir -p performance-results
+          target/release/examples/component_baseline > performance-results/components.jsonl
 
       - name: Measure growing and fixed state
         env:

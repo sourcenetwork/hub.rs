@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+"""Measure already-built revisions on one runner; never compile between passes."""
+import argparse
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+from compare_pr import TAGS, compare
+from record import digest
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--head', required=True, type=Path)
+    parser.add_argument('--base', required=True, type=Path)
+    parser.add_argument('--binaries', required=True, type=Path)
+    parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--count', type=int, default=600)
+    parser.add_argument('--rate', type=int, default=20)
+    args = parser.parse_args()
+    output = args.output.resolve()
+    output.mkdir(parents=True, exist_ok=False)
+    scripts = Path(__file__).resolve().parent
+    sources = {'head': args.head.resolve(), 'base': args.base.resolve()}
+    binaries = args.binaries.resolve()
+    identity = {}
+    for side, source in sources.items():
+        identity[side] = {
+            'source': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=source, text=True).strip(),
+            'node_sha256': digest(binaries / side / 'verad'),
+            'runner_sha256': digest(binaries / side / 'operation_baseline'),
+            'components': (binaries / side / 'component_baseline').is_file(),
+        }
+        if identity[side]['components']:
+            identity[side]['component_sha256'] = digest(binaries / side / 'component_baseline')
+    if not identity['head']['components']:
+        raise ValueError('head component benchmark is required')
+    (output / 'comparison.json').write_text(json.dumps(identity, indent=2) + '\n')
+    failed = False
+    for tag in TAGS:
+        side = tag.rstrip('12')
+        destination = output / tag
+        destination.mkdir()
+        print(f'Measuring {tag}', flush=True)
+        if identity[side]['components']:
+            with (destination / 'components.jsonl').open('w') as out, (destination / 'components.stderr').open('w') as err:
+                subprocess.run([str(binaries / side / 'component_baseline')], cwd=sources[side],
+                               stdout=out, stderr=err, check=True, timeout=120)
+        for objects in (0, 32):
+            command = [sys.executable, str(scripts / 'record.py'), '--node', str(binaries / side / 'verad'),
+                       '--runner', str(binaries / side / 'operation_baseline'), '--history', 'rocksdb',
+                       '--output', str(destination / f'objects-{objects}'), str(args.count), str(args.rate),
+                       '128', '1', 'normal', '100', '20', '0', str(objects), '32']
+            environment = dict(os.environ, VERA_E2E_KEEP='0')
+            failed |= subprocess.run(command, cwd=sources[side], env=environment, check=False).returncode != 0
+    # Render only after every timed pass has finished.
+    for tag in TAGS:
+        for objects in (0, 32):
+            failed |= subprocess.run([sys.executable, str(scripts / 'report.py'),
+                                      str(output / tag / f'objects-{objects}')], check=False).returncode != 0
+    failed |= compare(output)
+    raise SystemExit(int(failed))
+
+
+if __name__ == '__main__':
+    main()

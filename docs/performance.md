@@ -17,6 +17,57 @@ first with growing registrations and then with 128 repeatedly updated objects.
 These are fixed-load baselines, not searches for maximum throughput. They are
 not part of every pull request's test loop.
 
+## Pull request comparisons
+
+The [PR performance workflow](../.github/workflows/performance-pr.yml) measures
+code-changing same-repository PRs on one hosted Linux runner. It checks out the
+exact PR head and base-tip revisions, builds both with Rust 1.98.0 in the release
+profile, and preserves separate binaries before timing. Four passes run in
+head/base/base/head order with no compilation or chart rendering between them.
+Fork PRs cannot run this job because the locked dependencies require credentials.
+
+Each pass measures 600 operations at 20 offered arrivals/s on four local
+validators: growing registrations and repeated updates to 32 objects, both with
+verified permission reads. Receipt, permission and full-workflow p95, completed
+workflows/s, and peak member RSS appear in the check summary. Every pass must
+satisfy the existing completeness, certificate, replica and hard-restart gates.
+A failed run is never presented as improved performance. Configuration changes
+are listed explicitly and suppress full-stack percentage comparisons.
+
+The component executable separately measures native BLS request verification,
+ACP owner-read evaluation with read capture, and consensus-certificate verification
+through `verify_light_block`. Fixed fixture construction and signing occur before
+timing; each component warms for 200 ms then records nine 100 ms samples. These
+are repeated hot-fixture costs, not distributed consensus latency, disk proof
+construction, or representative complex-policy performance. A component newly
+introduced by the PR is reported without a fabricated base measurement.
+
+The report compares medians of two passes per revision. Changes below 5% are
+within threshold; larger changes with overlapping pass ranges are inconclusive.
+Within-revision pass spread above 5% also makes a larger change inconclusive.
+Otherwise, separated ranges are labelled improvement or regression **signals**, not
+statistical confidence. Performance changes are advisory on shared runners;
+missing measurements, build failures and failed correctness gates fail the job.
+The workflow summary and 30-day artifacts contain pass ranges, raw measurements,
+source revisions, binary hashes, workload configuration, host provenance and
+per-pass charts. The workflow has read-only repository permissions and does not
+post comments or publish a site. Throughput at this fixed offered rate is not a
+maximum-throughput benchmark.
+
+Run the same comparison locally after building each revision into separate
+`binaries/head` and `binaries/base` directories (containing `verad`,
+`operation_baseline`, and `component_baseline` when available):
+
+```sh
+python tools/performance/run_pr.py --head /path/to/head --base /path/to/base \
+  --binaries /path/to/binaries --output /path/to/new-results
+```
+
+Use an environment with `tools/performance/requirements.txt` installed. Both
+checkouts must be clean and match their binaries. The main/manual Performance
+workflow also retains the component samples alongside its RocksDB and Regolith
+full-stack runs.
+
 Each artifact includes:
 
 - Checkout revision, binary hashes, platform, CPU count, memory, runner image,
