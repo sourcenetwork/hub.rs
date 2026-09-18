@@ -243,6 +243,16 @@ receipts and error selection retain their original transaction order.
 The recorder stores the selected filter in the manifest. Additional logging can
 affect throughput and latency; treat diagnostic runs separately from baselines.
 
+For permission reads, use the separate filter
+`warn,vera_storage=info,vera_permission_diagnostics=debug`. It samples one in 128
+admitted current-permission requests per process, reporting completed storage-lock,
+proof-construction and finality-evidence stages, total elapsed time, selection
+attempts and the last phase. The proof stage includes snapshot capture and server
+verification. A timed-out stage contributes to total elapsed time but not its
+completed-stage counter; requests cancelled by their caller may emit no sample.
+Admission rejections are excluded from these samples. This target does not enable
+the per-receipt diagnostics, and its timings are diagnostic evidence only.
+
 ## Interpret the charts
 
 Receipt latency runs from scheduled arrival through verified confirmation. It

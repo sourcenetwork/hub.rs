@@ -2,7 +2,10 @@ use super::{VeraApiImpl, VeraApiServer};
 use crate::error::codes;
 use alloy_primitives::{B256, U64};
 use jsonrpsee::{core::RpcResult, types::ErrorObjectOwned};
-use std::time::Duration;
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::{Duration, Instant},
+};
 use vera_permission::{
     AccessRequest, PERMISSION_LIMITS, PERMISSION_RESPONSE_BYTES, PermissionError, PermissionProof,
     PermissionRead, PermissionResponse, RecordRead, capture_reads, encoded_size, validate_request,
@@ -60,19 +63,35 @@ impl VeraApiImpl {
             .as_ref()
             .ok_or_else(|| error("finalized revision index unavailable"))?;
         let mut updates = self.state.proof_updates();
-        tokio::time::timeout(Duration::from_secs(2), async {
+        static REQUESTS: AtomicU64 = AtomicU64::new(0);
+        let started =
+            (tracing::enabled!(target: "vera_permission_diagnostics", tracing::Level::DEBUG)
+                && REQUESTS.fetch_add(1, Ordering::Relaxed).is_multiple_of(128))
+            .then(Instant::now);
+        let mut phase = "storage_lock";
+        let mut height = 0;
+        let mut attempts = 0;
+        let mut lock_time = Duration::ZERO;
+        let mut proof_time = Duration::ZERO;
+        let mut finality_time = Duration::ZERO;
+        let result = tokio::time::timeout(Duration::from_secs(2), async {
             let (selected, proof) = loop {
+                attempts += 1;
                 let captured = {
+                    phase = "storage_lock";
+                    let stage = started.map(|_| Instant::now());
                     let (a, b, h, n) = tokio::join!(
                         databases.0.read(),
                         databases.1.read(),
                         databases.2.read(),
                         databases.3.read(),
                     );
+                    lock_time += stage.map_or(Duration::ZERO, |s| s.elapsed());
                     let selected = match index.latest_block() {
                         Some(selected) => selected,
                         None => {
                             drop((a, b, h, n));
+                            phase = "publication";
                             super::record::wait_for_proof_progress(&mut updates).await;
                             continue;
                         }
@@ -82,11 +101,15 @@ impl VeraApiImpl {
                         // for the next publication instead of failing a read
                         // whose minimum is already finalized elsewhere.
                         drop((a, b, h, n));
+                        phase = "publication";
                         super::record::wait_for_proof_progress(&mut updates).await;
                         continue;
                     }
+                    height = selected.number;
+                    phase = "proof";
+                    let stage = started.map(|_| Instant::now());
                     let snapshot = self.permission_snapshot()?;
-                    match vera_backend::native::permission_proof_at(
+                    let proof = vera_backend::native::permission_proof_at(
                         [&a, &b, &h, &n],
                         selected.module_state_root,
                         snapshot,
@@ -94,8 +117,9 @@ impl VeraApiImpl {
                         request,
                         PERMISSION_LIMITS,
                     )
-                    .await
-                    {
+                    .await;
+                    proof_time += stage.map_or(Duration::ZERO, |s| s.elapsed());
+                    match proof {
                         Ok(proof) => Some((selected, proof)),
                         Err(vera_backend::BackendError::Permission(PermissionError::Invalid(
                             "selected module root changed",
@@ -110,15 +134,29 @@ impl VeraApiImpl {
                     break captured;
                 }
                 // Release every read guard so an in-flight finalization can publish its index.
+                phase = "publication";
                 super::record::wait_for_proof_progress(&mut updates).await;
             };
+            phase = "finality";
+            let stage = started.map(|_| Instant::now());
             let revision = self.captured_revision(&selected).await?;
+            finality_time += stage.map_or(Duration::ZERO, |s| s.elapsed());
+            phase = "encoding";
             let response = PermissionResponse { revision, proof };
             encoded_size(&response, PERMISSION_RESPONSE_BYTES - 1024).map_err(request_error)?;
             Ok(response)
         })
         .await
-        .map_err(|_| retryable("current permission evidence deadline exceeded"))?
+        .map_err(|_| retryable("current permission evidence deadline exceeded"))
+        .and_then(std::convert::identity);
+        if let Some(started) = started {
+            tracing::debug!(target: "vera_permission_diagnostics", height, attempts, phase,
+                success = result.is_ok(), elapsed_us = started.elapsed().as_micros(),
+                storage_lock_us = lock_time.as_micros(), proof_us = proof_time.as_micros(),
+                finality_us = finality_time.as_micros(),
+                error = ?result.as_ref().err(), "sampled permission proof stages");
+        }
+        result
     }
 
     pub(super) async fn permission_proof(
