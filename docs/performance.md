@@ -371,3 +371,16 @@ comparisons across different configurations must not report an isolated code
 speedup. Epoch length, history backend, arrival rate and verification gates remain
 independently configurable. Pipelining does not establish a transaction capacity
 or latency guarantee.
+
+## Storage tracing
+
+For diagnostic runs, set `VERA_TRACE_SPANS=1` and select Commonware storage spans
+with `RUST_LOG=warn,commonware_glue::stateful::db=info`.
+Add `commonware_utils::sync=info` only when lock attribution is needed; its
+higher event volume can substantially perturb the workload.
+Span-close events report busy and idle time for database apply/finalize and
+labelled lock acquisition. The database index follows `OrderedDatabases` order:
+accounts, storage, code, ACP, bulletin, identity, native sequences, commitment.
+Idle time includes awaited I/O and scheduling; it is not a direct disk-latency
+measurement. Tracing is off by default and recorded in workload provenance.
+Do not treat traced runs as throughput qualification.

@@ -50,6 +50,7 @@ def main():
         'node_sha256': digest(node), 'runner_sha256': digest(runner),
         'history': args.history, 'arguments': args.workload_args,
         'rust_log': args.rust_log,
+        'trace_span_close': os.environ.get('VERA_TRACE_SPANS') == '1',
         'platform': platform.platform(), 'architecture': platform.machine(),
         'logical_cpus': os.cpu_count(), 'cpu_model': cpu_model(), 'load_before': os.getloadavg(),
         'runner_image': os.environ.get('ImageVersion'),
