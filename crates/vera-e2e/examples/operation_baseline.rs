@@ -238,6 +238,7 @@ async fn main() {
             "runner_debug_assertions": cfg!(debug_assertions),
             "revisions_per_epoch": epoch_length.get(),
             "simplex": simplex,
+            "proposal_batch_wait_ms": simplex.map(|_| (timing.leader_timeout / 4).min(Duration::from_millis(100)).as_millis()),
             "retention_minimum_revision": retention_height,
             "max_operations_per_revision": vera_domain::MAX_BLOCK_TXS,
             "max_encoded_operation_bytes_per_revision": vera_domain::MAX_BLOCK_TX_BYTES,

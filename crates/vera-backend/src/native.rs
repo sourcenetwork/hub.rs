@@ -4,7 +4,7 @@ use bytes::Bytes;
 use commonware_codec::RangeCfg;
 use commonware_cryptography::Sha256;
 use commonware_glue::stateful::db::{
-    DatabaseSet, ManagedDb, Merkleized as _, Shared, Unmerkleized as _,
+    DatabaseSet, ManagedDb, Merkleized as _, ReadGuard, Shared, Unmerkleized as _,
 };
 use commonware_parallel::Sequential;
 use commonware_runtime::buffer::paged::CacheRef;
@@ -15,7 +15,7 @@ use commonware_storage::{
     translator::Translator,
 };
 use commonware_utils::{NZU64, NZUsize, bitmap::Readable as _};
-use futures::StreamExt as _;
+use futures::{FutureExt as _, StreamExt as _};
 use vera_modules::{
     ModuleState,
     kv_store::InMemoryKvStore,
@@ -103,6 +103,17 @@ pub type NativeConfig = <NativeStateSet as DatabaseSet<Ctx>>::Config;
 mod fault_tests;
 #[cfg(test)]
 mod faulty_ctx;
+
+/// Acquire all partition readers immediately, or release every partial guard.
+/// A query must not hold idle partitions while waiting for another partition's writer.
+pub fn try_read_partitions<T>(databases: [&Shared<T>; 4]) -> Option<[ReadGuard<'_, T>; 4]> {
+    Some([
+        databases[0].read().now_or_never()?,
+        databases[1].read().now_or_never()?,
+        databases[2].read().now_or_never()?,
+        databases[3].read().now_or_never()?,
+    ])
+}
 
 /// Configure independent journals for the four native namespaces.
 pub fn state_config(prefix: &str, cache: CacheRef) -> NativeConfig {
@@ -269,4 +280,30 @@ async fn load(db: &Shared<NativeDb>) -> Result<InMemoryKvStore, BackendError> {
         },
     );
     InMemoryKvStore::try_from_stream(records.boxed()).await
+}
+
+#[cfg(test)]
+mod read_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn partial_partition_reads_never_hold_up_other_writers() {
+        let databases = std::array::from_fn::<_, 4, _>(|_| Shared::new("query-test", ()));
+        for blocked in 0..4 {
+            let (slot, database) = databases[blocked].write().await;
+            assert!(try_read_partitions(databases.each_ref()).is_none());
+            for (index, partition) in databases.iter().enumerate() {
+                if index != blocked {
+                    let (other, value) =
+                        tokio::time::timeout(Duration::from_secs(1), partition.write())
+                            .await
+                            .unwrap();
+                    other.put(value);
+                }
+            }
+            slot.put(database);
+            assert!(try_read_partitions(databases.each_ref()).is_some());
+        }
+    }
 }

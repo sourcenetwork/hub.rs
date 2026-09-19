@@ -120,6 +120,10 @@ A new deployment can enable stable leaders and optimistic validation in genesis:
 
 One leader serves each term. Commonware may propose and validate up to the
 configured optimistic distance before receiving the preceding notarizations.
+Native proposals collect requests for at most one quarter of the local leader
+timeout, capped at 100 milliseconds; batches reaching the request-count limit proceed
+immediately. Empty
+proposals remain possible after this deadline so DKG and idle progress continue.
 Certification, finalization and durable publication still require their normal
 evidence. A stalled term is abandoned through Commonware's nullification path.
 

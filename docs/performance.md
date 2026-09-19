@@ -17,6 +17,24 @@ first with growing registrations and then with 128 repeatedly updated objects.
 These are fixed-load baselines, not searches for maximum throughput. They are
 not part of every pull request's test loop.
 
+## Local pipelined load measurement
+
+On September 19, 2026, four validators on one macOS host used RocksDB history,
+16-view leader terms, optimistic distance 4, and a 100 ms proposal collection
+window. The driver offered 48,000 native ACP workflows at 400/s for 120 seconds,
+with one verified permission read per write and 1,024 outstanding workflows.
+Builds and profiling were excluded from the measurement interval.
+
+44,335 workflows completed in 121.342 seconds including drain (365.37/s).
+Certified-receipt p95 was 2,643.88 ms; permission-read p95 was 1,288.77 ms;
+complete-workflow p95 was 3,605.19 ms. The driver did not send 3,665 scheduled
+workflows, so **the 400/s offered-load gate failed**. The completed-subset rate
+is not a sustainable-throughput qualification or a comparison against the Go
+implementation. All four replicas reconciled all 48,000 expected outcomes,
+including absence of unsent requests; hard restart found zero receipt or state
+mismatches. These local results do not establish WAN performance or 300 ms
+finality.
+
 ## Pull request comparisons
 
 The [PR performance workflow](../.github/workflows/performance-pr.yml) measures
@@ -300,6 +318,12 @@ its permit through finality lookup and size validation; at most eight shared
 proof operations can hold evidence at once. This lets receipt requests use shared
 proof capacity while permission requests wait for storage, without an unbounded
 waiting queue or a higher evidence-allocation budget.
+
+Current permission requests acquire all four native partition readers without
+waiting while holding a partial set. If any writer is active or queued, the
+request releases its acquired readers and waits for publication before retrying.
+The existing two-second deadline, eight-request permission limit, shared proof
+budget and authenticated root checks still apply.
 
 RSS is sampled once per second. Missing samples are counted, not filled with
 zero; short peaks may be missed. A short fixed-state run cannot establish a

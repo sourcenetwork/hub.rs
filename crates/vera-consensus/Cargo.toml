@@ -18,10 +18,10 @@ commonware-codec.workspace = true
 parking_lot.workspace = true
 
 # Async
+tokio.workspace = true
 
 [dev-dependencies]
 rstest.workspace = true
-tokio = { workspace = true, features = ["rt", "macros"] }
 
 [lints]
 workspace = true

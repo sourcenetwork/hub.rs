@@ -45,6 +45,7 @@ pub struct StatefulVeraApp<S: FinalizedSink, D: ApplicationState = VeraStateSet>
     participant_addresses: Arc<Vec<(PublicKey, Address)>>,
     vrf_seeds: VrfSeedCache,
     native_pipeline: bool,
+    proposal_batch_wait: std::time::Duration,
     pending: Arc<Mutex<HashMap<BlockId, PendingExecution>>>,
 }
 
@@ -82,6 +83,7 @@ impl<S: FinalizedSink, D: ApplicationState> StatefulVeraApp<S, D> {
             participant_addresses: Arc::new(Vec::new()),
             vrf_seeds: VrfSeedCache::default(),
             native_pipeline: false,
+            proposal_batch_wait: std::time::Duration::ZERO,
             pending: Arc::default(),
         }
     }
@@ -95,8 +97,13 @@ impl<S: FinalizedSink, D: ApplicationState> StatefulVeraApp<S, D> {
 
     /// Enable native-only execution without certificate-dependent EVM randomness.
     #[must_use]
-    pub const fn with_native_pipeline(mut self, enabled: bool) -> Self {
+    pub const fn with_native_pipeline(
+        mut self,
+        enabled: bool,
+        batch_wait: std::time::Duration,
+    ) -> Self {
         self.native_pipeline = enabled;
+        self.proposal_batch_wait = batch_wait;
         self
     }
 
@@ -245,7 +252,14 @@ impl<S: FinalizedSink, D: ApplicationState> Application<Ctx> for StatefulVeraApp
             }
         }
         let excluded = Self::pending_tx_ids(&pending);
-        let mut txs = input.provider.build_block(self.max_txs, &excluded);
+        let mut txs = if self.native_pipeline {
+            input
+                .provider
+                .build_block_wait(self.max_txs, &excluded, self.proposal_batch_wait)
+                .await
+        } else {
+            input.provider.build_block(self.max_txs, &excluded)
+        };
         if self.native_pipeline {
             txs.retain(|tx| {
                 tx.bytes

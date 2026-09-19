@@ -545,7 +545,10 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         gas_limit,
     )
     .with_participant_addresses(participant_addresses)
-    .with_native_pipeline(genesis.simplex.is_some());
+    .with_native_pipeline(
+        genesis.simplex.is_some(),
+        (leader_timeout / 4).min(Duration::from_millis(100)),
+    );
     let vrf_elector = VrfElectorConfig::new(application.vrf_seed_cache(), genesis.simplex);
 
     let snapshot_history = crate::history::SnapshotHistory {
