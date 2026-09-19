@@ -35,6 +35,13 @@ including absence of unsent requests; hard restart found zero receipt or state
 mismatches. These local results do not establish WAN performance or 300 ms
 finality.
 
+A follow-up with direct storage-lock wakeups completed 44,515 workflows in
+122.931 seconds (362.11/s), leaving 3,485 unsent. Receipt p95 was 2,562.16 ms,
+permission p95 1,187.61 ms, and workflow p95 3,388.75 ms. Replica and restart
+checks again found no mismatches. This also failed the offered-load gate;
+these single trials do not establish a throughput improvement from the wakeup
+change.
+
 ## Pull request comparisons
 
 The [PR performance workflow](../.github/workflows/performance-pr.yml) measures
@@ -321,7 +328,9 @@ waiting queue or a higher evidence-allocation budget.
 
 Current permission requests acquire all four native partition readers without
 waiting while holding a partial set. If any writer is active or queued, the
-request releases its acquired readers and waits for publication before retrying.
+request releases its acquired readers, waits only for the busy partition, and
+retries the complete set. Storage availability does not require a publication
+notification or a polling timer.
 The existing two-second deadline, eight-request permission limit, shared proof
 budget and authenticated root checks still apply.
 

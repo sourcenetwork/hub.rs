@@ -104,15 +104,24 @@ mod fault_tests;
 #[cfg(test)]
 mod faulty_ctx;
 
-/// Acquire all partition readers immediately, or release every partial guard.
-/// A query must not hold idle partitions while waiting for another partition's writer.
-pub fn try_read_partitions<T>(databases: [&Shared<T>; 4]) -> Option<[ReadGuard<'_, T>; 4]> {
-    Some([
-        databases[0].read().now_or_never()?,
-        databases[1].read().now_or_never()?,
-        databases[2].read().now_or_never()?,
-        databases[3].read().now_or_never()?,
-    ])
+/// Acquire partition readers without holding partial guards across a writer wait.
+pub async fn read_partitions<T>(databases: [&Shared<T>; 4]) -> [ReadGuard<'_, T>; 4] {
+    loop {
+        let attempt = (|| {
+            Ok::<_, usize>([
+                databases[0].read().now_or_never().ok_or(0usize)?,
+                databases[1].read().now_or_never().ok_or(1usize)?,
+                databases[2].read().now_or_never().ok_or(2usize)?,
+                databases[3].read().now_or_never().ok_or(3usize)?,
+            ])
+        })();
+        match attempt {
+            Ok(readers) => return readers,
+            // All partial guards are gone. Wait only on the busy partition,
+            // then retry the complete set because other partitions may have changed.
+            Err(busy) => drop(databases[busy].read().await),
+        }
+    }
 }
 
 /// Configure independent journals for the four native namespaces.
@@ -292,7 +301,9 @@ mod read_tests {
         let databases = std::array::from_fn::<_, 4, _>(|_| Shared::new("query-test", ()));
         for blocked in 0..4 {
             let (slot, database) = databases[blocked].write().await;
-            assert!(try_read_partitions(databases.each_ref()).is_none());
+            let readers = read_partitions(databases.each_ref());
+            tokio::pin!(readers);
+            assert!(futures::poll!(&mut readers).is_pending());
             for (index, partition) in databases.iter().enumerate() {
                 if index != blocked {
                     let (other, value) =
@@ -303,7 +314,8 @@ mod read_tests {
                 }
             }
             slot.put(database);
-            assert!(try_read_partitions(databases.each_ref()).is_some());
+            let guards = futures::poll!(&mut readers);
+            assert!(guards.is_ready(), "reader must resume without publication");
         }
     }
 }

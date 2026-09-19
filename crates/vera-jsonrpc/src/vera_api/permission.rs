@@ -80,16 +80,13 @@ impl VeraApiImpl {
                 let captured = {
                     phase = "storage_lock";
                     let stage = started.map(|_| Instant::now());
-                    let Some([a, b, h, n]) = vera_backend::native::try_read_partitions([
+                    let [a, b, h, n] = vera_backend::native::read_partitions([
                         &databases.0,
                         &databases.1,
                         &databases.2,
                         &databases.3,
-                    ]) else {
-                        super::record::wait_for_proof_progress(&mut updates).await;
-                        lock_time += stage.map_or(Duration::ZERO, |s| s.elapsed());
-                        continue;
-                    };
+                    ])
+                    .await;
                     lock_time += stage.map_or(Duration::ZERO, |s| s.elapsed());
                     let selected = match index.latest_block() {
                         Some(selected) => selected,
