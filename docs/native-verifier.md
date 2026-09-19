@@ -106,3 +106,18 @@ record verification, object registration/archive/reactivation, altered owner
 evidence, direct/group/wildcard permission grants and revocation, and revoked
 relay authority after node restart. The current owner verifier rejects changed policy/object selection, minimum revision, consensus
 trust, proof roots, witnesses and revision metadata.
+
+The `native_go_gateway_verifies_pipelined_vera` case additionally requires
+`TRUST_NATIVE_GATEWAY_TEST_BINARY`, built from Trust's `cmd/trust-api` package
+with `vera_native` and CGo. It enables native-only pipelined consensus and runs
+the gateway workflow before restart, after restart, and after relay revocation.
+The gateway binary is mandatory for this case; the client-only cases remain
+available separately. Both Go binaries must link the matching shared verifier.
+
+```sh
+TRUST_NATIVE_TEST_BINARY=/path/to/trust-native.test \
+TRUST_NATIVE_GATEWAY_TEST_BINARY=/path/to/trust-gateway.test \
+VERAD_BINARY=/path/to/verad \
+cargo test --frozen -p vera-e2e --test native_go_client \
+  native_go_gateway_verifies_pipelined_vera -- --ignored --exact --nocapture
+```
