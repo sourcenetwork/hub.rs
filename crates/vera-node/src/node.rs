@@ -98,6 +98,9 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
             && snapshot.logs > 0,
         "snapshot byte limit, log limit and deadlines must be positive"
     );
+    if let Some(parameters) = genesis.simplex {
+        parameters.validate().map_err(anyhow::Error::msg)?;
+    }
     let blocks_per_epoch = std::num::NonZeroU64::new(genesis.blocks_per_epoch)
         .ok_or_else(|| anyhow::anyhow!("genesis blocks_per_epoch must be non-zero"))?;
     let prune_config = config
@@ -541,8 +544,9 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         MAX_BLOCK_TXS,
         gas_limit,
     )
-    .with_participant_addresses(participant_addresses);
-    let vrf_elector = VrfElectorConfig::new(application.vrf_seed_cache());
+    .with_participant_addresses(participant_addresses)
+    .with_native_pipeline(genesis.simplex.is_some());
+    let vrf_elector = VrfElectorConfig::new(application.vrf_seed_cache(), genesis.simplex);
 
     let snapshot_history = crate::history::SnapshotHistory {
         history: history.clone(),
@@ -745,7 +749,8 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         // advance nonces between loading them and enabling admission.
         let recovered_modules = modules.read().expect("module state lock poisoned");
         let mut admission =
-            MempoolValidator::new(committed_state.clone(), ExecutionConfig::new(chain_id), 0);
+            MempoolValidator::new(committed_state.clone(), ExecutionConfig::new(chain_id), 0)
+                .with_native_only(genesis.simplex.is_some());
         admission.reset(committed_state.clone(), recovered_modules.nonces.clone());
         let _ = validator.set(::tokio::sync::Mutex::new(admission));
     }

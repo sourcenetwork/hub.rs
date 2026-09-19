@@ -27,6 +27,9 @@ pub(super) async fn load_or_create(
     genesis: &VeraGenesis,
     cache: &CacheRef,
 ) -> anyhow::Result<Block> {
+    if let Some(parameters) = genesis.simplex {
+        parameters.validate().map_err(anyhow::Error::msg)?;
+    }
     let fingerprint = fingerprint(genesis)?;
     let path = data_dir.join("native-genesis.bin");
     if marker_exists(&path)? {
@@ -107,6 +110,10 @@ pub(super) async fn load_or_create(
     );
     let native_targets = native.committed_targets().await;
     let mut block = vera_app::genesis_block(root, targets, module_root);
+    if genesis.simplex.is_some() {
+        // Bind consensus parameters into the network's authenticated genesis identity.
+        block.prevrandao = fingerprint;
+    }
     block.receipt_commitment = Some(vera_executor::receipt_commitment(0, &[]));
     block.native_targets = Some(
         [

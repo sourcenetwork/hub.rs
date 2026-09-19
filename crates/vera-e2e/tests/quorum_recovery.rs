@@ -4,12 +4,25 @@ use std::time::Duration;
 
 use alloy_sol_types::SolCall;
 use vera_client::{BULLETIN_ADDRESS, BlsSigner, VeraClient};
-use vera_e2e::cluster::{ConsensusPreset, KeySet, TestCluster};
+use vera_e2e::cluster::{ConsensusPreset, GenesisBuilder, KeySet, TestCluster};
 use vera_modules::bulletin::abi::IBulletin;
 
 #[tokio::test]
 async fn minority_write_waits_for_quorum_and_survives_replica_recovery() {
-    let deployment = 9081;
+    quorum_recovery(false).await;
+}
+
+#[tokio::test]
+async fn pipelined_quorum_recovery_crosses_epoch_boundaries() {
+    quorum_recovery(true).await;
+}
+
+async fn quorum_recovery(pipelined: bool) {
+    let deployment = if pipelined { 9082 } else { 9081 };
+    let mut genesis = GenesisBuilder::devnet();
+    if pipelined {
+        genesis = genesis.simplex(vera_domain::SimplexParameters::default());
+    }
     let trusted = *KeySet::builder()
         .seed(deployment)
         .build()
@@ -23,6 +36,7 @@ async fn minority_write_waits_for_quorum_and_survives_replica_recovery() {
         .seed(deployment)
         .chain_id(deployment)
         .preset(ConsensusPreset::Normal)
+        .genesis(genesis)
         .build()
         .await
         .unwrap();
@@ -38,6 +52,10 @@ async fn minority_write_waits_for_quorum_and_survives_replica_recovery() {
     let clients: Vec<_> = (0..4)
         .map(|i| VeraClient::new(cluster.node(i).rpc_url()))
         .collect();
+    if pipelined {
+        let error = clients[0].send_raw_transaction(&[2]).await.unwrap_err();
+        assert!(error.to_string().contains("EVM transactions are disabled"));
+    }
     cluster.kill_node(2);
     cluster.kill_node(3);
 
@@ -86,6 +104,13 @@ async fn minority_write_waits_for_quorum_and_survives_replica_recovery() {
         .wait_ready(vera_e2e::readiness_deadline())
         .await
         .unwrap();
+    if pipelined {
+        cluster
+            .observe(Duration::from_millis(100))
+            .wait_for_height(45, Duration::from_secs(60))
+            .await
+            .unwrap();
+    }
     for client in &clients {
         tokio::time::timeout(Duration::from_secs(60), async {
             loop {

@@ -284,3 +284,41 @@ fn inaccessible_genesis_markers_fail_before_initializing_journals() {
         }
     }
 }
+
+#[test]
+fn pipeline_parameters_bind_the_genesis_identity_and_restart() {
+    let mut identities = Vec::new();
+    for term_length in [8, 16] {
+        let directory = tempfile::tempdir().unwrap();
+        let mut genesis = configured_genesis();
+        genesis.simplex = Some(vera_domain::SimplexParameters {
+            term_length,
+            ..Default::default()
+        });
+        let runtime =
+            tokio::Config::new().with_storage_directory(directory.path().join("commonware"));
+        let path = directory.path();
+        let configured = &genesis;
+        let block = tokio::Runner::new(runtime.clone()).start(|context| async move {
+            let cache = CacheRef::from_pooler(&context, NZU16!(4084), NZUsize!(64));
+            load_or_create(&context, path, configured, &cache)
+                .await
+                .unwrap()
+        });
+        assert_eq!(block.prevrandao, fingerprint(&genesis).unwrap());
+        identities.push(block.id());
+        genesis.simplex.as_mut().unwrap().term_length += 1;
+        let configured = &genesis;
+        tokio::Runner::new(runtime).start(|context| async move {
+            let cache = CacheRef::from_pooler(&context, NZU16!(4084), NZUsize!(64));
+            assert!(
+                load_or_create(&context, path, configured, &cache)
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("migration")
+            );
+        });
+    }
+    assert_ne!(identities[0], identities[1]);
+}

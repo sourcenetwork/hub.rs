@@ -327,3 +327,14 @@ measurements; they cannot be inferred from a consensus header stream.
 There is currently no deployed live Vera dashboard or qualified WAN capacity
 result. The reports here provide reproducible evidence for that work without
 claiming current release throughput from historical runs.
+
+
+### Pipelined consensus measurements
+
+`operation_baseline` accepts an optional eleventh argument, `1`, to enable the
+native-only Simplex configuration from `docs/consensus-membership.md`. Omission
+or `0` retains rotating leaders. The output records the exact `simplex` parameters;
+comparisons across different configurations must not report an isolated code
+speedup. Epoch length, history backend, arrival rate and verification gates remain
+independently configurable. Pipelining does not establish a transaction capacity
+or latency guarantee.

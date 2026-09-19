@@ -53,6 +53,7 @@ pub struct MempoolValidator<S> {
     evm_changes: ChangeSet,
     native_nonces: NativeNonceStore,
     base_fee: u64,
+    native_only: bool,
 }
 
 impl<S: StateDb> MempoolValidator<S> {
@@ -64,7 +65,15 @@ impl<S: StateDb> MempoolValidator<S> {
             evm_changes: ChangeSet::new(),
             native_nonces: NativeNonceStore::default(),
             base_fee,
+            native_only: false,
         }
+    }
+
+    /// Reject legacy EVM submissions in a native-only deployment.
+    #[must_use]
+    pub const fn with_native_only(mut self, enabled: bool) -> Self {
+        self.native_only = enabled;
+        self
     }
 
     /// Reset branched state after block finalization.
@@ -204,6 +213,15 @@ impl<S: StateDb> MempoolValidator<S> {
         &mut self,
         tx_bytes: &[u8],
     ) -> Result<TxValidationResult, ExecutionError> {
+        if self.native_only
+            && !tx_bytes
+                .first()
+                .is_some_and(|byte| NativeTx::is_native_tx(*byte))
+        {
+            return Err(ExecutionError::InvalidTx(
+                "EVM transactions are disabled in pipelined mode".into(),
+            ));
+        }
         if tx_bytes.is_empty() {
             return Err(ExecutionError::TxDecode("empty transaction".to_string()));
         }
@@ -440,6 +458,34 @@ mod tests {
         let sig = bls::sign(sk, &signing_data).unwrap();
         tx.signature = FixedBytes::from_slice(&sig);
         tx.encode_wire()
+    }
+
+    #[tokio::test]
+    async fn pipeline_admission_rejects_valid_evm_and_preserves_native_admission() {
+        let signer = PrivateKeySigner::random();
+        let state = MockStateDb::new().with_account(signer.address(), 0, U256::from(21_000_001));
+        let mut validator = MempoolValidator::new(state, test_config(), 0).with_native_only(true);
+        let error = validator
+            .validate_tx(&signed_evm_tx(&signer, 0))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("EVM transactions are disabled"));
+        let (secret, public) = test_bls_keypair();
+        let result = validator
+            .validate_tx(&signed_native_tx(&secret, &public, 0))
+            .await
+            .unwrap();
+        assert!(result.is_native);
+        assert_eq!(result.nonce, 0);
+        validator.reset(MockStateDb::new(), NativeNonceStore::default());
+        assert!(
+            validator
+                .validate_tx(&signed_evm_tx(&signer, 0))
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("EVM transactions are disabled")
+        );
     }
 
     // -- EVM validation tests --

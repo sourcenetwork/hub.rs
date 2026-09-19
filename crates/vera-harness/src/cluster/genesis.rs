@@ -39,6 +39,9 @@ pub struct VeraGenesis {
     /// Number of blocks in each DKG epoch.
     #[serde(default, skip_serializing_if = "is_default_blocks_per_epoch")]
     pub blocks_per_epoch: u64,
+    /// Pipelined consensus parameters. Omission preserves rotating leaders.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub simplex: Option<vera_domain::SimplexParameters>,
 }
 
 const fn is_default_blocks_per_epoch(value: &u64) -> bool {
@@ -111,6 +114,7 @@ pub struct GenesisBuilder {
     extra_storage: Vec<GenesisStorage>,
     epoch_info: Option<String>,
     blocks_per_epoch: u64,
+    simplex: Option<vera_domain::SimplexParameters>,
 }
 
 impl Default for GenesisBuilder {
@@ -126,6 +130,7 @@ impl Default for GenesisBuilder {
             extra_storage: Vec::new(),
             epoch_info: None,
             blocks_per_epoch: 20,
+            simplex: None,
         }
     }
 }
@@ -162,6 +167,7 @@ impl GenesisBuilder {
             extra_storage: Vec::new(),
             epoch_info: None,
             blocks_per_epoch: 20,
+            simplex: None,
         }
     }
 
@@ -277,6 +283,12 @@ impl GenesisBuilder {
         self
     }
 
+    /// Configure bounded stable-leader consensus for this deployment.
+    pub const fn simplex(mut self, parameters: vera_domain::SimplexParameters) -> Self {
+        self.simplex = Some(parameters);
+        self
+    }
+
     /// Build the genesis configuration.
     pub fn build(self) -> VeraGenesis {
         VeraGenesis {
@@ -291,6 +303,7 @@ impl GenesisBuilder {
             extra_storage: self.extra_storage,
             epoch_info: self.epoch_info,
             blocks_per_epoch: self.blocks_per_epoch,
+            simplex: self.simplex,
         }
     }
 
@@ -308,6 +321,7 @@ impl GenesisBuilder {
             extra_storage: self.extra_storage.clone(),
             epoch_info: self.epoch_info.clone(),
             blocks_per_epoch: self.blocks_per_epoch,
+            simplex: self.simplex,
         };
 
         let json = serde_json::to_string_pretty(&genesis)?;
