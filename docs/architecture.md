@@ -227,3 +227,6 @@ See [snapshot recovery](snapshot-recovery.md) and [history storage](history-stor
 For deployment and diagnostics, start with [operating](operating.md). Performance
 claims must distinguish submission capacity, finality latency, certified receipt
 latency, and completed application workflows; see [workloads](native-workload.md).
+
+See the [native integration baseline](native-integration.md) for exact tested
+consumer revisions, build features and reproducible process checks.
