@@ -32,8 +32,8 @@ const CHAIN_ID: u64 = 9001;
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     assert!(
-        args.len() <= 10,
-        "usage: operation_baseline [count] [arrivals/sec] [max outstanding] [permission reads 0/1] [fast|normal|stress] [RPC connections] [epoch revisions] [retention minimum revision] [fixed update objects, 0 for registrations] [retained consensus revisions, 0 disables pruning]"
+        args.len() <= 11,
+        "usage: operation_baseline [count] [arrivals/sec] [max outstanding] [permission reads 0/1] [fast|normal|stress] [RPC connections] [epoch revisions] [retention minimum revision] [fixed update objects, 0 for registrations] [retained consensus revisions, 0 disables pruning] [pipelined consensus 0/1]"
     );
     let parse = |index: usize, default: usize| {
         args.get(index).map_or(default, |value| {
@@ -71,6 +71,13 @@ async fn main() {
         "updates require permission verification"
     );
     let retained_consensus = parse(9, 0);
+    let pipelined = parse(10, 0);
+    assert!(pipelined <= 1);
+    let simplex = (pipelined == 1).then(vera_domain::SimplexParameters::default);
+    let mut genesis = GenesisBuilder::devnet().blocks_per_epoch(epoch_length.get());
+    if let Some(parameters) = simplex {
+        genesis = genesis.simplex(parameters);
+    }
     if retained_consensus > 0 {
         let window = retained_consensus
             .checked_add(2)
@@ -95,7 +102,7 @@ async fn main() {
 
     let mut cluster = TestCluster::builder()
         .nodes(4)
-        .genesis(GenesisBuilder::devnet().blocks_per_epoch(epoch_length.get()))
+        .genesis(genesis)
         .seed(42)
         .chain_id(CHAIN_ID)
         .preset(preset)
@@ -115,7 +122,13 @@ async fn main() {
         .wait_ready(Duration::from_secs(30))
         .await
         .expect("ready cluster");
-    let client = Arc::new(VeraClient::new(cluster.node(0).rpc_url()));
+    let client_queue_capacity =
+        std::num::NonZeroU32::new(u32::try_from(outstanding).unwrap()).unwrap();
+    let client_queue_timeout = Duration::from_secs(1);
+    let client = Arc::new(
+        VeraClient::new(cluster.node(0).rpc_url())
+            .with_request_queue(client_queue_capacity, client_queue_timeout),
+    );
     let setup = BlsSigner::new(((count + 1) as u64).into(), CHAIN_ID).unwrap();
     let raw = setup
         .sign_native_tx(
@@ -224,10 +237,15 @@ async fn main() {
             "format_version": 2, "permission_reads_per_write": permission_reads,
             "runner_debug_assertions": cfg!(debug_assertions),
             "revisions_per_epoch": epoch_length.get(),
+            "simplex": simplex,
+            "proposal_batch_wait_ms": simplex.map(|_| (timing.leader_timeout / 4).min(Duration::from_millis(100)).as_millis()),
             "retention_minimum_revision": retention_height,
             "max_operations_per_revision": vera_domain::MAX_BLOCK_TXS,
             "max_encoded_operation_bytes_per_revision": vera_domain::MAX_BLOCK_TX_BYTES,
             "max_encoded_revision_bytes": vera_domain::MAX_BLOCK_BYTES,
+            "client_max_concurrent_requests": 64,
+            "client_queue_capacity": client_queue_capacity.get(),
+            "client_queue_timeout_ms": client_queue_timeout.as_millis(),
             "rpc_max_connections": rpc_connections.get(), "nodes": 4, "preset": format!("{preset:?}"),
             "leader_timeout_ms": timing.leader_timeout.as_millis(),
             "notarization_timeout_ms": timing.notarization_timeout.as_millis(),

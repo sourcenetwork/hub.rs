@@ -411,7 +411,7 @@ impl VeraApiServer for VeraApiImpl {
         request: AccessRequest,
         minimum_height: U64,
     ) -> RpcResult<PermissionResponse> {
-        let _permit = self.state.proof_permit()?;
+        let _request = self.state.permission_read_permit()?;
         self.current_permission_proof(&policy, &request, minimum_height.to())
             .await
     }

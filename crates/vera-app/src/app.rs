@@ -44,6 +44,8 @@ pub struct StatefulVeraApp<S: FinalizedSink, D: ApplicationState = VeraStateSet>
     gas_limit: u64,
     participant_addresses: Arc<Vec<(PublicKey, Address)>>,
     vrf_seeds: VrfSeedCache,
+    native_pipeline: bool,
+    proposal_batch_wait: std::time::Duration,
     pending: Arc<Mutex<HashMap<BlockId, PendingExecution>>>,
 }
 
@@ -80,6 +82,8 @@ impl<S: FinalizedSink, D: ApplicationState> StatefulVeraApp<S, D> {
             gas_limit,
             participant_addresses: Arc::new(Vec::new()),
             vrf_seeds: VrfSeedCache::default(),
+            native_pipeline: false,
+            proposal_batch_wait: std::time::Duration::ZERO,
             pending: Arc::default(),
         }
     }
@@ -91,6 +95,18 @@ impl<S: FinalizedSink, D: ApplicationState> StatefulVeraApp<S, D> {
         self
     }
 
+    /// Enable native-only execution without certificate-dependent EVM randomness.
+    #[must_use]
+    pub const fn with_native_pipeline(
+        mut self,
+        enabled: bool,
+        batch_wait: std::time::Duration,
+    ) -> Self {
+        self.native_pipeline = enabled;
+        self.proposal_batch_wait = batch_wait;
+        self
+    }
+
     /// Shared cache populated by the node's VRF-aware consensus elector.
     #[must_use]
     pub fn vrf_seed_cache(&self) -> VrfSeedCache {
@@ -98,7 +114,7 @@ impl<S: FinalizedSink, D: ApplicationState> StatefulVeraApp<S, D> {
     }
 
     fn round_prevrandao(&self, round: Round) -> Option<B256> {
-        if round.view().get() <= 1 {
+        if self.native_pipeline || round.view().get() <= 1 {
             Some(B256::ZERO)
         } else {
             self.vrf_seeds.get(round)
@@ -236,7 +252,21 @@ impl<S: FinalizedSink, D: ApplicationState> Application<Ctx> for StatefulVeraApp
             }
         }
         let excluded = Self::pending_tx_ids(&pending);
-        let txs = input.provider.build_block(self.max_txs, &excluded);
+        let mut txs = if self.native_pipeline {
+            input
+                .provider
+                .build_block_wait(self.max_txs, &excluded, self.proposal_batch_wait)
+                .await
+        } else {
+            input.provider.build_block(self.max_txs, &excluded)
+        };
+        if self.native_pipeline {
+            txs.retain(|tx| {
+                tx.bytes
+                    .first()
+                    .is_some_and(|byte| vera_domain::NativeTx::is_native_tx(*byte))
+            });
+        }
 
         let height = parent.height + 1;
         let timestamp = now_secs().max(parent.timestamp);
@@ -280,6 +310,15 @@ impl<S: FinalizedSink, D: ApplicationState> Application<Ctx> for StatefulVeraApp
             )),
             db_targets: executed.db_targets,
         };
+        if self.native_pipeline
+            && block.txs.iter().any(|tx| {
+                !tx.bytes
+                    .first()
+                    .is_some_and(|byte| vera_domain::NativeTx::is_native_tx(*byte))
+            })
+        {
+            return None;
+        }
         if !block.fits_wire_limits() {
             return None;
         }

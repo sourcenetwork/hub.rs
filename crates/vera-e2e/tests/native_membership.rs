@@ -3,6 +3,9 @@
 #[path = "support/administration.rs"]
 mod administration;
 
+#[path = "support/epoch_share.rs"]
+mod epoch_share;
+
 use std::{fs, net::TcpListener, process::Stdio, time::Duration};
 
 use alloy_primitives::{Address, B256, Bytes, keccak256};
@@ -159,7 +162,10 @@ async fn admit_member(interrupt: bool, crash_share: bool) {
         .unwrap();
     receipt(&origin, initialized.transaction_hash, &trusted).await;
 
-    let local = tempfile::tempdir().unwrap();
+    let local = tempfile::Builder::new()
+        .prefix("incoming-")
+        .tempdir_in(cluster.node(0).data_dir.parent().unwrap())
+        .unwrap();
     let directory_path = local.path().to_owned();
     if std::env::var_os("VERA_E2E_KEEP").is_some() {
         let _ = local.keep();
@@ -317,6 +323,9 @@ async fn admit_member(interrupt: bool, crash_share: bool) {
     assert!(secrets["shares"].get("0").is_none());
     assert!(!secrets["shares"].as_object().unwrap().is_empty());
 
+    let current = membership(&origin, &trusted, active.height, 5).await;
+    epoch_share::wait_for_epoch_share(&directory.join("secrets.json"), current.epoch, deadline())
+        .await;
     cluster.kill_node(3);
     let changed = submit(
         &joining,
@@ -371,6 +380,9 @@ async fn admit_member(interrupt: bool, crash_share: bool) {
         IValidatorRegistry::removeValidatorCall { evmAddr: removed }.abi_encode(),
     )
     .await;
+    let current = membership(&origin, &trusted, reduced.height, 4).await;
+    epoch_share::wait_for_epoch_share(&directory.join("secrets.json"), current.epoch, deadline())
+        .await;
     cluster.kill_node(2);
     let final_write = submit(
         &joining,

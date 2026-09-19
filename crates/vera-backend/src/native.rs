@@ -4,7 +4,7 @@ use bytes::Bytes;
 use commonware_codec::RangeCfg;
 use commonware_cryptography::Sha256;
 use commonware_glue::stateful::db::{
-    DatabaseSet, ManagedDb, Merkleized as _, Shared, Unmerkleized as _,
+    DatabaseSet, ManagedDb, Merkleized as _, ReadGuard, Shared, Unmerkleized as _,
 };
 use commonware_parallel::Sequential;
 use commonware_runtime::buffer::paged::CacheRef;
@@ -15,7 +15,7 @@ use commonware_storage::{
     translator::Translator,
 };
 use commonware_utils::{NZU64, NZUsize, bitmap::Readable as _};
-use futures::StreamExt as _;
+use futures::{FutureExt as _, StreamExt as _};
 use vera_modules::{
     ModuleState,
     kv_store::InMemoryKvStore,
@@ -103,6 +103,26 @@ pub type NativeConfig = <NativeStateSet as DatabaseSet<Ctx>>::Config;
 mod fault_tests;
 #[cfg(test)]
 mod faulty_ctx;
+
+/// Acquire partition readers without holding partial guards across a writer wait.
+pub async fn read_partitions<T>(databases: [&Shared<T>; 4]) -> [ReadGuard<'_, T>; 4] {
+    loop {
+        let attempt = (|| {
+            Ok::<_, usize>([
+                databases[0].read().now_or_never().ok_or(0usize)?,
+                databases[1].read().now_or_never().ok_or(1usize)?,
+                databases[2].read().now_or_never().ok_or(2usize)?,
+                databases[3].read().now_or_never().ok_or(3usize)?,
+            ])
+        })();
+        match attempt {
+            Ok(readers) => return readers,
+            // All partial guards are gone. Wait only on the busy partition,
+            // then retry the complete set because other partitions may have changed.
+            Err(busy) => drop(databases[busy].read().await),
+        }
+    }
+}
 
 /// Configure independent journals for the four native namespaces.
 pub fn state_config(prefix: &str, cache: CacheRef) -> NativeConfig {
@@ -269,4 +289,33 @@ async fn load(db: &Shared<NativeDb>) -> Result<InMemoryKvStore, BackendError> {
         },
     );
     InMemoryKvStore::try_from_stream(records.boxed()).await
+}
+
+#[cfg(test)]
+mod read_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn partial_partition_reads_never_hold_up_other_writers() {
+        let databases = std::array::from_fn::<_, 4, _>(|_| Shared::new("query-test", ()));
+        for blocked in 0..4 {
+            let (slot, database) = databases[blocked].write().await;
+            let readers = read_partitions(databases.each_ref());
+            tokio::pin!(readers);
+            assert!(futures::poll!(&mut readers).is_pending());
+            for (index, partition) in databases.iter().enumerate() {
+                if index != blocked {
+                    let (other, value) =
+                        tokio::time::timeout(Duration::from_secs(1), partition.write())
+                            .await
+                            .unwrap();
+                    other.put(value);
+                }
+            }
+            slot.put(database);
+            let guards = futures::poll!(&mut readers);
+            assert!(guards.is_ready(), "reader must resume without publication");
+        }
+    }
 }

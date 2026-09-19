@@ -34,6 +34,7 @@ const GENESIS: &[u8] = b"genesis";
 const HEAD: &[u8] = b"head";
 
 mod membership;
+pub(crate) use membership::roster_from_boundary;
 mod query;
 pub use query::HistoricalExecution;
 mod peer;

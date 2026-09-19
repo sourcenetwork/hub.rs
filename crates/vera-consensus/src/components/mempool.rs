@@ -15,6 +15,7 @@ use crate::traits::{Mempool, TxId};
 #[derive(Debug, Clone)]
 pub struct InMemoryMempool {
     inner: Arc<RwLock<Pending>>,
+    changed: Arc<tokio::sync::Notify>,
 }
 
 const MAX_PENDING_BYTES: usize = 64 << 20;
@@ -71,11 +72,37 @@ impl InMemoryMempool {
             .collect()
     }
 
+    /// Collect until the request-count limit or deadline, preserving the encoded byte limit.
+    pub async fn build_block_wait(
+        &self,
+        max_txs: usize,
+        excluded: &std::collections::BTreeSet<TxId>,
+        wait: std::time::Duration,
+    ) -> Vec<Tx> {
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            let changed = self.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            let batch = self.build_block(max_txs, excluded);
+            if batch.len() >= max_txs.min(vera_domain::MAX_BLOCK_TXS)
+                || tokio::time::Instant::now() >= deadline
+            {
+                return batch;
+            }
+            tokio::select! {
+                _ = changed => {},
+                _ = tokio::time::sleep_until(deadline) => return self.build_block(max_txs, excluded),
+            }
+        }
+    }
+
     /// Create a new empty mempool.
     #[must_use]
     pub fn new() -> Self {
         Self {
             inner: Arc::new(RwLock::new(Pending::default())),
+            changed: Arc::default(),
         }
     }
 }
@@ -96,6 +123,8 @@ impl Mempool for InMemoryMempool {
         inner.bytes += tx.bytes.len();
         inner.order.push_back(id);
         inner.txs.insert(id, tx);
+        drop(inner);
+        self.changed.notify_waiters();
         true
     }
 
@@ -244,5 +273,45 @@ mod tests {
         let txs = mempool.build(10, &excluded);
         assert_eq!(txs.len(), 1);
         assert_eq!(txs[0], tx2);
+    }
+}
+
+#[cfg(test)]
+mod batching_tests {
+    use super::*;
+    use std::{collections::BTreeSet, time::Duration};
+
+    #[tokio::test]
+    async fn batching_wakes_when_full_and_excludes_pending_ancestry() {
+        let pool = InMemoryMempool::new();
+        let first = Tx::new(vec![1].into());
+        let second = Tx::new(vec![2].into());
+        let third = Tx::new(vec![3].into());
+        pool.insert(first.clone());
+        let excluded = BTreeSet::from([first.id()]);
+        let mut waiting = Box::pin(pool.build_block_wait(2, &excluded, Duration::from_secs(60)));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(1), &mut waiting)
+                .await
+                .is_err()
+        );
+        pool.insert(second.clone());
+        pool.insert(third.clone());
+        let batch = tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .unwrap();
+        assert_eq!(batch, vec![second, third]);
+    }
+
+    #[tokio::test]
+    async fn batching_deadline_preserves_idle_progress() {
+        let pool = InMemoryMempool::new();
+        let batch = tokio::time::timeout(
+            Duration::from_secs(1),
+            pool.build_block_wait(256, &BTreeSet::new(), Duration::from_millis(1)),
+        )
+        .await
+        .unwrap();
+        assert!(batch.is_empty());
     }
 }

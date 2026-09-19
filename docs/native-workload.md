@@ -1,5 +1,8 @@
 # Native ACP workload baseline
 
+See [performance reports and jobs](performance.md) for automated release builds,
+provenance capture, and plots of these measurements.
+
 Build optimized binaries before measuring:
 
 ```sh
@@ -60,11 +63,18 @@ preparation and does not model a production gateway's worker pool.
 Each timed registration must obtain a receipt verified against the configured
 consensus key. With permission reads enabled, it then verifies current ACP access
 for the registered owner at a revision no earlier than that receipt. A certified
-denial is a correctness failure. HTTP 429 on read requests is retried after
-250 ms within the existing workflow deadline and counted as `read_throttles`.
+denial is a correctness failure. Read capacity errors (local client saturation,
+retryable server errors and HTTP 429) are retried after 250 ms within the existing
+workflow deadline and counted as `read_throttles`.
 `receipt_throttles` and `permission_throttles` split that total by read stage in
-each observation and the summary.
-Submission HTTP 429 is recorded as rejected; submissions are never retried. Any receipt or permission proof verification
+each observation and the summary. `client_throttles` and `server_throttles`
+separately count the origin across all stages; their sum equals submission plus
+read throttles. Client capacity is a typed `ClientCapacityExhausted` error, distinct
+from server `ResourceBusy` responses; both satisfy `ClientError::is_throttled()`.
+`receipt_rpc_ms` measures only the successful receipt call, including response
+decoding and certificate/receipt verification. It excludes earlier polls and
+retry delays, which remain included in scheduled-to-confirmation latency.
+Permanent submission failures are recorded as rejected. Any receipt or permission proof verification
 failure also fails the run, even if later replica checks agree. On a receipt
 verification failure, the driver records a separately fetched proof and its
 verification result for diagnosis; this does not replace the failed observation. Read errors or deadlines remain visible as
@@ -76,6 +86,9 @@ JSONL format version 2 reports:
 - Certified write-confirmation latency and complete-workflow latency from the
   scheduled arrival, including scheduler lag.
 - Permission-read latency and completed-workflow throughput.
+- Failed request stage (`submit`, `receipt`, or `permission`), elapsed time for
+  failed calls, and nested transport error details. Workflow deadlines leave
+  the failed-call duration absent because they can expire during retry backoff.
 - Preparation time, request bytes, concurrency limit and receipt polling interval.
 - Post-run replica consistency and restart receipt/state comparisons.
 - Per-node RSS and cumulative CPU time sampled with `ps` once per second during

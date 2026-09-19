@@ -1,0 +1,118 @@
+name: PR performance
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'crates/**'
+      - 'bin/**'
+      - 'vendor/**'
+      - 'tools/performance/**'
+      - '.github/workflows/performance-pr.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: performance-pr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compare:
+    # Locked dependencies require a credential; never expose it to fork code.
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    name: Full stack and components
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: '0'
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: head
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-dev cmake pkg-config libssl-dev protobuf-compiler python3-venv
+          python3 -m venv "$RUNNER_TEMP/performance-python"
+          "$RUNNER_TEMP/performance-python/bin/pip" install -r head/tools/performance/requirements.txt
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+        with:
+          toolchain: '1.98.0'
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: performance-pr
+          workspaces: head -> ../target
+      - name: Fetch both locked dependency sets
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+          GIT_CONFIG_COUNT: '1'
+          GIT_CONFIG_KEY_0: url.https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/.insteadOf
+          GIT_CONFIG_VALUE_0: https://github.com/sourcenetwork/
+        run: |
+          for side in head base; do
+            (cd "$side" && cargo +1.98.0 fetch --locked)
+          done
+      - name: Test reporting gates
+        run: python3 -m unittest discover -s head/tools/performance -p 'test_*.py'
+      - name: Build and preserve both revisions before measuring
+        shell: bash
+        run: |
+          set -euo pipefail
+          for side in head base; do
+            mkdir -p "binaries/$side"
+            (
+              cd "$side"
+              examples=(--example operation_baseline)
+              if [[ -f crates/vera-e2e/examples/component_baseline.rs ]]; then
+                examples+=(--example component_baseline)
+              fi
+              cargo +1.98.0 build --frozen --release -p verad -p vera-e2e \
+                --bin verad "${examples[@]}"
+              cp "$CARGO_TARGET_DIR/release/verad" "$GITHUB_WORKSPACE/binaries/$side/"
+              cp "$CARGO_TARGET_DIR/release/examples/operation_baseline" "$GITHUB_WORKSPACE/binaries/$side/"
+              if [[ -f crates/vera-e2e/examples/component_baseline.rs ]]; then
+                cp "$CARGO_TARGET_DIR/release/examples/component_baseline" "$GITHUB_WORKSPACE/binaries/$side/"
+              fi
+            )
+          done
+      - name: Measure interleaved passes and compare
+        env:
+          VERA_E2E_DIR: ${{ runner.temp }}/vera-pr-nodes
+          MPLCONFIGDIR: ${{ runner.temp }}/vera-matplotlib
+          XDG_CACHE_HOME: ${{ runner.temp }}/vera-cache
+        run: |
+          "$RUNNER_TEMP/performance-python/bin/python" head/tools/performance/run_pr.py \
+            --head head --base base --binaries binaries --output performance-results
+      - name: Publish check summary
+        if: always()
+        run: |
+          if [[ -f performance-results/comparison.md ]]; then
+            cat performance-results/comparison.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Performance comparison did not complete; inspect the failing step and retained artifacts.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: performance-pr-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+          path: performance-results/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Stop workload processes
+        if: always()
+        run: |
+          python3 head/.github/scripts/stop-test-nodes.py "$GITHUB_WORKSPACE/binaries/head/verad"
+          python3 head/.github/scripts/stop-test-nodes.py "$GITHUB_WORKSPACE/binaries/base/verad"

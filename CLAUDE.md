@@ -2,6 +2,9 @@
 
 Native Rust implementation of Vera's access control, bulletin, identity and transparency services, using Commonware consensus and storage. Native requests use BLS12-381 signing; optional EVM execution reaches the same module logic.
 
+See [architecture and request flows](docs/architecture.md) for service boundaries,
+operator-managed membership, ACP, storage, threshold services, and recovery limits.
+
 ## Related Repos
 
 All repos follow gopath convention at `/Users/johnzampolin/go/src/github.com/{org}/{repo}`:
@@ -19,9 +22,9 @@ All repos follow gopath convention at `/Users/johnzampolin/go/src/github.com/{or
 
 | Component | Source repo | Used in vera.rs for |
 |-----------|-----------|-------------------|
-| Zanzibar engine (relation-tuple graph) | defradb.rs `crates/acp/src/zanzibar/` | ACP policy evaluation |
-| DID types, identity crate | defradb.rs `crates/identity/` | DID resolution (also check orbis-rs) |
-| YAML policy parser | defradb.rs `crates/acp/src/policy_yaml/` | ACP policy creation |
+| Zanzibar engine (relation-tuple graph) | vendored `crates/zanzibar/` (from defradb.rs 8d34d9c) | ACP policy evaluation |
+| DID types, identity crate | vendored `crates/identity/` (from defradb.rs 8d34d9c) | DID resolution |
+| YAML policy parser, DocumentACP types | vendored `crates/acp/` (from defradb.rs 8d34d9c) | ACP policy creation |
 | Simplex consensus, REVM executor, e2e harness | bankd-commonware | Consensus, EVM execution, testing |
 | BLS12-381 threshold crypto | commonware monorepo | Block signing, native tx verification |
 
@@ -414,3 +417,7 @@ The same diagnostics target logs per-revision database-apply and query-state
 publication times, plus synchronization startup time. Startup ends when the
 Commonware durability handle is returned; it is not completion of that handle.
 These elapsed times include lock waits and executor scheduling.
+
+Snapshot diagnostics on the same target report database transfer, history handoff,
+and query-state hydration, with the selected revision at each stage. Transfer may
+advance its selected revision before the history handoff begins.

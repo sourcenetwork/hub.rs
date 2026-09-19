@@ -23,6 +23,8 @@ pub struct SnapshotConfig {
     pub logs: usize,
     /// Deadline for one record or finality proof from one peer (default 10 seconds).
     pub peer_timeout_ms: u64,
+    /// Deadline for snapshot database and history initialization (default 5 minutes).
+    pub initialization_timeout_ms: u64,
 }
 
 impl Default for SnapshotConfig {
@@ -31,6 +33,7 @@ impl Default for SnapshotConfig {
             record_bytes: 64 << 20,
             logs: 100_000,
             peer_timeout_ms: 10_000,
+            initialization_timeout_ms: 300_000,
         }
     }
 }
@@ -285,12 +288,20 @@ mod tests {
         let default = NodeConfig::from_toml("[snapshot]").unwrap();
         assert_eq!(default.snapshot, Some(SnapshotConfig::default()));
         let configured = NodeConfig::from_toml(
-            "[snapshot]\nrecord_bytes = 1024\nlogs = 4\npeer_timeout_ms = 500",
+            "[snapshot]\nrecord_bytes = 1024\nlogs = 4\npeer_timeout_ms = 500\ninitialization_timeout_ms = 2000",
         )
         .unwrap();
         assert_eq!(configured.snapshot.as_ref().unwrap().record_bytes, 1024);
         assert_eq!(configured.snapshot.as_ref().unwrap().logs, 4);
         assert_eq!(configured.snapshot.as_ref().unwrap().peer_timeout_ms, 500);
+        assert_eq!(
+            configured
+                .snapshot
+                .as_ref()
+                .unwrap()
+                .initialization_timeout_ms,
+            2000
+        );
         assert_eq!(
             NodeConfig::from_toml(&configured.to_toml().unwrap()).unwrap(),
             configured

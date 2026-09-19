@@ -104,3 +104,41 @@ stored; execution then uses `AcpParams::default()`. Malformed stored bytes are
 errors and never select defaults. Parameter-dependent registration commitments
 also reject malformed configuration before changing state. After an approved
 parameter update, use its certified revision as the minimum for the read.
+
+
+## Pipelined native deployments
+
+A new deployment can enable stable leaders and optimistic validation in genesis:
+
+```json
+"simplex": {
+  "term_length": 16,
+  "optimistic_views": 4,
+  "stall_timeout_ms": 5000
+}
+```
+
+One leader serves each term. Commonware may propose and validate up to the
+configured optimistic distance before receiving the preceding notarizations.
+Native proposals collect requests for at most one quarter of the local leader
+timeout, capped at 100 milliseconds; batches reaching the request-count limit proceed
+immediately. Empty
+proposals remain possible after this deadline so DKG and idle progress continue.
+Certification, finalization and durable publication still require their normal
+evidence. A stalled term is abandoned through Commonware's nullification path.
+
+Terms must contain 2–64 views. Optimistic lookahead may be zero to disable
+optimism, or at most 16 views and strictly less than the term length. The stall
+timeout must be 1–60000 milliseconds. All parameters are included in the genesis
+fingerprint and, for pipelined deployments, committed in the genesis header's
+`prevrandao` field. Changing parameters requires a new deployment or an explicit
+migration; restarting against different parameters is rejected.
+
+Pipelined deployments accept native signed requests only. EVM submissions are
+rejected at admission, and proposals containing EVM transactions are invalid.
+Subsequent headers carry zero `prevrandao`; this field is not a randomness beacon.
+Native ACP, bulletin, identity and membership operations do not depend on EVM
+randomness. Threshold signatures and DKG/resharing remain enabled.
+
+Omitting `simplex` preserves rotating leaders, EVM execution and the existing
+per-view VRF handling. This preserves the encoding of existing genesis files.

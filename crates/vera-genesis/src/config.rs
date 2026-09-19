@@ -46,6 +46,9 @@ pub struct VeraGenesis {
     /// Number of blocks in each DKG epoch.
     #[serde(default = "default_blocks_per_epoch")]
     pub blocks_per_epoch: u64,
+    /// Pipelined consensus parameters. Omission preserves rotating leaders.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub simplex: Option<vera_domain::SimplexParameters>,
 }
 
 const fn default_blocks_per_epoch() -> u64 {
@@ -292,6 +295,7 @@ impl VeraGenesis {
             extra_storage: Vec::new(),
             epoch_info: None,
             blocks_per_epoch: 20,
+            simplex: None,
         }
     }
 }
@@ -437,6 +441,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pipeline_parameters_round_trip_without_changing_legacy_encoding() {
+        let mut genesis = VeraGenesis::devnet();
+        let legacy = serde_json::to_value(&genesis).unwrap();
+        assert!(legacy.get("simplex").is_none());
+        let decoded: VeraGenesis = serde_json::from_value(legacy).unwrap();
+        assert!(decoded.simplex.is_none());
+        genesis.simplex = Some(vera_domain::SimplexParameters::default());
+        let decoded: VeraGenesis =
+            serde_json::from_str(&serde_json::to_string(&genesis).unwrap()).unwrap();
+        assert_eq!(decoded.simplex, genesis.simplex);
+    }
+
+    #[test]
     fn devnet_genesis_roundtrip() {
         let genesis = VeraGenesis::devnet();
         let json = serde_json::to_string_pretty(&genesis).unwrap();
@@ -485,6 +502,7 @@ mod tests {
             extra_storage: Vec::new(),
             epoch_info: None,
             blocks_per_epoch: 20,
+            simplex: None,
         };
         let err = genesis.to_genesis_state().unwrap_err();
         assert!(err.to_string().contains("invalid address"));
@@ -503,6 +521,7 @@ mod tests {
             extra_storage: Vec::new(),
             epoch_info: None,
             blocks_per_epoch: 20,
+            simplex: None,
         }
     }
 

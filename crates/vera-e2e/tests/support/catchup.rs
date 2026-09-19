@@ -129,6 +129,15 @@ async fn check_pruned_rosters(
 }
 
 pub(super) async fn recover_replica(snapshot: bool, interrupt: bool, pruning: bool) {
+    recover_replica_with_delay(snapshot, interrupt, pruning, false).await;
+}
+
+pub(super) async fn recover_replica_with_delay(
+    snapshot: bool,
+    interrupt: bool,
+    pruning: bool,
+    stale_floor: bool,
+) {
     let deployment = 9041;
     let keys = KeySet::builder().seed(deployment).build().unwrap();
     let trusted_key = *keys.epoch_info().output.public().public();
@@ -184,6 +193,9 @@ pub(super) async fn recover_replica(snapshot: bool, interrupt: bool, pruning: bo
         let path = directory.join("config.toml");
         let mut config = fs::read_to_string(&path).unwrap();
         config.push_str("\n[snapshot]\n");
+        if stale_floor {
+            config.push_str("initialization_timeout_ms = 30000\n");
+        }
         fs::write(path, config).unwrap();
     }
 
@@ -271,7 +283,43 @@ pub(super) async fn recover_replica(snapshot: bool, interrupt: bool, pruning: bo
     if interrupt {
         fs::write(&crash_marker, []).unwrap();
     }
+    let pause = directory.join("snapshot-probe-pause");
+    if stale_floor {
+        fs::write(&pause, []).unwrap();
+    }
     cluster.restart_node(3).unwrap();
+    if stale_floor {
+        tokio::time::timeout(deadline(), async {
+            while !directory.join("snapshot-probe-ready").exists() {
+                assert!(cluster.node_mut(3).process.is_running());
+                tokio::time::sleep(POLL).await;
+            }
+        })
+        .await
+        .expect("snapshot probe pause deadline");
+        let paused = certified_height(&origin, target.height, &trusted_key).await;
+        // Advance beyond both peer retention and the selected epoch before startup resumes.
+        certified_height(&origin, paused.height + 100, &trusted_key).await;
+        fs::remove_file(pause).unwrap();
+        tokio::time::timeout(deadline(), async {
+            while cluster.node_mut(3).process.is_running() {
+                tokio::time::sleep(POLL).await;
+            }
+        })
+        .await
+        .expect("stale snapshot target must finish initialization within its deadline");
+        if crash_marker.exists() {
+            let logs = fs::read_to_string(cluster.node(3).log_dir.join("stderr.log")).unwrap();
+            assert!(
+                logs.contains("snapshot initialization deadline exceeded"),
+                "{logs}"
+            );
+            eprintln!("stale snapshot target reached its initialization deadline");
+            return;
+        }
+        // Successful transfer reaches the injected crash and must pass recovery checks below.
+        eprintln!("stale snapshot target reached durable history import");
+    }
     if interrupt {
         tokio::time::timeout(deadline(), async {
             while cluster.node_mut(3).process.is_running() {
@@ -292,7 +340,8 @@ pub(super) async fn recover_replica(snapshot: bool, interrupt: bool, pruning: bo
         );
         let path = directory.join("config.toml");
         let config = fs::read_to_string(&path).unwrap();
-        fs::write(path, config.replace("\n[snapshot]\n", "\n")).unwrap();
+        let (base, _) = config.split_once("\n[snapshot]\n").unwrap();
+        fs::write(path, base).unwrap();
         cluster.restart_node(3).unwrap();
     }
     cluster.wait_ready(deadline()).await.unwrap();

@@ -60,6 +60,8 @@ async fn rejected_updates_preserve_results_and_stop_dependent_submissions() {
     assert_eq!(summary["rejected"], 2);
     assert_eq!(summary["not_sent"], 4);
     assert_eq!(summary["submit_throttles"], 1);
+    assert_eq!(summary["client_throttles"], 0);
+    assert_eq!(summary["server_throttles"], 1);
     assert_eq!(summary["completed_workflows"], 0);
     let mut actual = calls.lock().unwrap().clone();
     actual.sort();

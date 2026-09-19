@@ -36,7 +36,7 @@ use commonware_glue::{
     },
 };
 use commonware_p2p::{Ingress, Provider as _, authenticated::discovery};
-use commonware_parallel::Sequential;
+use commonware_parallel::{Rayon, Sequential};
 use commonware_runtime::{Handle, Spawner as _, Supervisor as _, buffer::paged::CacheRef, tokio};
 use commonware_storage::{archive::prunable, translator::TwoCap};
 use commonware_utils::{NZDuration, NZU64, NZUsize, sequence::Unit};
@@ -92,9 +92,15 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     let gas_limit = config.execution.gas_limit;
     let snapshot = config.snapshot.clone().unwrap_or_default();
     anyhow::ensure!(
-        snapshot.record_bytes > 0 && snapshot.peer_timeout_ms > 0 && snapshot.logs > 0,
-        "snapshot byte limit, log limit and peer deadline must be positive"
+        snapshot.record_bytes > 0
+            && snapshot.peer_timeout_ms > 0
+            && snapshot.initialization_timeout_ms > 0
+            && snapshot.logs > 0,
+        "snapshot byte limit, log limit and deadlines must be positive"
     );
+    if let Some(parameters) = genesis.simplex {
+        parameters.validate().map_err(anyhow::Error::msg)?;
+    }
     let blocks_per_epoch = std::num::NonZeroU64::new(genesis.blocks_per_epoch)
         .ok_or_else(|| anyhow::anyhow!("genesis blocks_per_epoch must be non-zero"))?;
     let prune_config = config
@@ -213,7 +219,12 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         ),
     }
 
-    let executor = VeraExecutor::new(chain_id).with_membership_epochs(blocks_per_epoch);
+    let verification_threads = std::thread::available_parallelism()
+        .unwrap_or(NZUsize!(1))
+        .min(NZUsize!(4));
+    let executor = VeraExecutor::new(chain_id)
+        .with_membership_epochs(blocks_per_epoch)
+        .with_native_verification_strategy(Rayon::new(verification_threads)?);
     let executor_spec = executor.spec_id();
     #[cfg(feature = "fault-injection")]
     let executor = executor.with_crash_marker(config.data_dir.join("module-commit-crash"));
@@ -340,6 +351,16 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         None => None,
     };
     if let Some(artifact) = &probe_artifact {
+        #[cfg(feature = "fault-injection")]
+        {
+            let pause = config.data_dir.join("snapshot-probe-pause");
+            if pause.try_exists()? {
+                std::fs::write(config.data_dir.join("snapshot-probe-ready"), [])?;
+                while pause.try_exists()? {
+                    ::tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }
+        }
         provider.register(
             artifact.info.epoch,
             ConsensusScheme::verifier(
@@ -402,7 +423,8 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         players.clone(),
         history.clone(),
         blocks_per_epoch,
-    );
+    )
+    .with_marshal(marshal.clone());
     let (reshare_actor, reshare_mailbox) = reshare::Actor::new(
         context.child("reshare"),
         reshare::Config {
@@ -522,8 +544,12 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         MAX_BLOCK_TXS,
         gas_limit,
     )
-    .with_participant_addresses(participant_addresses);
-    let vrf_elector = VrfElectorConfig::new(application.vrf_seed_cache());
+    .with_participant_addresses(participant_addresses)
+    .with_native_pipeline(
+        genesis.simplex.is_some(),
+        (leader_timeout / 4).min(Duration::from_millis(100)),
+    );
+    let vrf_elector = VrfElectorConfig::new(application.vrf_seed_cache(), genesis.simplex);
 
     let snapshot_history = crate::history::SnapshotHistory {
         history: history.clone(),
@@ -592,13 +618,15 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         },
     );
 
-    let deferred = Deferred::new(
-        context.child("deferred"),
-        reshare::Application::new(
+    let (application, application_ready) =
+        crate::ready_application::ReadyApplication::new(reshare::Application::new(
             stateful_mailbox.clone(),
             reshare_mailbox.clone(),
             blocks_per_epoch,
-        ),
+        ));
+    let deferred = Deferred::new(
+        context.child("deferred"),
+        application,
         marshal.clone(),
         FixedEpocher::new(blocks_per_epoch),
     );
@@ -678,24 +706,58 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
             )
             .await?;
     }
+    let reshare_handle = reshare_actor.start(dkg_network);
     let stateful_handle = stateful_actor.start();
+    state_resolver_handles.extend([
+        p2p_handle,
+        broadcast_handle,
+        probe_handle,
+        orchestrator_handle,
+        marshal_handle,
+        stateful_handle,
+        reshare_handle,
+        history_peer_handle,
+    ]);
+    let startup_actors = Handle::select(std::mem::take(&mut state_resolver_handles));
+    ::tokio::pin!(startup_actors);
 
     // Transaction gossip and RPC over the live committed state.
-    let databases = stateful_mailbox.subscribe_databases().await;
+    let readiness = async {
+        if snapshot_sync {
+            ::tokio::time::timeout(
+                Duration::from_millis(snapshot.initialization_timeout_ms),
+                stateful_mailbox.subscribe_databases(),
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!(
+                "snapshot initialization deadline exceeded; restart to discover a fresh certified target"
+            ))
+        } else {
+            Ok(stateful_mailbox.subscribe_databases().await)
+        }
+    };
+    let databases = ::tokio::select! {
+        biased;
+        result = &mut startup_actors => {
+            anyhow::bail!("validator actor stopped during startup: {result:?}");
+        }
+        result = readiness => result?,
+    };
     let native_databases = databases.native_databases();
     let state_set = databases.execution_databases();
     let committed_state = CommittedState::new(state_set.clone());
-    let reshare_handle = reshare_actor.start(dkg_network);
     sink.attach_state(state_set.clone());
     {
         // Hold the module read lock through publication so finalization cannot
         // advance nonces between loading them and enabling admission.
         let recovered_modules = modules.read().expect("module state lock poisoned");
         let mut admission =
-            MempoolValidator::new(committed_state.clone(), ExecutionConfig::new(chain_id), 0);
+            MempoolValidator::new(committed_state.clone(), ExecutionConfig::new(chain_id), 0)
+                .with_native_only(genesis.simplex.is_some());
         admission.reset(committed_state.clone(), recovered_modules.nonces.clone());
         let _ = validator.set(::tokio::sync::Mutex::new(admission));
     }
+    application_ready.send_replace(true);
     let gossip = TxGossip::new(mempool.clone(), validator.clone(), chain_id, mempool_sender);
     state_resolver_handles.push(spawn_tx_receiver(
         context.child("tx_receiver"),
@@ -808,19 +870,11 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     });
     info!(validator_index, %rpc_addr, "vera validator started");
 
-    state_resolver_handles.extend([
-        p2p_handle,
-        broadcast_handle,
-        probe_handle,
-        reshare_handle,
-        orchestrator_handle,
-        marshal_handle,
-        stateful_handle,
-        history_peer_handle,
-    ]);
-    Handle::select(state_resolver_handles)
-        .await
-        .map_err(|e| anyhow::anyhow!("validator actor failed: {e:?}"))
+    ::tokio::select! {
+        result = &mut startup_actors => result,
+        result = Handle::select(state_resolver_handles) => result,
+    }
+    .map_err(|e| anyhow::anyhow!("validator actor failed: {e:?}"))
 }
 
 pub(crate) const fn block_cfg() -> vera_domain::BlockCfg {

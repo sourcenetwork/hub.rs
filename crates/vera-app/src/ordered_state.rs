@@ -416,8 +416,9 @@ impl DatabaseSet<Ctx> for OrderedState {
     }
 
     async fn apply(&self, batches: OrderedSealed) {
-        let started = tracing::enabled!(target: "vera_diagnostics", tracing::Level::DEBUG)
-            .then(std::time::Instant::now);
+        let started = (tracing::enabled!(target: "vera_diagnostics", tracing::Level::DEBUG)
+            || tracing::enabled!(target: "vera_publication_diagnostics", tracing::Level::DEBUG))
+        .then(std::time::Instant::now);
         #[cfg(feature = "fault-injection")]
         let changed = batches
             .modules
@@ -433,9 +434,14 @@ impl DatabaseSet<Ctx> for OrderedState {
             .commit_snapshot(batches.height, batches.modules)
             .expect("publish applied module state");
         if let Some((started, applied)) = started.zip(applied) {
+            let publication = started.elapsed() - applied;
             tracing::debug!(target: "vera_diagnostics", height = batches.height,
                 database_apply_us = applied.as_micros(),
-                publication_us = (started.elapsed() - applied).as_micros(),
+                publication_us = publication.as_micros(),
+                "finalized state apply");
+            tracing::debug!(target: "vera_publication_diagnostics", height = batches.height,
+                database_apply_us = applied.as_micros(),
+                publication_us = publication.as_micros(),
                 "finalized state apply");
         }
     }
@@ -487,6 +493,8 @@ where
         if config.executor.module_trees().is_some() {
             return Err("ordered storage cannot attach JMT trees".into());
         }
+        tracing::debug!(target: "vera_diagnostics", height = %anchor.height,
+            "snapshot database transfer started");
         let (databases, anchor) = Box::pin(OrderedDatabases::sync(
             context,
             config.databases,
@@ -497,15 +505,23 @@ where
             sync_config,
         ))
         .await?;
+        tracing::debug!(target: "vera_diagnostics", height = %anchor.height,
+            "snapshot database transfer completed");
         Self::check_module_root(&databases)
             .await
             .map_err(|e| e.to_string())?;
         if let Some(handoff) = config.sync_handoff {
+            tracing::debug!(target: "vera_diagnostics", height = %anchor.height,
+                "snapshot history handoff started");
             handoff(anchor).await?;
+            tracing::debug!(target: "vera_diagnostics", height = %anchor.height,
+                "snapshot history handoff completed");
         }
         let state = Self::hydrate(databases, config.executor)
             .await
             .map_err(|e| e.to_string())?;
+        tracing::debug!(target: "vera_diagnostics", height = %anchor.height,
+            "snapshot query state hydrated");
         Ok((state, anchor))
     }
 }

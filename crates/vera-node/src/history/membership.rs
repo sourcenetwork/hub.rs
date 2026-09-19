@@ -45,18 +45,58 @@ impl FinalizedHistory {
                 .context("truncated roster boundary block")?,
             &crate::node::block_cfg(),
         )?;
-        ensure!(block.height == height, "roster boundary height mismatch");
-        let Some(Payload::EpochInfo(info)) = block.payload else {
-            anyhow::bail!("roster boundary is missing its epoch artifact");
-        };
-        ensure!(
-            info.epoch.get() == boundary_epoch,
-            "roster artifact epoch mismatch"
+        roster_from_boundary(&block, epoch, height).map(Some)
+    }
+}
+
+pub(crate) fn roster_from_boundary(
+    block: &Block,
+    epoch: Epoch,
+    height: u64,
+) -> Result<Set<PublicKey>> {
+    ensure!(block.height == height, "roster boundary height mismatch");
+    let Some(Payload::EpochInfo(info)) = &block.payload else {
+        anyhow::bail!("roster boundary is missing its epoch artifact");
+    };
+    ensure!(
+        info.epoch.get().checked_add(1) == Some(epoch.get()),
+        "roster artifact epoch mismatch"
+    );
+    ensure!(
+        !info.next_players.is_empty(),
+        "empty historical consensus roster"
+    );
+    Ok(info.next_players.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use commonware_cryptography::{Signer as _, ed25519};
+
+    #[test]
+    fn boundary_roster_rejects_wrong_epoch_height_and_missing_selection() {
+        let key = ed25519::PrivateKey::from_seed(7).public_key();
+        let (mut info, _) = crate::trusted_setup(7, [key.clone()]).unwrap();
+        info.epoch = Epoch::new(2);
+        info.next_players = Set::from_iter_dedup([key.clone()]);
+        let mut block = vera_app::genesis_block(
+            vera_domain::StateRoot(B256::ZERO),
+            Default::default(),
+            B256::ZERO,
         );
-        ensure!(
-            !info.next_players.is_empty(),
-            "empty historical consensus roster"
+        block.height = 39;
+        block.payload = Some(Payload::EpochInfo(info.clone()));
+        assert_eq!(
+            roster_from_boundary(&block, Epoch::new(3), 39).unwrap(),
+            Set::from_iter_dedup([key]),
         );
-        Ok(Some(info.next_players))
+        assert!(roster_from_boundary(&block, Epoch::new(4), 39).is_err());
+        assert!(roster_from_boundary(&block, Epoch::new(3), 40).is_err());
+        info.next_players = Set::default();
+        block.payload = Some(Payload::EpochInfo(info));
+        assert!(roster_from_boundary(&block, Epoch::new(3), 39).is_err());
+        block.payload = None;
+        assert!(roster_from_boundary(&block, Epoch::new(3), 39).is_err());
     }
 }

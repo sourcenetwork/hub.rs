@@ -42,11 +42,15 @@ pub(super) struct Observation {
     schedule_lag_ms: f64,
     submit_ms: Option<f64>,
     receipt_ms: Option<f64>,
+    receipt_rpc_ms: Option<f64>,
     receipt: Option<MeasuredReceipt>,
     permission_ms: Option<f64>,
     workflow_ms: Option<f64>,
     error: Option<String>,
+    failure_stage: Option<&'static str>,
+    failed_request_ms: Option<f64>,
     verification_failure: bool,
+    client_throttles: u64,
     submit_throttles: u64,
     receipt_throttles: u64,
     permission_throttles: u64,
@@ -71,10 +75,14 @@ impl Observation {
             "submit_rpc_ms": self.submit_ms, "scheduled_to_certified_receipt_ms": self.receipt_ms,
             "permission_read_ms": self.permission_ms, "scheduled_to_workflow_ms": self.workflow_ms,
             "height": self.receipt.as_ref().map(|r| r.block_number), "error": self.error,
+            "failure_stage": self.failure_stage, "failed_request_ms": self.failed_request_ms,
             "verification_failure": self.verification_failure,
+            "client_throttles": self.client_throttles,
+            "server_throttles": self.submit_throttles + self.receipt_throttles + self.permission_throttles - self.client_throttles,
             "submit_throttles": self.submit_throttles,
             "read_throttles": self.receipt_throttles + self.permission_throttles,
             "receipt_throttles": self.receipt_throttles,
+            "receipt_rpc_ms": self.receipt_rpc_ms,
             "permission_throttles": self.permission_throttles,
             "diagnostic_refetched_revision": self.diagnostic_revision,
             "diagnostic_refetch_error": self.diagnostic_error,
@@ -95,11 +103,15 @@ pub(super) async fn observe(
         schedule_lag_ms: scheduled.elapsed().as_secs_f64() * 1000.0,
         submit_ms: None,
         receipt_ms: None,
+        receipt_rpc_ms: None,
         receipt: None,
         permission_ms: None,
         workflow_ms: None,
         error: None,
+        failure_stage: None,
+        failed_request_ms: None,
         verification_failure: false,
+        client_throttles: 0,
         submit_throttles: 0,
         receipt_throttles: 0,
         permission_throttles: 0,
@@ -110,11 +122,18 @@ pub(super) async fn observe(
         return observation;
     };
     observation.outcome = "unknown";
+    let mut stage = "submit";
+    let mut request_started = Instant::now();
     let completed = tokio::time::timeout(REQUEST_TIMEOUT, async {
         let submit_start = Instant::now();
         let result = loop {
+            request_started = Instant::now();
             let result = client.send_native_tx(&observation.request.raw).await;
-            if result.as_ref().is_err_and(is_throttled) {
+            if let Err(error) = &result
+                && is_throttled(error)
+            {
+                observation.client_throttles +=
+                    u64::from(matches!(error, ClientError::ClientCapacityExhausted));
                 observation.submit_throttles += 1;
                 tokio::time::sleep(POLL_INTERVAL).await;
                 continue;
@@ -128,16 +147,20 @@ pub(super) async fn observe(
                 if matches!(error, ClientError::Rpc { .. }) || is_throttled(&error) {
                     observation.outcome = "rejected";
                 }
-                observation.error = Some(error.to_string());
+                observation.error = Some(format!("{error:?}"));
                 return;
             }
         }
         loop {
+            stage = "receipt";
+            request_started = Instant::now();
             match client
                 .read_receipt(observation.request.hash, &reads.trusted)
                 .await
             {
                 Ok(Some(response)) => {
+                    observation.receipt_rpc_ms =
+                        Some(request_started.elapsed().as_secs_f64() * 1000.0);
                     let receipt = response
                         .receipts
                         .iter()
@@ -164,6 +187,8 @@ pub(super) async fn observe(
                         };
                         let started = Instant::now();
                         let permission = loop {
+                            stage = "permission";
+                            request_started = Instant::now();
                             let result = client
                                 .verify_current_access(
                                     &reads.policy,
@@ -173,7 +198,13 @@ pub(super) async fn observe(
                                     PERMISSION_LIMITS,
                                 )
                                 .await;
-                            if result.as_ref().is_err_and(is_throttled) {
+                            if let Err(error) = &result
+                                && is_throttled(error)
+                            {
+                                observation.client_throttles += u64::from(matches!(
+                                    error,
+                                    ClientError::ClientCapacityExhausted
+                                ));
                                 observation.permission_throttles += 1;
                                 tokio::time::sleep(Duration::from_millis(250)).await;
                                 continue;
@@ -195,7 +226,7 @@ pub(super) async fn observe(
                                         | ClientError::Receipt(_)
                                         | ClientError::Permission(_)
                                 );
-                                observation.error = Some(error.to_string());
+                                observation.error = Some(format!("{error:?}"));
                                 return;
                             }
                         }
@@ -207,6 +238,8 @@ pub(super) async fn observe(
                 }
                 Ok(None) => {}
                 Err(error) if is_throttled(&error) => {
+                    observation.client_throttles +=
+                        u64::from(matches!(error, ClientError::ClientCapacityExhausted));
                     observation.receipt_throttles += 1;
                     tokio::time::sleep(Duration::from_millis(250)).await;
                     continue;
@@ -218,7 +251,9 @@ pub(super) async fn observe(
                             | ClientError::Receipt(_)
                             | ClientError::Permission(_)
                     );
-                    observation.error = Some(error.to_string());
+                    observation.error = Some(format!("{error:?}"));
+                    observation.failed_request_ms =
+                        Some(request_started.elapsed().as_secs_f64() * 1000.0);
                     if observation.verification_failure
                         && let Ok(Some(response)) = client
                             .rpc_call_typed::<Option<ReceiptResponse>>(
@@ -243,6 +278,14 @@ pub(super) async fn observe(
     if completed.is_err() && observation.error.is_none() {
         observation.error = Some("request deadline elapsed; submission was not retried".into());
     }
+    if observation.error.is_some() {
+        observation.failure_stage = Some(stage);
+        if completed.is_ok() {
+            observation
+                .failed_request_ms
+                .get_or_insert_with(|| request_started.elapsed().as_secs_f64() * 1000.0);
+        }
+    }
     observation
 }
 
@@ -262,6 +305,8 @@ pub(super) fn summary(observations: &[Observation], elapsed: Duration) -> Value 
         "offered": observations.len(), "confirmed": count("confirmed"),
         "reverted": count("reverted"), "rejected": count("rejected"),
         "unknown": count("unknown"), "not_sent": count("not_sent"),
+        "client_throttles": observations.iter().map(|o| o.client_throttles).sum::<u64>(),
+        "server_throttles": observations.iter().map(|o| o.submit_throttles + o.receipt_throttles + o.permission_throttles - o.client_throttles).sum::<u64>(),
         "submit_throttles": observations.iter().map(|o| o.submit_throttles).sum::<u64>(),
         "read_throttles": observations.iter().map(|o| o.receipt_throttles + o.permission_throttles).sum::<u64>(),
         "receipt_throttles": observations.iter().map(|o| o.receipt_throttles).sum::<u64>(),
@@ -274,6 +319,7 @@ pub(super) fn summary(observations: &[Observation], elapsed: Duration) -> Value 
         "permission_read_ms": distribution(observations.iter().filter_map(|o| o.permission_ms).collect()),
         "scheduled_to_workflow_ms": distribution(observations.iter().filter_map(|o| o.workflow_ms).collect()),
         "schedule_lag_ms": distribution(observations.iter().map(|o| o.schedule_lag_ms).collect()),
+        "receipt_rpc_ms": distribution(observations.iter().filter_map(|o| o.receipt_rpc_ms).collect()),
         "submit_rpc_ms": distribution(observations.iter().filter_map(|o| o.submit_ms).collect()),
         "scheduled_to_certified_receipt_ms": distribution(observations.iter().filter_map(|o| o.receipt_ms).collect()),
     })

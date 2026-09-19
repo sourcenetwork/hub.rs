@@ -27,6 +27,17 @@ mod administration_support;
 #[tokio::test]
 #[ignore = "requires TRUST_NATIVE_TEST_BINARY built with vera_native and its shared library"]
 async fn native_go_workers_verify_policy_creation() {
+    native_go_workflow(false).await;
+}
+
+#[tokio::test]
+#[ignore = "requires TRUST_NATIVE_TEST_BINARY and TRUST_NATIVE_GATEWAY_TEST_BINARY with vera_native"]
+async fn native_go_gateway_verifies_pipelined_vera() {
+    std::env::var("TRUST_NATIVE_GATEWAY_TEST_BINARY").expect("Go gateway test binary required");
+    native_go_workflow(true).await;
+}
+
+async fn native_go_workflow(pipelined: bool) {
     let binary = std::env::var("TRUST_NATIVE_TEST_BINARY").expect("Go native test binary required");
     let deployment = 9063;
     let trusted = *KeySet::builder()
@@ -37,11 +48,17 @@ async fn native_go_workers_verify_policy_creation() {
         .output
         .public()
         .public();
+    let genesis = GenesisBuilder::devnet().operators(administration_support::operators());
+    let genesis = if pipelined {
+        genesis.simplex(vera_domain::SimplexParameters::default())
+    } else {
+        genesis
+    };
     let mut cluster = TestCluster::builder()
         .nodes(4)
         .seed(deployment)
         .chain_id(deployment)
-        .genesis(GenesisBuilder::devnet().operators(administration_support::operators()))
+        .genesis(genesis)
         .preset(ConsensusPreset::Normal)
         .build()
         .await
