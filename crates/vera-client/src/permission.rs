@@ -58,6 +58,8 @@ impl VeraClient {
     ///
     /// The consensus key must come from authenticated configuration. The caller
     /// selects revision freshness; this method never falls back to an older revision.
+    /// This method fetches evidence over RPC. A successful historical check does
+    /// not authorize later offline writes or establish absence of later revocation.
     pub async fn verify_access_at(
         &self,
         policy: &str,

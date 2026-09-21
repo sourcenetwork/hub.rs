@@ -163,6 +163,8 @@ impl AcpModule {
     }
 
     /// Replace a policy's definition, pruning relationships that no longer fit.
+    /// This edits the current record without an expected-parent check or a policy
+    /// revision DAG; callers must not use it to reconcile offline policy branches.
     #[allow(unused_variables)]
     pub fn edit_policy(
         &mut self,

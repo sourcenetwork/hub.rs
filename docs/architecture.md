@@ -10,6 +10,10 @@ This describes the native implementation. Recovery qualification, deployment
 packaging, and sustained capacity measurements remain open. Implementation is
 not a claim of production qualification.
 
+The [causal authorization design](causal-authorization.md) records the agreed
+direction for offline policy and document histories, existing function boundaries,
+and the unresolved revocation rules. That design is not yet an enabled ACP feature.
+
 ## Service boundaries
 
 ```mermaid
