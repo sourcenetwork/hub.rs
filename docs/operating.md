@@ -44,10 +44,11 @@ existing participant identity.
 
 Retain `validator.key` and `secrets.json` together with independently provisioned
 genesis, configuration, and peer material. Recovering the remaining state depends
-on reachable peers and available authenticated state and history. Delayed
-snapshot catch-up has an unresolved liveness defect; a secret backup alone does
-not establish that a restore will succeed. Exercise restores before relying on
-this recovery path.
+on reachable peers and available authenticated state and history. A delayed
+snapshot catch-up re-floors from stored gossiped finalizations when processing
+stalls, and still exits at its deadline if the transfer cannot converge under
+continuous finalization; a secret backup alone does not establish that a restore
+will succeed. Exercise restores before relying on this recovery path.
 
 ## Recovery behaviour
 
@@ -77,7 +78,9 @@ rejected and require an explicit migration decision, not silent reset.
 - **Snapshot catch-up** (`[snapshot]`): opt-in for newly admitted members;
   `record_bytes`, `peer_timeout_ms`, and `initialization_timeout_ms` must be positive.
   Initialization defaults to a five-minute deadline. Exceeding it stops the
-  process; restart is not a guarantee of convergence.
+  process; restart is not a guarantee of convergence. `floor_stall_seconds`
+  (default 15, zero disables) bounds the quiet period before startup re-floors
+  a stalled initialization from the newest stored gossiped finalization.
 - **Finality watchdog** (`watchdog_stall_seconds`, default 600, `0` disables): fails the
   process after that long without a new finalization while peers stay connected, so supervised
   restarts re-enter boot-time recovery. It starts after database readiness and

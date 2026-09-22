@@ -45,6 +45,16 @@ resumes at a later verified revision, history starts a new descending pass from
 that revision to the same previously committed prefix. This can refetch already
 staged records. Unpublished imports remain unavailable to history clients.
 
+A floor that ages out of peer retention strands transfer: ancestry backfill
+cannot reach the gossiped tip, so no newer finalized targets arrive. While
+databases are pending, startup watches marshal's processed height and, after
+`floor_stall_seconds` without progress (default 15, zero disables), re-floors
+marshal from the newest stored gossiped finalization. Dispatches resume from
+that retained anchor and the transfer retargets; the overall
+`initialization_timeout_ms` deadline still bounds the attempt. Retargeting
+alone does not guarantee convergence while the network keeps changing state:
+a stale target can still exhaust the deadline inside database transfer.
+
 `vera_nodeStatus` includes `snapshotRevision` after snapshot recovery. On restart,
 it reports the persisted snapshot recovery floor, which can also cover execution
 completed during the original handoff. It is operational status; clients still

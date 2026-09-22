@@ -212,9 +212,12 @@ configurable deadline bound failures; successful recovery still depends on peer
 availability and retention.
 Proposals are skipped and verification remains pending until execution state is
 ready, before either can request speculative DKG artifacts.
-A deliberately stale target can reach history import or exhaust the initialization
-deadline during database transfer. Epoch progress alone does not establish
-convergence under continuous pruning; this remains a recovery limitation.
+A stale target whose floor has aged out of peer retention can stop marshal's
+finalized dispatches; startup watches that progress and, after a configured
+stall, re-floors marshal from the newest stored gossiped finalization so
+dispatches resume from a retained anchor. Retargeting keeps the database sync
+on servable targets, though a network that keeps changing state can still
+exhaust the initialization deadline inside transfer.
 See [snapshot recovery](snapshot-recovery.md) and [history storage](history-storage.md).
 
 ## Implementation map

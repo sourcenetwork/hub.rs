@@ -25,6 +25,9 @@ pub struct SnapshotConfig {
     pub peer_timeout_ms: u64,
     /// Deadline for snapshot database and history initialization (default 5 minutes).
     pub initialization_timeout_ms: u64,
+    /// Seconds without finalized-processing progress that re-floors snapshot
+    /// initialization from the newest stored finalization (default 15, 0 disables).
+    pub floor_stall_seconds: u64,
 }
 
 impl Default for SnapshotConfig {
@@ -34,6 +37,7 @@ impl Default for SnapshotConfig {
             logs: 100_000,
             peer_timeout_ms: 10_000,
             initialization_timeout_ms: 300_000,
+            floor_stall_seconds: 15,
         }
     }
 }
@@ -288,7 +292,7 @@ mod tests {
         let default = NodeConfig::from_toml("[snapshot]").unwrap();
         assert_eq!(default.snapshot, Some(SnapshotConfig::default()));
         let configured = NodeConfig::from_toml(
-            "[snapshot]\nrecord_bytes = 1024\nlogs = 4\npeer_timeout_ms = 500\ninitialization_timeout_ms = 2000",
+            "[snapshot]\nrecord_bytes = 1024\nlogs = 4\npeer_timeout_ms = 500\ninitialization_timeout_ms = 2000\nfloor_stall_seconds = 3",
         )
         .unwrap();
         assert_eq!(configured.snapshot.as_ref().unwrap().record_bytes, 1024);
@@ -302,6 +306,7 @@ mod tests {
                 .initialization_timeout_ms,
             2000
         );
+        assert_eq!(configured.snapshot.as_ref().unwrap().floor_stall_seconds, 3);
         assert_eq!(
             NodeConfig::from_toml(&configured.to_toml().unwrap()).unwrap(),
             configured

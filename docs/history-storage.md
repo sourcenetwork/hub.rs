@@ -65,12 +65,18 @@ Keep `vera_storage=info` enabled. This checks process-crash recovery, not power-
 or failed-write behavior.
 
 Snapshot database and history initialization has a five-minute deadline,
-configurable through `snapshot.initialization_timeout_ms`. Exceeding it exits
-with `snapshot initialization deadline exceeded`; restart the node to discover
-a fresh certified target. Restarting does not guarantee convergence if peer
-retention is too short for synchronization. Increase the budget when the expected dataset and
-network require longer initialization. Durable import progress is preserved.
-Actor failures are also reported while database startup is pending.
+configurable through `snapshot.initialization_timeout_ms`. While databases are
+pending, startup watches marshal's finalized-processing progress: after
+`snapshot.floor_stall_seconds` without progress (default 15, zero disables),
+it re-floors marshal from the newest stored gossiped finalization, resuming
+dispatches from a retained anchor so the database sync retargets. Exceeding
+the overall deadline still exits with `snapshot initialization deadline
+exceeded`; restart the node to discover a fresh certified target. A stale
+target can still fail to converge inside database transfer while the network
+keeps finalizing; restart into a quieter window or longer peer state retention
+recovers it. Increase the budget when the expected dataset and network require
+longer initialization. Durable import progress is preserved. Actor failures are
+also reported while database startup is pending.
 
 The `snapshot_interrupt` case
 `stale_snapshot_target_recovers_or_reaches_initialization_deadline` pauses the
@@ -78,5 +84,5 @@ joining node after discovery while peers advance beyond retention. If transfer
 cannot finish, it requires the explicit initialization deadline before durable
 history import. If transfer succeeds, it injects a crash during history import
 and verifies recovery, certified state, receipts, restart persistence and quorum
-participation. The test bounds startup failure without requiring transfer to fail;
-it does not establish convergence for every retention window.
+participation. The test bounds startup failure without requiring transfer to
+fail; it does not establish convergence for every retention window.

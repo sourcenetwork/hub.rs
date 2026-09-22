@@ -194,7 +194,7 @@ pub(super) async fn recover_replica_with_delay(
         let mut config = fs::read_to_string(&path).unwrap();
         config.push_str("\n[snapshot]\n");
         if stale_floor {
-            config.push_str("initialization_timeout_ms = 30000\n");
+            config.push_str("initialization_timeout_ms = 30000\nfloor_stall_seconds = 3\n");
         }
         fs::write(path, config).unwrap();
     }

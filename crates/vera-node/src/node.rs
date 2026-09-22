@@ -722,26 +722,45 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
     ::tokio::pin!(startup_actors);
 
     // Transaction gossip and RPC over the live committed state.
-    let readiness = async {
-        if snapshot_sync {
-            ::tokio::time::timeout(
-                Duration::from_millis(snapshot.initialization_timeout_ms),
-                stateful_mailbox.subscribe_databases(),
-            )
-            .await
-            .map_err(|_| anyhow::anyhow!(
-                "snapshot initialization deadline exceeded; restart to discover a fresh certified target"
-            ))
-        } else {
-            Ok(stateful_mailbox.subscribe_databases().await)
+    let subscribe_databases = stateful_mailbox.subscribe_databases();
+    ::tokio::pin!(subscribe_databases);
+    let databases = if snapshot_sync {
+        let mut refresh = crate::snapshot_refresh::FloorRefresh::new(Duration::from_secs(
+            snapshot.floor_stall_seconds,
+        ));
+        let deadline = ::tokio::time::Instant::now()
+            + Duration::from_millis(snapshot.initialization_timeout_ms);
+        loop {
+            let stalled = async {
+                if refresh.enabled() {
+                    ::tokio::time::sleep(refresh.stall()).await;
+                    refresh.observe(&marshal).await;
+                } else {
+                    ::std::future::pending::<()>().await;
+                }
+            };
+            ::tokio::select! {
+                biased;
+                result = &mut startup_actors => {
+                    anyhow::bail!("validator actor stopped during startup: {result:?}");
+                }
+                databases = &mut subscribe_databases => break databases,
+                _ = stalled => {}
+                _ = ::tokio::time::sleep_until(deadline) => {
+                    anyhow::bail!(
+                        "snapshot initialization deadline exceeded; restart to discover a fresh certified target"
+                    );
+                }
+            }
         }
-    };
-    let databases = ::tokio::select! {
-        biased;
-        result = &mut startup_actors => {
-            anyhow::bail!("validator actor stopped during startup: {result:?}");
+    } else {
+        ::tokio::select! {
+            biased;
+            result = &mut startup_actors => {
+                anyhow::bail!("validator actor stopped during startup: {result:?}");
+            }
+            databases = &mut subscribe_databases => databases,
         }
-        result = readiness => result?,
     };
     let native_databases = databases.native_databases();
     let state_set = databases.execution_databases();

@@ -42,6 +42,7 @@ pub use participants::{RegistryParticipants, validator_address};
 mod provider;
 mod ready_application;
 mod rejoin;
+mod snapshot_refresh;
 mod watchdog;
 pub use provider::{DynamicProvider, Registrar};
 pub(crate) use watchdog::run as run_watchdog;
