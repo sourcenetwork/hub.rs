@@ -52,7 +52,7 @@ impl FinalizedHistory {
         let mut certified = (block.height, block.id().0.0);
         for encoded in &proof.descendants {
             let bytes = unhex(encoded)?;
-            let descendant = Block::decode_cfg(bytes.as_slice(), &crate::node::block_cfg())?;
+            let descendant = Block::decode_cfg(commonware_codec::Copying(bytes.as_slice()), &crate::node::block_cfg())?;
             certified = (descendant.height, descendant.id().0.0);
             if certified.0 > anchor {
                 let key = key(PROOF_BLOCK, certified.0);
@@ -137,7 +137,7 @@ impl FinalizedHistory {
             let mut previous = None;
             let mut certified = None;
             for (offset, encoded) in blocks.iter().enumerate() {
-                let block = Block::decode_cfg(encoded.as_slice(), &crate::node::block_cfg())?;
+                let block = Block::decode_cfg(commonware_codec::Copying(encoded.as_slice()), &crate::node::block_cfg())?;
                 ensure!(
                     block.height == height + offset as u64,
                     "finalized history height mismatch"
@@ -181,7 +181,9 @@ impl FinalizedHistory {
                             "oversized epoch boundary"
                         );
                         let boundary_block = Block::decode_cfg(
-                            encoded.get(..size).context("truncated epoch boundary")?,
+                            commonware_codec::Copying(
+                                encoded.get(..size).context("truncated epoch boundary")?,
+                            ),
                             &crate::node::block_cfg(),
                         )?;
                         ensure!(

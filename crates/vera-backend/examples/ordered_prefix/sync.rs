@@ -4,7 +4,7 @@ use commonware_glue::stateful::db::{
     DatabaseSet, ManagedDb, Shared, StateSyncDb, SyncEngineConfig, Unmerkleized as _,
 };
 use commonware_runtime::Supervisor as _;
-use commonware_storage::qmdb::sync::{FeedbackTx, Request, Response, Source};
+use commonware_storage::qmdb::sync::{Feedback, Request, Response, Source};
 use commonware_utils::channel::{mpsc, oneshot};
 use std::sync::{
     Arc, Mutex,
@@ -33,7 +33,7 @@ impl Source for MeasuredSource {
     async fn serve(
         &self,
         request: Request<Self::Family>,
-    ) -> Result<(Response<Self::Family, Self::Op, Self::Digest>, FeedbackTx), Self::Error> {
+    ) -> Result<(Response<Self::Family, Self::Op, Self::Digest>, Feedback), Self::Error> {
         let _permit = self.gate.acquire().await.unwrap();
         let (mut response, mut feedback) = self.db.serve(request).await?;
         let count = match &mut response {

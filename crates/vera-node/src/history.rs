@@ -64,7 +64,7 @@ struct Record {
 
 impl Record {
     fn decode(&self) -> Result<(Block, Vec<ExecutionReceipt>)> {
-        let block = Block::decode_cfg(self.block.as_slice(), &crate::node::block_cfg())?;
+        let block = Block::decode_cfg(commonware_codec::Copying(self.block.as_slice()), &crate::node::block_cfg())?;
         let receipts = self
             .receipts
             .iter()

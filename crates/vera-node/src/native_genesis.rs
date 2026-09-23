@@ -38,7 +38,7 @@ pub(super) async fn load_or_create(
             record.get(..32) == Some(fingerprint.as_slice()),
             "native genesis configuration or storage format differs; an explicit migration is required"
         );
-        let block = Block::decode_cfg(&record[32..], &crate::node::block_cfg())?;
+        let block = Block::decode_cfg(commonware_codec::Copying(&record[32..]), &crate::node::block_cfg())?;
         ensure!(
             block.native_targets.is_some(),
             "native genesis commitments missing"

@@ -51,9 +51,9 @@ databases are pending, startup watches marshal's processed height and, after
 `floor_stall_seconds` without progress (default 15, zero disables), re-floors
 marshal from the newest stored gossiped finalization. Dispatches resume from
 that retained anchor and the transfer retargets; the overall
-`initialization_timeout_ms` deadline still bounds the attempt. Retargeting
-alone does not guarantee convergence while the network keeps changing state:
-a stale target can still exhaust the deadline inside database transfer.
+`initialization_timeout_ms` deadline still bounds the attempt. Sync completes
+at its reached target and settles on the newest one at the first update lull,
+so stale targets converge without network quiescence.
 
 `vera_nodeStatus` includes `snapshotRevision` after snapshot recovery. On restart,
 it reports the persisted snapshot recovery floor, which can also cover execution

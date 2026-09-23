@@ -28,6 +28,7 @@ commonware-storage.workspace = true
 commonware-utils.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
+tracing.workspace = true
 
 [dev-dependencies]
 commonware-p2p.workspace = true

@@ -46,7 +46,7 @@ impl PrefixProof {
             return Err(PermissionError::Invalid("current-state roots"));
         }
         let evidence =
-            PrefixEvidence::decode_cfg(self.proof.as_ref(), &PERMISSION_LIMITS.reads.records)
+            PrefixEvidence::decode_cfg(commonware_codec::Copying(self.proof.as_ref()), &PERMISSION_LIMITS.reads.records)
                 .map_err(|_| PermissionError::Invalid("prefix encoding or record limit"))?;
         let mut remaining = PERMISSION_LIMITS
             .reads

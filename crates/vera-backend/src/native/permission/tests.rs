@@ -212,7 +212,7 @@ fn permission_evidence_replays_deny_and_revocation_at_one_revision() {
             panic!("missing deny proof")
         };
         let mut evidence =
-            PrefixEvidence::decode_cfg(encoded.as_ref(), &PERMISSION_LIMITS.reads.records).unwrap();
+            PrefixEvidence::decode_cfg(commonware_codec::Copying(encoded.as_ref()), &PERMISSION_LIMITS.reads.records).unwrap();
         assert_eq!(evidence.entries.len(), 1);
         evidence.entries.clear();
         *encoded = evidence.encode().into();
@@ -408,7 +408,7 @@ fn prefix_evidence_handles_boundaries_and_rejects_noncanonical_or_excessive_data
                     );
                     let mut trailing = encoded.to_vec();
                     trailing.push(0);
-                    assert!(PrefixEvidence::decode_cfg(trailing.as_slice(), &4096).is_err());
+                    assert!(PrefixEvidence::decode_cfg(commonware_codec::Copying(trailing.as_slice()), &4096).is_err());
                     if !evidence.entries.is_empty() {
                         assert!(
                             PrefixEvidence::decode_cfg(encoded, &(evidence.entries.len() - 1))

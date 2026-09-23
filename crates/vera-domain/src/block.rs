@@ -209,7 +209,7 @@ impl EncodeSize for Block {
 impl Read for Block {
     type Cfg = BlockCfg;
 
-    fn read_cfg(buf: &mut impl Buf, cfg: &Self::Cfg) -> Result<Self, CodecError> {
+    fn read_cfg(buf: &mut impl commonware_codec::Buf, cfg: &Self::Cfg) -> Result<Self, CodecError> {
         let buf = &mut buf.take(crate::MAX_BLOCK_BYTES);
         let context = ConsensusContext::read(buf)?;
         let parent = BlockId::read(buf)?;
@@ -474,9 +474,9 @@ mod tests {
             assert!(input.is_empty());
             let mut invalid = bytes.to_vec();
             invalid[offset] = 4;
-            assert!(Block::decode_cfg(invalid.as_slice(), &default_block_cfg()).is_err());
+            assert!(Block::decode_cfg(commonware_codec::Copying(invalid.as_slice()), &default_block_cfg()).is_err());
             for end in offset..bytes.len() {
-                assert!(Block::decode_cfg(&bytes[..end], &default_block_cfg()).is_err());
+                assert!(Block::decode_cfg(commonware_codec::Copying(&bytes[..end]), &default_block_cfg()).is_err());
             }
             native.native_targets = None;
             assert_eq!(native.encode(), original);
@@ -519,7 +519,7 @@ mod tests {
                 );
                 assert!(input.is_empty());
                 for end in offset..encoded.len() {
-                    assert!(Block::decode_cfg(&encoded[..end], &default_block_cfg()).is_err());
+                    assert!(Block::decode_cfg(commonware_codec::Copying(&encoded[..end]), &default_block_cfg()).is_err());
                 }
             }
         }
@@ -590,7 +590,7 @@ mod tests {
         let payload_start =
             encoded.len() - block.db_targets.encode_size() - block.payload.encode_size();
         encoded[payload_start] = 4;
-        assert!(Block::decode_cfg(encoded.as_slice(), &default_block_cfg()).is_err());
+        assert!(Block::decode_cfg(commonware_codec::Copying(encoded.as_slice()), &default_block_cfg()).is_err());
     }
 
     #[test]

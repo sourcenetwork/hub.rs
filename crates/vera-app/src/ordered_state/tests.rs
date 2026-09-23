@@ -7,7 +7,7 @@ use alloy_primitives::B256;
 use alloy_sol_types::SolCall;
 use commonware_consensus::types::{Epoch, Height, Round, View};
 use commonware_runtime::{Runner as _, Supervisor as _, buffer::paged::CacheRef, tokio};
-use commonware_storage::qmdb::sync::{FeedbackTx, Request, Response, Source};
+use commonware_storage::qmdb::sync::{Feedback, Request, Response, Source};
 use commonware_utils::{NZU16, NZU64, NZUsize};
 use futures::SinkExt as _;
 use vera_backend::state_set_config;
@@ -116,7 +116,7 @@ impl Source for PausedSource {
     async fn serve(
         &self,
         request: Request<Self::Family>,
-    ) -> Result<(Response<Self::Family, Self::Op, Self::Digest>, FeedbackTx), Self::Error> {
+    ) -> Result<(Response<Self::Family, Self::Op, Self::Digest>, Feedback), Self::Error> {
         self.requested.notify_one();
         let _permit = self.gate.acquire().await.unwrap();
         self.db.serve(request).await

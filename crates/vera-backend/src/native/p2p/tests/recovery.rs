@@ -32,7 +32,7 @@ impl Source for PausedSource {
     async fn serve(
         &self,
         request: Request<Self::Family>,
-    ) -> Result<(Response<Self::Family, Self::Op, Self::Digest>, FeedbackTx), Self::Error> {
+    ) -> Result<(Response<Self::Family, Self::Op, Self::Digest>, Feedback), Self::Error> {
         if self.permits.available_permits() == 0 {
             self.waiting.notify_one();
         }

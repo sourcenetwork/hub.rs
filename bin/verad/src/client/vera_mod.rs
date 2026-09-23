@@ -54,7 +54,7 @@ impl VeraCommand {
             } => {
                 let bytes = hex::decode(trusted_key.strip_prefix("0x").unwrap_or(&trusted_key))
                     .map_err(|error| eyre::eyre!("invalid --trusted-key hex: {error}"))?;
-                let trusted = commonware_codec::DecodeExt::decode(bytes.as_slice())
+                let trusted = commonware_codec::DecodeExt::decode(commonware_codec::Copying(bytes.as_slice()))
                     .map_err(|error| eyre::eyre!("invalid --trusted-key: {error}"))?;
                 let record = ctx
                     .client

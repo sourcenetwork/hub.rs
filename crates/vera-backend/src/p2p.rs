@@ -1,4 +1,4 @@
-use bytes::{Buf, BufMut};
+use bytes::BufMut;
 use commonware_codec::{Codec, EncodeSize, Error, RangeCfg, Read, Write};
 use commonware_cryptography::sha256::Digest;
 use commonware_glue::stateful::db::{AttachableResolver, Shared, p2p};
@@ -6,7 +6,7 @@ use commonware_storage::{
     merkle::mmr,
     qmdb::{
         self,
-        sync::{FeedbackTx, Request, Response, ServeError, Source},
+        sync::{Request, Response, ServeError, Source, source},
     },
 };
 use commonware_utils::NZU64;
@@ -27,11 +27,17 @@ pub trait Partition:
     /// Decode limits for one operation, including commit metadata.
     fn operation_config() -> <Self::Op as Read>::Cfg;
 
+    /// Servable journal span: items below `start` are pruned.
+    fn bounds(&self) -> std::ops::Range<commonware_storage::merkle::Location<mmr::Family>>;
+
     /// Reject local records that cannot be decoded by a peer.
     fn accepts(operation: &Self::Op) -> bool;
 }
 
 impl Partition for NativeDb {
+    fn bounds(&self) -> std::ops::Range<commonware_storage::merkle::Location<mmr::Family>> {
+        self.bounds()
+    }
     fn operation_config() -> <Self::Op as Read>::Cfg {
         crate::native::operation_config()
     }
@@ -53,6 +59,9 @@ impl Partition for NativeDb {
 }
 
 impl Partition for AccountsDb {
+    fn bounds(&self) -> std::ops::Range<commonware_storage::merkle::Location<mmr::Family>> {
+        self.bounds()
+    }
     fn operation_config() -> <Self::Op as Read>::Cfg {
         ((), ())
     }
@@ -62,6 +71,9 @@ impl Partition for AccountsDb {
 }
 
 impl Partition for StorageDb {
+    fn bounds(&self) -> std::ops::Range<commonware_storage::merkle::Location<mmr::Family>> {
+        self.bounds()
+    }
     fn operation_config() -> <Self::Op as Read>::Cfg {
         ((), ())
     }
@@ -75,6 +87,9 @@ impl Partition for StorageDb {
 pub const MAX_CODE_BYTES: usize = 1 << 20;
 
 impl Partition for CodeDb {
+    fn bounds(&self) -> std::ops::Range<commonware_storage::merkle::Location<mmr::Family>> {
+        self.bounds()
+    }
     fn operation_config() -> <Self::Op as Read>::Cfg {
         ((), (RangeCfg::new(0..=MAX_CODE_BYTES), ()))
     }
@@ -129,7 +144,7 @@ impl<DB: Partition> EncodeSize for WireOperation<DB> {
 impl<DB: Partition> Read for WireOperation<DB> {
     type Cfg = ();
 
-    fn read_cfg(buf: &mut impl Buf, (): &()) -> Result<Self, Error> {
+    fn read_cfg(buf: &mut impl commonware_codec::Buf, (): &()) -> Result<Self, Error> {
         DB::Op::read_cfg(buf, &DB::operation_config()).map(Self)
     }
 }
@@ -156,12 +171,37 @@ impl<DB: Partition> Source for WireDatabase<DB> {
     type Op = WireOperation<DB>;
     type Error = ServeError<mmr::Family>;
 
-    async fn serve(
-        &self,
-        request: Request<Self::Family>,
-    ) -> Result<(Response<Self::Family, Self::Op, Self::Digest>, FeedbackTx), Self::Error> {
+    async fn serve(&self, request: Request<Self::Family>) -> source::Result<Self> {
         let db = self.0.read().await;
-        let response = serve::response(&*db, bounded(request)).await?;
+        let request = bounded(request);
+        let response = match serve::response(&*db, request.clone()).await {
+            Ok(response) => response,
+            Err(error) => {
+                let bounds = db.bounds();
+                if matches!(
+                    &error,
+                    commonware_storage::qmdb::Error::Journal(
+                        commonware_storage::journal::Error::ItemPruned(_)
+                    )
+                ) {
+                    tracing::debug!(
+                        ?request,
+                        frontier = *bounds.start,
+                        tip = *bounds.end,
+                        "qmdb serve pruned"
+                    );
+                    return Ok((Response::Pruned { frontier: bounds.start }, None));
+                }
+                tracing::warn!(
+                    ?request,
+                    ?error,
+                    frontier = *bounds.start,
+                    tip = *bounds.end,
+                    "qmdb serve rejected"
+                );
+                return Err(ServeError::Database(error));
+            }
+        };
         Ok((map(response, WireOperation), None))
     }
 }
@@ -198,12 +238,13 @@ impl<DB: Partition> Source for Resolver<DB> {
     type Op = DB::Op;
     type Error = p2p::ResponseDropped;
 
-    async fn serve(
-        &self,
-        request: Request<Self::Family>,
-    ) -> Result<(Response<Self::Family, Self::Op, Self::Digest>, FeedbackTx), Self::Error> {
-        let (response, feedback) = self.0.serve(bounded(request)).await?;
-        Ok((map(response, |op| op.0), feedback))
+    async fn serve(&self, request: Request<Self::Family>) -> source::Result<Self> {
+        // The wire feedback carries `WireOperation` responses and cannot follow the
+        // operation mapping below; dropping it cancels the mailbox-side request and
+        // the sync engine reschedules this fetch when verification rejects the
+        // mapped response (see `spawn_fetch`'s `Ok(None)` path).
+        let (response, _feedback) = self.0.serve(bounded(request)).await?;
+        Ok((map(response, |op| op.0), None))
     }
 }
 
@@ -229,6 +270,7 @@ fn map<A, B>(
             proof,
             operations: operations.into_iter().map(convert).collect(),
         },
+        Response::Pruned { frontier } => Response::Pruned { frontier },
         Response::Boundary {
             proof,
             op,

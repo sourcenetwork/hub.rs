@@ -17,7 +17,7 @@ use commonware_storage::{
             ordered::variable::{Operation as StoredOperation, Update},
             value::VariableEncoding,
         },
-        current::ordered::{ExclusionProof, variable::KeyValueProof},
+        current::ordered::proof::constant::{ExclusionProof, KeyValueProof},
     },
 };
 
@@ -57,13 +57,13 @@ fn key_config() -> <Vec<u8> as Read>::Cfg {
 
 /// Decode one membership proof with native field and Merkle limits.
 pub fn membership(bytes: &[u8]) -> Result<Membership, PermissionError> {
-    Membership::decode_cfg(bytes, &(MAX_PROOF_DIGESTS_PER_ELEMENT, key_config()))
+    Membership::decode_cfg(commonware_codec::Copying(bytes), &(MAX_PROOF_DIGESTS_PER_ELEMENT, key_config()))
         .map_err(|_| PermissionError::Invalid("membership encoding"))
 }
 
 /// Decode one absence proof with native field and Merkle limits.
 pub fn exclusion(bytes: &[u8]) -> Result<Exclusion, PermissionError> {
-    Exclusion::decode_cfg(bytes, &exclusion_config())
+    Exclusion::decode_cfg(commonware_codec::Copying(bytes), &exclusion_config())
         .map_err(|_| PermissionError::Invalid("exclusion encoding"))
 }
 
@@ -223,7 +223,7 @@ pub(super) fn verify(
                 if prefix.len() > MAX_KEY_BYTES {
                     return Err(PermissionError::Limit);
                 }
-                let evidence = PrefixEvidence::decode_cfg(proof.as_ref(), &remaining)
+                let evidence = PrefixEvidence::decode_cfg(commonware_codec::Copying(proof.as_ref()), &remaining)
                     .map_err(|_| PermissionError::Invalid("prefix encoding or record limit"))?;
                 remaining -= evidence.entries.len();
                 evidence.verify(prefix, &root)?;
@@ -256,7 +256,7 @@ impl EncodeSize for Entry {
 }
 impl Read for Entry {
     type Cfg = ();
-    fn read_cfg(buf: &mut impl bytes::Buf, _: &()) -> Result<Self, CodecError> {
+    fn read_cfg(buf: &mut impl commonware_codec::Buf, _: &()) -> Result<Self, CodecError> {
         Ok(Self {
             key: Vec::read_cfg(buf, &key_config())?,
             value: Bytes::read_cfg(buf, &RangeCfg::new(0..=MAX_VALUE_BYTES))?,
@@ -277,7 +277,7 @@ impl EncodeSize for PrefixEvidence {
 }
 impl Read for PrefixEvidence {
     type Cfg = usize;
-    fn read_cfg(buf: &mut impl bytes::Buf, records: &usize) -> Result<Self, CodecError> {
+    fn read_cfg(buf: &mut impl commonware_codec::Buf, records: &usize) -> Result<Self, CodecError> {
         Ok(Self {
             boundary: Option::<Exclusion>::read_cfg(buf, &exclusion_config())?,
             entries: Vec::read_cfg(buf, &(RangeCfg::new(0..=*records), ()))?,

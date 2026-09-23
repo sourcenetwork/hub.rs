@@ -32,7 +32,7 @@ impl EncodeSize for AccountValue {
 impl Read for AccountValue {
     type Cfg = ();
 
-    fn read_cfg(buf: &mut impl Buf, _: &Self::Cfg) -> Result<Self, CodecError> {
+    fn read_cfg(buf: &mut impl commonware_codec::Buf, _: &Self::Cfg) -> Result<Self, CodecError> {
         if buf.remaining() < AccountEncoding::SIZE {
             return Err(CodecError::EndOfBuffer);
         }
@@ -61,7 +61,7 @@ impl EncodeSize for StorageValue {
 impl Read for StorageValue {
     type Cfg = ();
 
-    fn read_cfg(buf: &mut impl Buf, _: &Self::Cfg) -> Result<Self, CodecError> {
+    fn read_cfg(buf: &mut impl commonware_codec::Buf, _: &Self::Cfg) -> Result<Self, CodecError> {
         if buf.remaining() < 32 {
             return Err(CodecError::EndOfBuffer);
         }

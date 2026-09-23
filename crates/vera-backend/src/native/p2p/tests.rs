@@ -15,7 +15,7 @@ use commonware_storage::{
     merkle::{Location, MAX_PROOF_DIGESTS_PER_ELEMENT, Proof, mmr},
     qmdb::{
         any::ordered::variable::Update,
-        sync::{FeedbackTx, Request, Response, Source},
+        sync::{Feedback, Request, Response, Source},
     },
 };
 use commonware_utils::{NZU16, NZU64, NZUsize, channel::mpsc};

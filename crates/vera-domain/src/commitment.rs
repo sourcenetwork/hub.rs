@@ -83,7 +83,7 @@ impl EncodeSize for AccountChange {
 impl Read for AccountChange {
     type Cfg = StateChangesCfg;
 
-    fn read_cfg(buf: &mut impl Buf, cfg: &Self::Cfg) -> Result<Self, CodecError> {
+    fn read_cfg(buf: &mut impl commonware_codec::Buf, cfg: &Self::Cfg) -> Result<Self, CodecError> {
         let touched = bool::read(buf)?;
         let created = bool::read(buf)?;
         let selfdestructed = bool::read(buf)?;
@@ -135,7 +135,7 @@ impl EncodeSize for StateChanges {
 impl Read for StateChanges {
     type Cfg = StateChangesCfg;
 
-    fn read_cfg(buf: &mut impl Buf, cfg: &Self::Cfg) -> Result<Self, CodecError> {
+    fn read_cfg(buf: &mut impl commonware_codec::Buf, cfg: &Self::Cfg) -> Result<Self, CodecError> {
         let accounts = usize::read_cfg(buf, &RangeCfg::new(0..=cfg.max_accounts))?;
         let mut map = BTreeMap::new();
         for _ in 0..accounts {
@@ -151,7 +151,7 @@ fn write_address(value: &Address, buf: &mut impl BufMut) {
     buf.put_slice(value.as_slice());
 }
 
-fn read_address(buf: &mut impl Buf) -> Result<Address, CodecError> {
+fn read_address(buf: &mut impl commonware_codec::Buf) -> Result<Address, CodecError> {
     if buf.remaining() < 20 {
         return Err(CodecError::EndOfBuffer);
     }
@@ -164,7 +164,7 @@ fn write_b256(value: &B256, buf: &mut impl BufMut) {
     buf.put_slice(value.as_slice());
 }
 
-fn read_b256(buf: &mut impl Buf) -> Result<B256, CodecError> {
+fn read_b256(buf: &mut impl commonware_codec::Buf) -> Result<B256, CodecError> {
     if buf.remaining() < 32 {
         return Err(CodecError::EndOfBuffer);
     }
@@ -177,7 +177,7 @@ fn write_u256(value: &U256, buf: &mut impl BufMut) {
     buf.put_slice(&value.to_be_bytes::<32>());
 }
 
-fn read_u256(buf: &mut impl Buf) -> Result<U256, CodecError> {
+fn read_u256(buf: &mut impl commonware_codec::Buf) -> Result<U256, CodecError> {
     if buf.remaining() < 32 {
         return Err(CodecError::EndOfBuffer);
     }

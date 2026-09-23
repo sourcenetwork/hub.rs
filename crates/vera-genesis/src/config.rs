@@ -184,7 +184,7 @@ impl VeraGenesis {
         let bytes = hex::decode(raw)
             .map_err(|e| VeraGenesisError::Parse(format!("invalid epoch_info hex: {e}")))?;
         let info = commonware_codec::Decode::decode_cfg(
-            bytes.as_slice(),
+            commonware_codec::Copying(bytes.as_slice()),
             &(
                 vera_domain::MAX_DKG_PARTICIPANTS,
                 commonware_cryptography::bls12381::primitives::sharing::ModeVersion::v0(),
@@ -405,7 +405,7 @@ fn validator_storage_entries(
                 "consensus pubkey cannot be all zeros".into(),
             ));
         }
-        vera_domain::PublicKey::read(&mut consensus.as_slice()).map_err(|error| {
+        vera_domain::PublicKey::read(&mut commonware_codec::Copying(consensus.as_slice())).map_err(|error| {
             VeraGenesisError::Parse(format!("invalid consensus pubkey: {error}"))
         })?;
         validate_genesis_p2p_address(&v.p2p_address)?;

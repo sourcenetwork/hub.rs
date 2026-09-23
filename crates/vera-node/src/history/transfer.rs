@@ -82,7 +82,7 @@ impl FinalizedHistory {
             if import.anchor == anchor.encode().as_ref() {
                 return Ok(());
             }
-            let previous = Block::decode_cfg(import.anchor.as_slice(), &crate::node::block_cfg())?;
+            let previous = Block::decode_cfg(commonware_codec::Copying(import.anchor.as_slice()), &crate::node::block_cfg())?;
             ensure!(
                 anchor.height > previous.height,
                 "history import selection must advance"
@@ -116,7 +116,7 @@ impl FinalizedHistory {
         };
         let import: Import = borsh::from_slice(&bytes)?;
         Ok(Some(Block::decode_cfg(
-            import.anchor.as_slice(),
+            commonware_codec::Copying(import.anchor.as_slice()),
             &crate::node::block_cfg(),
         )?))
     }
@@ -151,7 +151,7 @@ impl FinalizedHistory {
             (block.height, block.id().0.0) == import.next,
             "history import ancestry mismatch"
         );
-        let trusted = ConsensusPublicKey::decode(import.trusted.as_slice())?;
+        let trusted = ConsensusPublicKey::decode(commonware_codec::Copying(import.trusted.as_slice()))?;
         ensure!(
             verify_finalized_block(proof, &trusted)? == block,
             "history finality does not match record"
@@ -164,7 +164,7 @@ impl FinalizedHistory {
             );
         }
         let mut batch = WriteBatch::default();
-        let anchor = Block::decode_cfg(import.anchor.as_slice(), &crate::node::block_cfg())?;
+        let anchor = Block::decode_cfg(commonware_codec::Copying(import.anchor.as_slice()), &crate::node::block_cfg())?;
         self.stage_finality(proof, &block, anchor.height, &mut batch)?;
         batch.put(key(RECORD, block.height), bytes);
         // Imported proofs supply finality without consulting the local marshal archive.
@@ -213,7 +213,7 @@ fn decode_record(mut input: &[u8], limits: HistoryLimits) -> Result<Block> {
         input.len() <= limits.record_bytes,
         "history record byte limit"
     );
-    let block = Block::decode_cfg(vector(&mut input)?, &crate::node::block_cfg())?;
+    let block = Block::decode_cfg(commonware_codec::Copying(vector(&mut input)?), &crate::node::block_cfg())?;
     ensure!(
         block.native_targets.is_some() && block.receipt_commitment.is_some(),
         "native import commitments missing"

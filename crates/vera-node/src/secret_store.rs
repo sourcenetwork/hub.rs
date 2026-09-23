@@ -123,7 +123,7 @@ impl FileSecretStore {
 
 fn decode_secret<T: Decode<Cfg = ()>>(raw: &str) -> anyhow::Result<T> {
     let bytes = hex::decode(raw).map_err(|_| anyhow::anyhow!("invalid stored DKG encoding"))?;
-    T::decode(bytes.as_slice()).map_err(|_| anyhow::anyhow!("invalid stored DKG material"))
+    T::decode(commonware_codec::Copying(bytes.as_slice())).map_err(|_| anyhow::anyhow!("invalid stored DKG material"))
 }
 
 impl dkg::SecretStore for FileSecretStore {

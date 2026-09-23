@@ -16,6 +16,7 @@ use commonware_glue::dkg::{
     types::{EpochInfo, EpochOutcome},
 };
 use commonware_p2p::{Ingress, authenticated::discovery};
+use commonware_stream::encrypted::Handshake as StreamHandshake;
 use commonware_parallel::Sequential;
 use commonware_runtime::{Supervisor as _, tokio};
 use commonware_utils::{
@@ -79,7 +80,7 @@ pub async fn run_bootstrap(
         .map(|(key, address)| (key.clone(), Ingress::Socket(*address)))
         .collect();
     let mut p2p_config = discovery::Config::local(
-        signing_key.clone(),
+        StreamHandshake::new(signing_key.clone()),
         &[NAMESPACE, P2P_SUFFIX].concat(),
         listen,
         dial,

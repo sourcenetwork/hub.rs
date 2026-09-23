@@ -4,7 +4,7 @@
 //! targets, and state sync uses them to know which operation range and root
 //! each EVM partition must reach.
 
-use bytes::{Buf, BufMut};
+use bytes::{BufMut};
 use commonware_codec::{Error as CodecError, FixedSize, Read, ReadExt, Write};
 
 use commonware_cryptography::sha256::Digest;
@@ -47,7 +47,7 @@ impl FixedSize for DbTarget {
 impl Read for DbTarget {
     type Cfg = ();
 
-    fn read_cfg(buf: &mut impl Buf, _: &Self::Cfg) -> Result<Self, CodecError> {
+    fn read_cfg(buf: &mut impl commonware_codec::Buf, _: &Self::Cfg) -> Result<Self, CodecError> {
         Ok(Self {
             root: ConsensusDigest::read(buf)?,
             floor: u64::read(buf)?,
@@ -82,7 +82,7 @@ impl FixedSize for DbTargets {
 impl Read for DbTargets {
     type Cfg = ();
 
-    fn read_cfg(buf: &mut impl Buf, _: &Self::Cfg) -> Result<Self, CodecError> {
+    fn read_cfg(buf: &mut impl commonware_codec::Buf, _: &Self::Cfg) -> Result<Self, CodecError> {
         Ok(Self {
             accounts: DbTarget::read(buf)?,
             storage: DbTarget::read(buf)?,

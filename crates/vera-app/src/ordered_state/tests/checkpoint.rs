@@ -138,7 +138,7 @@ fn checkpoint_rejects_bad_evidence_and_checks_rebuilt_state_before_publication()
                 witness.grafted_root.0[0] ^= 1;
                 let mut encoded = proof.encode().to_vec();
                 encoded[Digest::SIZE] ^= 1;
-                let inconsistent = native::SyncProof::decode(encoded.as_slice()).unwrap();
+                let inconsistent = native::SyncProof::decode(commonware_codec::Copying(encoded.as_slice())).unwrap();
                 let mut block = block;
                 block.module_state_root = vera_modules::module_state::combine_module_roots(&[
                     witness.root::<Sha256>(&db.3.read().await.ops_root()).0,
