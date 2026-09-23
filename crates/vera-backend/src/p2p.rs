@@ -174,7 +174,7 @@ impl<DB: Partition> Source for WireDatabase<DB> {
     async fn serve(&self, request: Request<Self::Family>) -> source::Result<Self> {
         let db = self.0.read().await;
         let request = bounded(request);
-        let response = match serve::response(&*db, request.clone()).await {
+        let response = match serve::response(&*db, request).await {
             Ok(response) => response,
             Err(error) => {
                 let bounds = db.bounds();
