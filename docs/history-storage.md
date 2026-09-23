@@ -1,0 +1,88 @@
+# Finalized history storage
+
+Commonware stores authenticated current state, pending forks, and consensus
+archives. Finalized execution history is a separate database containing records,
+certificates, query indexes and snapshot-import progress. Its backend does not
+change the revision commitments or proof format.
+
+Normal builds use RocksDB in the node's `history` directory. The opt-in
+`regolith-history` build uses Regolith in `history/regolith`:
+
+```sh
+cargo build --frozen -p verad --features regolith-history
+```
+
+Regolith is pinned to the revision used by DefraDB. History writes explicitly
+request synchronous WAL persistence; they do not use Regolith's default eventual
+durability. Execution, certificate and query-index updates share one batch.
+Snapshots pin consistent reads and borrowed record values. Cursor reads check
+status separately from exhaustion so errors cannot appear as empty history.
+Recovery batches retain the existing flush threshold, using a running payload
+estimate for the Regolith batch.
+
+A history-write error stops finalization before updating the in-memory head or
+acknowledging execution. An error does not establish that the batch is absent:
+if a complete batch is visible, its stored head can be ahead of memory. Startup
+reconciles stored history before serving requests. The focused write-failure
+regression checks both absent and visible batches for each backend using injected
+errors; it does not qualify device-level write or synchronization failures.
+
+Archived receipt polling returns pending while the receipt's revision is ahead
+of the live published index. This prevents a receipt from becoming available in
+the interval between its durable history write and publication of query state.
+
+Each build rejects the other backend's history layout before initializing its
+own store. There is no automatic on-disk conversion. Keep an existing node on its
+original backend, or use a separate node directory and authenticated snapshot
+recovery to obtain history with the selected backend. Copying storage files
+between the two layouts is not a migration.
+
+The Regolith feature is for qualification. Backend selection does not establish
+throughput, memory bounds, or power-loss durability. Its `memtables` diagnostic
+reports the engine's current memtable-size counter; it is not directly comparable
+to RocksDB's allocation accounting. Unsupported `table_readers` accounting remains
+absent, and block-cache usage is reported separately.
+
+To exercise authenticated snapshot import from pruned peers with Regolith,
+build the feature above, then point the harness at that binary:
+
+```sh
+VERAD_BINARY="$PWD/target/debug/verad" RUST_LOG=warn,vera_storage=info \
+  cargo test --frozen -p vera-e2e --test snapshot_catchup \
+  snapshot_replica_recovers_from_pruned_peers -- --exact
+```
+
+This case checks historical receipts and proofs, restored revocation state,
+restart, and subsequent writes requiring the recovered member's participation.
+The prepared Linux CI workflow runs it after building the Regolith node.
+
+The `snapshot_interrupt` case `interrupted_snapshot_resumes_from_pruned_peers`
+combines pruning with a process abort after a durable history-import record.
+It removes the explicit snapshot request before restarting, exercising automatic
+import resumption. Run it with both the node and test built with
+`fault-injection`, and the node additionally built with `regolith-history`.
+Keep `vera_storage=info` enabled. This checks process-crash recovery, not power-loss
+or failed-write behavior.
+
+Snapshot database and history initialization has a five-minute deadline,
+configurable through `snapshot.initialization_timeout_ms`. While databases are
+pending, startup watches marshal's finalized-processing progress: after
+`snapshot.floor_stall_seconds` without progress (default 15, zero disables),
+it re-floors marshal from the newest stored gossiped finalization, resuming
+dispatches from a retained anchor so the database sync retargets. Exceeding
+the overall deadline still exits with `snapshot initialization deadline
+exceeded`; restart the node to discover a fresh certified target. A stale
+target can still fail to converge inside database transfer while the network
+keeps finalizing; restart into a quieter window or longer peer state retention
+recovers it. Increase the budget when the expected dataset and network require
+longer initialization. Durable import progress is preserved. Actor failures are
+also reported while database startup is pending.
+
+The `snapshot_interrupt` case
+`stale_snapshot_target_recovers_or_reaches_initialization_deadline` pauses the
+joining node after discovery while peers advance beyond retention. If transfer
+cannot finish, it requires the explicit initialization deadline before durable
+history import. If transfer succeeds, it injects a crash during history import
+and verifies recovery, certified state, receipts, restart persistence and quorum
+participation. The test bounds startup failure without requiring transfer to
+fail; it does not establish convergence for every retention window.
