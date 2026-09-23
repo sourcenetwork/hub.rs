@@ -247,7 +247,8 @@ impl<DB: Partition> Source for Resolver<DB> {
         // The wire feedback carries `WireOperation` responses and cannot follow the
         // operation mapping below; dropping it cancels the mailbox-side request and
         // the sync engine reschedules this fetch when verification rejects the
-        // mapped response (see `spawn_fetch`'s `Ok(None)` path).
+        // mapped response. Peer-blocking on invalid responses through this layer
+        // is tracked with the typed-feedback translation discussion upstream.
         let (response, _feedback) = self.0.serve(bounded(request)).await?;
         Ok((map(response, |op| op.0), None))
     }

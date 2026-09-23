@@ -1302,7 +1302,7 @@ dependencies = [
  "bitflags",
  "cexpr",
  "clang-sys",
- "itertools 0.10.5",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "regex",
@@ -1707,7 +1707,7 @@ dependencies = [
 [[package]]
 name = "commonware-actor"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware.git?branch=vera#d1ea85c6f8d905a6713621c26e5d6d7523a0946c"
+source = "git+https://github.com/iverc/commonware.git?branch=vera#03e2f18b1099ea49ba6bee4a05ee1e31a5f04be1"
 dependencies = [
  "cfg-if",
  "commonware-macros",
@@ -1720,7 +1720,7 @@ dependencies = [
 [[package]]
 name = "commonware-broadcast"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware.git?branch=vera#d1ea85c6f8d905a6713621c26e5d6d7523a0946c"
+source = "git+https://github.com/iverc/commonware.git?branch=vera#03e2f18b1099ea49ba6bee4a05ee1e31a5f04be1"
 dependencies = [
  "commonware-actor",
  "commonware-codec",
@@ -1736,7 +1736,7 @@ dependencies = [
 [[package]]
 name = "commonware-codec"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware.git?branch=vera#d1ea85c6f8d905a6713621c26e5d6d7523a0946c"
+source = "git+https://github.com/iverc/commonware.git?branch=vera#03e2f18b1099ea49ba6bee4a05ee1e31a5f04be1"
 dependencies = [
  "bytes",
  "cfg-if",
@@ -1750,7 +1750,7 @@ dependencies = [
 [[package]]
 name = "commonware-codec-macros"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware.git?branch=vera#d1ea85c6f8d905a6713621c26e5d6d7523a0946c"
+source = "git+https://github.com/iverc/commonware.git?branch=vera#03e2f18b1099ea49ba6bee4a05ee1e31a5f04be1"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -1761,7 +1761,7 @@ dependencies = [
 [[package]]
 name = "commonware-coding"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware.git?branch=vera#d1ea85c6f8d905a6713621c26e5d6d7523a0946c"
+source = "git+https://github.com/iverc/commonware.git?branch=vera#03e2f18b1099ea49ba6bee4a05ee1e31a5f04be1"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -1779,7 +1779,7 @@ dependencies = [
 [[package]]
 name = "commonware-consensus"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware.git?branch=vera#d1ea85c6f8d905a6713621c26e5d6d7523a0946c"
+source = "git+https://github.com/iverc/commonware.git?branch=vera#03e2f18b1099ea49ba6bee4a05ee1e31a5f04be1"
 dependencies = [
  "bytes",
  "cfg-if",
@@ -1809,7 +1809,7 @@ dependencies = [
 [[package]]
 name = "commonware-cryptography"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware.git?branch=vera#d1ea85c6f8d905a6713621c26e5d6d7523a0946c"
+source = "git+https://github.com/iverc/commonware.git?branch=vera#03e2f18b1099ea49ba6bee4a05ee1e31a5f04be1"
 dependencies = [
  "ahash",
  "anyhow",
@@ -1851,7 +1851,7 @@ dependencies = [
 [[package]]
 name = "commonware-formatting"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware.git?branch=vera#d1ea85c6f8d905a6713621c26e5d6d7523a0946c"
+source = "git+https://github.com/iverc/commonware.git?branch=vera#03e2f18b1099ea49ba6bee4a05ee1e31a5f04be1"
 dependencies = [
  "commonware-macros",
  "const-hex",
@@ -1860,7 +1860,7 @@ dependencies = [
 [[package]]
 name = "commonware-glue"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware.git?branch=vera#d1ea85c6f8d905a6713621c26e5d6d7523a0946c"
+source = "git+https://github.com/iverc/commonware.git?branch=vera#03e2f18b1099ea49ba6bee4a05ee1e31a5f04be1"
 dependencies = [
  "bytes",
  "commonware-actor",
@@ -1886,7 +1886,7 @@ dependencies = [
 [[package]]
 name = "commonware-macros"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware.git?branch=vera#d1ea85c6f8d905a6713621c26e5d6d7523a0946c"
+source = "git+https://github.com/iverc/commonware.git?branch=vera#03e2f18b1099ea49ba6bee4a05ee1e31a5f04be1"
 dependencies = [
  "commonware-macros-impl",
  "tokio",
@@ -1895,7 +1895,7 @@ dependencies = [
 [[package]]
 name = "commonware-macros-impl"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware.git?branch=vera#d1ea85c6f8d905a6713621c26e5d6d7523a0946c"
+source = "git+https://github.com/iverc/commonware.git?branch=vera#03e2f18b1099ea49ba6bee4a05ee1e31a5f04be1"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -1907,7 +1907,7 @@ dependencies = [
 [[package]]
 name = "commonware-math"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware.git?branch=vera#d1ea85c6f8d905a6713621c26e5d6d7523a0946c"
+source = "git+https://github.com/iverc/commonware.git?branch=vera#03e2f18b1099ea49ba6bee4a05ee1e31a5f04be1"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -1920,7 +1920,7 @@ dependencies = [
 [[package]]
 name = "commonware-p2p"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware.git?branch=vera#d1ea85c6f8d905a6713621c26e5d6d7523a0946c"
+source = "git+https://github.com/iverc/commonware.git?branch=vera#03e2f18b1099ea49ba6bee4a05ee1e31a5f04be1"
 dependencies = [
  "commonware-actor",
  "commonware-codec",
@@ -1946,7 +1946,7 @@ dependencies = [
 [[package]]
 name = "commonware-parallel"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware.git?branch=vera#d1ea85c6f8d905a6713621c26e5d6d7523a0946c"
+source = "git+https://github.com/iverc/commonware.git?branch=vera#03e2f18b1099ea49ba6bee4a05ee1e31a5f04be1"
 dependencies = [
  "cfg-if",
  "commonware-macros",
@@ -1958,7 +1958,7 @@ dependencies = [
 [[package]]
 name = "commonware-resolver"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware.git?branch=vera#d1ea85c6f8d905a6713621c26e5d6d7523a0946c"
+source = "git+https://github.com/iverc/commonware.git?branch=vera#03e2f18b1099ea49ba6bee4a05ee1e31a5f04be1"
 dependencies = [
  "bytes",
  "commonware-actor",
@@ -1979,7 +1979,7 @@ dependencies = [
 [[package]]
 name = "commonware-runtime"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware.git?branch=vera#d1ea85c6f8d905a6713621c26e5d6d7523a0946c"
+source = "git+https://github.com/iverc/commonware.git?branch=vera#03e2f18b1099ea49ba6bee4a05ee1e31a5f04be1"
 dependencies = [
  "ahash",
  "axum",
@@ -2018,7 +2018,7 @@ dependencies = [
 [[package]]
 name = "commonware-runtime-macros"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware.git?branch=vera#d1ea85c6f8d905a6713621c26e5d6d7523a0946c"
+source = "git+https://github.com/iverc/commonware.git?branch=vera#03e2f18b1099ea49ba6bee4a05ee1e31a5f04be1"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -2029,7 +2029,7 @@ dependencies = [
 [[package]]
 name = "commonware-storage"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware.git?branch=vera#d1ea85c6f8d905a6713621c26e5d6d7523a0946c"
+source = "git+https://github.com/iverc/commonware.git?branch=vera#03e2f18b1099ea49ba6bee4a05ee1e31a5f04be1"
 dependencies = [
  "ahash",
  "anyhow",
@@ -2053,7 +2053,7 @@ dependencies = [
 [[package]]
 name = "commonware-stream"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware.git?branch=vera#d1ea85c6f8d905a6713621c26e5d6d7523a0946c"
+source = "git+https://github.com/iverc/commonware.git?branch=vera#03e2f18b1099ea49ba6bee4a05ee1e31a5f04be1"
 dependencies = [
  "chacha20poly1305",
  "commonware-codec",
@@ -2072,7 +2072,7 @@ dependencies = [
 [[package]]
 name = "commonware-utils"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware.git?branch=vera#d1ea85c6f8d905a6713621c26e5d6d7523a0946c"
+source = "git+https://github.com/iverc/commonware.git?branch=vera#03e2f18b1099ea49ba6bee4a05ee1e31a5f04be1"
 dependencies = [
  "ahash",
  "bytes",
@@ -2820,7 +2820,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5278,7 +5278,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.10.5",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -5291,7 +5291,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27c6023962132f4b30eb4c172c91ce92d933da334c59c23cddee82358ddafb0b"
 dependencies = [
  "anyhow",
- "itertools 0.10.5",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -6029,7 +6029,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6808,7 +6808,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -8129,7 +8129,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
