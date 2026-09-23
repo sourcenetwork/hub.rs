@@ -157,7 +157,7 @@ mod tests {
         Idents::write_b256(&value, &mut buf);
         assert_eq!(buf.len(), 32);
 
-        let mut reader = buf.as_slice();
+        let mut reader = commonware_codec::Copying(buf.as_slice());
         let decoded = Idents::read_b256(&mut reader).expect("read b256");
         assert_eq!(decoded, value);
     }
@@ -165,7 +165,7 @@ mod tests {
     #[test]
     fn test_idents_read_b256_end_of_buffer() {
         let short_buf = [0u8; 16];
-        let mut reader = short_buf.as_slice();
+        let mut reader = commonware_codec::Copying(short_buf.as_slice());
         let result = Idents::read_b256(&mut reader);
         assert!(result.is_err());
     }

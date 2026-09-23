@@ -9,8 +9,8 @@ use commonware_storage::{
         Error,
         any::value::VariableEncoding,
         current::ordered::{
-            ExclusionProof,
-            variable::{Db, KeyValueProof},
+            proof::constant::{ExclusionProof, KeyValueProof},
+            variable::Db,
         },
     },
 };
@@ -55,7 +55,7 @@ impl PrefixProof {
         let mut expected = match &self.boundary {
             None => Some(prefix),
             Some(boundary) => {
-                if !Store::verify_exclusion_proof(&prefix.to_vec(), boundary, root) {
+                if !boundary.verify::<Sha256>(&prefix.to_vec(), root) {
                     return false;
                 }
                 match boundary {
@@ -66,12 +66,9 @@ impl PrefixProof {
         };
         for entry in &self.entries {
             if expected != Some(entry.key.as_slice())
-                || !Store::verify_key_value_proof(
-                    entry.key.clone(),
-                    entry.value.clone(),
-                    &entry.proof,
-                    root,
-                )
+                || !entry
+                    .proof
+                    .verify::<Sha256, _>(entry.key.clone(), entry.value.clone(), root)
             {
                 return false;
             }

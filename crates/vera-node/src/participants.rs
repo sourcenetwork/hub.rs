@@ -112,7 +112,8 @@ impl ParticipantsProvider for RegistryParticipants {
             .0
             .iter()
             .map(|bytes| {
-                ed25519::PublicKey::read(&mut commonware_codec::Copying(bytes.as_slice())).expect("invalid consensus identity")
+                ed25519::PublicKey::read(&mut commonware_codec::Copying(bytes.as_slice()))
+                    .expect("invalid consensus identity")
             })
             .collect();
         assert!(
@@ -145,7 +146,10 @@ mod tests {
     }
 
     fn key(encoded: &str) -> PublicKey {
-        PublicKey::read(&mut commonware_codec::Copying(hex::decode(encoded).unwrap().as_slice())).unwrap()
+        PublicKey::read(&mut commonware_codec::Copying(
+            hex::decode(encoded).unwrap().as_slice(),
+        ))
+        .unwrap()
     }
 
     #[tokio::test]

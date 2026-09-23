@@ -1,7 +1,7 @@
 //! Transactions
 
 use alloy_primitives::{Bytes, keccak256};
-use bytes::{BufMut};
+use bytes::BufMut;
 use commonware_codec::{Encode, EncodeSize, Error as CodecError, RangeCfg, Read, Write};
 
 use super::TxId;

@@ -46,7 +46,9 @@ fn pages_bind_selection_successors_and_complete_prefix_semantics() {
                     page.continuation.as_ref().map(|value| value.as_ref()),
                     Some(b"p/b".as_slice())
                 );
-                let evidence = PrefixEvidence::decode_cfg(proof.proof.as_ref(), &2).unwrap();
+                let evidence =
+                    PrefixEvidence::decode_cfg(commonware_codec::Copying(proof.proof.as_ref()), &2)
+                        .unwrap();
                 assert!(
                     evidence
                         .verify(

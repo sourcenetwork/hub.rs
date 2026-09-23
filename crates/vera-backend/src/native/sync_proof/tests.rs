@@ -76,7 +76,7 @@ fn proofs_bind_all_namespaces_and_commit_ranges_after_pruning() {
             assert!(SyncProof::decode(bytes.slice(..bytes.len() - 1)).is_err());
             let mut trailing = bytes.to_vec();
             trailing.push(0);
-            assert!(SyncProof::decode(trailing.as_slice()).is_err());
+            assert!(SyncProof::decode(commonware_codec::Copying(trailing.as_slice())).is_err());
             assert!(proof.verify(initial_root).is_err());
             for i in 0..4 {
                 let mut changed = proof.clone();

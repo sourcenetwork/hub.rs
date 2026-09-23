@@ -217,7 +217,7 @@ pub(super) fn prefix(
         })
         .expect("complete native relation evidence");
     vera_permission::current::PrefixEvidence::decode_cfg(
-        bytes.as_ref(),
+        commonware_codec::Copying(bytes.as_ref()),
         &PERMISSION_LIMITS.reads.records,
     )
     .unwrap()

@@ -96,7 +96,9 @@ fn read_anchor(sidecar: &std::path::Path) -> FaultyTargets {
     while offset < blob.len() {
         let len = u32::from_le_bytes(blob[offset..offset + 4].try_into().unwrap()) as usize;
         offset += 4;
-        targets.push(FaultyTarget::decode(commonware_codec::Copying(&blob[offset..offset + len])).unwrap());
+        targets.push(
+            FaultyTarget::decode(commonware_codec::Copying(&blob[offset..offset + len])).unwrap(),
+        );
         offset += len;
     }
     let [acp, bulletin, vera, native]: [FaultyTarget; 4] =

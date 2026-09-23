@@ -24,7 +24,10 @@ fn code_codec_bounds_values_and_commit_metadata() {
                 assert!(WireOperation::<CodeDb>::decode(bytes.slice(..bytes.len() - 1)).is_err());
                 let mut trailing = bytes.to_vec();
                 trailing.push(0);
-                assert!(WireOperation::<CodeDb>::decode(trailing.as_slice()).is_err());
+                assert!(
+                    WireOperation::<CodeDb>::decode(commonware_codec::Copying(trailing.as_slice()))
+                        .is_err()
+                );
             }
         }
     }

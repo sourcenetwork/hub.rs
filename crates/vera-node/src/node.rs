@@ -36,10 +36,10 @@ use commonware_glue::{
     },
 };
 use commonware_p2p::{Ingress, Provider as _, authenticated::discovery};
-use commonware_stream::encrypted::Handshake as StreamHandshake;
 use commonware_parallel::{Rayon, Sequential};
 use commonware_runtime::{Handle, Spawner as _, Supervisor as _, buffer::paged::CacheRef, tokio};
 use commonware_storage::{archive::prunable, translator::TwoCap};
+use commonware_stream::encrypted::Handshake as StreamHandshake;
 use commonware_utils::{NZDuration, NZU64, NZUsize, sequence::Unit};
 use tracing::{error, info};
 use vera_app::{

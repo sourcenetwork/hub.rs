@@ -6,8 +6,8 @@ use crate::history::{
 use alloy_primitives::B256;
 use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
 use commonware_p2p::{Address, AddressableManager as _, authenticated::lookup};
-use commonware_stream::encrypted::Handshake as StreamHandshake;
 use commonware_runtime::{Quota, Runner as _, Supervisor as _, tokio};
+use commonware_stream::encrypted::Handshake as StreamHandshake;
 use commonware_utils::{NZU32, ordered::Map};
 use vera_domain::BlockId;
 use vera_indexer::{BlockIndex, LightBlockIndex};

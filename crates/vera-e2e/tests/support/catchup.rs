@@ -334,7 +334,9 @@ pub(super) async fn recover_replica_with_delay(
         );
         let path = directory.join("config.toml");
         let config = fs::read_to_string(&path).unwrap();
-        let (base, _) = config.split_once("\n[snapshot]\n").unwrap_or((config.as_str(), ""));
+        let (base, _) = config
+            .split_once("\n[snapshot]\n")
+            .unwrap_or((config.as_str(), ""));
         fs::write(path, base).unwrap();
         cluster.restart_node(3).unwrap();
     }

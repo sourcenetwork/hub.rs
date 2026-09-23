@@ -88,8 +88,11 @@ impl PrefixPageProof {
         if vera_modules::module_state::combine_module_roots(&self.roots.map(|r| r.0)) != root {
             return Err(PermissionError::Invalid("current-state roots"));
         }
-        let evidence = PrefixEvidence::decode_cfg(commonware_codec::Copying(self.proof.as_ref()), &usize::from(request.limit))
-            .map_err(|_| PermissionError::Invalid("page encoding or record limit"))?;
+        let evidence = PrefixEvidence::decode_cfg(
+            commonware_codec::Copying(self.proof.as_ref()),
+            &usize::from(request.limit),
+        )
+        .map_err(|_| PermissionError::Invalid("page encoding or record limit"))?;
         let mut remaining = PAGE_DATA_BYTES
             .checked_sub(request.prefix.len())
             .and_then(|n| n.checked_sub(request.start.len()))

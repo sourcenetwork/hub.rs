@@ -134,7 +134,7 @@ mod tests {
         let signing = tx.signing_data();
         assert_eq!(signing[0], NATIVE_TX_TYPE);
 
-        let payload = NativeTxPayload::decode(commonware_codec::Copying(&signing[1..])).expect("decode payload");
+        let payload = NativeTxPayload::decode(&mut &signing[1..]).expect("decode payload");
         assert_eq!(payload.chain_id, tx.chain_id);
         assert_eq!(payload.nonce, tx.nonce);
         assert_eq!(payload.bls_pubkey, tx.bls_pubkey);

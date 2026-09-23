@@ -57,8 +57,11 @@ fn key_config() -> <Vec<u8> as Read>::Cfg {
 
 /// Decode one membership proof with native field and Merkle limits.
 pub fn membership(bytes: &[u8]) -> Result<Membership, PermissionError> {
-    Membership::decode_cfg(commonware_codec::Copying(bytes), &(MAX_PROOF_DIGESTS_PER_ELEMENT, key_config()))
-        .map_err(|_| PermissionError::Invalid("membership encoding"))
+    Membership::decode_cfg(
+        commonware_codec::Copying(bytes),
+        &(MAX_PROOF_DIGESTS_PER_ELEMENT, key_config()),
+    )
+    .map_err(|_| PermissionError::Invalid("membership encoding"))
 }
 
 /// Decode one absence proof with native field and Merkle limits.
@@ -223,8 +226,11 @@ pub(super) fn verify(
                 if prefix.len() > MAX_KEY_BYTES {
                     return Err(PermissionError::Limit);
                 }
-                let evidence = PrefixEvidence::decode_cfg(commonware_codec::Copying(proof.as_ref()), &remaining)
-                    .map_err(|_| PermissionError::Invalid("prefix encoding or record limit"))?;
+                let evidence = PrefixEvidence::decode_cfg(
+                    commonware_codec::Copying(proof.as_ref()),
+                    &remaining,
+                )
+                .map_err(|_| PermissionError::Invalid("prefix encoding or record limit"))?;
                 remaining -= evidence.entries.len();
                 evidence.verify(prefix, &root)?;
                 let entries = evidence

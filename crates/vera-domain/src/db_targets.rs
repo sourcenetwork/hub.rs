@@ -4,7 +4,7 @@
 //! targets, and state sync uses them to know which operation range and root
 //! each EVM partition must reach.
 
-use bytes::{BufMut};
+use bytes::BufMut;
 use commonware_codec::{Error as CodecError, FixedSize, Read, ReadExt, Write};
 
 use commonware_cryptography::sha256::Digest;

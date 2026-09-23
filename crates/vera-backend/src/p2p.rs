@@ -190,7 +190,12 @@ impl<DB: Partition> Source for WireDatabase<DB> {
                         tip = *bounds.end,
                         "qmdb serve pruned"
                     );
-                    return Ok((Response::Pruned { frontier: bounds.start }, None));
+                    return Ok((
+                        Response::Pruned {
+                            frontier: bounds.start,
+                        },
+                        None,
+                    ));
                 }
                 tracing::warn!(
                     ?request,

@@ -66,7 +66,7 @@ fn config<T: Translator + Default>(
         },
         grafted_metadata_partition: "prefix-graft".into(),
         translator: T::default(),
-        init_cache_size: Some(NZUsize!(1024)),
+        init_cache: Some(NZUsize!(1024)),
         init_buffer: NZUsize!(1 << 21),
         init_concurrency: (),
     }

@@ -2,6 +2,7 @@
 
 #![recursion_limit = "256"]
 
+use commonware_cryptography::Sha256;
 use commonware_glue::stateful::db::DatabaseSet;
 use commonware_runtime::{Runner as _, Supervisor as _, buffer::paged::CacheRef, tokio};
 use commonware_utils::{NZU16, NZUsize};
@@ -183,18 +184,8 @@ fn authorization_survives_forks_restart_and_rewind() {
             let key = keys::policy_key(&policy);
             let value = db.get(&key).await.unwrap().unwrap();
             let proof = db.key_value_proof(key.clone()).await.unwrap();
-            assert!(NativeDb::verify_key_value_proof(
-                key.clone(),
-                value.clone(),
-                &proof,
-                &db.root()
-            ));
-            assert!(!NativeDb::verify_key_value_proof(
-                key,
-                value,
-                &proof,
-                &target.0.root
-            ));
+            assert!(proof.verify::<Sha256, _>(key.clone(), value.clone(), &db.root()));
+            assert!(!proof.verify::<Sha256, _>(key, value, &target.0.root));
             (
                 first_state,
                 first_root,

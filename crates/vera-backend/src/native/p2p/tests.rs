@@ -87,7 +87,7 @@ fn wire_codec_bounds_every_variable_field_and_response() {
         assert!(WireOperation::decode(bytes.slice(..bytes.len() - 1)).is_err());
         let mut trailing = bytes.to_vec();
         trailing.push(0);
-        assert!(WireOperation::decode(trailing.as_slice()).is_err());
+        assert!(WireOperation::decode(commonware_codec::Copying(trailing.as_slice())).is_err());
     }
     for operation in [
         update(MAX_KEY_BYTES + 1, 0, 0),
@@ -173,7 +173,7 @@ fn peer_sync_preserves_roots_and_reports_rejected_responses() {
                 .await
                 .unwrap();
             assert!(matches!(response, Response::Boundary { .. }));
-            feedback.unwrap().send(false).unwrap();
+            assert!(feedback.unwrap().reject().await.is_some());
             loop {
                 if peers.blocked[1]
                     .recv()

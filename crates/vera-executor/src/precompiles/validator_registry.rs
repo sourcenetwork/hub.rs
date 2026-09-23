@@ -421,7 +421,10 @@ pub(crate) fn dispatch_with_journal<CTX: ContextTr>(
                 )));
             }
             if call.consensusPubkey == B256::ZERO
-                || vera_domain::PublicKey::read(&mut commonware_codec::Copying(call.consensusPubkey.as_slice())).is_err()
+                || vera_domain::PublicKey::read(&mut commonware_codec::Copying(
+                    call.consensusPubkey.as_slice(),
+                ))
+                .is_err()
             {
                 return Ok(err_dispatch(ValidatorRegistryError::InvalidPublicKey));
             }

@@ -405,9 +405,10 @@ fn validator_storage_entries(
                 "consensus pubkey cannot be all zeros".into(),
             ));
         }
-        vera_domain::PublicKey::read(&mut commonware_codec::Copying(consensus.as_slice())).map_err(|error| {
-            VeraGenesisError::Parse(format!("invalid consensus pubkey: {error}"))
-        })?;
+        vera_domain::PublicKey::read(&mut commonware_codec::Copying(consensus.as_slice()))
+            .map_err(|error| {
+                VeraGenesisError::Parse(format!("invalid consensus pubkey: {error}"))
+            })?;
         validate_genesis_p2p_address(&v.p2p_address)?;
 
         let addr_slot = vr_array_element_slot(SLOT_VALIDATORS_ARRAY_BASE, i as u64);

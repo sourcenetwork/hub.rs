@@ -6,6 +6,8 @@ use commonware_cryptography::{
 use commonware_p2p::{
     Address, AddressableManager as _, BlockedSubscription, Blocker as _, authenticated::lookup,
 };
+use commonware_stream::encrypted::Handshake as StreamHandshake;
+
 use commonware_runtime::{Handle, Quota};
 use commonware_utils::{NZU32, ordered::Map};
 
@@ -39,7 +41,7 @@ impl Peers {
         let mut blocked = Vec::new();
         for (i, (key, listener)) in keys.into_iter().zip(listeners).enumerate() {
             let mut cfg = lookup::Config::local(
-                key,
+                StreamHandshake::new(key),
                 b"vera-native-sync-test",
                 addresses[i],
                 NZUsize!(2),
