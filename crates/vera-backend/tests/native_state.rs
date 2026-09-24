@@ -8,7 +8,7 @@ use commonware_runtime::{Runner as _, Supervisor as _, buffer::paged::CacheRef, 
 use commonware_utils::{NZU16, NZUsize};
 use vera_backend::{
     BackendError,
-    native::{self, NativeDb, NativeStateSet},
+    native::{self, NativeStateSet},
 };
 use vera_modules::{
     ModuleState,

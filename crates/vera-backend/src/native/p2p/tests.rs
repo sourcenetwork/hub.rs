@@ -105,7 +105,6 @@ fn wire_codec_bounds_every_variable_field_and_response() {
 }
 
 #[test]
-#[ignore = "typed-feedback peer blocking pending the upstream translation discussion"]
 fn peer_sync_preserves_roots_and_reports_rejected_responses() {
     let directory = tempfile::tempdir().unwrap();
     let config = tokio::Config::new().with_storage_directory(directory.path());
@@ -174,17 +173,23 @@ fn peer_sync_preserves_roots_and_reports_rejected_responses() {
                 .await
                 .unwrap();
             assert!(matches!(response, Response::Boundary { .. }));
-            assert!(feedback.unwrap().reject().await.is_some());
-            loop {
-                if peers.blocked[1]
+            let rejection = feedback.unwrap().reject();
+            let blocked = async {
+                while !peers.blocked[1]
                     .recv()
                     .await
                     .unwrap()
                     .iter()
                     .any(|peer| peer == &peers.identities[0])
-                {
-                    break;
-                }
+                {}
+            };
+            ::tokio::pin!(rejection, blocked);
+            ::tokio::select! {
+                result = &mut rejection => {
+                    assert!(result.is_none(), "rejected peer supplied another response");
+                    blocked.await;
+                },
+                () = &mut blocked => {},
             }
         })
         .await

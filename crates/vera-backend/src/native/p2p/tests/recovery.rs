@@ -60,7 +60,6 @@ fn sync_config() -> SyncEngineConfig {
 }
 
 #[test]
-#[ignore = "typed-feedback peer blocking pending the upstream translation discussion"]
 fn peer_sync_rejects_a_response_against_a_different_target_root() {
     let directory = tempfile::tempdir().unwrap();
     let config = tokio::Config::new().with_storage_directory(directory.path());

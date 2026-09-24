@@ -31,6 +31,14 @@ and later consensus progress; they do not request another snapshot.
    Commonware makes any pending execution suffix durable and records completion
    before exposing the databases. Admission and RPC start after this handoff.
 
+Peer response translation preserves Commonware's validation feedback. The sync
+engine's rejection of an invalid proof reaches the original resolver, which can
+block that peer and supply another candidate. Accepting a proof closes the
+request; dropping feedback cancels it without accusing the peer. Translation
+uses a one-entry channel and exits when the consumer closes, including when no
+further candidate arrives. This feedback does not replace root verification or
+acknowledge durable storage.
+
 Resharing starts alongside database recovery. When execution state cannot yet
 provide a committee selection, the membership provider uses the corresponding
 finalized boundary in the consensus archive, checking its height, selected epoch

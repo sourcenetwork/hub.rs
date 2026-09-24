@@ -6,7 +6,7 @@ use commonware_storage::{
     merkle::mmr,
     qmdb::{
         self,
-        sync::{Request, Response, ServeError, Source, source},
+        sync::{Feedback, Request, Response, ServeError, Source, source},
     },
 };
 use commonware_utils::NZU64;
@@ -244,14 +244,40 @@ impl<DB: Partition> Source for Resolver<DB> {
     type Error = p2p::ResponseDropped;
 
     async fn serve(&self, request: Request<Self::Family>) -> source::Result<Self> {
-        // The wire feedback carries `WireOperation` responses and cannot follow the
-        // operation mapping below; dropping it cancels the mailbox-side request and
-        // the sync engine reschedules this fetch when verification rejects the
-        // mapped response. Peer-blocking on invalid responses through this layer
-        // is tracked with the typed-feedback translation discussion upstream.
-        let (response, _feedback) = self.0.serve(bounded(request)).await?;
-        Ok((map(response, |op| op.0), None))
+        let (response, feedback) = self.0.serve(bounded(request)).await?;
+        Ok((
+            map(response, |op| op.0),
+            feedback.map(translate_feedback::<DB>),
+        ))
     }
+}
+
+fn translate_feedback<DB: Partition>(
+    feedback: Feedback<Response<mmr::Family, WireOperation<DB>, Digest>>,
+) -> Feedback<Response<mmr::Family, DB::Op, Digest>> {
+    let (verdict, mut candidates) = feedback.into_parts();
+    let (translated, receiver) = commonware_utils::channel::mpsc::channel(1);
+    // Keep verdicts tied to their original candidates. Closing the consumer
+    // cancels the underlying request even when no further candidate arrives.
+    tokio::spawn(async move {
+        loop {
+            let candidate = tokio::select! {
+                () = translated.closed() => break,
+                candidate = candidates.recv() => candidate,
+            };
+            let Some((response, verdict)) = candidate else {
+                break;
+            };
+            if translated
+                .send((map(response, |op| op.0), verdict))
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+    Feedback::from_parts(verdict, receiver)
 }
 
 impl<DB: Partition> AttachableResolver<DB> for Resolver<DB> {
