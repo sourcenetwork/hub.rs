@@ -83,19 +83,21 @@ most 64 KiB of data per chunk. These are transfer and decoding bounds; extra
 buffers, caches and storage resources contribute to process memory. Aggregate
 serving capacity and sustained catch-up throughput still require qualification.
 
-## Known availability limitation
+## Pruning hints and retries
 
-The pinned Commonware fork treats one peer's `Pruned` response as a reason to
-pause requests until an advancing target arrives. That response is not a proof
-that every peer has pruned the target. A focused engine reproduction with an
-available target confirms that a single such hint stops further source requests
-when the target does not advance. The peer adapter forwards individual replies;
-it does not aggregate retention evidence across peers.
+A peer's `Pruned` response describes only that source's claimed retention. It is
+not proof that every peer lacks the target and cannot change the authenticated
+state root or operation range. The sync engine pauses new fetches for 100 ms,
+then retries even if the finalized target has not advanced. Further pruning
+hints during that pause cannot extend its deadline. Already outstanding fetches
+remain eligible; valid data clears the pause, and an advancing target can bypass
+it. The startup initialization deadline still bounds the overall attempt.
 
-This is a recovery availability gap, not a bypass of operation or state-root
-verification. Production recovery qualification remains open until pruning hints
-have bounded retry or peer-aware handling, with honest-source fallback and
-all-peers-pruned cases covered alongside continuous-target convergence.
+The engine regression tests check retry timing, repeated hints and target
+advancement. Vera's `pruned_hint` integration test confirms that synchronization
+can recover after one false hint and reconstruct the correct stored value. This
+source-level test does not establish liveness under every adversarial peer
+selection or network partition.
 
 ## Private DKG material
 
