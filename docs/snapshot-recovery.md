@@ -83,6 +83,20 @@ most 64 KiB of data per chunk. These are transfer and decoding bounds; extra
 buffers, caches and storage resources contribute to process memory. Aggregate
 serving capacity and sustained catch-up throughput still require qualification.
 
+## Known availability limitation
+
+The pinned Commonware fork treats one peer's `Pruned` response as a reason to
+pause requests until an advancing target arrives. That response is not a proof
+that every peer has pruned the target. A focused engine reproduction with an
+available target confirms that a single such hint stops further source requests
+when the target does not advance. The peer adapter forwards individual replies;
+it does not aggregate retention evidence across peers.
+
+This is a recovery availability gap, not a bypass of operation or state-root
+verification. Production recovery qualification remains open until pruning hints
+have bounded retry or peer-aware handling, with honest-source fallback and
+all-peers-pruned cases covered alongside continuous-target convergence.
+
 ## Private DKG material
 
 Secret-store updates write a complete temporary file, sync its contents, replace
