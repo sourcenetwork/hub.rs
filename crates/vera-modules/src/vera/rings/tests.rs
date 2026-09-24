@@ -680,27 +680,44 @@ fn reshare_finalization_preserves_key_and_rejects_replay_and_changed_authority()
         deployment_id: context().deployment_id,
         ring_id: record.id.clone(),
         expected_sequence: record.sequence,
-        scheme: ThresholdScheme::Bls12381,
+        scheme: ThresholdScheme::Bls12381AugV1,
         signature: hex::encode(
             key.sign(
                 &record
                     .reshare_signing_bytes(context().deployment_id)
                     .unwrap(),
-                b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_",
-                &[],
+                b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_AUG_",
+                &key.sk_to_pk().to_bytes(),
             )
             .to_bytes(),
         ),
     };
     let signed = sign(&pending);
-    for variant in 0..5 {
+    let mut legacy = signed.clone();
+    legacy.scheme = ThresholdScheme::Bls12381;
+    legacy.signature = hex::encode(
+        key.sign(
+            &pending
+                .reshare_signing_bytes(context().deployment_id)
+                .unwrap(),
+            b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_",
+            &[],
+        )
+        .to_bytes(),
+    );
+    let before = vera.store().serialize();
+    assert!(vera.finalize_ring_reshare(&context(), &legacy).is_err());
+    assert_eq!(vera.store().serialize(), before);
+
+    for variant in 0..6 {
         let mut bad = signed.clone();
         match variant {
             0 => bad.deployment_root[0] ^= 1,
             1 => bad.deployment_id += 1,
             2 => bad.expected_sequence += 1,
             3 => bad.signature = "00".repeat(96),
-            _ => bad.scheme = ThresholdScheme::Decaf377Frost,
+            4 => bad.scheme = ThresholdScheme::Decaf377Frost,
+            _ => bad.scheme = ThresholdScheme::Bls12381,
         }
         let before = vera.store().serialize();
         assert!(vera.finalize_ring_reshare(&context(), &bad).is_err());
@@ -820,12 +837,12 @@ fn reports_deduplicate_expire_and_schedule_replacement_atomically() {
     };
     let sign = |report: ReportEnvelope| SignedReport {
         report_id: report.report_id(),
-        signature_scheme: "bls12_381_g1_pk_g2_sig_nul".into(),
+        signature_scheme: "bls12_381_g1_pk_g2_sig_aug_v1".into(),
         signature: hex::encode(
             key.sign(
                 &report.canonical_bytes(),
-                b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_",
-                &[],
+                b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_AUG_",
+                &key.sk_to_pk().to_bytes(),
             )
             .to_bytes(),
         ),
@@ -838,6 +855,19 @@ fn reports_deduplicate_expire_and_schedule_replacement_atomically() {
         3,
         CommitteeScope::Current,
     ));
+    let mut legacy = first.clone();
+    legacy.signature_scheme = "bls12_381_g1_pk_g2_sig_nul".into();
+    legacy.signature = hex::encode(
+        key.sign(
+            &legacy.report.canonical_bytes(),
+            b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_",
+            &[],
+        )
+        .to_bytes(),
+    );
+    let before = vera.store().serialize();
+    assert!(vera.submit_ring_report(&context(), &legacy).is_err());
+    assert_eq!(vera.store().serialize(), before);
     let outcome = vera.submit_ring_report(&context(), &first).unwrap();
     assert_eq!(outcome.demerits.points, 1);
     assert!(outcome.replacement.is_none());
