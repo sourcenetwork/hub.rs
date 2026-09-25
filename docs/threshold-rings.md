@@ -88,7 +88,7 @@ The sequence advances for every administrative mutation, so even changes to
 settings omitted from the protobuf projection invalidate previous signatures.
 
 Submit the aggregate signature with `encode_ring_reshare` through the durable
-worker. The service verifies either `bls12_381_g1_pk_g2_sig_nul` or
+worker. The service verifies either `bls12_381_g1_pk_g2_sig_aug_v1` or
 `decaf377_frost` against the existing ring key, then rechecks target controllers'
 current permission. It atomically replaces the committee/threshold, clears the
 pending target and advances the sequence. The ring identifier and public key
@@ -144,3 +144,16 @@ remain within the new bounds.
 
 Encrypted document and signing-derivation registration is described in [threshold objects](threshold-objects.md). This API does not import
 existing rings or choose an encrypted-record migration policy.
+
+
+### Threshold signature suites
+
+BLS reshare finalization and fault reports require
+`bls12_381_g1_pk_g2_sig_aug_v1`, matching Orbis's augmented BLS signer. Verification
+uses the compressed ring public key as the message prefix and the AUG domain.
+Basic NUL scheme identifiers and signatures are rejected; there is no fallback
+verifier. Decaf377 FROST keeps its existing format.
+
+Vera and Orbis must use matching builds. Ring IDs and public keys retain their
+encoding. Native threshold services target a fresh deployment; no legacy
+threshold-signature compatibility or history migration is provided.

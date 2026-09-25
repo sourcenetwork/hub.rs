@@ -6,12 +6,12 @@ use sha2::{Digest as _, Sha512};
 /// Signature formats supported by existing Orbis rings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ThresholdScheme {
-    /// BLS with a compressed G1 public key and G2 signature, using the basic NUL suite.
-    #[serde(rename = "bls12_381_g1_pk_g2_sig_nul")]
-    Bls12381,
     /// Orbis FROST over decaf377 with its existing challenge domain.
     #[serde(rename = "decaf377_frost")]
     Decaf377Frost,
+    /// Public-key-augmented BLS matching current Orbis threshold signing.
+    #[serde(rename = "bls12_381_g1_pk_g2_sig_aug_v1")]
+    Bls12381AugV1,
 }
 
 /// The encoding, group element or signature equation is invalid.
@@ -27,7 +27,7 @@ pub fn verify(
     signature: &[u8],
 ) -> Result<(), InvalidThresholdSignature> {
     let valid = match scheme {
-        ThresholdScheme::Bls12381 => {
+        ThresholdScheme::Bls12381AugV1 => {
             if public_key.len() != 48 || signature.len() != 96 {
                 return Err(InvalidThresholdSignature);
             }
@@ -38,8 +38,8 @@ pub fn verify(
             signature.verify(
                 true,
                 message,
-                b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_",
-                &[],
+                b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_AUG_",
+                public_key,
                 &key,
                 true,
             ) == blst::BLST_ERROR::BLST_SUCCESS

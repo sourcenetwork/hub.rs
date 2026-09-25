@@ -59,41 +59,95 @@ fn decaf_signatures_match_orbis_interoperability_vectors() {
 }
 
 #[test]
-fn bls_signatures_bind_key_message_and_orbis_suite() {
+fn augmented_bls_rejects_basic_signatures_and_public_key_substitution() {
     let key = blst::min_pk::SecretKey::key_gen(&[42; 32], &[]).unwrap();
     let public = key.sk_to_pk().to_bytes();
-    let message = b"ring reshare";
-    let signature = key
+    let message = b"ring authorization";
+    let augmented = key
+        .sign(
+            message,
+            b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_AUG_",
+            &public,
+        )
+        .to_bytes();
+    verify(ThresholdScheme::Bls12381AugV1, &public, message, &augmented).unwrap();
+    let basic = key
         .sign(message, b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_", &[])
         .to_bytes();
-    verify(ThresholdScheme::Bls12381, &public, message, &signature).unwrap();
+    assert!(verify(ThresholdScheme::Bls12381AugV1, &public, message, &basic).is_err());
+    let unaugmented = key
+        .sign(message, b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_AUG_", &[])
+        .to_bytes();
     assert!(
         verify(
-            ThresholdScheme::Bls12381,
+            ThresholdScheme::Bls12381AugV1,
             &public,
-            b"other reshare",
-            &signature
+            message,
+            &unaugmented
         )
         .is_err()
     );
-    let wrong_suite = key.sign(message, b"other suite", &[]).to_bytes();
-    assert!(verify(ThresholdScheme::Bls12381, &public, message, &wrong_suite).is_err());
+    assert!(
+        verify(
+            ThresholdScheme::Bls12381AugV1,
+            &public,
+            b"other",
+            &augmented
+        )
+        .is_err()
+    );
     let other = blst::min_pk::SecretKey::key_gen(&[43; 32], &[])
         .unwrap()
         .sk_to_pk()
         .to_bytes();
-    assert!(verify(ThresholdScheme::Bls12381, &other, message, &signature).is_err());
-    let mut identity = [0; 48];
-    identity[0] = 0xc0;
-    assert!(verify(ThresholdScheme::Bls12381, &identity, message, &signature).is_err());
+    assert!(verify(ThresholdScheme::Bls12381AugV1, &other, message, &augmented).is_err());
     assert!(
         verify(
-            ThresholdScheme::Bls12381,
+            ThresholdScheme::Bls12381AugV1,
             &public,
             message,
-            &signature[..95]
+            &augmented[..95]
         )
         .is_err()
     );
-    assert!(verify(ThresholdScheme::Decaf377Frost, &public, message, &signature).is_err());
+    let mut identity = [0; 48];
+    identity[0] = 0xc0;
+    assert!(
+        verify(
+            ThresholdScheme::Bls12381AugV1,
+            &identity,
+            message,
+            &augmented
+        )
+        .is_err()
+    );
+    assert!(verify(ThresholdScheme::Decaf377Frost, &public, message, &augmented).is_err());
+    assert!(serde_json::from_str::<ThresholdScheme>("\"bls12_381_g1_pk_g2_sig_nul\"").is_err());
+    assert_eq!(
+        serde_json::to_string(&ThresholdScheme::Bls12381AugV1).unwrap(),
+        "\"bls12_381_g1_pk_g2_sig_aug_v1\""
+    );
+}
+
+#[test]
+fn augmented_bls_matches_orbis_and_rejects_scaled_signature() {
+    let vector: serde_json::Value =
+        serde_json::from_str(include_str!("orbis_aug_vector.json")).unwrap();
+    let decode = |name: &str| hex::decode(vector[name].as_str().unwrap()).unwrap();
+    verify(
+        ThresholdScheme::Bls12381AugV1,
+        &decode("public_key"),
+        &decode("message"),
+        &decode("signature"),
+    )
+    .unwrap();
+    assert!(
+        verify(
+            ThresholdScheme::Bls12381AugV1,
+            &decode("scaled_public_key"),
+            &decode("message"),
+            &decode("scaled_signature")
+        )
+        .is_err()
+    );
 }
