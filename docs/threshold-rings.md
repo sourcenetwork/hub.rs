@@ -146,19 +146,14 @@ Encrypted document and signing-derivation registration is described in [threshol
 existing rings or choose an encrypted-record migration policy.
 
 
-### Signature suite transition
+### Threshold signature suites
 
-Live BLS reshare finalization and fault reports require
+BLS reshare finalization and fault reports require
 `bls12_381_g1_pk_g2_sig_aug_v1`, matching Orbis's augmented BLS signer. Verification
-uses the compressed ring public key as the message prefix and the AUG domain;
-there is no retry under another suite. Basic NUL signatures are rejected before
-state changes. Decaf377 FROST keeps its existing format.
+uses the compressed ring public key as the message prefix and the AUG domain.
+Basic NUL scheme identifiers and signatures are rejected; there is no fallback
+verifier. Decaf377 FROST keeps its existing format.
 
-The crypto library retains explicit basic-suite verification for historical
-consumers; that does not authorize a live ring operation. Deploy the matching Vera and Orbis builds together. This changes execution
-validation: replaying a previously accepted basic-BLS report or reshare under
-these rules will reject it. Existing deployments with that history need an
-explicit protocol activation or state migration, neither of which this change
-provides. Use a fresh deployment for qualification. Ring IDs and public keys
-retain their encoding. Rings that exposed basic signatures under related derived keys
-must be retired: changing verification suites cannot repair old signatures.
+Vera and Orbis must use matching builds. Ring IDs and public keys retain their
+encoding. Native threshold services target a fresh deployment; no legacy
+threshold-signature compatibility or history migration is provided.

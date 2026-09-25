@@ -87,11 +87,6 @@ impl VeraModule {
         {
             return Err(invalid("ring deployment or sequence changed"));
         }
-        if request.scheme == ThresholdScheme::Bls12381 {
-            return Err(invalid(
-                "basic BLS is unsupported for live ring authorization",
-            ));
-        }
         let message = record.reshare_signing_bytes(context.deployment_id)?;
         let RingState::Active { public_key } = &record.state else {
             return Err(invalid("ring is not active"));

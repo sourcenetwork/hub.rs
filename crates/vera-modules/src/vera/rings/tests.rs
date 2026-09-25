@@ -693,8 +693,10 @@ fn reshare_finalization_preserves_key_and_rejects_replay_and_changed_authority()
         ),
     };
     let signed = sign(&pending);
+    let mut unsupported = serde_json::to_value(&signed).unwrap();
+    unsupported["scheme"] = "bls12_381_g1_pk_g2_sig_nul".into();
+    assert!(serde_json::from_value::<RingReshareRequest>(unsupported).is_err());
     let mut legacy = signed.clone();
-    legacy.scheme = ThresholdScheme::Bls12381;
     legacy.signature = hex::encode(
         key.sign(
             &pending
@@ -709,15 +711,14 @@ fn reshare_finalization_preserves_key_and_rejects_replay_and_changed_authority()
     assert!(vera.finalize_ring_reshare(&context(), &legacy).is_err());
     assert_eq!(vera.store().serialize(), before);
 
-    for variant in 0..6 {
+    for variant in 0..5 {
         let mut bad = signed.clone();
         match variant {
             0 => bad.deployment_root[0] ^= 1,
             1 => bad.deployment_id += 1,
             2 => bad.expected_sequence += 1,
             3 => bad.signature = "00".repeat(96),
-            4 => bad.scheme = ThresholdScheme::Decaf377Frost,
-            _ => bad.scheme = ThresholdScheme::Bls12381,
+            _ => bad.scheme = ThresholdScheme::Decaf377Frost,
         }
         let before = vera.store().serialize();
         assert!(vera.finalize_ring_reshare(&context(), &bad).is_err());
@@ -866,6 +867,9 @@ fn reports_deduplicate_expire_and_schedule_replacement_atomically() {
         .to_bytes(),
     );
     let before = vera.store().serialize();
+    assert!(vera.submit_ring_report(&context(), &legacy).is_err());
+    assert_eq!(vera.store().serialize(), before);
+    legacy.signature_scheme = first.signature_scheme.clone();
     assert!(vera.submit_ring_report(&context(), &legacy).is_err());
     assert_eq!(vera.store().serialize(), before);
     let outcome = vera.submit_ring_report(&context(), &first).unwrap();
