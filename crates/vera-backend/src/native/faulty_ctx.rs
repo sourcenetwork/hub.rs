@@ -174,12 +174,21 @@ impl Clock for FaultyCtx {
         (*self.inner).current()
     }
 
-    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send + 'static {
-        (*self.inner).sleep(duration)
+    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send + 'static + use<> {
+        let inner = Arc::clone(&self.inner);
+        async move {
+            (*inner).sleep(duration).await;
+        }
     }
 
-    fn sleep_until(&self, deadline: SystemTime) -> impl Future<Output = ()> + Send + 'static {
-        (*self.inner).sleep_until(deadline)
+    fn sleep_until(
+        &self,
+        deadline: SystemTime,
+    ) -> impl Future<Output = ()> + Send + 'static + use<> {
+        let inner = Arc::clone(&self.inner);
+        async move {
+            (*inner).sleep_until(deadline).await;
+        }
     }
 }
 

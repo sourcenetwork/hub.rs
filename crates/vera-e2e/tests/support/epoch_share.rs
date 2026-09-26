@@ -18,7 +18,7 @@ fn ready_epoch(document: &Value, minimum: u64) -> Option<u64> {
     }
     let encoded = document.get("shares")?.get(epoch.to_string())?.as_str()?;
     let bytes = hex::decode(encoded).ok()?;
-    Share::decode(bytes.as_slice()).ok()?;
+    Share::decode(commonware_codec::Copying(bytes.as_slice())).ok()?;
     Some(epoch)
 }
 

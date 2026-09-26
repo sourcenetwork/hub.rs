@@ -443,13 +443,13 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
     .canonical_bytes();
     let signed = SignedReport {
         report_id: report.report_id(),
-        signature_scheme: "bls12_381_g1_pk_g2_sig_nul".into(),
+        signature_scheme: "bls12_381_g1_pk_g2_sig_aug_v1".into(),
         signature: hex::encode(
             ring_secret
                 .sign(
                     &report.canonical_bytes(),
-                    b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_",
-                    &[],
+                    b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_AUG_",
+                    &ring_secret.sk_to_pk().to_bytes(),
                 )
                 .to_bytes(),
         ),
@@ -561,8 +561,8 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
     let signature = ring_secret
         .sign(
             &recovered.reshare_signing_bytes(deployment).unwrap(),
-            b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_",
-            &[],
+            b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_AUG_",
+            &ring_secret.sk_to_pk().to_bytes(),
         )
         .to_bytes();
     let finalize = encode_ring_reshare(&RingReshareRequest {
@@ -570,7 +570,7 @@ async fn native_ring_lifecycle_preserves_actor_authority_and_terminal_state() {
         deployment_id: deployment,
         ring_id: ring.clone(),
         expected_sequence: recovered.sequence,
-        scheme: ThresholdScheme::Bls12381,
+        scheme: ThresholdScheme::Bls12381AugV1,
         signature: hex::encode(signature),
     })
     .unwrap();

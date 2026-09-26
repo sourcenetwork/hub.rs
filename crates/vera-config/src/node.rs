@@ -199,7 +199,7 @@ impl NodeConfig {
                 let mut seed = [0u8; 32];
                 seed.copy_from_slice(&key_bytes);
                 Ok(commonware_cryptography::ed25519::PrivateKey::decode(
-                    &seed[..],
+                    commonware_codec::Copying(&seed[..]),
                 )?)
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -222,7 +222,7 @@ impl NodeConfig {
                 })?;
 
                 Ok(commonware_cryptography::ed25519::PrivateKey::decode(
-                    &seed[..],
+                    commonware_codec::Copying(&seed[..]),
                 )?)
             }
             Err(e) => Err(ConfigError::Read {

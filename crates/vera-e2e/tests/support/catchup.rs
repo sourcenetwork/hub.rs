@@ -308,16 +308,10 @@ pub(super) async fn recover_replica_with_delay(
         })
         .await
         .expect("stale snapshot target must finish initialization within its deadline");
-        if crash_marker.exists() {
-            let logs = fs::read_to_string(cluster.node(3).log_dir.join("stderr.log")).unwrap();
-            assert!(
-                logs.contains("snapshot initialization deadline exceeded"),
-                "{logs}"
-            );
-            eprintln!("stale snapshot target reached its initialization deadline");
-            return;
-        }
-        // Successful transfer reaches the injected crash and must pass recovery checks below.
+        assert!(
+            !crash_marker.exists(),
+            "stale target must steer into durable history import"
+        );
         eprintln!("stale snapshot target reached durable history import");
     }
     if interrupt {
@@ -340,7 +334,9 @@ pub(super) async fn recover_replica_with_delay(
         );
         let path = directory.join("config.toml");
         let config = fs::read_to_string(&path).unwrap();
-        let (base, _) = config.split_once("\n[snapshot]\n").unwrap();
+        let (base, _) = config
+            .split_once("\n[snapshot]\n")
+            .unwrap_or((config.as_str(), ""));
         fs::write(path, base).unwrap();
         cluster.restart_node(3).unwrap();
     }

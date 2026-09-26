@@ -30,7 +30,6 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       CARGO_INCREMENTAL: '0'
-      CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -53,8 +52,10 @@ jobs:
           toolchain: '1.98.0'
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          shared-key: performance-pr
-          workspaces: head -> ../target
+          shared-key: performance-pr-isolated
+          workspaces: |
+            head -> ../target/head
+            base -> ../target/base
       - name: Fetch both locked dependency sets
         env:
           CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
@@ -75,6 +76,7 @@ jobs:
             mkdir -p "binaries/$side"
             (
               cd "$side"
+              export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target/$side"
               examples=(--example operation_baseline)
               if [[ -f crates/vera-e2e/examples/component_baseline.rs ]]; then
                 examples+=(--example component_baseline)

@@ -14,6 +14,6 @@ async fn interrupted_snapshot_resumes_from_pruned_peers() {
 }
 
 #[tokio::test]
-async fn stale_snapshot_target_recovers_or_reaches_initialization_deadline() {
+async fn stale_snapshot_target_recovers_after_sync_fixes() {
     catchup::recover_replica_with_delay(true, true, true, true).await;
 }

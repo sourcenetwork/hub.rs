@@ -46,9 +46,9 @@ Retain `validator.key` and `secrets.json` together with independently provisione
 genesis, configuration, and peer material. Recovering the remaining state depends
 on reachable peers and available authenticated state and history. A delayed
 snapshot catch-up re-floors from stored gossiped finalizations when processing
-stalls, and still exits at its deadline if the transfer cannot converge under
-continuous finalization; a secret backup alone does not establish that a restore
-will succeed. Exercise restores before relying on this recovery path.
+stalls and converges without network quiescence, though it still exits at its
+deadline if peers cannot serve any retained target; a secret backup alone does
+not establish that a restore will succeed. Exercise restores before relying on this recovery path.
 
 ## Recovery behaviour
 

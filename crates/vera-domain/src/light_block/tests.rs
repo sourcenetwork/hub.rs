@@ -130,7 +130,7 @@ fn proposal_payload_tampering_fails() {
     let mut light = light_fixture(42);
     let encoded = decode_hex("finalization", &light.finalization).unwrap();
     let mut finalization: Finalization<LightConsensusScheme, ConsensusDigest> =
-        Finalization::decode(encoded.as_slice()).unwrap();
+        Finalization::decode(commonware_codec::Copying(encoded.as_slice())).unwrap();
     finalization.proposal.payload = ConsensusDigest::from([0x99; 32]);
     light.finalization = encode_hex(&finalization.encode());
     assert_eq!(
@@ -164,18 +164,19 @@ fn wrong_epoch_material_fails() {
 fn substituted_certificate_is_rejected() {
     let mut light = light_fixture(42);
     let mut finalization: Finalization<LightConsensusScheme, ConsensusDigest> =
-        Finalization::decode(
+        Finalization::decode(commonware_codec::Copying(
             decode_hex("finalization", &light.finalization)
                 .unwrap()
                 .as_slice(),
-        )
+        ))
         .unwrap();
-    let unrelated: Finalization<LightConsensusScheme, ConsensusDigest> = Finalization::decode(
-        decode_hex("finalization", &light_fixture(100).finalization)
-            .unwrap()
-            .as_slice(),
-    )
-    .unwrap();
+    let unrelated: Finalization<LightConsensusScheme, ConsensusDigest> =
+        Finalization::decode(commonware_codec::Copying(
+            decode_hex("finalization", &light_fixture(100).finalization)
+                .unwrap()
+                .as_slice(),
+        ))
+        .unwrap();
     finalization.certificate = unrelated.certificate;
     light.finalization = encode_hex(&finalization.encode());
     assert_eq!(
@@ -478,13 +479,15 @@ fn epoch_end_reproposal_verifies_directly_and_through_ancestry() {
             100,
         );
         let mut certificate = Finalization::<LightConsensusScheme, ConsensusDigest>::decode(
-            decode_hex("finalization", &light.finalization)
-                .unwrap()
-                .as_slice(),
+            commonware_codec::Copying(
+                decode_hex("finalization", &light.finalization)
+                    .unwrap()
+                    .as_slice(),
+            ),
         )
         .unwrap();
         certificate.certificate = Finalization::<LightConsensusScheme, ConsensusDigest>::decode(
-            decode_hex("finalization", &forged).unwrap().as_slice(),
+            commonware_codec::Copying(decode_hex("finalization", &forged).unwrap().as_slice()),
         )
         .unwrap()
         .certificate;

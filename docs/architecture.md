@@ -215,9 +215,9 @@ ready, before either can request speculative DKG artifacts.
 A stale target whose floor has aged out of peer retention can stop marshal's
 finalized dispatches; startup watches that progress and, after a configured
 stall, re-floors marshal from the newest stored gossiped finalization so
-dispatches resume from a retained anchor. Retargeting keeps the database sync
-on servable targets, though a network that keeps changing state can still
-exhaust the initialization deadline inside transfer.
+dispatches resume from a retained anchor. The sync completes at its reached
+target and settles on the newest one at the first update lull, converging
+without requiring network quiescence.
 See [snapshot recovery](snapshot-recovery.md) and [history storage](history-storage.md).
 
 ## Implementation map

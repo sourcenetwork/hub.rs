@@ -74,7 +74,8 @@ fn trusted_key(value: &str) -> Result<ConsensusPublicKey, String> {
         return Err("consensus key must contain 96 bytes".into());
     }
     let raw = hex::decode(raw).map_err(|error| error.to_string())?;
-    ConsensusPublicKey::decode(raw.as_slice()).map_err(|error| error.to_string())
+    ConsensusPublicKey::decode(commonware_codec::Copying(raw.as_slice()))
+        .map_err(|error| error.to_string())
 }
 
 fn verify(input: &[u8]) -> Result<Value, String> {

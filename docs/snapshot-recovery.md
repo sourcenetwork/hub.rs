@@ -31,6 +31,14 @@ and later consensus progress; they do not request another snapshot.
    Commonware makes any pending execution suffix durable and records completion
    before exposing the databases. Admission and RPC start after this handoff.
 
+Peer response translation preserves Commonware's validation feedback. The sync
+engine's rejection of an invalid proof reaches the original resolver, which can
+block that peer and supply another candidate. Accepting a proof closes the
+request; dropping feedback cancels it without accusing the peer. Translation
+uses a one-entry channel and exits when the consumer closes, including when no
+further candidate arrives. This feedback does not replace root verification or
+acknowledge durable storage.
+
 Resharing starts alongside database recovery. When execution state cannot yet
 provide a committee selection, the membership provider uses the corresponding
 finalized boundary in the consensus archive, checking its height, selected epoch
@@ -51,9 +59,9 @@ databases are pending, startup watches marshal's processed height and, after
 `floor_stall_seconds` without progress (default 15, zero disables), re-floors
 marshal from the newest stored gossiped finalization. Dispatches resume from
 that retained anchor and the transfer retargets; the overall
-`initialization_timeout_ms` deadline still bounds the attempt. Retargeting
-alone does not guarantee convergence while the network keeps changing state:
-a stale target can still exhaust the deadline inside database transfer.
+`initialization_timeout_ms` deadline still bounds the attempt. Sync completes
+at its reached target and settles on the newest one at the first update lull,
+so stale targets converge without network quiescence.
 
 `vera_nodeStatus` includes `snapshotRevision` after snapshot recovery. On restart,
 it reports the persisted snapshot recovery floor, which can also cover execution
@@ -74,6 +82,22 @@ artifacts, and 70 MiB plus 64 KiB for the JSON response. Peer responses contain 
 most 64 KiB of data per chunk. These are transfer and decoding bounds; extra
 buffers, caches and storage resources contribute to process memory. Aggregate
 serving capacity and sustained catch-up throughput still require qualification.
+
+## Pruning hints and retries
+
+A peer's `Pruned` response describes only that source's claimed retention. It is
+not proof that every peer lacks the target and cannot change the authenticated
+state root or operation range. The sync engine pauses new fetches for 100 ms,
+then retries even if the finalized target has not advanced. Further pruning
+hints during that pause cannot extend its deadline. Already outstanding fetches
+remain eligible; valid data clears the pause, and an advancing target can bypass
+it. The startup initialization deadline still bounds the overall attempt.
+
+The engine regression tests check retry timing, repeated hints and target
+advancement. Vera's `pruned_hint` integration test confirms that synchronization
+can recover after one false hint and reconstruct the correct stored value. This
+source-level test does not establish liveness under every adversarial peer
+selection or network partition.
 
 ## Private DKG material
 

@@ -40,9 +40,11 @@ impl FinalizedHistory {
             "oversized roster boundary block"
         );
         let block = Block::decode_cfg(
-            encoded
-                .get(..size)
-                .context("truncated roster boundary block")?,
+            commonware_codec::Copying(
+                encoded
+                    .get(..size)
+                    .context("truncated roster boundary block")?,
+            ),
             &crate::node::block_cfg(),
         )?;
         roster_from_boundary(&block, epoch, height).map(Some)

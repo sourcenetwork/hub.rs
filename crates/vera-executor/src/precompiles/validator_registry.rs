@@ -296,7 +296,7 @@ pub(crate) fn active_consensus_keys<CTX: ContextTr>(
             let mut key = [0; 32];
             hex::decode_to_slice(member.consensus_pubkey, &mut key)
                 .map_err(|_| PrecompileError::Fatal("invalid consensus key encoding".into()))?;
-            vera_domain::PublicKey::read(&mut key.as_slice())
+            vera_domain::PublicKey::read(&mut commonware_codec::Copying(key.as_slice()))
                 .map_err(|_| PrecompileError::Fatal("invalid consensus key".into()))?;
             keys.push(key);
         }
@@ -421,7 +421,10 @@ pub(crate) fn dispatch_with_journal<CTX: ContextTr>(
                 )));
             }
             if call.consensusPubkey == B256::ZERO
-                || vera_domain::PublicKey::read(&mut call.consensusPubkey.as_slice()).is_err()
+                || vera_domain::PublicKey::read(&mut commonware_codec::Copying(
+                    call.consensusPubkey.as_slice(),
+                ))
+                .is_err()
             {
                 return Ok(err_dispatch(ValidatorRegistryError::InvalidPublicKey));
             }

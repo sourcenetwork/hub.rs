@@ -1,7 +1,7 @@
 //! Transactions
 
 use alloy_primitives::{Bytes, keccak256};
-use bytes::{Buf, BufMut};
+use bytes::BufMut;
 use commonware_codec::{Encode, EncodeSize, Error as CodecError, RangeCfg, Read, Write};
 
 use super::TxId;
@@ -50,7 +50,7 @@ impl EncodeSize for Tx {
 impl Read for Tx {
     type Cfg = TxCfg;
 
-    fn read_cfg(buf: &mut impl Buf, cfg: &Self::Cfg) -> Result<Self, CodecError> {
+    fn read_cfg(buf: &mut impl commonware_codec::Buf, cfg: &Self::Cfg) -> Result<Self, CodecError> {
         let data = Vec::<u8>::read_cfg(
             buf,
             &(

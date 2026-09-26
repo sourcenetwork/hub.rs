@@ -88,6 +88,7 @@ commonware-broadcast = "2026.9.0"
 commonware-resolver = "2026.9.0"
 commonware-macros = "2026.9.0"
 commonware-glue = "2026.9.0"
+commonware-stream = "2026.9.0"
 
 # Shared Defra types and policy evaluation
 acp = { path = "crates/acp" }
@@ -173,3 +174,20 @@ libc = "0.2"
 # Testing
 tempfile = "3"
 rstest = "0.24"
+
+# Vera state-sync liveness fixes carried by the iverc/commonware fork (branch
+# vera) until they are released upstream. See docs/history-storage.md.
+[patch.crates-io]
+commonware-p2p = { git = "https://github.com/iverc/commonware.git", branch = "vera" }
+commonware-utils = { git = "https://github.com/iverc/commonware.git", branch = "vera" }
+commonware-codec = { git = "https://github.com/iverc/commonware.git", branch = "vera" }
+commonware-runtime = { git = "https://github.com/iverc/commonware.git", branch = "vera" }
+commonware-consensus = { git = "https://github.com/iverc/commonware.git", branch = "vera" }
+commonware-cryptography = { git = "https://github.com/iverc/commonware.git", branch = "vera" }
+commonware-parallel = { git = "https://github.com/iverc/commonware.git", branch = "vera" }
+commonware-storage = { git = "https://github.com/iverc/commonware.git", branch = "vera" }
+commonware-broadcast = { git = "https://github.com/iverc/commonware.git", branch = "vera" }
+commonware-resolver = { git = "https://github.com/iverc/commonware.git", branch = "vera" }
+commonware-macros = { git = "https://github.com/iverc/commonware.git", branch = "vera" }
+commonware-glue = { git = "https://github.com/iverc/commonware.git", branch = "vera" }
+commonware-stream = { git = "https://github.com/iverc/commonware.git", branch = "vera" }

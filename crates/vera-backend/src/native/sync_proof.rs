@@ -131,7 +131,7 @@ impl EncodeSize for PartitionProof {
 
 impl Read for PartitionProof {
     type Cfg = ();
-    fn read_cfg(buf: &mut impl bytes::Buf, _: &()) -> Result<Self, Error> {
+    fn read_cfg(buf: &mut impl commonware_codec::Buf, _: &()) -> Result<Self, Error> {
         Ok(Self {
             ops_root: Digest::read(buf)?,
             witness: OpsRootWitness::read(buf)?,
@@ -155,7 +155,7 @@ impl EncodeSize for SyncProof {
 
 impl Read for SyncProof {
     type Cfg = ();
-    fn read_cfg(buf: &mut impl bytes::Buf, _: &()) -> Result<Self, Error> {
+    fn read_cfg(buf: &mut impl commonware_codec::Buf, _: &()) -> Result<Self, Error> {
         Ok(Self(<[PartitionProof; 4]>::read(buf)?))
     }
 }

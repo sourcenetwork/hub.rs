@@ -7,6 +7,7 @@ use alloy_primitives::B256;
 use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
 use commonware_p2p::{Address, AddressableManager as _, authenticated::lookup};
 use commonware_runtime::{Quota, Runner as _, Supervisor as _, tokio};
+use commonware_stream::encrypted::Handshake as StreamHandshake;
 use commonware_utils::{NZU32, ordered::Map};
 use vera_domain::BlockId;
 use vera_indexer::{BlockIndex, LightBlockIndex};
@@ -117,7 +118,7 @@ fn peer_import_rejects_bad_records_and_resumes_after_cancellation() {
             let mut clients = Vec::new();
             for (i, (key, listener)) in keys.into_iter().zip(listeners).enumerate() {
                 let mut cfg = lookup::Config::local(
-                    key,
+                    StreamHandshake::new(key),
                     b"vera-history-transfer-test",
                     addresses[i],
                     NZUsize!(3),

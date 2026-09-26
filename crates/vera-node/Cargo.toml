@@ -34,6 +34,7 @@ commonware-cryptography.workspace = true
 commonware-glue.workspace = true
 commonware-macros.workspace = true
 commonware-p2p.workspace = true
+commonware-stream.workspace = true
 commonware-parallel.workspace = true
 commonware-runtime.workspace = true
 commonware-resolver.workspace = true

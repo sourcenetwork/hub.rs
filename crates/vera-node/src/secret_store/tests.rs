@@ -141,7 +141,7 @@ async fn valid_material_reopens_and_invalid_dealing_keys_fail() {
     let share = Share::new(Participant::new(1), Private::new(Scalar::from(1u64)));
     let expected = share.encode();
     store.put_share(Epoch::new(1), share).await;
-    let seed = Summary::decode(&[7u8; 32][..]).unwrap();
+    let seed = Summary::decode(commonware_codec::Copying(&[7u8; 32][..])).unwrap();
     store.put_seed(Epoch::new(1), seed).await;
     let dealing = hex::encode(DealerPrivMsg::new(Scalar::from(1u64)).encode());
     store

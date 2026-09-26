@@ -177,7 +177,7 @@ fn startup_recovers_each_partial_apply_before_publication() {
             String::from_utf8_lossy(&output.stderr)
         );
         let bytes = std::fs::read(directory.path().join("anchor")).unwrap();
-        let anchor = OrderedTargets::decode(bytes.as_slice()).unwrap();
+        let anchor = OrderedTargets::decode(commonware_codec::Copying(bytes.as_slice())).unwrap();
         let next_target = runtime(directory.path()).start(|context| {
             Box::pin(async move {
                 let executor = VeraExecutor::new(DEPLOYMENT);

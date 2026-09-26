@@ -15,7 +15,7 @@ use commonware_storage::{
     merkle::{Location, MAX_PROOF_DIGESTS_PER_ELEMENT, Proof, mmr},
     qmdb::{
         any::ordered::variable::Update,
-        sync::{FeedbackTx, Request, Response, Source},
+        sync::{Feedback, Request, Response, Source},
     },
 };
 use commonware_utils::{NZU16, NZU64, NZUsize, channel::mpsc};
@@ -87,7 +87,7 @@ fn wire_codec_bounds_every_variable_field_and_response() {
         assert!(WireOperation::decode(bytes.slice(..bytes.len() - 1)).is_err());
         let mut trailing = bytes.to_vec();
         trailing.push(0);
-        assert!(WireOperation::decode(trailing.as_slice()).is_err());
+        assert!(WireOperation::decode(commonware_codec::Copying(trailing.as_slice())).is_err());
     }
     for operation in [
         update(MAX_KEY_BYTES + 1, 0, 0),
@@ -173,17 +173,23 @@ fn peer_sync_preserves_roots_and_reports_rejected_responses() {
                 .await
                 .unwrap();
             assert!(matches!(response, Response::Boundary { .. }));
-            feedback.unwrap().send(false).unwrap();
-            loop {
-                if peers.blocked[1]
+            let rejection = feedback.unwrap().reject();
+            let blocked = async {
+                while !peers.blocked[1]
                     .recv()
                     .await
                     .unwrap()
                     .iter()
                     .any(|peer| peer == &peers.identities[0])
-                {
-                    break;
-                }
+                {}
+            };
+            ::tokio::pin!(rejection, blocked);
+            ::tokio::select! {
+                result = &mut rejection => {
+                    assert!(result.is_none(), "rejected peer supplied another response");
+                    blocked.await;
+                },
+                () = &mut blocked => {},
             }
         })
         .await

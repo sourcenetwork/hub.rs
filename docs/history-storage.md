@@ -71,18 +71,15 @@ pending, startup watches marshal's finalized-processing progress: after
 it re-floors marshal from the newest stored gossiped finalization, resuming
 dispatches from a retained anchor so the database sync retargets. Exceeding
 the overall deadline still exits with `snapshot initialization deadline
-exceeded`; restart the node to discover a fresh certified target. A stale
-target can still fail to converge inside database transfer while the network
-keeps finalizing; restart into a quieter window or longer peer state retention
-recovers it. Increase the budget when the expected dataset and network require
+exceeded`. Under continuous finalization the state sync completes at its
+reached target and settles on the newest one at the first update lull, so
+stale targets converge without waiting for network quiescence. Increase the
+budget when the expected dataset and network require
 longer initialization. Durable import progress is preserved. Actor failures are
 also reported while database startup is pending.
 
-The `snapshot_interrupt` case
-`stale_snapshot_target_recovers_or_reaches_initialization_deadline` pauses the
-joining node after discovery while peers advance beyond retention. If transfer
-cannot finish, it requires the explicit initialization deadline before durable
-history import. If transfer succeeds, it injects a crash during history import
-and verifies recovery, certified state, receipts, restart persistence and quorum
-participation. The test bounds startup failure without requiring transfer to
-fail; it does not establish convergence for every retention window.
+The `snapshot_interrupt` case `stale_snapshot_target_recovers_after_sync_fixes`
+pauses the joining node after discovery while peers advance beyond retention,
+then requires convergence into durable history import, where an injected crash
+exercises recovery, certified state, receipts, restart persistence and quorum
+participation.

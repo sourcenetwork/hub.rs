@@ -28,8 +28,10 @@ commonware-storage.workspace = true
 commonware-utils.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
+tracing.workspace = true
 
 [dev-dependencies]
+commonware-stream.workspace = true
 commonware-p2p.workspace = true
 governor = "0.10.4"
 serde_json.workspace = true

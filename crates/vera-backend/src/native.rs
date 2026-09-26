@@ -157,7 +157,7 @@ fn config(prefix: &str, module: &str, cache: CacheRef) -> <NativeDb as ManagedDb
         },
         grafted_metadata_partition: format!("{prefix}-graft"),
         translator: KeyPrefix::default(),
-        init_cache_size: Some(NZUsize!(1024)),
+        init_cache: Some(NZUsize!(1024)),
         init_buffer: NZUsize!(1 << 21),
         init_concurrency: (),
     }

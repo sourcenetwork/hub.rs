@@ -41,7 +41,7 @@ pub fn load_peers(path: &Path) -> Result<PeerSet, PeerSetError> {
     let json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path)?)?;
     let parse_key = |hex_key: &str| -> Result<PublicKey, PeerSetError> {
         let bytes = hex::decode(hex_key).map_err(|e| PeerSetError::Invalid(e.to_string()))?;
-        ed25519::PublicKey::read(&mut bytes.as_slice())
+        ed25519::PublicKey::read(&mut commonware_codec::Copying(bytes.as_slice()))
             .map_err(|e| PeerSetError::Invalid(format!("public key: {e}")))
     };
     let participants = json["participants"]

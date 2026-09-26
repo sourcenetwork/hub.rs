@@ -45,9 +45,11 @@ impl PrefixProof {
         if vera_modules::module_state::combine_module_roots(&self.roots.map(|r| r.0)) != root {
             return Err(PermissionError::Invalid("current-state roots"));
         }
-        let evidence =
-            PrefixEvidence::decode_cfg(self.proof.as_ref(), &PERMISSION_LIMITS.reads.records)
-                .map_err(|_| PermissionError::Invalid("prefix encoding or record limit"))?;
+        let evidence = PrefixEvidence::decode_cfg(
+            commonware_codec::Copying(self.proof.as_ref()),
+            &PERMISSION_LIMITS.reads.records,
+        )
+        .map_err(|_| PermissionError::Invalid("prefix encoding or record limit"))?;
         let mut remaining = PERMISSION_LIMITS
             .reads
             .bytes

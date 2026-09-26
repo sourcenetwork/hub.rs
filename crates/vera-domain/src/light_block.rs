@@ -1,7 +1,7 @@
 //! Self-contained BLS light blocks and standalone finality verification.
 
 use alloy_evm::revm::primitives::{B256, keccak256};
-use bytes::{Buf, BufMut};
+use bytes::BufMut;
 use commonware_codec::{
     Decode as _, DecodeExt as _, Encode as _, EncodeSize, Error as CodecError, RangeCfg, Read,
     Write,
@@ -64,7 +64,7 @@ impl EpochMaterial {
     /// Decode verifier material using the protocol's participant and sharing bounds.
     pub fn decode_bounded(bytes: &[u8]) -> Result<Self, LightBlockError> {
         Ok(Self::decode_cfg(
-            bytes,
+            commonware_codec::Copying(bytes),
             &(LIGHT_BLOCK_MAX_PARTICIPANTS, ModeVersion::v0()),
         )?)
     }
@@ -87,7 +87,7 @@ impl Read for EpochMaterial {
     type Cfg = (u32, ModeVersion);
 
     fn read_cfg(
-        buf: &mut impl Buf,
+        buf: &mut impl commonware_codec::Buf,
         (max_participants, max_mode): &Self::Cfg,
     ) -> Result<Self, CodecError> {
         let participants =
@@ -293,7 +293,7 @@ fn decode_b256(field: &'static str, value: &str) -> Result<B256, LightBlockError
 
 fn decode_block(bytes: &[u8]) -> Result<Block, LightBlockError> {
     Ok(Block::decode_cfg(
-        bytes,
+        commonware_codec::Copying(bytes),
         &BlockCfg {
             max_txs: LIGHT_BLOCK_MAX_TXS,
             tx: TxCfg {
@@ -395,7 +395,7 @@ pub fn verify_finalized_block(
     );
     let finalization_bytes = decode_hex("finalization", &light.finalization)?;
     let finalization: Finalization<LightConsensusScheme, ConsensusDigest> =
-        Finalization::decode(finalization_bytes.as_slice())?;
+        Finalization::decode(commonware_codec::Copying(finalization_bytes.as_slice()))?;
     // Commonware may re-propose the same epoch-ending block in a later view.
     // Its signed payload remains the digest of the original canonical block.
     let proposal = &finalization.proposal;

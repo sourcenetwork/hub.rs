@@ -39,6 +39,7 @@ use commonware_p2p::{Ingress, Provider as _, authenticated::discovery};
 use commonware_parallel::{Rayon, Sequential};
 use commonware_runtime::{Handle, Spawner as _, Supervisor as _, buffer::paged::CacheRef, tokio};
 use commonware_storage::{archive::prunable, translator::TwoCap};
+use commonware_stream::encrypted::Handshake as StreamHandshake;
 use commonware_utils::{NZDuration, NZU64, NZUsize, sequence::Unit};
 use tracing::{error, info};
 use vera_app::{
@@ -144,7 +145,7 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         .collect();
     let max_peers_per_set = NZUsize!(MAX_PARTICIPANTS.get() as usize);
     let mut p2p_config = discovery::Config::local(
-        signing_key.clone(),
+        StreamHandshake::new(signing_key.clone()),
         &[NAMESPACE, P2P_SUFFIX].concat(),
         listen,
         dial,
@@ -379,7 +380,7 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
         marshal::Config {
             provider: provider.clone(),
             epocher: FixedEpocher::new(blocks_per_epoch),
-            start: plan.marshal_start(genesis_block.clone()),
+            start: plan.marshal_start(Arc::new(genesis_block.clone())),
             partition_prefix: PARTITION_PREFIX.to_string(),
             mailbox_size: MAILBOX_SIZE,
             view_retention: ViewDelta::new(10),
@@ -582,7 +583,7 @@ pub async fn run_node(context: tokio::Context, settings: NodeSettings) -> anyhow
             )
             .recover_from_marshal()
             .with_sync_handoff(move |anchor| async move {
-                let selected: vera_domain::Block = sync_marshal
+                let selected: Arc<vera_domain::Block> = sync_marshal
                     .get_block(Identifier::Height(anchor.height))
                     .await
                     .ok_or_else(|| "missing synchronized history anchor".to_string())?;

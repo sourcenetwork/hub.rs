@@ -209,7 +209,7 @@ impl EncodeSize for Block {
 impl Read for Block {
     type Cfg = BlockCfg;
 
-    fn read_cfg(buf: &mut impl Buf, cfg: &Self::Cfg) -> Result<Self, CodecError> {
+    fn read_cfg(buf: &mut impl commonware_codec::Buf, cfg: &Self::Cfg) -> Result<Self, CodecError> {
         let buf = &mut buf.take(crate::MAX_BLOCK_BYTES);
         let context = ConsensusContext::read(buf)?;
         let parent = BlockId::read(buf)?;
@@ -462,7 +462,7 @@ mod tests {
             assert_ne!(native.id(), changed.id());
             let mut concatenated = bytes.to_vec();
             concatenated.extend_from_slice(&original);
-            let mut input = concatenated.as_slice();
+            let mut input = commonware_codec::Copying(concatenated.as_slice());
             assert_eq!(
                 Block::read_cfg(&mut input, &default_block_cfg()).unwrap(),
                 native
@@ -471,12 +471,24 @@ mod tests {
                 Block::read_cfg(&mut input, &default_block_cfg()).unwrap(),
                 legacy
             );
-            assert!(input.is_empty());
+            assert!(input.0.is_empty());
             let mut invalid = bytes.to_vec();
             invalid[offset] = 4;
-            assert!(Block::decode_cfg(invalid.as_slice(), &default_block_cfg()).is_err());
+            assert!(
+                Block::decode_cfg(
+                    commonware_codec::Copying(invalid.as_slice()),
+                    &default_block_cfg()
+                )
+                .is_err()
+            );
             for end in offset..bytes.len() {
-                assert!(Block::decode_cfg(&bytes[..end], &default_block_cfg()).is_err());
+                assert!(
+                    Block::decode_cfg(
+                        commonware_codec::Copying(&bytes[..end]),
+                        &default_block_cfg()
+                    )
+                    .is_err()
+                );
             }
             native.native_targets = None;
             assert_eq!(native.encode(), original);
@@ -506,7 +518,7 @@ mod tests {
                 assert_ne!(block.id(), changed.id());
                 let mut concatenated = encoded.to_vec();
                 concatenated.extend_from_slice(&previous);
-                let mut input = concatenated.as_slice();
+                let mut input = commonware_codec::Copying(concatenated.as_slice());
                 assert_eq!(
                     Block::read_cfg(&mut input, &default_block_cfg()).unwrap(),
                     block
@@ -517,9 +529,15 @@ mod tests {
                     Block::read_cfg(&mut input, &default_block_cfg()).unwrap(),
                     block
                 );
-                assert!(input.is_empty());
+                assert!(input.0.is_empty());
                 for end in offset..encoded.len() {
-                    assert!(Block::decode_cfg(&encoded[..end], &default_block_cfg()).is_err());
+                    assert!(
+                        Block::decode_cfg(
+                            commonware_codec::Copying(&encoded[..end]),
+                            &default_block_cfg()
+                        )
+                        .is_err()
+                    );
                 }
             }
         }
@@ -590,7 +608,13 @@ mod tests {
         let payload_start =
             encoded.len() - block.db_targets.encode_size() - block.payload.encode_size();
         encoded[payload_start] = 4;
-        assert!(Block::decode_cfg(encoded.as_slice(), &default_block_cfg()).is_err());
+        assert!(
+            Block::decode_cfg(
+                commonware_codec::Copying(encoded.as_slice()),
+                &default_block_cfg()
+            )
+            .is_err()
+        );
     }
 
     #[test]

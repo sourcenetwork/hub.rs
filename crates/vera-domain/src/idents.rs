@@ -27,7 +27,7 @@ impl Idents {
     }
 
     /// Decode a `B256` from the buffer, returning an error if insufficient bytes remain.
-    pub fn read_b256(buf: &mut impl Buf) -> Result<B256, CodecError> {
+    pub fn read_b256(buf: &mut impl commonware_codec::Buf) -> Result<B256, CodecError> {
         if buf.remaining() < 32 {
             return Err(CodecError::EndOfBuffer);
         }
@@ -58,7 +58,7 @@ impl Write for BlockId {
 impl Read for BlockId {
     type Cfg = ();
 
-    fn read_cfg(buf: &mut impl Buf, _: &Self::Cfg) -> Result<Self, CodecError> {
+    fn read_cfg(buf: &mut impl commonware_codec::Buf, _: &Self::Cfg) -> Result<Self, CodecError> {
         Ok(Self(Idents::read_b256(buf)?))
     }
 }
@@ -72,7 +72,7 @@ impl Write for TxId {
 impl Read for TxId {
     type Cfg = ();
 
-    fn read_cfg(buf: &mut impl Buf, _: &Self::Cfg) -> Result<Self, CodecError> {
+    fn read_cfg(buf: &mut impl commonware_codec::Buf, _: &Self::Cfg) -> Result<Self, CodecError> {
         Ok(Self(Idents::read_b256(buf)?))
     }
 }
@@ -86,7 +86,7 @@ impl Write for StateRoot {
 impl Read for StateRoot {
     type Cfg = ();
 
-    fn read_cfg(buf: &mut impl Buf, _: &Self::Cfg) -> Result<Self, CodecError> {
+    fn read_cfg(buf: &mut impl commonware_codec::Buf, _: &Self::Cfg) -> Result<Self, CodecError> {
         Ok(Self(Idents::read_b256(buf)?))
     }
 }
@@ -157,7 +157,7 @@ mod tests {
         Idents::write_b256(&value, &mut buf);
         assert_eq!(buf.len(), 32);
 
-        let mut reader = buf.as_slice();
+        let mut reader = commonware_codec::Copying(buf.as_slice());
         let decoded = Idents::read_b256(&mut reader).expect("read b256");
         assert_eq!(decoded, value);
     }
@@ -165,7 +165,7 @@ mod tests {
     #[test]
     fn test_idents_read_b256_end_of_buffer() {
         let short_buf = [0u8; 16];
-        let mut reader = short_buf.as_slice();
+        let mut reader = commonware_codec::Copying(short_buf.as_slice());
         let result = Idents::read_b256(&mut reader);
         assert!(result.is_err());
     }
